@@ -29,6 +29,9 @@ fs.mkdirSync(out, { recursive: true });
 const { start } = require('./serve.cjs');
 const { externalUrls } = require('./offline.cjs');
 const url = q => 'http://127.0.0.1:4812/' + path.relative(ROOTDIR, page) + (q ? '?' + q : '');
+// held still on a frame of the incoming message: the app's ?f counts chunks (chunk 1 ends on
+// a frame of the text), the mockup's counts frames
+const HELD = APP ? 'f=1&still' : 'f=3&still';
 const VIEWPORTS = [[1024, 768], [1280, 800], [1440, 900], [1728, 1117]];
 const PARTS = { top: '.top', bank: '.bank', sheet: '.sheet', compose: '.compose', menu: '.menu', panel: '.panel' };
 
@@ -82,7 +85,7 @@ function measureText() {
       window.__cls = 0;
       new PerformanceObserver(l => { for (const e of l.getEntries()) if (!e.hadRecentInput) window.__cls += e.value; }).observe({ type: 'layout-shift', buffered: true });
     });
-    await p.goto(url('f=3&still'), { waitUntil: 'networkidle' });
+    await p.goto(url(HELD), { waitUntil: 'networkidle' });
     await p.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
     await p.evaluate(() => document.fonts.ready);
     await p.waitForTimeout(400);
@@ -107,7 +110,8 @@ function measureText() {
   const still = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   watch(still, 'frames');
   await still.goto(url('still'));
-  const frames = await still.evaluate(() => +document.getElementById('fnt').textContent);
+  // the app's ?f= counts chunks of the incoming message; the mockup's counts frames
+  const frames = await still.evaluate(() => window.__sim ? __sim.chunks : +document.getElementById('fnt').textContent);
   for (let f = 0; f < frames; f++) {
     await still.goto(url(`f=${f}&still`));
     await still.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
@@ -120,7 +124,7 @@ function measureText() {
   // 3. 2x crops of each part, by selector
   const hi = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 });
   watch(hi, 'detail');
-  await hi.goto(url('f=3&still'));
+  await hi.goto(url(HELD));
   await hi.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
   await hi.evaluate(() => document.fonts.ready);
   await hi.waitForTimeout(300);
@@ -231,8 +235,10 @@ function measureText() {
     await br.mouse.click(5, 5);
     await br.waitForFunction(() => window.__bank && __bank.ready && window.__sim, null, { timeout: 60000 });
     await br.waitForFunction(() => __drum.running, null, { timeout: 5000 }).catch(() => {});
-    const KNOWN = 'LOOKUNDERTHEBLUESTAIRSFORTHERADIO';
-    const bridged = await br.evaluate(async known => {
+    // a chunk of real text: letters read as themselves on the plain row, anything else as X
+    const KNOWN = 'Look under the blue stairs for the radio.';
+    const WANT = [...KNOWN.slice(0, 12)].map(ch => /[a-z]/i.test(ch) ? ch.toUpperCase() : 'X').join('');
+    const bridged = await br.evaluate(async ([known, want]) => {
       const audio = __drum.running;
       __sim.inject(known);
       const receiving = __drum.receiving;
@@ -240,16 +246,16 @@ function measureText() {
       // every turn of the drums goes through Drum.spin: count the turns, and the sounds they made
       const calls0 = __drum.calls, sounds0 = __drum.sounds;
       const t0 = performance.now();
-      while (performance.now() - t0 < 9000 && __bank.rows().plain !== known.slice(0, 12)) await new Promise(r => setTimeout(r, 100));
+      while (performance.now() - t0 < 25000 && __bank.rows().plain !== want) await new Promise(r => setTimeout(r, 100));
       const plain = __bank.rows().plain;
       await new Promise(r => setTimeout(r, 1200));
       const turns = __drum.calls - calls0, sounds = __drum.sounds - sounds0;
       __sim.receiving(false);
       const after = __drum.spin(5, 1);
       return { audio, receiving, during, turns, sounds, plain, after, ms: Math.round(performance.now() - t0) };
-    }, KNOWN);
+    }, [KNOWN, WANT]);
     report.bridge = bridged;
-    if (bridged.plain !== KNOWN.slice(0, 12)) problems.push(`injected chunk: plain row reads ${bridged.plain}, wanted ${KNOWN.slice(0, 12)}`);
+    if (bridged.plain !== WANT) problems.push(`injected chunk: plain row reads ${bridged.plain}, wanted ${WANT}`);
     if (!bridged.receiving) problems.push('the page did not hear that a message was arriving by sound');
     if (bridged.during !== 0) problems.push(`Drum.spin made ${bridged.during} sounds while a message was arriving by sound`);
     if (!bridged.turns) problems.push('the drums never turned for the injected chunk');
@@ -257,6 +263,43 @@ function measureText() {
     if (!bridged.audio) problems.push('audio never started, so muting could not be tested');
     else if (!(bridged.after > 0)) problems.push('Drum.spin stayed silent after reception ended');
     await br.close();
+
+    // provisional tape: chunks type onto the sheet in grey, not yet checked; the message
+    // from this sheet's contact replaces it, another contact's takes it away, and one
+    // that never finishes is struck through (stall shortened to 1.5 s for the test)
+    const pv = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    watch(pv, 'provisional');
+    await pv.goto(url('stall=1500'));
+    await pv.waitForFunction(() => window.__bank && __bank.ready && window.__sim, null, { timeout: 60000 });
+    const sheet = () => {
+      const ents = [...document.querySelectorAll('#log .ent')];
+      const last = ents[ents.length - 1];
+      const strips = l => l ? [...l.querySelectorAll('.strip')].map(s => s.textContent).join(' ') : '';
+      return { arriving: document.querySelectorAll('#log .ent.arriving').length, failed: document.querySelectorAll('#log .ent.failed').length,
+        provisional: strips(document.querySelector('#log .ent.arriving')), note: ((document.querySelector('#log .ent.arriving') || last || document).querySelector('.state') || {}).textContent || '',
+        lastText: strips(last), lastProvisional: !!(last && last.querySelector('.provisional')), struck: last ? getComputedStyle(last.querySelector('.strip') || last).textDecorationLine : '' };
+    };
+    const TEXT = 'Meet at the library at noon.';
+    await pv.evaluate(t => __sim.arrive(t, { complete: false }), TEXT);
+    await pv.waitForTimeout(300);
+    const hanging = await pv.evaluate(`(${sheet})()`);
+    if (hanging.provisional !== TEXT) problems.push(`provisional tape reads ${JSON.stringify(hanging.provisional)}, wanted ${JSON.stringify(TEXT)}`);
+    if (hanging.note !== 'arriving by sound, not yet checked') problems.push(`provisional note reads ${JSON.stringify(hanging.note)}`);
+    await pv.locator('.sheet').screenshot({ path: path.join(out, 'provisional.png') });
+    await pv.waitForTimeout(2200);
+    const stalled = await pv.evaluate(`(${sheet})()`);
+    if (!stalled.failed || stalled.arriving || stalled.note !== 'did not check' || stalled.struck !== 'line-through') problems.push(`a stalled arrival was not struck through: ${JSON.stringify(stalled)}`);
+    await pv.locator('.sheet').screenshot({ path: path.join(out, 'provisional-failed.png') });
+    await pv.evaluate(() => __sim.arrive('Not for this sheet.', { contact: 2 }));
+    await pv.waitForTimeout(3200);
+    const other = await pv.evaluate(`(${sheet})()`);
+    if (other.arriving || /Not for this sheet/.test(other.lastText)) problems.push(`another contact's message stayed on this sheet: ${JSON.stringify(other)}`);
+    await pv.evaluate(() => __sim.arrive('Bring water.'));
+    await pv.waitForTimeout(3200);
+    const done = await pv.evaluate(`(${sheet})()`);
+    if (done.arriving || done.lastText !== 'Bring water.' || done.lastProvisional) problems.push(`the message did not replace its provisional tape: ${JSON.stringify(done)}`);
+    report.provisional = { hanging, stalled, other, done };
+    await pv.close();
   }
 
   // 7. offline audio

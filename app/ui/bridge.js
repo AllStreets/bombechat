@@ -9,43 +9,77 @@
 //   setSetting(id, valueIndex)   [set_setting { id, valueIndex }]
 //   unlock(passphrase)           [unlock { passphrase }]
 //
-// Events, as the node's NodeEvent, after normalising (on(name, fn)):
-//   chunk      { tag, index, of, view: { plain, heard, key } }   each view field a string of letters
+// Events (on(name, fn)), as the node's NodeEvent after normalising:
+//   chunk      { tag, index, of, view: { plain, heard, key }, text }
+//                plain: one letter per byte; ASCII letters upper-cased, every other byte X (the Bombe's spacer)
+//                heard, key: one letter per byte, by letter(b)
+//                text: the message text decrypted so far under this tag, NOT yet checked (see below)
 //   message    { id, contact, outgoing, text, channel, at_min, heard }
 //   heard      { id, by }
 //   broadcast  { signer, text, verified }                       signer: hex of the signing key
 //   pairOffer  { peer, name, safety }                           peer: hex of sign key then dh key
 //   roomDb     number
-//   channel    { channel, state }
-// Ids arrive as byte arrays or hex and leave as lowercase hex. Channels arrive as
-// "Sound" or "sound" and leave lower case. Bytes become letters by letter(b).
+//   channel    { channel, state }       state 'receiving' while a message arrives by sound; 'failed' when one
+//                                       stops arriving; anything else (e.g. 'listening', 'unavailable: ...') otherwise
+//   outbox     { id, state, text?, public? }   a send's progress: 'waiting' (for the room to fall under Send under),
+//                                       'playing', 'sent'. text and public come with the first report of a send
+//                                       this page didn't make (one queued before it opened).
+// The node emits channel 'receiving'/'listening'/'failed' and outbox from Task 11 on; the simulator emits them now.
+// Ids arrive as byte arrays or hex and leave as lowercase hex. Channels arrive as "Sound" or "sound" and leave lower case.
 //
 // A chunk is only known to come from a holder of the content key until the
-// message event that follows it. The drums may show it; the sheet waits.
+// message event that follows it. The drums may show it, and the sheet may show
+// its text as provisional tape, but only `message` puts it on the sheet for good.
 //
 // Beyond the node's events, the bridge offers start() (begin delivering the
-// simulated conversation; nothing in the app), now() (the clock the sheet
-// writes times with, in ms) and pending() (sends already waiting when the page
-// opened; empty in the app until the node can report its queue).
+// simulated conversation; nothing in the app) and now() (the clock the sheet
+// writes times with, in ms).
 import { createSimulator } from './simulator.js';
 
 const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 export const letter = b => ALPHABET[((b % 26) + 26) % 26];
-const letters = v => typeof v === 'string' ? v : Array.from(v || [], letter).join('');
+// the plain row reads as the message: letters as letters, everything else as the spacer
+export const plainLetter = b => (b >= 65 && b <= 90) || (b >= 97 && b <= 122) ? String.fromCharCode(b & ~32) : 'X';
+const bytesOf = v => Array.from(v || []);
 const hex = v => typeof v === 'string' ? v.toLowerCase() : Array.from(v || [], b => (b & 255).toString(16).padStart(2, '0')).join('');
 const lower = c => String(c || '').toLowerCase();
 const contactId = c => c && typeof c === 'object' && '0' in c ? +c[0] : +c;
 const identity = p => p && typeof p === 'object' && !Array.isArray(p) && 'sign' in p ? hex(p.sign) + hex(p.dh) : hex(p);
 
-const EVENTS = ['chunk', 'message', 'heard', 'broadcast', 'pairOffer', 'roomDb', 'channel'];
+// The sealed inner plaintext is: sender sign [32], sender dh [32], sent_min [4],
+// the text in UTF-8, then the Ed25519 signature [64] (crates/core/src/seal.rs).
+// The provisional text is what lies between. Before the last chunk the exact end
+// isn't known, but `of` bounds it: every chunk but the last is full, so the
+// whole is at least (of - 1) chunks and one byte, and the text ends no earlier
+// than 64 bytes before that.
+const SENDER_LEN = 68, SIGNATURE_LEN = 64;
+const arriving = new Map(); // tag -> { bytes so far, chunk size }
+const decoder = new TextDecoder('utf-8');
+function provisional(tag, index, of, plain) {
+  const a = index === 0 || !arriving.has(tag) ? { so: [], size: 0 } : arriving.get(tag);
+  if (index < of - 1) a.size = plain.length;
+  a.so.push(...plain); arriving.set(tag, a);
+  const last = index === of - 1;
+  const end = last ? a.so.length - SIGNATURE_LEN : Math.min(a.so.length, (of - 1) * a.size + 1 - SIGNATURE_LEN);
+  if (end <= SENDER_LEN) return '';
+  return decoder.decode(new Uint8Array(a.so.slice(SENDER_LEN, end))).replace(/\uFFFD+$/, '');
+}
+
+const EVENTS = ['chunk', 'message', 'heard', 'broadcast', 'pairOffer', 'roomDb', 'channel', 'outbox'];
 const normalise = {
-  chunk: c => ({ tag: c.tag, index: c.index, of: c.of, view: { plain: letters(c.view.plain), heard: letters(c.view.heard), key: letters(c.view.key) } }),
+  chunk: c => {
+    const plain = bytesOf(c.view.plain);
+    const text = provisional(c.tag, c.index, c.of, plain);
+    if (c.index === c.of - 1) arriving.delete(c.tag);
+    return { tag: c.tag, index: c.index, of: c.of, text, view: { plain: plain.map(plainLetter).join(''), heard: bytesOf(c.view.heard).map(letter).join(''), key: bytesOf(c.view.key).map(letter).join('') } };
+  },
   message: m => ({ ...m, id: hex(m.id), contact: contactId(m.contact), channel: lower(m.channel) }),
   heard: h => ({ id: hex(h.id), by: contactId(h.by) }),
   broadcast: b => ({ ...b, signer: b.signer && b.signer.sign ? hex(b.signer.sign) : hex(b.signer) }),
   pairOffer: p => ({ ...p, peer: identity(p.peer) }),
   roomDb: d => +(d && typeof d === 'object' ? d.db : d),
   channel: s => ({ ...s, channel: lower(s.channel) }),
+  outbox: o => ({ ...o, id: hex(o.id), state: lower(o.state) }),
 };
 
 const handlers = Object.fromEntries(EVENTS.map(e => [e, new Set()]));
@@ -70,7 +104,6 @@ function tauriBackend() {
     unlock: passphrase => invoke('unlock', { passphrase }),
     start() {},
     now: () => Date.now(),
-    pending: () => [],
   };
 }
 
@@ -87,7 +120,6 @@ function simulatedBackend() {
     unlock: passphrase => sim.unlock(passphrase),
     start: () => sim.start(),
     now: () => sim.now(),
-    pending: () => sim.pending(),
   };
 }
 
@@ -108,5 +140,4 @@ export const bridge = {
   },
   start: () => backend.start(),
   now: () => backend.now(),
-  pending: () => backend.pending(),
 };

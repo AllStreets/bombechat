@@ -1,4 +1,4 @@
-// Finds web addresses in the app's interface files. The app runs with
+// Finds web addresses (http, https, ws, wss and protocol-relative) in the app's interface files. The app runs with
 // connect-src 'none' and ships every asset, so none should appear at all.
 // Allowed: XML namespace names (identifiers that are never fetched), licence
 // texts (which must stay as published), and comments inside vendored three.js.
@@ -7,7 +7,8 @@ const path = require('path');
 
 const NAMESPACES = /^http:\/\/www\.w3\.org\/(2000\/svg|1999\/xhtml|1999\/xlink)$/;
 const LICENCE = /^(LICENSE|OFL-[\w-]+\.txt)$/;
-const URL = /https?:\/\/[^\s'"`)<>\\]+/g;
+// http(s) and ws(s) addresses, and protocol-relative ones (//host.tld/...) that a page would fetch over its own scheme
+const URL = /\b(?:https?|wss?):\/\/[^\s'"`)<>\\]+|(?<![\\:\w\/])\/\/[a-z0-9-]+(?:\.[a-z0-9-]+)+(?::\d+)?(?:\/[^\s'"`)<>\\]*)?/gi;
 
 function files(dir) {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap(e => {

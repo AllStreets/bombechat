@@ -65,6 +65,7 @@ a.pl svg{display:block}
 .row .desc{font-family:var(--type);font-size:12.5px;line-height:1.45;color:var(--muted);max-height:0;overflow:hidden;opacity:0;transition:max-height .25s ease,opacity .2s,margin .25s}
 .row.focus .desc,.row.active .desc{max-height:60px;opacity:1;margin-top:5px}
 .jacks{display:flex;gap:4px;margin-top:9px;flex-wrap:wrap}
+.jacks.wide{column-gap:14px}
 .jk{all:unset;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:3px;min-width:34px;padding:2px 2px 0;border-radius:2px}
 .jk i{width:18px;height:18px;border-radius:50%;display:block;position:relative;
   background:radial-gradient(circle at 50% 50%,#0f0e0c 0 5px,transparent 5.5px),radial-gradient(circle at 38% 32%,#f0dcae,#b8955c 55%,#6e5631);
@@ -118,7 +119,7 @@ a.pl svg{display:block}
 <div class="stage">
   <div class="cardwrap">
     <section class="card" aria-label="Wiring schedule">
-      <div class="card-h"><h1>Wiring schedule</h1><span>Machine<b>No. 1</b></span></div>
+      <div class="card-h"><h1>Wiring schedule</h1><span>Machine No.<b>1</b></span></div>
       <div class="sched" id="sched"></div>
       <div class="card-f"><span>Every setting is a plug. Move one here or on the machine.</span></div>
     </section>
@@ -142,10 +143,10 @@ const REDUCED=matchMedia('(prefers-reduced-motion: reduce)').matches||Q.has('sti
 /* ---------- settings model ---------- */
 const GROUPS=['Sound','Light','Bluetooth','Machine','Passing on','Quiet sending','Privacy'];
 const SETTINGS=[
- {id:'listen',g:'Sound',name:'Listen by sound',values:['Off','On'],v:1,desc:'Use the microphone to hear messages sent nearby.'},
+ {id:'sound',g:'Sound',name:'Sound switch',values:['Off','Listen','Listen and send'],v:2,desc:'Listen hears messages sent nearby through the microphone. Listen and send also plays yours through the speaker. The same switch as on the front.'},
  {id:'volume',g:'Sound',name:'Send volume',values:['1','2','3','4','5'],v:2,desc:'Louder reaches further across a room, and is easier for others to notice.'},
  {id:'band',g:'Sound',name:'Tone band',values:['Near silent','Audible'],v:0,desc:'Near silent sends on 17.6 to 19.8 kHz. Audible suits older speakers that cannot reach that high.'},
- {id:'read',g:'Light',name:'Read by camera',values:['Off','On'],v:0,desc:'Watch the camera for a screen flashing a message at it.'},
+ {id:'light',g:'Light',name:'Light switch',values:['Off','Read','Read and flash'],v:0,desc:'Read watches the camera for a screen flashing a message at it. Read and flash also flashes yours. The same switch as on the front.'},
  {id:'flash',g:'Light',name:'Flash speed',values:['Slow','Normal','Fast'],v:1,desc:'Slower is more reliable in bright rooms and from further away.'},
  {id:'machine',g:'Machine',name:'Machine sound',values:['Off','On'],v:1,desc:'Drum clicks and plug sounds, kept below 7 kHz so they never mix with messages.'},
  {id:'machvol',g:'Machine',name:'Machine volume',values:['1','2','3','4','5'],v:2,desc:'How loud the drums and plugs are.'},
@@ -174,7 +175,7 @@ for(const g of GROUPS){
     const r=document.createElement('div');r.className='row';r.dataset.id=s.id;
     r.innerHTML=`<div class="hd"><span class="nm" id="nm-${s.id}">${s.name}</span><span class="val">${label(s)}</span></div>
       <div class="desc">${s.desc}</div>
-      <div class="jacks" role="radiogroup" aria-labelledby="nm-${s.id}">${s.values.map((v,i)=>`<button class="jk" role="radio" aria-checked="${i===s.v}" tabindex="${i===s.v?0:-1}" data-i="${i}" aria-label="${v}${s.unit||''}"><i></i><span>${v}</span></button>`).join('')}</div>`;
+      <div class="jacks${s.values.some(v=>v.includes(' '))?' wide':''}" role="radiogroup" aria-labelledby="nm-${s.id}">${s.values.map((v,i)=>`<button class="jk" role="radio" aria-checked="${i===s.v}" tabindex="${i===s.v?0:-1}" data-i="${i}" aria-label="${v}${s.unit||''}"><i></i><span>${v}</span></button>`).join('')}</div>`;
     sched.appendChild(r);rows[s.id]=r;
     r.addEventListener('mouseenter',()=>focusSetting(s.id,'hover'));
     r.addEventListener('mouseleave',()=>focusSetting(null,'hover'));
@@ -293,13 +294,15 @@ async function build(){
   const LAYOUT={left:{x:-8.9,groups:['Sound','Light','Bluetooth','Machine']},right:{x:.55,groups:['Passing on','Quiet sending','Privacy']}};
   const ROWH=.74,TOP=.75;
   const plugs={};const jackMeshes=[];
+  const valueWidth=t=>{const m=engrave(t,0,0,.1);m.geometry.computeBoundingBox();const b=m.geometry.boundingBox;scene.remove(m);m.geometry.dispose();m.material.map.dispose();m.material.dispose();return b.max.x-b.min.x};
       for(const side of Object.values(LAYOUT)){let y=TOP;
     for(const g of side.groups){plate(g.toUpperCase(),side.x,y,{h:.24,red:g==='Bluetooth',align:'left'});y-=.42;
       if(g==='Bluetooth'){const cov=new THREE.Mesh(new THREE.BoxGeometry(5.6,.9,.05),new THREE.MeshStandardMaterial({color:'#262724',roughness:.45,metalness:.6,bumpMap:wrinkle,bumpScale:.4}));cov.position.set(side.x+2.8,y-.3,.025);cov.castShadow=true;cov.receiveShadow=true;scene.add(cov);
         [[-2.65,.33],[2.65,.33],[-2.65,-.33],[2.65,-.33]].forEach(([dx,dy])=>bolt(side.x+2.8+dx,y-.3+dy));const e=engrave('NOT FITTED TO THIS BUILD',side.x+2.8,y-.3,.15,'#6f6a5e');e.position.z=.055;y-=1.12;continue}
       for(const s of SETTINGS.filter(q=>q.g===g)){
         {const e=engrave(s.name.toUpperCase(),0,y-.01,.12,'#ddd5c0');e.geometry.computeBoundingBox();const w=e.geometry.boundingBox.max.x-e.geometry.boundingBox.min.x;e.position.x=side.x+w/2+.02}
-        const n=s.values.length,x0=side.x+3.55,span=4.9,step=Math.min(.74,span/n);const jacks=[];
+        // jacks sit .74 apart, or as far apart as their longest engraved value needs
+        const n=s.values.length,x0=side.x+3.55,span=4.9,step=Math.min(span/n,Math.max(.74,...s.values.map(v=>valueWidth(v.toUpperCase())+.16)));const jacks=[];
         s.values.forEach((v,i)=>{const x=x0+i*step,p=new THREE.Vector3(x,y,0);
           const nut=new THREE.Mesh(nutGeo,M.brassDull);nut.position.set(x,y,.02);nut.castShadow=true;nut.receiveShadow=true;scene.add(nut);
           const ring=new THREE.Mesh(jackGeo,M.brass);ring.position.set(x,y,.05);ring.castShadow=true;scene.add(ring);

@@ -145,6 +145,10 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
 .stamp.new{animation:stampin .32s cubic-bezier(.3,1.4,.5,1)}
 @keyframes stampin{0%{transform:rotate(-2.5deg) scale(1.35);opacity:0}100%{transform:rotate(-2.5deg) scale(1);opacity:.85}}
 .strip.feed{min-width:40px}
+/* provisional tape: text that has decrypted but is not yet checked against the sender's signature */
+.strip.provisional{background:#d9d5cb;color:#5b5850;text-shadow:none;box-shadow:0 1px 1px rgba(60,40,10,.16),0 0 0 .5px rgba(90,85,75,.18)}
+.ent.failed .strip{text-decoration:line-through;text-decoration-thickness:1px;text-decoration-color:rgba(60,52,40,.8);opacity:.75}
+.ent.failed .state{color:#7a3a30}
 .cur{display:inline-block;width:8px;height:14px;background:#1c1a16;vertical-align:-2px;animation:b 1s steps(2) infinite}
 @keyframes b{50%{opacity:0}}
 .ent.fresh{animation:feed .35s ease-out}
@@ -207,11 +211,11 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
 
 /* control panel */
 .panel{grid-area:panel;position:relative;display:grid;grid-template-rows:auto auto auto;align-content:space-between;gap:14px;min-height:0}
-.mods{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(112px,.9fr);gap:10px}
+.mods{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(104px,.78fr);gap:10px}
 .mod{display:flex;flex-direction:column;align-items:center;gap:6px;padding:10px 4px 12px;border-radius:2px;background:linear-gradient(#1f201d,#181917);box-shadow:inset 0 0 0 1px #000,inset 0 1px 0 rgba(255,255,255,.04)}
 .knob{all:unset;box-sizing:border-box;position:relative;display:block;width:100%;cursor:pointer;border-radius:6px}
 .knob svg{display:block;width:100%;height:auto;overflow:visible}
-.knob{aspect-ratio:128/86}
+.knob{aspect-ratio:132/96}
 .knob .cap{transition:transform .32s cubic-bezier(.3,1.5,.5,1)}
 .knob:hover .grip{fill:rgba(255,255,255,.08)}
 .knob:focus-visible{outline:1.5px solid var(--amber);outline-offset:2px}
@@ -405,11 +409,12 @@ function setLetter(cell,ch,turns){const i=A.indexOf(ch);let base=cell.angle-(cel
   let n=0;cell.wl.setAttribute('opacity','.5');cell.t=setInterval(()=>{cell.wl.textContent=A[(Math.random()*26)|0];if(++n>12){clearInterval(cell.t);cell.wl.textContent=ch;cell.wl.setAttribute('opacity','1')}},62)}
 
 /* ---------- frames: each landed chunk, twelve letters at a time, in order ---------- */
-const W=12,DWELL=2600;
+const W=12,DWELL=3400;
 const frames=[];let current=null,shownAt=-1e9,pumpT=null,arrival=null;
 const pad=s=>s.padEnd(W,'X');
 function lamps(index,of){const n=Math.min(of,24),first=Math.max(0,Math.min(index-n+2,of-n));
   return [...Array(n)].map((_,k)=>{const i=first+k;return `<i class="${i<index?'d':i===index?'n':''}"></i>`}).join('')}
+// X is the spacer: anything in the message that isn't a letter. It is cut lighter on the drum.
 function showFrame(fr,anim){const p=fr.plain;for(let c=0;c<W;c++){
   cells[c].wl.setAttribute('fill',p[c]==='X'?'#9a9282':'#15130f');cells[c].wl.setAttribute('stroke',p[c]==='X'?'#9a9282':'#15130f');
   if(!anim){setLetter(cells[24+c],fr.key[c]);setLetter(cells[12+c],fr.heard[c]);setLetter(cells[c],p[c]);continue}
@@ -421,10 +426,13 @@ function showFrame(fr,anim){const p=fr.plain;for(let c=0;c<W;c++){
 function pump(){clearTimeout(pumpT);if(!frames.length)return;
   const wait=shownAt+(frames.length>4?1300:DWELL)-performance.now();
   if(wait>0&&!booting){pumpT=setTimeout(pump,wait);return}
+  // what landed before the page opened goes straight to the last of it
+  if(booting)while(frames.length>1)showFrame(frames.shift(),false);
   showFrame(frames.shift(),!booting&&!STILL);shownAt=performance.now();
   if(frames.length)pumpT=setTimeout(pump,DWELL)}
 // let the drums finish before the sheet moves on
-function whenDrumsRest(fn){if(booting||STILL||RM.matches||(!frames.length&&performance.now()-shownAt>1700))fn();else setTimeout(()=>whenDrumsRest(fn),100)}
+// (a long message can leave the drums far behind: the sheet waits for them 2.7 s at most)
+function whenDrumsRest(fn,t0=performance.now()){if(booting||STILL||RM.matches||(!frames.length&&performance.now()-shownAt>2700)||performance.now()-t0>2700)fn();else setTimeout(()=>whenDrumsRest(fn,t0),100)}
 
 /* ---------- the sheet ---------- */
 const log=document.getElementById('log'),newtab=document.getElementById('newtab');
@@ -440,20 +448,18 @@ function entry(ms,how){const ent=el('div',booting?'ent':'ent fresh');const when=
 // tape: a strip per line; a line longer than a strip of tape is cut at the word nearest 40 letters
 function cut(t,max){const w=t.split(' ');const out=[];let cur='';w.forEach(x=>{if((cur+' '+x).trim().length>max){out.push(cur.trim());cur=x}else cur+=' '+x});if(cur.trim())out.push(cur.trim());return out}
 const TILT=[-.3,.4,-.15];
-function tape(what,text){const lines=text.split('\n').flatMap(l=>l.length>56?cut(l,40):[l]);
-  lines.forEach((l,i)=>{const s=el('div','strip',l);if(i){s.style.transform=`rotate(${TILT[(i-1)%3]}deg)`;s.style.marginLeft=`${i*2}px`}what.appendChild(s)})}
+function tape(what,text,cls='strip',before=null){const lines=text.split('\n').flatMap(l=>l.length>56?cut(l,40):[l]);
+  return lines.map((l,i)=>{const s=el('div',cls,l);if(i){s.style.transform=`rotate(${TILT[(i-1)%3]}deg)`;s.style.marginLeft=`${i*2}px`}what.insertBefore(s,before);return s})}
 function stamp(what,how,ms){const s=el('div',booting?'stamp':'stamp new',`${how==='light'?'seen':'heard'} by ${CONTACT.short}, ${hhmm(ms)}`);what.appendChild(s)}
 const sent=new Map();// message id -> {ent,how}
 const hopsWord=n=>['no hops','one hop','two hops','three hops','four hops','five hops','six hops','seven hops'][n]||`${n} hops`;
 
 bridge.on('message',m=>{
-  // the message whose chunks the drums have been showing: its entry is already waiting
-  if(!m.outgoing&&arrival&&arrival.ent&&m.channel==='sound'&&!m.via){const ent=arrival.ent;arrival.ent=null;
-    whenDrumsRest(()=>grow(()=>{const what=ent.querySelector('.what');what.textContent='';tape(what,m.text)}));return}
+  if(!m.outgoing&&m.channel==='sound'&&!m.via&&arrival&&arrival.ent)return;// it finishes a provisional entry: see below
+  if(m.contact!==CONTACT.id)return;// another person's sheet
   const how=m.via?'relay':m.channel;const ent=entry(m.at_min*60000,how);const what=ent.querySelector('.what');
   if(m.outgoing){what.appendChild(el('div','typed',m.text));sent.set(m.id,{ent,how:m.channel});if(m.heard)stamp(what,m.channel,bridge.now())}
   else{tape(what,m.text);if(m.via)what.appendChild(el('div','state',`passed on by the ${m.via}`))}
-  if(!booting)ent.classList.add('fresh');
   grow(()=>log.appendChild(ent))});
 bridge.on('broadcast',b=>{const ent=entry(bridge.now(),'public');const what=ent.querySelector('.what');tape(what,b.text);
   what.appendChild(el('div','state',`${b.verified?'signed':'signed, not checked,'} ${b.signer.slice(0,4).toUpperCase()}${b.hops?', '+hopsWord(b.hops):''}`));
@@ -461,43 +467,68 @@ bridge.on('broadcast',b=>{const ent=entry(bridge.now(),'public');const what=ent.
 bridge.on('heard',h=>{const s=sent.get(h.id);if(!s||s.ent.querySelector('.stamp'))return;
   grow(()=>{const st=s.ent.querySelector('.state');if(st)st.remove();stamp(s.ent.querySelector('.what'),s.how,bridge.now())})});
 
-/* ---------- chunks arriving ---------- */
-// a new message gets its entry at once, but no text: until the message event the
-// chunks are only known to come from someone holding the key, not from Marisol
-function arrivingEntry(){const ent=entry(bridge.now(),'sound');const what=ent.querySelector('.what');
-  const t=el('div','strip feed');t.appendChild(el('span','cur'));what.append(t,el('div','state live','arriving by sound'));
+/* ---------- a message arriving: provisional tape ----------
+   As chunks decrypt, their text types onto the sheet in pencil-grey tape. Until
+   the message event it is only known to come from someone holding the key, so it
+   is marked as not yet checked. The message event (from this sheet's contact)
+   replaces it with the real entry; a failure, or no chunk for 30 s, strikes it through. */
+const STALL=Q.has('stall')?+Q.get('stall'):30000;
+function arrivingEntry(){const ent=entry(bridge.now(),'sound');ent.classList.add('arriving');
+  ent.querySelector('.what').append(el('div','strip provisional feed'),el('div','state live','arriving by sound, not yet checked'));
   grow(()=>log.appendChild(ent));return ent}
+function provisionalTape(a,text){const what=a.ent.querySelector('.what'),note=what.querySelector('.state');
+  what.querySelectorAll('.strip').forEach(s=>s.remove());
+  const strips=text?tape(what,text,'strip provisional',note):[];
+  const last=strips.length?strips[strips.length-1]:what.insertBefore(el('div','strip provisional feed'),note);
+  last.appendChild(el('span','cur'))}
+function failArrival(a){if(!a||!a.ent)return;clearTimeout(a.stallT);const ent=a.ent;a.ent=null;
+  grow(()=>{ent.classList.remove('arriving');ent.classList.add('failed');ent.querySelectorAll('.cur').forEach(c=>c.remove());
+    const note=ent.querySelector('.state');note.classList.remove('live');note.textContent='did not check'})}
 bridge.on('chunk',c=>{const v=c.view,fpc=Math.max(1,Math.ceil(v.plain.length/W));
-  if(!arrival||arrival.tag!==c.tag||c.index===0)arrival={tag:c.tag,fpc,ent:arrivingEntry()};
+  if(!arrival||arrival.tag!==c.tag||c.index===0){failArrival(arrival);arrival={tag:c.tag,fpc,ent:arrivingEntry(),text:''}}
   const base=c.index*arrival.fpc,total=c.index===c.of-1?base+fpc:c.of*arrival.fpc;
   for(let i=0;i<fpc;i++){const s=i*W;frames.push({plain:pad(v.plain.slice(s,s+W)),heard:pad(v.heard.slice(s,s+W)),key:pad(v.key.slice(s,s+W)),no:base+i,total,index:c.index,of:c.of})}
-  if(arrival.ent){const st=arrival.ent.querySelector('.state');grow(()=>{st.textContent=`arriving by sound, ${c.index+1} of ${c.of} checked`})}
+  const a=arrival;
+  if(a.ent){a.text=c.text;grow(()=>provisionalTape(a,c.text));clearTimeout(a.stallT);a.stallT=setTimeout(()=>failArrival(a),STALL)}
   pump()});
-bridge.on('channel',s=>{if(s.channel==='sound')Drum.receiving=s.state==='receiving'});
+// the message the chunks were spelling: the provisional tape gives way to the real entry
+bridge.on('message',m=>{
+  if(m.outgoing||m.channel!=='sound'||m.via||!arrival||!arrival.ent)return;
+  const a=arrival,ent=a.ent;a.ent=null;clearTimeout(a.stallT);
+  if(m.contact!==CONTACT.id){grow(()=>ent.remove());return}
+  whenDrumsRest(()=>grow(()=>{ent.classList.remove('arriving');const what=ent.querySelector('.what');what.textContent='';tape(what,m.text)}))});
+bridge.on('channel',s=>{if(s.channel!=='sound')return;Drum.receiving=s.state==='receiving';if(s.state==='failed')failArrival(arrival)});
 
 /* ---------- channels ---------- */
-// sentence case, set in the engraving face's small capitals. Off sits at nine o'clock;
-// the longest position is engraved on two lines above the knob's right shoulder.
+// Sentence case, set in the engraving face's small capitals. Three detents 120 degrees
+// apart: Off at eight o'clock, Listen at four, and the longest, Listen and send, at
+// twelve, where there is room to engrave it on two lines. Ticks sit inside the words.
 const KNOBS={k1:{setting:'sound',labels:['Off','Listen','Listen and send'],pos:2,name:'Sound',say:['off','listening only, never makes a sound','listening and sending']},
              k2:{setting:'light',labels:['Off','Read','Read and flash'],pos:0,name:'Light',say:['off','reading the camera','reading the camera and flashing replies']}};
-const ANG=[-90,-30,30];
-// where each position's words sit, in the knob's own units: centre x, first baseline y, line breaks
-const PLACE=[{x:-45,y:-8},{x:-29,y:-40},{x:31,y:-41,two:true}];
-const LINE=12.4;
+// the turn runs Off, Listen, Listen and send, round through six o'clock
+const ANG=[-120,-240,-360];
+// where each position's words sit, in the knob's own units: centre x, first baseline y, whether to break after the first word
+const PLACE=[{x:-41,y:29},{x:41,y:29},{x:0,y:-49.5,two:true}];
+const LINE=12.6;
 function engraving(t,i,fill){const P=PLACE[i],w=t.split(' ');const lines=P.two&&w.length>1?[w[0],w.slice(1).join(' ')]:[t];
   return lines.map((l,j)=>`<text x="${P.x}" y="${P.y+j*LINE}" font-family="${ENGR}" font-size="13.4" letter-spacing=".2" fill="${fill}" stroke="${fill}" stroke-width=".28" text-anchor="middle">${l}</text>`).join('')}
 function drawKnob(id){const el=document.getElementById(id),k=KNOBS[id];let fl='';
   for(let i=0;i<24;i++)fl+=`<path class="grip" transform="rotate(${i*15})" d="M-2 -24.5 Q0 -26.8 2 -24.5 L1.4 -18.5 L-1.4 -18.5Z" fill="rgba(255,255,255,.055)"/>`;
   let marks='';k.labels.forEach((t,i)=>{const r=ANG[i]*Math.PI/180,on=i===k.pos;
-    const lx=Math.sin(r)*29,ly=-Math.cos(r)*29,mx=Math.sin(r)*33,my=-Math.cos(r)*33;
-    marks+=`<line x1="${lx}" y1="${ly}" x2="${mx}" y2="${my}" stroke="${on?'#e8e1cf':'#6d685c'}" stroke-width="1.2"/>`+engraving(t,i,on?'#f1ebd9':'#8a8476')});
-  el.innerHTML=`<svg viewBox="-64 -54 128 86" aria-hidden="true"><defs><radialGradient id="kb${id}" cx="40%" cy="30%" r="80%"><stop offset="0" stop-color="#3b3935"/><stop offset=".6" stop-color="#1a1917"/><stop offset="1" stop-color="#0a0a09"/></radialGradient></defs>
-  ${marks}<circle r="26" cy="3" fill="#000" opacity=".6"/><circle r="25.5" fill="url(#kb${id})"/>
+    const lx=Math.sin(r)*28.5,ly=-Math.cos(r)*28.5,mx=Math.sin(r)*32.5,my=-Math.cos(r)*32.5;
+    marks+=`<line class="tick" x1="${lx}" y1="${ly}" x2="${mx}" y2="${my}" stroke="${on?'#e8e1cf':'#6d685c'}" stroke-width="1.2"/>`+engraving(t,i,on?'#f1ebd9':'#8a8476')});
+  el.innerHTML=`<svg viewBox="-66 -63 132 96" aria-hidden="true"><defs><radialGradient id="kb${id}" cx="40%" cy="30%" r="80%"><stop offset="0" stop-color="#3b3935"/><stop offset=".6" stop-color="#1a1917"/><stop offset="1" stop-color="#0a0a09"/></radialGradient></defs>
+  ${marks}<circle class="body" r="26" cy="3" fill="#000" opacity=".6"/><circle r="25.5" fill="url(#kb${id})"/>
   <g class="cap" style="transform:rotate(${ANG[k.pos]}deg)">${fl}<circle r="17" fill="#1d1c1a" stroke="rgba(0,0,0,.75)"/><circle r="17" fill="none" stroke="rgba(255,255,255,.07)" transform="translate(0,-.7)"/><rect x="-1.5" y="-24" width="3" height="12.5" rx="1.1" fill="#e9e3d2"/></g></svg>`;
   el.setAttribute('aria-valuenow',k.pos);el.setAttribute('aria-valuetext',k.labels[k.pos].toLowerCase());el.title=`${k.name}: ${k.say[k.pos]}. Click or use the arrow keys to turn.`}
+// the switches and the back panel's Sound and Light rows are the same two settings
+const SAVED='bombechat.settings';
+function savedSettings(){try{return JSON.parse(localStorage.getItem(SAVED)||'{}')}catch(e){return {}}}
+function saveSetting(id,v){try{const s=savedSettings();s[id]=v;localStorage.setItem(SAVED,JSON.stringify(s))}catch(e){}}
+for(const k of Object.values(KNOBS)){const v=savedSettings()[k.setting];if(v>=0&&v<=2)k.pos=v}
 function turnKnob(id,pos){const k=KNOBS[id];pos=Math.max(0,Math.min(2,pos));if(pos===k.pos)return;k.pos=pos;
   const cap=document.querySelector(`#${id} .cap`);cap.style.transform=`rotate(${ANG[pos]}deg)`;setTimeout(()=>drawKnob(id),RM.matches?0:330);
-  Drum.spin(2,0.7);bridge.setSetting(k.setting,pos);applyChannels()}
+  Drum.spin(2,0.7);bridge.setSetting(k.setting,pos);saveSetting(k.setting,pos);applyChannels()}
 ['k1','k2'].forEach(id=>{drawKnob(id);const el=document.getElementById(id);
   el.addEventListener('click',()=>turnKnob(id,(KNOBS[id].pos+1)%3));
   el.addEventListener('keydown',e=>{const d={ArrowRight:1,ArrowUp:1,ArrowLeft:-1,ArrowDown:-1}[e.key];if(e.key==='Home')turnKnob(id,0);else if(e.key==='End')turnKnob(id,2);else if(d)turnKnob(id,KNOBS[id].pos+d);else return;e.preventDefault()})});
@@ -524,20 +555,28 @@ const vuNeedle=(()=>{const g=document.getElementById('vusvg');const cx=100,cy=96
   g.innerHTML=h;const n=document.getElementById('needle');
   return v=>n.setAttribute('transform',`rotate(${-48+(Math.max(28,Math.min(62,v))-30)/30*96} ${cx} ${cy})`)})();
 vuNeedle(room);
-// the node holds sends until the room is quieter than Send under; the outbox follows the same rule
-bridge.on('roomDb',db=>{room=db;vuNeedle(room);if(room<40)flushOutbox()});
+bridge.on('roomDb',db=>{room=db;vuNeedle(room)});
 
-/* ---------- outbox and replying ---------- */
-const outbox=document.getElementById('outbox');let queue=bridge.pending().map(m=>({...m}));
-function drawOutbox(){if(!queue.length){outbox.innerHTML='<div class="slip empty">Nothing waiting to send.</div>';return}
-  outbox.innerHTML=queue.slice(0,2).map(m=>`<div class="slip">${esc(m.text)}<small>${m.public?'public, ':''}sends once under 40 dB</small></div>`).join('')+(queue.length>2?`<div class="slip empty">and ${queue.length-2} more</div>`:'')}
+/* ---------- outbox and replying ----------
+   The node holds each send until the room is quieter than Send under, and says
+   so through outbox events: waiting, playing, sent. The slips and each reply's
+   status line are drawn from those alone. */
+const outboxEl=document.getElementById('outbox');
+const outbox=new Map();// id -> {text,public,state,ent,how,leaving}
 const esc=s=>s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-let sending=false;
-function flushOutbox(){if(sending||!queue.length||KNOBS.k1.pos<2)return;sending=true;const m=queue[0];
-  const slip=outbox.querySelector('.slip');if(slip)slip.classList.add('gone');
-  setTimeout(()=>{const i=queue.indexOf(m);if(i>=0)queue.splice(i,1);drawOutbox();if(m.ent)playOut(m.ent,'sound');sending=false},RM.matches?0:460)}
-// the stamp comes when the other side says it heard; until then the entry says what it is doing
-function playOut(ent,how){const st=ent.querySelector('.state');if(!st)return;st.textContent=how==='sound'?'playing by sound':'flashing on screen';st.classList.add('live')}
+function outItem(id){let it=outbox.get(id);if(!it){it={id,text:'',public:false,state:null,ent:null,how:'sound',leaving:false};outbox.set(id,it)}return it}
+function drawOutbox(){const q=[...outbox.values()].filter(m=>m.text&&(m.state==='waiting'||m.leaving));
+  if(!q.length){outboxEl.innerHTML='<div class="slip empty">Nothing waiting to send.</div>';return}
+  outboxEl.innerHTML=q.slice(0,2).map(m=>`<div class="slip${m.leaving?' gone':''}" data-id="${m.id}">${esc(m.text)}<small>${m.public?'public, ':''}sends once under 40 dB</small></div>`).join('')+(q.length>2?`<div class="slip empty">and ${q.length-2} more</div>`:'')}
+function status(it){const st=it.ent&&it.ent.querySelector('.state');if(!st)return;
+  st.classList.toggle('live',it.state==='playing');
+  st.textContent=it.state==='waiting'?(room<40?'playing next':`waiting for quiet, the room is at ${Math.round(room)} dB`)
+    :it.state==='playing'?(it.how==='light'?'flashing on screen':'playing by sound'):it.state==='sent'?'sent, not heard yet':''}
+function setOut(it,state){const was=it.state;it.state=state;status(it);
+  if(state==='playing'&&was==='waiting'&&!RM.matches){it.leaving=true;const slip=outboxEl.querySelector(`[data-id="${it.id}"]`);if(slip)slip.classList.add('gone');setTimeout(()=>{it.leaving=false;drawOutbox()},460)}
+  else drawOutbox();
+  if(state==='sent')outbox.delete(it.id)}
+bridge.on('outbox',o=>{const it=outItem(o.id);if(o.text&&!it.text){it.text=o.text;it.public=!!o.public}setOut(it,o.state)});
 const nowtime=document.getElementById('nowtime');
 const tick=()=>{nowtime.firstChild.nodeValue=hhmm(bridge.now())};
 const reply=document.getElementById('reply'),form=document.getElementById('compose');
@@ -554,11 +593,8 @@ function send(how){const text=reply.value.trim();
   const ent=entry(bridge.now(),how);ent.classList.add('mine');const what=ent.querySelector('.what');what.append(el('div','typed',text),el('div','state'));
   grow(()=>log.appendChild(ent),true);
   reply.value='';fit();
-  bridge.send([CONTACT.id],text).then(id=>{sent.set(id,{ent,how});tick()});
-  if(how==='light'){playOut(ent,'light');return}
-  const item={text,ent};queue.push(item);
-  if(room>=40){ent.querySelector('.state').textContent=`waiting for quiet, the room is at ${Math.round(room)} dB`;drawOutbox()}
-  else{ent.querySelector('.state').textContent='playing next';drawOutbox();flushOutbox()}}
+  bridge.send([CONTACT.id],text).then(id=>{sent.set(id,{ent,how});const it=outItem(id);Object.assign(it,{text,ent,how});
+    if(it.state)setOut(it,it.state);tick()})}
 
 /* ---------- key check menu ---------- */
 (function(){const svg=document.getElementById('menusvg');
@@ -663,6 +699,7 @@ function syncMirror(){const r=window.__bank.rows();if(mirror.plain.textContent!=
 
 /* ---------- open: replay what came before, then listen ---------- */
 drawOutbox();applyChannels();
+for(const k of Object.values(KNOBS))bridge.setSetting(k.setting,k.pos);
 bridge.start();
 booting=false;tick();setInterval(tick,20000);
 syncMirror();
