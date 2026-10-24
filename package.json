@@ -6,6 +6,7 @@
     "check": "node tools/check.cjs mockups/bombechat.html && node tools/check-settings.cjs",
     "check:front": "node tools/check.cjs mockups/bombechat.html",
     "check:settings": "node tools/check-settings.cjs",
+    "check:airgapped": "bash tools/check-airgapped.sh",
     "serve": "node tools/serve.cjs"
   },
   "devDependencies": {

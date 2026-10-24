@@ -48,3 +48,15 @@ npm run check
 `tools/check-settings.cjs` runs the settings page in Chrome on the GPU. It sets every setting to a new value and confirms the cord ends up in the matching jack, tests the arrow keys, measures the frame rate, and saves the overview, a focused row, a cord in mid-air and the narrow layout. The output of both goes to `checks/`, which is not committed.
 
 The fonts on the engraved plates use Copperplate, which ships with macOS. A web release will need a licensed engraving face.
+
+CI runs `cargo test --workspace` and the airgapped dependency gate (`npm run check:airgapped`, both the clean check and the negative check that a `bluetooth`-featured build fails it). It does not run `npm run check:front` or `npm run check:settings`: both need a GPU-backed Chrome to render the WebGL interface, which the CI runners don't have. Those stay a local gate, run by hand before a change counts as done.
+
+## Airgapped build
+
+There is a separate build for airgapped computers, with the `bluetooth` feature on `bombechat-node` off (`cargo build --no-default-features`). `tools/check-airgapped.sh` proves that build's dependency tree carries no Bluetooth or networking crate:
+
+```
+npm run check:airgapped
+```
+
+It fails and names the offending crate if one shows up. On macOS, once the app binary exists, it also checks with `otool -L` that the binary links no Bluetooth framework; until then it skips that part with a message.

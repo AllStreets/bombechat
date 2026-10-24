@@ -1,0 +1,13 @@
+[package]
+name = "bombechat-node"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Optional, feature-gated Bluetooth transport. Never present in the airgapped
+# build (`--no-default-features`); see tools/check-airgapped.sh.
+btleplug = { version = "0.11", optional = true }
+
+[features]
+default = []
+bluetooth = ["btleplug"]
