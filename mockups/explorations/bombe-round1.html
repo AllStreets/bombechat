@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Carrier, Bombe</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link href="https://fonts.googleapis.com/css2?family=Courier+Prime:wght@400;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --enamel:#141613; --enamel-2:#1b1d19; --enamel-3:#23251f; --rail:#2c2d26;
+  --brass:#b8955c; --brass-2:#dcc08a; --brass-d:#6e5631;
+  --cream:#ece3cf; --cream-2:#e3d8bf; --ink:#2b2620; --ink-2:#6b6153;
+  --lab:#cbbf9f; --lab-d:rgba(203,191,159,.5); --line:rgba(203,191,159,.13);
+  --ox:#8a2f27; --amber:#e0a243;
+  --gill:'Gill Sans','Gill Sans MT','Lato',sans-serif; --type:'Courier Prime','Courier New',monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:#0a0b09}
+body{font-family:var(--gill);color:var(--lab);display:grid;place-items:center;height:100vh;overflow:hidden;padding:0;-webkit-font-smoothing:antialiased}
+.win{width:1440px;height:900px;background:var(--enamel);border-radius:10px;overflow:hidden;position:relative;display:grid;grid-template-rows:40px 1fr;border:1px solid #262720}
+.bar{display:flex;align-items:center;gap:18px;padding:0 16px;border-bottom:1px solid #000;background:linear-gradient(#1c1e19,#151713)}
+.lights{display:flex;gap:8px}.lights i{width:12px;height:12px;border-radius:50%;background:#2c2e27;display:block}
+.plate{font-family:var(--gill);font-size:14px;color:#1b160d;background:linear-gradient(180deg,#e2c792,#b8955c 55%,#9c7b45);padding:3px 12px 3px;border-radius:2px;box-shadow:inset 0 1px 0 rgba(255,255,255,.35),0 1px 0 #000;letter-spacing:.04em;position:relative}
+.plate::before,.plate::after{content:"";position:absolute;top:50%;width:4px;height:4px;border-radius:50%;background:#6e5631;transform:translateY(-50%)}
+.plate::before{left:4px}.plate::after{right:4px}
+.bar .sub{font-size:13px;color:var(--lab-d)}
+.bar .r{margin-left:auto;display:flex;gap:22px;font-size:13px;color:var(--lab-d)}
+.bar .r b{color:var(--lab);font-weight:400}
+.lamp{display:inline-block;width:8px;height:8px;border-radius:50%;background:#3a2a14;margin-right:7px;vertical-align:0}
+.lamp.on{background:radial-gradient(circle at 40% 35%,#ffe2a0,#e0a243 55%,#9a6a1e)}
+
+.main{display:grid;grid-template-columns:212px minmax(0,1fr) 272px;min-height:0}
+.col{padding:18px 18px;display:flex;flex-direction:column;min-height:0}
+.col.l{border-right:1px solid #000;box-shadow:1px 0 0 var(--line)}
+.col.r{border-left:1px solid #000;box-shadow:inset 1px 0 0 var(--line)}
+h3{font-family:var(--gill);font-weight:400;font-size:15px;color:var(--lab);margin-bottom:10px;display:flex;justify-content:space-between;align-items:baseline}
+h3 small{font-size:12px;color:var(--lab-d)}
+.st{padding:9px 0 10px;border-top:1px solid var(--line);display:grid;grid-template-columns:1fr auto;gap:2px 8px}
+.st .n{font-size:15px;color:#e6dcc4}
+.st .m{font-size:12px;color:var(--lab-d)}
+.st .g{grid-row:1/3;grid-column:2;align-self:center}
+.st.sel .n{color:var(--brass-2)}
+
+.center{display:grid;grid-template-rows:auto 1fr;min-height:0;min-width:0;padding:16px 18px 0}
+.cab{position:relative;background:linear-gradient(180deg,#191b17,#121410);border-radius:4px;padding:16px 20px 14px 104px;
+  box-shadow:inset 0 0 0 1px #000,inset 0 2px 0 rgba(255,255,255,.04),0 1px 0 rgba(255,255,255,.04)}
+.bolt{position:absolute;width:9px;height:9px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#e6cf9f,#9c7b45 60%,#5c4628);box-shadow:0 1px 0 #000}
+.bolt::after{content:"";position:absolute;left:1px;right:1px;top:4px;height:1px;background:#4a3820;transform:rotate(35deg)}
+.rowl{position:absolute;left:22px;width:76px;font-size:12px;color:var(--lab-d);line-height:1.2}
+.rowl b{display:block;color:var(--lab);font-weight:400;font-size:13px}
+.drums{display:grid;grid-template-columns:repeat(9,86px);row-gap:12px;column-gap:6px;justify-content:space-between}
+.drum{position:relative;width:86px;height:94px}
+.drum svg{position:absolute;left:0;top:7px;overflow:visible}
+.rotor{transform-box:view-box;transform-origin:0 0}
+.drum .idx{position:absolute;left:50%;top:-1px;width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-top:7px solid var(--brass);transform:translateX(-50%);z-index:2}
+.rotor{transition:transform .9s cubic-bezier(.2,.9,.25,1.02)}
+.rotor.spin{transition:none}
+.rail{height:1px;background:#000;box-shadow:0 1px 0 rgba(255,255,255,.05);grid-column:1/-1;width:100%;margin:-6px 0 -4px}
+.cab-foot{display:flex;justify-content:space-between;margin-top:14px;font-size:12.5px;color:var(--lab-d)}
+.cab-foot b{color:var(--lab);font-weight:400}
+
+.paper-wrap{position:relative;margin-top:14px;min-height:0;overflow:hidden}
+.paper{position:absolute;left:26px;right:26px;bottom:30px;top:0;display:flex;flex-direction:column;justify-content:flex-end;padding-bottom:16px!important;background:var(--cream);color:var(--ink);font-family:var(--type);font-size:14.5px;line-height:1.55;padding:18px 28px 0;
+  box-shadow:0 -1px 0 rgba(0,0,0,.4),0 8px 30px rgba(0,0,0,.5);
+  background-image:linear-gradient(90deg,rgba(0,0,0,.035),transparent 6%,transparent 94%,rgba(0,0,0,.035)),repeating-linear-gradient(0deg,transparent 0 22px,rgba(120,100,70,.05) 22px 23px)}
+.paper::before{content:"";position:absolute;left:0;right:0;top:-6px;height:8px;background:radial-gradient(circle at 5px 8px,var(--cream) 5px,transparent 5.5px) 0 0/10px 8px repeat-x}
+.slot{position:absolute;left:6px;right:6px;bottom:6px;height:30px;border-radius:15px;background:linear-gradient(#3a3a34,#16160f 30%,#050504 60%,#1d1d18);box-shadow:0 4px 10px rgba(0,0,0,.6),inset 0 1px 0 rgba(255,255,255,.08)}
+.slot::before,.slot::after{content:"";position:absolute;top:5px;width:20px;height:20px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#ecd6a6,#a8854c 55%,#5a4426)}
+.slot::before{left:-2px}.slot::after{right:-2px}
+.hd{color:var(--ink-2);font-size:12.5px;margin-top:12px}
+.hd:first-child{margin-top:0}
+.ln{white-space:pre-wrap}
+.ln.me{color:#3f3a33}
+.ln .car{display:inline-block;width:9px;height:17px;background:var(--ink);vertical-align:-3px;animation:b 1s steps(2) infinite}
+@keyframes b{50%{opacity:0}}
+.stamp{display:inline-block;border:1.5px solid var(--ox);color:var(--ox);font-size:11.5px;padding:0 5px;margin-left:10px;transform:rotate(-2deg);opacity:.85}
+
+.sw{display:grid;grid-template-columns:44px 1fr;gap:12px;align-items:center;padding:12px 0;border-top:1px solid var(--line)}
+.sw .n{font-size:15.5px;color:#e6dcc4}
+.sw .m{font-size:12px;color:var(--lab-d);margin-top:1px}
+.tog{width:44px;height:44px;border-radius:50%;background:radial-gradient(circle at 50% 40%,#2a2b24,#121310);box-shadow:inset 0 0 0 1px #000,inset 0 0 0 3px #2f3029,0 1px 0 rgba(255,255,255,.05);position:relative}
+.tog i{position:absolute;left:50%;top:50%;width:8px;height:24px;margin:-22px 0 0 -4px;border-radius:4px;background:linear-gradient(90deg,#8d8a80,#e9e5da 45%,#8d8a80);transform-origin:50% 22px;transform:rotate(28deg);box-shadow:0 2px 3px rgba(0,0,0,.6)}
+.tog.off i{transform:rotate(-28deg)}
+.tog b{position:absolute;left:50%;top:50%;width:12px;height:12px;margin:-6px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#e6cf9f,#9c7b45 60%,#5c4628)}
+.blank{width:44px;height:44px;border-radius:3px;background:linear-gradient(135deg,#2a2b24,#1a1b17);box-shadow:inset 0 0 0 1px #000;position:relative}
+.blank::before,.blank::after{content:"";position:absolute;width:5px;height:5px;border-radius:50%;background:#5c4628}
+.blank::before{left:4px;top:4px}.blank::after{right:4px;bottom:4px}
+.nf{display:inline-block;font-size:11.5px;color:var(--ox);border:1px solid rgba(138,47,39,.6);padding:0 5px;margin-left:6px;vertical-align:1px}
+.menu{margin-top:8px}
+.menu svg{display:block;width:100%;height:auto}
+.kv{display:flex;justify-content:space-between;font-size:13px;padding:7px 0;border-top:1px solid var(--line);color:var(--lab-d)}
+.kv span:last-child{color:#e6dcc4}
+.tape{height:36px;margin-top:4px;background:#e6dcc0;position:relative;box-shadow:0 2px 6px rgba(0,0,0,.5);
+  -webkit-mask:linear-gradient(90deg,transparent 0,#000 6px,#000 calc(100% - 6px),transparent 100%)}
+.tape svg{display:block}
+.tape-n{font-size:12px;color:var(--lab-d);margin-top:8px}
+.slip{font-family:var(--type);font-size:14px;color:var(--ink);background:var(--cream);padding:9px 12px;margin:2px 0 12px;box-shadow:0 2px 6px rgba(0,0,0,.45);transform:rotate(-.6deg)}
+.vu{margin-bottom:10px}
+</style>
+</head>
+<body>
+<div class="win">
+  <div class="bar">
+    <div class="lights"><i></i><i></i><i></i></div>
+    <span class="plate">Carrier</span>
+    <span class="sub">Receiving from Marisol Ortega by sound</span>
+    <div class="r"><span><i class="lamp on"></i>Listening</span><span>Radios <b>none fitted</b></span><span>Airgapped build <b>0.4</b></span></div>
+  </div>
+  <div class="main">
+    <aside class="col l">
+      <h3>Stations heard <small>30 min</small></h3>
+      <div class="st sel"><span class="n">Marisol Ortega</span><span class="m">sound, now</span><svg class="g" width="34" height="20" viewBox="0 0 34 20"><path d="M3 18a14 14 0 0 1 28 0" fill="none" stroke="#5c5444"/><path d="M17 18L27 8" stroke="#dcc08a" stroke-width="1.5"/><circle cx="17" cy="18" r="2" fill="#b8955c"/></svg></div>
+      <div class="st"><span class="n">Teodor Vance</span><span class="m">light, 11 min ago</span><svg class="g" width="34" height="20" viewBox="0 0 34 20"><path d="M3 18a14 14 0 0 1 28 0" fill="none" stroke="#5c5444"/><path d="M17 18L9 9" stroke="#cbbf9f" stroke-width="1.5"/><circle cx="17" cy="18" r="2" fill="#b8955c"/></svg></div>
+      <div class="st"><span class="n">North stairwell relay</span><span class="m">sound, holds 6</span><svg class="g" width="34" height="20" viewBox="0 0 34 20"><path d="M3 18a14 14 0 0 1 28 0" fill="none" stroke="#5c5444"/><path d="M17 18L6 14" stroke="#cbbf9f" stroke-width="1.5"/><circle cx="17" cy="18" r="2" fill="#b8955c"/></svg></div>
+      <div class="st"><span class="n">Signed 7F3A</span><span class="m">public, 26 min ago</span><svg class="g" width="34" height="20" viewBox="0 0 34 20"><path d="M3 18a14 14 0 0 1 28 0" fill="none" stroke="#5c5444"/><path d="M17 18L5 17" stroke="#cbbf9f" stroke-width="1.5"/><circle cx="17" cy="18" r="2" fill="#b8955c"/></svg></div>
+          <h3 style="margin-top:22px">Held to forward <small>6</small></h3>
+      <div class="kv"><span>Public, 7F3A</span><span>2 hops left</span></div>
+      <div class="kv"><span>Sealed, 3 others</span><span>40 min</span></div>
+      <div class="kv" style="border-bottom:1px solid var(--line)"><span>Sealed, for Ines</span><span>2 h</span></div>
+      <h3 style="margin-top:auto">Your key on tape <small>B7E2 91C4</small></h3>
+      <div class="tape" id="tape"></div>
+      <div class="tape-n">Show it to a camera to pair in person.</div>
+    </aside>
+
+    <section class="center">
+      <div class="cab" id="cab">
+        <span class="bolt" style="left:8px;top:8px"></span><span class="bolt" style="right:8px;top:8px"></span>
+        <span class="bolt" style="left:8px;bottom:8px"></span><span class="bolt" style="right:8px;bottom:8px"></span>
+        <div class="rowl" style="top:46px"><b>Plain</b>what she wrote</div>
+        <div class="rowl" style="top:152px"><b>Heard</b>what the mic caught</div>
+        <div class="rowl" style="top:258px"><b>Key</b>yours and hers</div>
+        <div class="drums" id="drums"></div>
+        <div class="cab-foot"><span>Frame <b id="fno">4</b> of <span id="fnt">8</span></span><span>64 bytes a second, 14 dB over the room</span><span>Every frame checked against Marisol's key</span></div>
+      </div>
+      <div class="paper-wrap">
+        <div class="paper" id="paper">
+          <div class="hd">07.40 &nbsp;Marisol, by light</div>
+          <div class="ln">Are you all right? Nothing on the phone since last night.</div>
+          <div class="hd">07.46 &nbsp;you, by light <span class="stamp">seen</span></div>
+          <div class="ln me">Fine. Battery at 60. I'll keep the laptop on sound from now.</div>
+          <div class="hd">08.51 &nbsp;public, signed 7F3A, two hops</div>
+          <div class="ln">Shelter open at Benito Juarez High. Cots and water.</div>
+          <div class="hd">09.02 &nbsp;Marisol, by light</div>
+          <div class="ln">Power is out across the east side. Phones show no service.</div>
+          <div class="hd">09.07 &nbsp;you, by sound <span class="stamp">heard</span></div>
+          <div class="ln me">Same here. I'm at the library on Halsted with the laptop.</div>
+          <div class="hd">09.14 &nbsp;Marisol, by sound</div>
+          <div class="ln" id="live"></div>
+        </div>
+        <div class="slot"></div>
+      </div>
+    </section>
+
+    <aside class="col r">
+      <h3>Channels</h3>
+      <div class="sw"><span class="tog"><i></i><b></b></span><div><div class="n">Sound</div><div class="m">speaker and microphone, about 8 m</div></div></div>
+      <div class="sw"><span class="tog off"><i></i><b></b></span><div><div class="n">Light</div><div class="m">screen and camera, in sight only</div></div></div>
+      <div class="sw" style="border-bottom:1px solid var(--line)"><span class="blank"></span><div><div class="n">Bluetooth <span class="nf">not fitted</span></div><div class="m">left out of the airgapped build</div></div></div>
+      <h3 style="margin-top:20px">Key check <small>done 2 Oct, by light</small></h3>
+      <div class="menu" id="menu"></div>
+      <div class="kv"><span>Safety number</span><span>4821 0937 7710</span></div>
+      <div class="kv"><span>Readable by</span><span>you and Teodor</span></div>
+      <div class="kv" style="border-bottom:1px solid var(--line)"><span>Sealed with</span><span>X25519, ChaCha20</span></div>
+      <h3 style="margin-top:auto">Your reply <small>waiting for quiet</small></h3>
+      <div class="slip">On my way. 20 minutes.</div>
+      <div class="vu"><svg viewBox="0 0 236 112" width="100%">
+        <defs><linearGradient id="vuf" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#efe5c9"/><stop offset="1" stop-color="#d9cba6"/></linearGradient></defs>
+        <rect x="0.5" y="0.5" width="235" height="111" rx="4" fill="url(#vuf)" stroke="#000"/>
+        <g id="vuscale"></g>
+        <line id="needle" x1="118" y1="104" x2="118" y2="22" stroke="#1d1914" stroke-width="1.4"/>
+        <rect x="0" y="96" width="236" height="16" rx="0" fill="#191a16"/>
+        <circle cx="118" cy="104" r="7" fill="#b8955c" stroke="#5a4426"/>
+        <text x="12" y="89" font-family="Gill Sans" font-size="10.5" fill="#5b5141">dB in the room</text>
+      </svg></div>
+      <div class="kv"><span>Plays below</span><span>40 dB, now 47</span></div>
+      <div class="kv" style="border-bottom:1px solid var(--line)"><span>Then repeats</span><span>3 times, 90 s apart</span></div>
+
+    </aside>
+  </div>
+</div>
+<script>
+const A='ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+const RIMS=['#7d2b24','#2f4a37','#a8842f','#34465a','#b8ab8c','#5a3a25','#7d2b24','#2f4a37','#a8842f'];
+const NS='http://www.w3.org/2000/svg';
+let did=0;
+function drum(rim){
+  const id='d'+(did++);
+  const s=document.createElementNS(NS,'svg');s.setAttribute('width',86);s.setAttribute('height',86);s.setAttribute('viewBox','-43 -43 86 86');
+  const ring=(fill,size,y,w)=>{let g='';for(let i=0;i<26;i++){g+=`<g transform="rotate(${i*360/26})"><text y="${y}" text-anchor="middle" font-family="Gill Sans,Gill Sans MT,sans-serif" font-weight="${w||400}" font-size="${size}" fill="${fill}">${A[i]}</text></g>`}return g};
+  let ticks='';for(let i=0;i<26;i++)ticks+=`<line transform="rotate(${i*360/26+360/52})" y1="-34" y2="-30.5" stroke="rgba(233,223,198,.25)" stroke-width=".6"/>`;
+  s.innerHTML=`<defs>
+   <radialGradient id="${id}f" cx="42%" cy="32%" r="78%"><stop offset="0" stop-color="#2b2723"/><stop offset=".7" stop-color="#141210"/><stop offset="1" stop-color="#0b0a08"/></radialGradient>
+   <radialGradient id="${id}h" cx="35%" cy="30%" r="80%"><stop offset="0" stop-color="#ecd6a6"/><stop offset=".55" stop-color="#a8854c"/><stop offset="1" stop-color="#5a4426"/></radialGradient>
+   <linearGradient id="${id}r" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".22"/><stop offset=".5" stop-color="#fff" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".35"/></linearGradient>
+   <clipPath id="${id}w"><rect x="-8" y="-37" width="16" height="17" rx="1.5"/></clipPath></defs>
+  <circle r="42" fill="#000" opacity=".55" cy="2.5"/>
+  <circle r="40.5" fill="${rim}"/><circle r="40.5" fill="url(#${id}r)"/>
+  <circle r="40.5" fill="none" stroke="rgba(0,0,0,.5)"/>
+  <circle r="35" fill="url(#${id}f)" stroke="rgba(0,0,0,.7)"/>
+  <g class="rotor">${ticks}${ring('#a99f87',8.6,-24.2)}<circle r="17" fill="none" stroke="rgba(233,223,198,.1)"/></g>
+  <rect x="-8" y="-37" width="16" height="17" rx="1.5" fill="#f1e8d1"/><rect x="-8" y="-37" width="16" height="4" rx="1.5" fill="rgba(0,0,0,.08)"/>
+  <text class="wl" y="-24.2" text-anchor="middle" font-family="Gill Sans,Gill Sans MT,sans-serif" font-weight="600" font-size="13" fill="#14110d">A</text>
+  <rect x="-8" y="-37" width="16" height="17" rx="1.5" fill="none" stroke="#5e4c2e" stroke-width="1"/>
+  <circle r="8.5" fill="url(#${id}h)"/><circle r="8.5" fill="none" stroke="rgba(0,0,0,.5)" stroke-width=".6"/>
+  <line x1="-6" x2="6" stroke="#4a3820" stroke-width="1.4" transform="rotate(-30)"/>`;
+  return s;
+}
+const D=document.getElementById('drums');const cells=[];
+for(let r=0;r<3;r++){for(let c=0;c<9;c++){const d=document.createElement('div');d.className='drum';d.innerHTML='<span class="idx"></span>';const s=drum(RIMS[(c+r*4)%9]);d.appendChild(s);D.appendChild(d);cells.push({rot:[...s.querySelectorAll('.rotor')],wl:s.querySelector('.wl'),angle:0,t:null})}}
+function setLetter(cell,ch,extraTurns){const i=A.indexOf(ch);const target=-(i*360/26);let base=cell.angle-(cell.angle%360);let a=base+target-360*(extraTurns||0);cell.angle=a;cell.rot.forEach(g=>g.style.transform=`rotate(${a}deg)`);
+  clearInterval(cell.t);if(!extraTurns){cell.wl.textContent=ch;return}
+  let n=0;cell.wl.setAttribute('opacity','.55');cell.t=setInterval(()=>{cell.wl.textContent=A[(Math.random()*26)|0];if(++n>11){clearInterval(cell.t);cell.wl.textContent=ch;cell.wl.setAttribute('opacity','1')}},60)}
+const MSG="WATERXISXATXTHEXCHURCHXONXFIFTHXBRINGXTHEXRADIOXWEXLEAVEXATXDUSK";
+const KEY="QXMBRTLEKZPOWJFAYUVHDGCNSI";
+const shown="Water is at the church on Fifth. Bring the radio, we leave at dusk.";
+const letters=MSG;const NF=Math.ceil(MSG.length/9);
+let f=3;
+function frameText(n){return letters.slice(n*9,n*9+9).padEnd(9,'X')}
+function cipher(p,k){return A[(A.indexOf(p)+A.indexOf(k))%26]}
+function showFrame(n,animate){const p=frameText(n);for(let c=0;c<9;c++){const k=KEY[(n*9+c*7)%26];const ci=cipher(p[c],k);
+  if(!animate){setLetter(cells[18+c],k,0);setLetter(cells[9+c],ci,0);setLetter(cells[c],p[c],0);continue}
+  const delay=c*150;
+  setTimeout(()=>{setLetter(cells[18+c],k,1)},delay);
+  setTimeout(()=>{setLetter(cells[9+c],ci,2)},delay+140);
+  setTimeout(()=>{setLetter(cells[c],p[c],3)},delay+300);}
+  document.getElementById('fno').textContent=n+1;document.getElementById('fnt').textContent=NF;}
+showFrame(f,false);
+const live=document.getElementById('live');
+function typed(n){const want=Math.min(MSG.length,(n+1)*9);let cnt=0,L=0;while(L<shown.length&&cnt<want){if(/[A-Za-z ]/.test(shown[L]))cnt++;L++}live.innerHTML=shown.slice(0,L)+'<span class="car"></span>'}
+typed(f);
+setInterval(()=>{f=f>=NF-1?2:f+1;showFrame(f,true);setTimeout(()=>typed(f),1500)},3600);
+
+// key check menu: letters linked like a Bombe menu
+const menu=document.getElementById('menu');
+(function(){const nodes=[['M',20,30],['O',80,14],['R',140,34],['T',200,16],['E',250,44],['G',60,74],['A',130,82],['S',196,78]];
+  const edges=[[0,1,'4'],[1,2,'8'],[2,3,'2'],[3,4,'1'],[0,5,'0'],[5,6,'9'],[6,2,'3'],[6,7,'7'],[7,4,'7']];
+  let h=`<svg viewBox="0 0 270 100">`;
+  edges.forEach(([a,b,l])=>{const[,x1,y1]=nodes[a],[,x2,y2]=nodes[b];h+=`<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#7a6d52" stroke-width="1"/><text x="${(x1+x2)/2+3}" y="${(y1+y2)/2-3}" font-size="9.5" fill="#8c836f" font-family="Gill Sans">${l}</text>`});
+  nodes.forEach(([t,x,y])=>{h+=`<circle cx="${x}" cy="${y}" r="9.5" fill="#1b1d19" stroke="#b8955c"/><text x="${x}" y="${y+3.6}" text-anchor="middle" font-size="10.5" fill="#e6dcc4" font-family="Gill Sans">${t}</text>`});
+  menu.innerHTML=h+'</svg>'})();
+
+// punched tape: 5 holes per column + sprocket row, 28 columns
+(function(){const t=document.getElementById('tape');const W=t.clientWidth||176,cols=Math.floor(W/7);let q=0xb7e2;let h=`<svg width="${W}" height="36" viewBox="0 0 ${W} 36">`;
+  for(let c=0;c<cols;c++){const x=4+c*7;h+=`<circle cx="${x}" cy="20" r="1.1" fill="#26231d"/>`;
+    for(let r=0;r<5;r++){q=(q*75+74)%65537;if(q%5<2){const y=[6,12,26,31,1][r];if(y>2)h+=`<circle cx="${x}" cy="${y}" r="2.3" fill="#1b1a16"/>`}}}
+  t.innerHTML=h+'</svg>'})();
+// VU scale 30..60 dB over -50..50 degrees
+(function(){const g=document.getElementById('vuscale');let h='';const cx=118,cy=104,R=78;
+  for(let d=30;d<=60;d+=2){const a=(-50+(d-30)/30*100)*Math.PI/180;const big=d%10===0;const r1=R-(big?10:6);
+    const x1=cx+Math.sin(a)*r1,y1=cy-Math.cos(a)*r1,x2=cx+Math.sin(a)*R,y2=cy-Math.cos(a)*R;
+    h+=`<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${d>40?'#8a2f27':'#2b2620'}" stroke-width="${big?1.4:.8}"/>`;
+    if(big)h+=`<text x="${cx+Math.sin(a)*(R-19)}" y="${cy-Math.cos(a)*(R-19)+3}" font-family="Gill Sans" font-size="10" text-anchor="middle" fill="${d>40?'#8a2f27':'#2b2620'}">${d}</text>`}
+  const a1=(-50+10/30*100)*Math.PI/180,a2=50*Math.PI/180;
+  h+=`<path d="M${cx+Math.sin(a1)*(R+1)} ${cy-Math.cos(a1)*(R+1)} A${R+1} ${R+1} 0 0 1 ${cx+Math.sin(a2)*(R+1)} ${cy-Math.cos(a2)*(R+1)}" fill="none" stroke="#8a2f27" stroke-width="2.4"/>`;
+  g.innerHTML=h;const n=document.getElementById('needle');
+  let v=47;function set(){v+= (Math.random()-.5)*1.6;v=Math.max(43,Math.min(51,v));const deg=-50+(v-30)/30*100;n.setAttribute('transform',`rotate(${deg} 118 104)`)}set();setInterval(set,180)})();
+
+// fit the 1440x900 window to any screen
+(function(){const w=document.querySelector('.win');function fit(){const k=Math.min(1,(innerWidth-32)/1440,(innerHeight-32)/900);w.style.transform=`scale(${k})`;w.style.transformOrigin='center center'}fit();addEventListener('resize',fit)})();
+</script>
+</body>
+</html>

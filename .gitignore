@@ -1,0 +1,4 @@
+node_modules/
+.superpowers/
+checks/
+.DS_Store

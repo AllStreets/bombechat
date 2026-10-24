@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Carrier, Cyber</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#06090a; --panel:#0c1214; --panel-2:#10181b; --line:rgba(190,212,218,.10); --line-2:rgba(190,212,218,.2); --line-3:rgba(190,212,218,.34);
+  --text:#e8eeee; --text-2:rgba(222,232,233,.72); --dim:rgba(160,182,188,.5);
+  --red:#cc5858; --red-2:#ef7a6e; --red-ink:rgba(204,88,88,.13);
+  --slate:#223035; --steel:#7f9ea6;
+  --mono:'IBM Plex Mono',ui-monospace,monospace; --sans:'IBM Plex Sans',system-ui,sans-serif; --cond:'IBM Plex Sans Condensed',var(--sans);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:#020303}
+body{font-family:var(--sans);color:var(--text);display:grid;place-items:center;height:100vh;overflow:hidden;padding:0;-webkit-font-smoothing:antialiased}
+.win{width:1440px;height:900px;background:var(--bg);position:relative;overflow:hidden;display:grid;grid-template-rows:38px 1fr 26px;border:1px solid #182124;border-radius:10px}
+/* registration marks instead of a full grid */
+.win::before{content:"";position:absolute;inset:0;background:
+  radial-gradient(circle at 1px 1px,rgba(190,212,218,.16) 1px,transparent 1.2px) 0 0/24px 24px;opacity:.5;pointer-events:none}
+
+.bar{display:flex;align-items:center;gap:18px;padding:0 14px;border-bottom:1px solid var(--line);position:relative;z-index:2;background:rgba(6,9,10,.9)}
+.lights{display:flex;gap:8px}.lights i{width:12px;height:12px;border-radius:50%;background:#253034;display:block}
+.brand{display:flex;align-items:center;gap:9px;font-family:var(--cond);font-weight:600;font-size:15px;letter-spacing:.01em}
+.brand svg{display:block}
+.crumbs{font-family:var(--cond);font-size:13.5px;color:var(--dim)}
+.crumbs b{color:var(--text-2);font-weight:500}
+.status{margin-left:auto;display:flex;gap:0;font-family:var(--mono);font-size:11px;color:var(--text-2)}
+.status span{padding:0 14px;border-left:1px solid var(--line);display:flex;align-items:center;gap:7px;height:38px}
+.status .rec{color:var(--text)}
+.status .rec i{width:7px;height:7px;background:var(--red);display:block;animation:blink 1.2s steps(2) infinite}
+@keyframes blink{50%{opacity:.25}}
+
+.main{display:grid;grid-template-columns:250px 1fr 300px;min-height:0;position:relative;z-index:1}
+.rail{border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0}
+.rail.r{border-right:0;border-left:1px solid var(--line)}
+.sh{display:flex;align-items:baseline;justify-content:space-between;padding:14px 16px 8px}
+.sh h3{font-family:var(--cond);font-weight:600;font-size:13.5px;color:var(--text)}
+.sh span{font-family:var(--mono);font-size:10.5px;color:var(--dim)}
+
+/* peers */
+.peer{position:relative;padding:10px 16px 11px 16px;display:grid;grid-template-columns:1fr auto;gap:3px 10px;border-top:1px solid var(--line)}
+.peer:last-of-type{border-bottom:1px solid var(--line)}
+.peer .n{font-size:13.5px;color:var(--text)}
+.peer .m{font-family:var(--mono);font-size:10.5px;color:var(--dim);grid-column:1/3}
+.peer .lv{display:flex;gap:2px;align-items:flex-end;height:12px;align-self:center}
+.peer .lv i{width:3px;background:var(--slate);display:block}
+.peer .lv i.f{background:var(--steel)}
+.peer.sel{background:linear-gradient(90deg,var(--red-ink),transparent 85%)}
+.peer.sel::before{content:"";position:absolute;left:0;top:-1px;bottom:-1px;width:2px;background:var(--red)}
+.peer.sel .lv i.f{background:var(--red-2)}
+.route{margin:6px 16px 0;padding:10px 0 4px;font-family:var(--mono);font-size:10.5px;color:var(--dim)}
+.hops{display:flex;align-items:center;margin-top:8px}
+.hops .node{width:9px;height:9px;border:1px solid var(--steel);transform:rotate(45deg)}
+.hops .node.me{background:var(--text);border-color:var(--text)}
+.hops .node.r{border-color:var(--red-2);background:var(--red)}
+.hops .wire{flex:1;height:1px;background:repeating-linear-gradient(90deg,var(--steel) 0 3px,transparent 3px 6px)}
+.hops-l{display:flex;justify-content:space-between;margin-top:6px;font-size:10px}
+
+/* center */
+.center{display:grid;grid-template-rows:auto 1fr;min-height:0}
+.inst{position:relative;border-bottom:1px solid var(--line)}
+.inst-h{display:flex;align-items:baseline;gap:14px;padding:13px 18px 0}
+.inst-h h2{font-family:var(--cond);font-weight:600;font-size:19px;letter-spacing:.005em}
+.inst-h .sub{font-family:var(--mono);font-size:11px;color:var(--dim)}
+.inst-h .rt{margin-left:auto;display:flex;gap:18px;font-family:var(--mono);font-size:11px;color:var(--text-2)}
+.inst-h .rt b{font-weight:500;color:var(--text)}
+.wfwrap{position:relative;height:372px;margin:12px 18px 0 18px}
+.wfwrap canvas{position:absolute;inset:0;width:100%;height:100%}
+.wfwrap .fr{position:absolute;left:-46px;width:40px;font-family:var(--mono);font-size:10px;color:var(--dim);text-align:right;transform:translateY(-50%)}
+.wfwrap .fr.on{color:var(--red-2)}
+.fx{display:flex;justify-content:space-between;margin:6px 18px 0 62px;font-family:var(--mono);font-size:10px;color:var(--dim)}
+.frame-edge{position:absolute;inset:0;pointer-events:none;
+  background:
+   linear-gradient(var(--line-3),var(--line-3)) 0 0/10px 1px no-repeat,
+   linear-gradient(var(--line-3),var(--line-3)) 0 0/1px 10px no-repeat,
+   linear-gradient(var(--line-3),var(--line-3)) 100% 0/10px 1px no-repeat,
+   linear-gradient(var(--line-3),var(--line-3)) 100% 0/1px 10px no-repeat,
+   linear-gradient(var(--line-3),var(--line-3)) 0 100%/10px 1px no-repeat,
+   linear-gradient(var(--line-3),var(--line-3)) 0 100%/1px 10px no-repeat,
+   linear-gradient(var(--line-3),var(--line-3)) 100% 100%/10px 1px no-repeat,
+   linear-gradient(var(--line-3),var(--line-3)) 100% 100%/1px 10px no-repeat}
+
+/* frame strip */
+.strip{display:grid;grid-template-columns:repeat(10,1fr);gap:1px;margin:14px 18px 16px;background:var(--line)}
+.cell{background:var(--bg);padding:7px 7px 8px;min-height:62px;position:relative}
+.cell .no{font-family:var(--mono);font-size:9.5px;color:var(--dim);display:flex;justify-content:space-between}
+.cell .hex{font-family:var(--mono);font-size:9.5px;color:rgba(127,158,166,.55);margin-top:4px;letter-spacing:.04em;white-space:nowrap;overflow:hidden}
+.cell .pt{font-family:var(--mono);font-size:13px;color:var(--text);margin-top:4px;white-space:pre}
+.cell.done .no i{color:var(--steel)}
+.cell.now{background:var(--red-ink)}
+.cell.now::after{content:"";position:absolute;left:0;right:0;top:0;height:2px;background:var(--red)}
+.cell.wait .pt{color:var(--dim)}
+
+/* thread */
+.thread{display:flex;flex-direction:column;min-height:0}
+.th-h{display:flex;align-items:baseline;gap:12px;padding:12px 18px 6px}
+.th-h h3{font-family:var(--cond);font-size:15px;font-weight:600}
+.th-h span{font-family:var(--mono);font-size:10.5px;color:var(--dim)}
+.th-h .sn{margin-left:auto;color:var(--text-2)}
+.log{flex:1;overflow:hidden;padding:4px 18px}
+.row{display:grid;grid-template-columns:52px 64px 1fr;gap:0 12px;padding:7px 0;border-top:1px solid var(--line);align-items:baseline}
+.row .t{font-family:var(--mono);font-size:10.5px;color:var(--dim)}
+.row .c{font-family:var(--mono);font-size:10.5px;color:var(--steel);display:flex;align-items:center;gap:6px}
+.row .c svg{flex:none}
+.row .b{font-size:14px;line-height:1.45;color:var(--text-2)}
+.row .b em{font-style:normal;color:var(--dim);font-family:var(--mono);font-size:10.5px;margin-left:8px}
+.row.me .b{color:var(--text)}
+.row.me .b::before{content:"You  ";font-family:var(--mono);font-size:10.5px;color:var(--dim)}
+.row.live .b{color:var(--text)}
+.row.live .b .cur{display:inline-block;width:8px;height:15px;background:var(--red);vertical-align:-2px;margin-left:1px;animation:blink 1s steps(2) infinite}
+.compose{display:flex;align-items:center;gap:8px;padding:10px 18px 12px;border-top:1px solid var(--line)}
+.compose .in{flex:1;font-size:14px;color:var(--dim);padding:8px 0}
+.key{font-family:var(--mono);font-size:10.5px;color:var(--dim);border:1px solid var(--line-2);padding:2px 5px;margin-right:6px}
+.btn{font-family:var(--cond);font-weight:500;font-size:13px;padding:7px 13px 7px 14px;color:var(--text);background:var(--slate);
+  clip-path:polygon(7px 0,100% 0,100% calc(100% - 7px),calc(100% - 7px) 100%,0 100%,0 7px);display:flex;align-items:center;gap:7px}
+.btn.r{background:var(--red);color:#fff}
+
+/* channels */
+.chan{border-top:1px solid var(--line);padding:12px 16px 14px}
+.chan:last-of-type{border-bottom:1px solid var(--line)}
+.chan-h{display:flex;align-items:center;gap:10px}
+.chan-h .n{font-family:var(--cond);font-weight:600;font-size:14.5px}
+.chan-h .st{margin-left:auto;font-family:var(--mono);font-size:10.5px}
+.chan-h .st.on{color:var(--red-2)}
+.chan-h .st.off{color:var(--dim)}
+.chan .d{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-top:3px}
+.meter{display:grid;grid-template-columns:repeat(40,1fr);gap:2px;height:22px;margin-top:10px;align-items:end}
+.meter i{display:block;background:var(--slate)}
+.meter i.l{background:var(--steel)}
+.meter i.c{background:var(--red)}
+.mscale{display:flex;justify-content:space-between;font-family:var(--mono);font-size:9.5px;color:var(--dim);margin-top:4px}
+.cam{margin-top:10px;height:96px;position:relative;background:
+  repeating-linear-gradient(0deg,rgba(190,212,218,.05) 0 1px,transparent 1px 3px),#0a0f11;border:1px solid var(--line)}
+.cam .ret{position:absolute;left:50%;top:50%;width:26px;height:26px;transform:translate(-50%,-50%);border:1px dashed var(--dim)}
+.cam span{position:absolute;left:8px;bottom:6px;font-family:var(--mono);font-size:9.5px;color:var(--dim)}
+.plate{margin-top:10px;height:40px;border:1px dashed var(--line-2);display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:10.5px;color:var(--dim);
+  background:repeating-linear-gradient(135deg,transparent 0 7px,rgba(190,212,218,.05) 7px 8px)}
+.facts{padding:4px 16px}
+.fact{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--line);font-size:12.5px;color:var(--text-2)}
+.fact span:last-child{font-family:var(--mono);font-size:11px;color:var(--text)}
+.lcode{display:grid;grid-template-columns:auto 1fr;gap:12px;padding:6px 16px 16px;align-items:end}
+.lcode .grid{display:grid;grid-template-columns:repeat(8,9px);gap:2px}
+.lcode .grid i{width:9px;height:9px;background:var(--slate);display:block}
+.lcode .grid i.f{background:var(--text)}
+.lcode .grid i.r{background:var(--red)}
+.lc-m{display:flex;flex-direction:column;gap:6px;font-family:var(--mono);font-size:10.5px;color:var(--dim);line-height:1.4}
+.lc-m span:first-child{color:var(--text);font-size:12px}
+.queue{padding:2px 16px 16px}
+.q-t{font-size:14px;color:var(--text);margin-bottom:8px}
+.q-m{display:flex;justify-content:space-between;gap:10px;white-space:nowrap;font-family:var(--mono);font-size:10.5px;color:var(--dim);line-height:1.5}
+.q-m span:last-child{color:var(--text-2)}
+.q-bar{position:relative;height:4px;background:var(--slate);margin:8px 0}
+.q-bar i{position:absolute;left:0;top:0;bottom:0;background:var(--steel)}
+.q-bar b{position:absolute;top:-4px;width:1px;height:12px;background:var(--red-2)}
+.foot{display:flex;align-items:center;gap:0;font-family:var(--mono);font-size:10.5px;color:var(--dim);border-top:1px solid var(--line);position:relative;z-index:2}
+.foot span{padding:0 14px;border-right:1px solid var(--line);height:26px;display:flex;align-items:center}
+</style>
+</head>
+<body>
+<div class="win">
+  <div class="bar">
+    <div class="lights"><i></i><i></i><i></i></div>
+    <div class="brand">
+      <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M1 9h3l2-5 3 10 2-7 2 4h4" stroke="#cc5858" stroke-width="1.6"/></svg>
+      Carrier
+    </div>
+    <div class="crumbs">Receiving from <b>Marisol Ortega</b></div>
+    <div class="status">
+      <span class="rec"><i></i>Mic open, 17.6 to 19.8 kHz</span>
+      <span>Radios: none present</span>
+      <span>Airgapped build 0.4</span>
+    </div>
+  </div>
+
+  <div class="main">
+    <aside class="rail">
+      <div class="sh"><h3>Heard nearby</h3><span>last 30 min</span></div>
+      <div class="peer sel"><div class="n">Marisol Ortega</div><div class="lv"><i class="f" style="height:4px"></i><i class="f" style="height:7px"></i><i class="f" style="height:10px"></i><i style="height:12px"></i></div><div class="m">sound, now, key checked 2 Oct</div></div>
+      <div class="peer"><div class="n">Teodor Vance</div><div class="lv"><i class="f" style="height:4px"></i><i class="f" style="height:7px"></i><i style="height:10px"></i><i style="height:12px"></i></div><div class="m">light, 11 min ago</div></div>
+      <div class="peer"><div class="n">North stairwell relay</div><div class="lv"><i class="f" style="height:4px"></i><i style="height:7px"></i><i style="height:10px"></i><i style="height:12px"></i></div><div class="m">sound, holds 6 for others</div></div>
+      <div class="peer"><div class="n">Unknown, signed 7F3A</div><div class="lv"><i class="f" style="height:4px"></i><i style="height:7px"></i><i style="height:10px"></i><i style="height:12px"></i></div><div class="m">public broadcast, 26 min ago</div></div>
+
+      <div class="sh" style="margin-top:14px"><h3>Path of this message</h3></div>
+      <div class="route">
+        <div class="hops"><span class="node"></span><span class="wire"></span><span class="node r"></span><span class="wire"></span><span class="node me"></span></div>
+        <div class="hops-l"><span>Marisol</span><span>direct, sound</span><span>you</span></div>
+      </div>
+
+      <div class="sh" style="margin-top:14px"><h3>Waiting to forward</h3><span>6</span></div>
+      <div class="facts">
+        <div class="fact"><span>Public, signed 7F3A</span><span>2 hops left</span></div>
+        <div class="fact"><span>Sealed, for 3 others</span><span>held 40 min</span></div>
+        <div class="fact"><span>Sealed, for Ines</span><span>held 2 h</span></div>
+      </div>
+      <div class="sh" style="margin-top:auto"><h3>Your light code</h3><span>flash to pair</span></div>
+      <div class="lcode"><div class="grid" id="lcode"></div><div class="lc-m"><span>B7E2 91C4</span><span>hold up to a camera to swap keys in person</span></div></div>
+    </aside>
+
+    <section class="center">
+      <div class="inst">
+        <div class="inst-h">
+          <h2>Sound carrier</h2>
+          <span class="sub">16-tone FSK, newest at top</span>
+          <div class="rt"><span>SNR <b id="snr">14.2</b> dB</span><span><b>64</b> B/s</span><span>frame <b id="fno">7</b> of 10</span></div>
+        </div>
+        <div class="wfwrap" id="wfw">
+          <canvas id="wf"></canvas>
+          <div class="frame-edge"></div>
+        </div>
+        <div class="fx"><span>17.6 kHz</span><span>18.0</span><span>18.4</span><span>18.8</span><span>19.2</span><span>19.8 kHz</span></div>
+        <div class="strip" id="strip"></div>
+      </div>
+
+      <div class="thread">
+        <div class="th-h"><h3>Marisol Ortega</h3><span>sealed to you and Teodor</span><span class="sn">safety number 4821 0937 7710</span></div>
+        <div class="log">
+          <div class="row"><span class="t">08:51</span><span class="c">public</span><span class="b">Shelter open at Benito Juarez High, cots and water.<em>signed 7F3A, 2 hops</em></span></div>
+          <div class="row"><span class="t">09:02</span><span class="c">light</span><span class="b">Power is out across the east side. Phones show no service.</span></div>
+          <div class="row me"><span class="t">09:07</span><span class="c">sound</span><span class="b">Same here. I'm at the library on Halsted with the laptop.<em>heard by Marisol</em></span></div>
+          <div class="row live"><span class="t">09:14</span><span class="c">sound</span><span class="b" id="live"></span></div>
+        </div>
+        <div class="compose">
+          <span class="in">Write to Marisol</span>
+          <span class="btn"><svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="6.5" cy="6.5" r="2.4"/><path d="M6.5 0.8v1.6M6.5 10.6v1.6M0.8 6.5h1.6M10.6 6.5h1.6M2.4 2.4l1.1 1.1M9.5 9.5l1.1 1.1M2.4 10.6l1.1-1.1M9.5 3.5l1.1-1.1"/></svg>Flash</span>
+          <span class="btn r"><svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M1 6.5h2l1.5-4 2 8 1.6-6 1.4 2H12"/></svg>Play by sound</span>
+        </div>
+      </div>
+    </section>
+
+    <aside class="rail r">
+      <div class="sh"><h3>Channels</h3><span>this device</span></div>
+      <div class="chan">
+        <div class="chan-h"><span class="n">Sound</span><span class="st on">listening</span></div>
+        <div class="d">built-in speaker and mic, about 8 m</div>
+        <div class="meter" id="meter"></div>
+        <div class="mscale"><span>0</span><span>room</span><span>carrier</span><span>22 kHz</span></div>
+      </div>
+      <div class="chan">
+        <div class="chan-h"><span class="n">Light</span><span class="st off">camera off</span></div>
+        <div class="d">screen flashes to a camera, line of sight</div>
+        <div class="cam"><div class="ret"></div><span>point at a sender to read</span></div>
+      </div>
+      <div class="chan">
+        <div class="chan-h"><span class="n">Bluetooth</span><span class="st off">not in this build</span></div>
+        <div class="d">the airgapped build ships without it</div>
+        <div class="plate">no radio code compiled in</div>
+      </div>
+      <div class="sh" style="margin-top:6px"><h3>This message</h3><span>checking as it lands</span></div>
+      <div class="facts">
+        <div class="fact"><span>Sealed with</span><span>X25519, ChaCha20</span></div>
+        <div class="fact"><span>Frames verified</span><span id="fv">6 of 10</span></div>
+        <div class="fact"><span>Sender signature</span><span>matches Marisol</span></div>
+        <div class="fact"><span>Readable by</span><span>you, Teodor</span></div>
+      </div>
+      <div class="sh" style="margin-top:auto"><h3>Your reply</h3><span>queued</span></div>
+      <div class="queue">
+        <div class="q-t">"On my way. 20 minutes."</div>
+        <div class="q-m"><span>plays once the room is under 40 dB</span><span>47 dB</span></div>
+        <div class="q-bar"><i style="width:68%"></i><b style="left:58%"></b></div>
+        <div class="q-m"><span>then repeats 3 times, 90 s apart</span><span>cancel</span></div>
+      </div>
+    </aside>
+  </div>
+  <div class="foot"><span>No network interfaces up</span><span>Wi-Fi hardware off</span><span>Last internet contact: never</span></div>
+</div>
+
+<script>
+const MSG="Water is at the church on 5th. Bring the radio, we leave at dusk.";
+const NF=10, per=Math.ceil(MSG.length/NF);
+const frames=[...Array(NF)].map((_,i)=>MSG.slice(i*per,(i+1)*per));
+let cur=6; // index of frame currently arriving (0-based)
+const hex=s=>[...s].map((c,i)=>((c.charCodeAt(0)*131+i*71+29)%256).toString(16).padStart(2,'0')).join('');
+const strip=document.getElementById('strip');
+function drawStrip(){strip.innerHTML=frames.map((f,i)=>{
+  const st=i<cur?'done':i===cur?'now':'wait';
+  const pt=i<cur?f:i===cur?f.slice(0,2):'·'.repeat(f.length);
+  return `<div class="cell ${st}"><div class="no"><span>${String(i+1).padStart(2,'0')}</span><i>${i<cur?'ok':i===cur?'..':''}</i></div><div class="hex">${i<=cur?hex(f).slice(0,i===cur?6:14):''}</div><div class="pt">${pt.replace(/ /g,' ')}</div></div>`}).join('');}
+drawStrip();
+{let g='',q=0x9e37;for(let i=0;i<64;i++){q=(q*75+74)%65537;const v=q%7;g+=`<i class="${i===0||i===7||i===56?'r':v<3?'f':''}"></i>`}document.getElementById('lcode').innerHTML=g;}
+const live=document.getElementById('live');
+function drawLive(){const n=frames.slice(0,cur).join('').length+2;live.innerHTML=MSG.slice(0,n)+'<span class="cur"></span>';}
+drawLive();
+
+/* meter */
+const meter=document.getElementById('meter');
+function drawMeter(){let h='';for(let i=0;i<40;i++){const inC=i>=32&&i<=36;let v=inC?(0.55+Math.random()*0.4):Math.max(0.06,0.5*Math.exp(-i/9)+Math.random()*0.12);h+=`<i class="${inC?'c':v>0.2?'l':''}" style="height:${Math.round(v*22)}px"></i>`}meter.innerHTML=h}
+drawMeter();setInterval(drawMeter,140);
+
+/* receiver: spectrum line on top, waterfall below */
+const wrap=document.getElementById('wfw'),c=document.getElementById('wf'),x=c.getContext('2d');
+const DPR=2;c.width=wrap.clientWidth*DPR;c.height=wrap.clientHeight*DPR;
+const W=c.width,H=c.height,GUT=40*DPR,PW=W-GUT,SPH=78*DPR,WY=SPH+8*DPR,WH=H-WY,ROWH=2*DPR,BINS=320,bw=PW/BINS;
+const TONES=16,toneBin=k=>18+k*(BINS-36)/(TONES-1);
+const LUT=[];{const st=[[0,[8,12,14]],[.22,[18,29,33]],[.42,[44,62,68]],[.6,[110,96,100]],[.74,[198,86,84]],[.88,[238,140,118]],[1,[255,240,230]]];
+ for(let i=0;i<256;i++){const v=i/255;for(let k=1;k<st.length;k++)if(v<=st[k][0]){const[a,ca]=st[k-1],[b,cb]=st[k];const t=(v-a)/(b-a);LUT.push(`rgb(${ca.map((q,n)=>Math.round(q+(cb[n]-q)*t))})`);break}}}
+let seed=11;const rnd=()=>{seed=(seed*16807)%2147483647;return seed/2147483647};
+const SYM=13,TRANS=4,SPF=8,GAP=5;
+let st={tone:Math.floor(rnd()*TONES),prev:0,r:0,sym:0,gap:0,frame:0};
+function gen(state){
+  const row=new Float32Array(BINS);let mark=false;
+  for(let b=0;b<BINS;b++)row[b]=0.13+Math.random()*0.13+0.05*Math.sin(b*0.07+state.r*0.01);
+  if(state.gap>0){state.gap--;if(state.gap===0)mark=true}
+  else{
+    let f=toneBin(state.tone);
+    if(state.r<TRANS){const A=toneBin(state.prev),B=toneBin(state.tone);const f0=A+(B-A)*state.r/TRANS,f1=A+(B-A)*(state.r+1)/TRANS;
+      const lo=Math.min(f0,f1),hi=Math.max(f0,f1);for(let b=Math.floor(lo)-1;b<=Math.ceil(hi)+1;b++){if(b>=0&&b<BINS)row[b]=Math.max(row[b],0.5+Math.random()*0.05)}
+      state.r++;return {row,mark};}
+    const amp=1;
+    for(let b=Math.floor(f-10);b<=f+10;b++){if(b<0||b>=BINS)continue;const d=b-f;row[b]=Math.max(row[b],amp*Math.exp(-d*d/14)*(0.92+Math.random()*0.08))}
+    const e=f+16;for(let b=Math.floor(e-3);b<=e+3;b++){if(b>=0&&b<BINS){const d=b-e;row[b]=Math.max(row[b],0.3*Math.exp(-d*d/6))}}
+    state.r++;if(state.r>=SYM){state.r=0;state.prev=state.tone;state.tone=Math.floor(rnd()*TONES);state.sym++;if(state.sym%SPF===0){state.gap=GAP;state.frame++}}
+  }
+  return {row,mark};
+}
+function paint(r,y){for(let b=0;b<BINS;b++){x.fillStyle=LUT[Math.min(255,Math.max(0,Math.round(r.row[b]*255)))];x.fillRect(GUT+Math.floor(b*bw),y,Math.ceil(bw)+1,ROWH)}
+  x.fillStyle='#06090a';x.fillRect(0,y,GUT,ROWH);
+  if(r.mark){x.fillStyle='rgba(188,211,218,.22)';x.fillRect(GUT,y,PW,1)}}
+// prefill: newest at top. generate oldest -> newest, then paint reversed.
+const rows=Math.floor(WH/ROWH),hist=[];for(let i=0;i<rows;i++)hist.push(gen(st));
+let fcount=0;hist.forEach(h=>{if(h.mark)fcount++});
+let labelFrame=cur+1; // frame being received at top
+const marks=[];
+for(let i=0;i<rows;i++){const h=hist[rows-1-i];paint(h,WY+i*ROWH);if(h.mark)marks.push(i)}
+function drawLabels(){x.fillStyle='#06090a';x.fillRect(0,WY,GUT,WH);x.font=`${10*DPR}px "IBM Plex Mono"`;x.textBaseline='middle';
+  // the region above the first mark is the current frame
+  let n=labelFrame;const ys=[0,...marks.map(m=>m*ROWH)];
+  for(let k=0;k<ys.length;k++){const yTop=ys[k],yBot=k+1<ys.length?ys[k+1]:WH;const mid=WY+(yTop+yBot)/2;if(yBot-yTop<14*DPR){n--;continue}
+    x.fillStyle=k===0?'#ef7a6e':'rgba(160,182,188,.55)';x.fillText('f'+String(n).padStart(2,'0'),2*DPR,mid);
+    x.fillStyle=k===0?'#cc5858':'rgba(160,182,188,.3)';x.fillRect(GUT-6*DPR,WY+yTop+2*DPR,2*DPR,Math.max(2,yBot-yTop-4*DPR));n--}}
+let last=hist[rows-1];
+function spectrum(row){
+  x.clearRect(0,0,W,WY);x.fillStyle='#06090a';x.fillRect(0,0,W,WY);
+  // grid
+  x.fillStyle='rgba(190,212,218,.07)';for(let i=0;i<=4;i++)x.fillRect(GUT,Math.round(i*SPH/4),PW,1);
+  x.font=`${9.5*DPR}px "IBM Plex Mono"`;x.fillStyle='rgba(160,182,188,.5)';x.textBaseline='middle';
+  ['0','-20','-40'].forEach((t,i)=>x.fillText(t,2*DPR,4*DPR+i*SPH/2-(i===2?6*DPR:0)));
+  // tone slots
+  for(let k=0;k<TONES;k++){x.fillStyle='rgba(190,212,218,.16)';x.fillRect(GUT+Math.round(toneBin(k)*bw),SPH-4*DPR,1,4*DPR)}
+  // line
+  x.beginPath();for(let b=0;b<BINS;b++){const v=row[b];const y=SPH-v*(SPH-6*DPR)-2*DPR;const px=GUT+b*bw+bw/2;b?x.lineTo(px,y):x.moveTo(px,y)}
+  x.strokeStyle='rgba(190,212,218,.75)';x.lineWidth=1.2*DPR;x.stroke();
+  x.lineTo(GUT+PW,SPH);x.lineTo(GUT,SPH);x.closePath();x.fillStyle='rgba(127,158,166,.08)';x.fill();
+  // peak marker
+  let pb=0;for(let b=1;b<BINS;b++)if(row[b]>row[pb])pb=b;
+  if(row[pb]>0.5){const px=GUT+pb*bw;x.fillStyle='#cc5858';x.fillRect(px-0.5*DPR,0,1*DPR,SPH);
+    let k=0,bd=1e9;for(let t=0;t<TONES;t++){const d=Math.abs(toneBin(t)-pb);if(d<bd){bd=d;k=t}}
+    const lab='tone '+k.toString(16).toUpperCase()+'  '+(17.6+pb/BINS*2.2).toFixed(2)+' kHz';x.font=`${10*DPR}px "IBM Plex Mono"`;const tw=x.measureText(lab).width;
+    const lx=Math.min(px+6*DPR,W-tw-4*DPR);x.fillStyle='#e8eeee';x.fillText(lab,lx,9*DPR)}
+}
+let smooth=new Float32Array(BINS);
+function step(){
+  const img=x.getImageData(0,WY,W,WH-ROWH);x.putImageData(img,0,WY+ROWH);
+  const r=gen(st);paint(r,WY);
+  for(let i=0;i<marks.length;i++)marks[i]++;if(r.mark){marks.unshift(0);labelFrame++}
+  while(marks.length&&marks[marks.length-1]*ROWH>WH)marks.pop();
+  drawLabels();
+  for(let b=0;b<BINS;b++)smooth[b]=smooth[b]*0.4+r.row[b]*0.6;spectrum(smooth);
+  requestAnimationFrame(step);
+}
+for(let b=0;b<BINS;b++)smooth[b]=hist[rows-1].row[b];spectrum(smooth);drawLabels();
+requestAnimationFrame(step);
+setInterval(()=>{document.getElementById('snr').textContent=(13.6+Math.random()*1.4).toFixed(1)},700);
+
+(function(){const w=document.querySelector('.win');function fit(){const k=Math.min(1,(innerWidth-32)/1440,(innerHeight-32)/900);w.style.transform=`scale(${k})`}fit();addEventListener('resize',fit)})();
+</script>
+</body>
+</html>
