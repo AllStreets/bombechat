@@ -10,13 +10,15 @@
 //! rollback journal and any WAL/SHM files it creates.
 
 use std::fmt::Write as _;
+use std::fs::OpenOptions;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use argon2::{Algorithm, Argon2, Params, Version};
 use bombechat_core::{Identity, PublicIdentity};
 use rand_core::{OsRng, RngCore};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use zeroize::{Zeroize, Zeroizing};
 
 /// Argon2id parameters for deriving the database key from the user's
@@ -110,18 +112,29 @@ pub struct StoredMessage {
 /// Errors returned by [`Store`] operations.
 #[derive(Debug)]
 pub enum StoreError {
-    /// The passphrase did not decrypt the database (SQLCipher reported the
-    /// file is not a database once we tried to read it with the derived key).
+    /// `create` was asked to make a store at a path (or sidecar) that
+    /// already has one. Nothing was touched; the existing store is
+    /// untouched and can still be opened with its original passphrase.
+    AlreadyExists,
+    /// The passphrase did not decrypt the database: SQLCipher reported the
+    /// first page it read back as not belonging to a database once we
+    /// tried to read it with the derived key. A file that isn't a
+    /// SQLite/SQLCipher database at all (garbage, truncated, or otherwise
+    /// unrelated) is reported identically by SQLCipher, so it also comes
+    /// back as `WrongPassphrase` here rather than `Corrupt`.
     WrongPassphrase,
-    /// The database (or the derived key material) is present but malformed.
+    /// The database (or its sidecar, or the derived key material) is
+    /// present but malformed, e.g. a missing identity row or a short salt.
     Corrupt,
-    /// A filesystem operation failed.
+    /// A filesystem operation failed, or the store (or its sidecar) does
+    /// not exist where `open` was asked to look.
     Io,
 }
 
 impl std::fmt::Display for StoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            StoreError::AlreadyExists => write!(f, "a store already exists at this path"),
             StoreError::WrongPassphrase => write!(f, "wrong passphrase"),
             StoreError::Corrupt => write!(f, "store is corrupt"),
             StoreError::Io => write!(f, "store i/o error"),
@@ -140,22 +153,36 @@ impl Store {
     /// Create a new encrypted store at `path`. `me` is this device's
     /// identity, kept (encrypted) inside the database; `my_name` is this
     /// device's own display label.
+    ///
+    /// Refuses with [`StoreError::AlreadyExists`] if either `path` or its
+    /// `.salt` sidecar already exists, without touching either file. If
+    /// any later step fails, the files this call itself created are
+    /// removed before returning, so a failed `create` never leaves a
+    /// half-written store (or clobbers an existing one's salt) behind.
     pub fn create(
         path: &Path,
         passphrase: &str,
         me: &Identity,
         my_name: &str,
     ) -> Result<Store, StoreError> {
+        if path.exists() || salt_path(path).exists() {
+            return Err(StoreError::AlreadyExists);
+        }
+
+        let guard = CreateGuard::new(path);
+
         let salt = random_salt();
         write_salt_sidecar(path, &salt)?;
+        create_private_db_file(path)?;
 
         let key = derive_key(passphrase, &salt)?;
-        let conn = Connection::open(path).map_err(|_| StoreError::Io)?;
+        let conn = open_existing(path)?;
         key_connection(&conn, &key)?;
 
         conn.execute_batch(SCHEMA).map_err(|_| StoreError::Corrupt)?;
         store_identity(&conn, me, my_name)?;
 
+        guard.disarm();
         Ok(Store {
             conn: Mutex::new(conn),
         })
@@ -163,15 +190,13 @@ impl Store {
 
     /// Open an existing encrypted store at `path`.
     pub fn open(path: &Path, passphrase: &str) -> Result<Store, StoreError> {
-        if !path.exists() {
-            return Err(StoreError::Io);
-        }
         let salt = read_salt_sidecar(path)?;
         let key = derive_key(passphrase, &salt)?;
 
-        let conn = Connection::open(path).map_err(|_| StoreError::Io)?;
+        let conn = open_existing(path)?;
         key_connection(&conn, &key)?;
         verify_key(&conn)?;
+        verify_identity_present(&conn)?;
 
         Ok(Store {
             conn: Mutex::new(conn),
@@ -363,21 +388,43 @@ fn key_connection(conn: &Connection, key: &Zeroizing<[u8; ARGON2_KEY_LEN]>) -> R
 }
 
 /// After keying a freshly opened connection, force SQLCipher to actually
-/// read a page. With the wrong key, SQLCipher cannot tell until this point,
-/// and reports the page as not belonging to a valid database.
+/// read a page. With the wrong key, SQLCipher cannot tell until this point;
+/// it then reports the page as not belonging to a valid database at all
+/// (`SQLITE_NOTADB`), which is exactly the same code a file that was never
+/// a SQLite/SQLCipher database in the first place (garbage, truncated)
+/// would produce. We can't tell those two apart, so both come back as
+/// `WrongPassphrase`.
 fn verify_key(conn: &Connection) -> Result<(), StoreError> {
     match conn.query_row("SELECT count(*) FROM sqlite_master", [], |row| {
         row.get::<_, i64>(0)
     }) {
         Ok(_) => Ok(()),
-        Err(err) => {
-            if err.to_string().to_lowercase().contains("not a database") {
-                Err(StoreError::WrongPassphrase)
-            } else {
-                Err(StoreError::Corrupt)
-            }
+        Err(rusqlite::Error::SqliteFailure(e, _)) if e.code == rusqlite::ErrorCode::NotADatabase => {
+            Err(StoreError::WrongPassphrase)
         }
+        Err(_) => Err(StoreError::Corrupt),
     }
+}
+
+/// Once the key has been verified, confirm the one identity row this
+/// store's schema requires is actually there. A freshly keyed but empty
+/// file (no `CREATE TABLE`s run against it yet) keys and reads back fine
+/// but has no `identity` table at all; without this check, `Store::me`
+/// would panic on it instead of `open` reporting `Corrupt`.
+fn verify_identity_present(conn: &Connection) -> Result<(), StoreError> {
+    let row: Option<i64> = conn
+        .query_row("SELECT 1 FROM identity WHERE id = 0", [], |row| row.get(0))
+        .optional()
+        .map_err(|_| StoreError::Corrupt)?;
+    row.map(|_| ()).ok_or(StoreError::Corrupt)
+}
+
+/// Open an already-existing database file for read/write without SQLite's
+/// implicit `CREATE`, so a missing file reliably surfaces as
+/// [`StoreError::Io`] instead of silently starting a new, empty, unkeyed
+/// database at that path.
+fn open_existing(path: &Path) -> Result<Connection, StoreError> {
+    Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE).map_err(|_| StoreError::Io)
 }
 
 /// Store this device's identity secret and display name inside the
@@ -406,11 +453,80 @@ fn salt_path(db_path: &Path) -> PathBuf {
     PathBuf::from(p)
 }
 
+/// Write the salt sidecar, failing if it already exists (`create_new`),
+/// rather than truncating whatever salt a previous store at this path had.
+/// Not secret, so plain bytes, but still mode 0600 on Unix: there's no
+/// reason to let other local accounts read it either.
 fn write_salt_sidecar(db_path: &Path, salt: &[u8; SALT_LEN]) -> Result<(), StoreError> {
-    std::fs::write(salt_path(db_path), salt).map_err(|_| StoreError::Io)
+    let path = salt_path(db_path);
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|_| StoreError::Io)?;
+    file.write_all(salt).map_err(|_| StoreError::Io)?;
+    drop(file);
+    set_private_permissions(&path)
 }
 
 fn read_salt_sidecar(db_path: &Path) -> Result<[u8; SALT_LEN], StoreError> {
     let bytes = std::fs::read(salt_path(db_path)).map_err(|_| StoreError::Io)?;
     bytes.try_into().map_err(|_| StoreError::Corrupt)
+}
+
+/// Create the (empty) database file itself, failing if it already exists,
+/// so `Store::create` never opens and re-keys someone else's database.
+/// Mode 0600 on Unix, set before any page is ever written to it.
+fn create_private_db_file(path: &Path) -> Result<(), StoreError> {
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|_| StoreError::Io)?;
+    set_private_permissions(path)
+}
+
+#[cfg(unix)]
+fn set_private_permissions(path: &Path) -> Result<(), StoreError> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+        .map_err(|_| StoreError::Io)
+}
+
+#[cfg(not(unix))]
+fn set_private_permissions(_path: &Path) -> Result<(), StoreError> {
+    Ok(())
+}
+
+/// Removes the db file and its sidecar if `Store::create` fails after
+/// creating one or both of them, so a failed `create` never leaves a
+/// half-written store sitting where a later `open` could be pointed at
+/// it. Disarmed only once `create` has fully succeeded.
+struct CreateGuard {
+    db_path: PathBuf,
+    salt_path: PathBuf,
+    armed: bool,
+}
+
+impl CreateGuard {
+    fn new(db_path: &Path) -> CreateGuard {
+        CreateGuard {
+            db_path: db_path.to_path_buf(),
+            salt_path: salt_path(db_path),
+            armed: true,
+        }
+    }
+
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for CreateGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = std::fs::remove_file(&self.db_path);
+            let _ = std::fs::remove_file(&self.salt_path);
+        }
+    }
 }

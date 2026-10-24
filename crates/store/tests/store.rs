@@ -45,11 +45,32 @@ fn nothing_readable_on_disk() {
         })
         .unwrap();
 
-    // Drop the store so every page is flushed before we inspect the files.
-    drop(store);
+    // Scan once while the store is still open: rusqlite commits each
+    // statement immediately (autocommit), so the plaintext must already be
+    // unreadable on disk, not just once the store is closed.
+    assert_nothing_readable(&path, &secret[..]);
 
-    let mut to_scan = Vec::new();
-    for suffix in ["", "-wal", "-shm"] {
+    // And again after drop/close, in case closing writes anything further.
+    drop(store);
+    assert_nothing_readable(&path, &secret[..]);
+}
+
+/// Scans the main db file, its `-wal`/`-shm` files (if present) and its
+/// `.salt` sidecar for plaintext and asserts none of it shows up. Fails
+/// loudly (rather than vacuously passing) if the main db file can't be
+/// read or is implausibly small, since either would mean the scan never
+/// actually looked at the data we just wrote.
+fn assert_nothing_readable(path: &std::path::Path, secret: &[u8]) {
+    let main_db = std::fs::read(path).expect("main db file must exist and be readable");
+    assert!(
+        main_db.len() >= 512,
+        "main db file is implausibly small ({} bytes) for a store with a \
+         contact and a message in it; the plaintext scan would be vacuous",
+        main_db.len()
+    );
+
+    let mut to_scan = vec![main_db];
+    for suffix in ["-wal", "-shm"] {
         let mut candidate = path.as_os_str().to_owned();
         candidate.push(suffix);
         let candidate = std::path::PathBuf::from(candidate);
@@ -61,8 +82,6 @@ fn nothing_readable_on_disk() {
     sidecar.push(".salt");
     to_scan.push(std::fs::read(std::path::PathBuf::from(sidecar)).unwrap());
 
-    assert!(!to_scan.is_empty(), "expected at least the db file and its sidecar to exist");
-
     for bytes in &to_scan {
         assert!(
             !contains(bytes, b"Marisol Ortega"),
@@ -73,7 +92,7 @@ fn nothing_readable_on_disk() {
             "message text found in plaintext on disk"
         );
         assert!(
-            !contains(bytes, &secret[..]),
+            !contains(bytes, secret),
             "identity secret bytes found in plaintext on disk"
         );
     }
@@ -213,4 +232,108 @@ fn put_message_with_existing_id_upserts() {
     assert_eq!(conversation.len(), 1);
     assert_eq!(conversation[0].text, "second");
     assert!(conversation[0].heard);
+}
+
+#[test]
+fn create_on_an_existing_path_is_refused_and_preserves_the_original() {
+    let d = tempdir().unwrap();
+    let path = d.path().join("b.db");
+    let me = Identity::generate();
+    Store::create(&path, "correct horse", &me, "Kitchen laptop").unwrap();
+
+    let second = Store::create(
+        &path,
+        "a different passphrase",
+        &Identity::generate(),
+        "Someone else's laptop",
+    );
+    assert!(matches!(second, Err(StoreError::AlreadyExists)));
+
+    // The original store must still open with its original passphrase:
+    // the failed second `create` must not have touched the salt or db.
+    let reopened = Store::open(&path, "correct horse").unwrap();
+    assert_eq!(reopened.me().public(), me.public());
+}
+
+#[test]
+fn open_on_a_nonexistent_path_is_io_error() {
+    let d = tempdir().unwrap();
+    let path = d.path().join("missing.db");
+    assert!(matches!(
+        Store::open(&path, "whatever"),
+        Err(StoreError::Io)
+    ));
+}
+
+#[test]
+fn open_with_a_missing_sidecar_is_io_error() {
+    let d = tempdir().unwrap();
+    let path = d.path().join("b.db");
+    Store::create(&path, "correct horse", &Identity::generate(), "Kitchen laptop").unwrap();
+
+    let mut sidecar = path.as_os_str().to_owned();
+    sidecar.push(".salt");
+    std::fs::remove_file(std::path::PathBuf::from(sidecar)).unwrap();
+
+    assert!(matches!(
+        Store::open(&path, "correct horse"),
+        Err(StoreError::Io)
+    ));
+}
+
+#[test]
+fn open_with_a_short_sidecar_is_corrupt() {
+    let d = tempdir().unwrap();
+    let path = d.path().join("b.db");
+    Store::create(&path, "correct horse", &Identity::generate(), "Kitchen laptop").unwrap();
+
+    let mut sidecar = path.as_os_str().to_owned();
+    sidecar.push(".salt");
+    std::fs::write(std::path::PathBuf::from(sidecar), [1u8, 2, 3]).unwrap();
+
+    assert!(matches!(
+        Store::open(&path, "correct horse"),
+        Err(StoreError::Corrupt)
+    ));
+}
+
+#[test]
+fn open_on_an_empty_db_file_is_corrupt_not_a_panic() {
+    let d = tempdir().unwrap();
+    let path = d.path().join("b.db");
+    // A zero-byte db file keys fine (there is nothing to decrypt yet) but
+    // has no schema at all, so the identity row open() checks for is
+    // missing. This must not make `me()` panic; `open` itself must refuse.
+    std::fs::write(&path, []).unwrap();
+    let mut sidecar = path.as_os_str().to_owned();
+    sidecar.push(".salt");
+    std::fs::write(std::path::PathBuf::from(sidecar), [0u8; 16]).unwrap();
+
+    assert!(matches!(
+        Store::open(&path, "anything"),
+        Err(StoreError::Corrupt)
+    ));
+}
+
+#[test]
+fn files_are_created_private_on_unix() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempdir().unwrap();
+        let path = d.path().join("b.db");
+        Store::create(&path, "correct horse", &Identity::generate(), "Kitchen laptop").unwrap();
+
+        let db_mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(db_mode, 0o600, "db file mode was {:o}", db_mode);
+
+        let mut sidecar = path.as_os_str().to_owned();
+        sidecar.push(".salt");
+        let sidecar_mode = std::fs::metadata(std::path::PathBuf::from(sidecar))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(sidecar_mode, 0o600, "sidecar mode was {:o}", sidecar_mode);
+    }
 }
