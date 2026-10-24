@@ -116,6 +116,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn dbfs_to_room_db_adds_the_calibration_offset() {
+        assert_eq!(dbfs_to_room_db(-40.0, DEFAULT_CALIBRATION_OFFSET), 54.0);
+        assert_eq!(dbfs_to_room_db(-40.0, 94.0), 54.0);
+        assert_eq!(dbfs_to_room_db(0.0, 94.0), 94.0);
+    }
+
+    #[test]
     fn waits_for_quiet() {
         let mut g = QuietGate::new(40.0, 2, 90);
         g.enqueue(0);

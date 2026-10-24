@@ -71,6 +71,20 @@ fn map_cpal_error(err: cpal::Error) -> AudioError {
     }
 }
 
+/// Handles an error reported asynchronously by an input or output stream's
+/// error callback, after the stream has already started: maps it the same
+/// way a synchronous failure would be, logs one line, and stores it in
+/// `slot` for [`CpalAudio::take_stream_error`] to pick up. A later error
+/// overwrites an earlier one that was never taken.
+///
+/// Factored out of the stream-building closures so it can be unit-tested
+/// directly, without real audio hardware.
+fn record_stream_error(slot: &Mutex<Option<AudioError>>, err: cpal::Error) {
+    let mapped = map_cpal_error(err);
+    eprintln!("bombechat-modem: audio stream error: {mapped}");
+    *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(mapped);
+}
+
 /// Default-device input and output over cpal.
 ///
 /// Built once, at construction: the output stream is opened and started
@@ -87,6 +101,13 @@ pub struct CpalAudio {
     // Kept alive for as long as `CpalAudio` is; dropping it stops output.
     _output_stream: cpal::Stream,
     output_queue: Arc<Mutex<VecDeque<f32>>>,
+    /// The most recent error reported by either stream's error callback
+    /// (a device disconnect, an xrun, and so on) since it was last taken
+    /// by [`CpalAudio::take_stream_error`]. `start_input`/`play` only
+    /// report *synchronous* failures (device missing, config rejected);
+    /// this is how a failure *after* a stream has started reaches anyone,
+    /// since `AudioIo` has no asynchronous error channel of its own.
+    stream_error: Arc<Mutex<Option<AudioError>>>,
 }
 
 impl CpalAudio {
@@ -118,6 +139,9 @@ impl CpalAudio {
         let queue_for_callback = output_queue.clone();
         let out_channels = output_channels as usize;
 
+        let stream_error: Arc<Mutex<Option<AudioError>>> = Arc::new(Mutex::new(None));
+        let error_slot_for_output = stream_error.clone();
+
         let output_config = StreamConfig {
             channels: output_channels,
             sample_rate,
@@ -137,7 +161,7 @@ impl CpalAudio {
                         }
                     }
                 },
-                |_err: cpal::Error| {},
+                move |err: cpal::Error| record_stream_error(&error_slot_for_output, err),
                 None,
             )
             .map_err(map_cpal_error)?;
@@ -150,7 +174,22 @@ impl CpalAudio {
             input_stream: None,
             _output_stream: output_stream,
             output_queue,
+            stream_error,
         })
+    }
+
+    /// The most recent stream error recorded by either the input or
+    /// output audio callback since the last call, if any. Each error is
+    /// returned at most once: calling this again immediately afterward
+    /// returns `None` until another error is recorded. Task 9's transport
+    /// is expected to poll this (for example alongside each
+    /// [`crate::DemodEvent::Level`]) and turn a `Some` into a
+    /// channel-unavailable event.
+    pub fn take_stream_error(&self) -> Option<AudioError> {
+        self.stream_error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
     }
 }
 
@@ -162,6 +201,7 @@ impl AudioIo for CpalAudio {
             sample_rate: self.sample_rate,
             buffer_size: BufferSize::Default,
         };
+        let error_slot_for_input = self.stream_error.clone();
 
         let stream = self
             .input_device
@@ -178,7 +218,7 @@ impl AudioIo for CpalAudio {
                         sink(&mono);
                     }
                 },
-                |_err: cpal::Error| {},
+                move |err: cpal::Error| record_stream_error(&error_slot_for_input, err),
                 None,
             )
             .map_err(map_cpal_error)?;
@@ -204,6 +244,52 @@ impl AudioIo for CpalAudio {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stream_error_is_mapped_like_a_synchronous_one() {
+        let slot: Mutex<Option<AudioError>> = Mutex::new(None);
+
+        record_stream_error(&slot, cpal::ErrorKind::PermissionDenied.into());
+        assert_eq!(*slot.lock().unwrap(), Some(AudioError::PermissionDenied));
+
+        record_stream_error(&slot, cpal::ErrorKind::DeviceNotAvailable.into());
+        assert_eq!(*slot.lock().unwrap(), Some(AudioError::NoDevice));
+
+        record_stream_error(&slot, cpal::ErrorKind::HostUnavailable.into());
+        assert_eq!(*slot.lock().unwrap(), Some(AudioError::NoDevice));
+
+        record_stream_error(&slot, cpal::ErrorKind::Xrun.into());
+        assert!(matches!(
+            *slot.lock().unwrap(),
+            Some(AudioError::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn stream_error_slot_is_taken_once() {
+        let slot: Arc<Mutex<Option<AudioError>>> = Arc::new(Mutex::new(None));
+
+        record_stream_error(&slot, cpal::ErrorKind::PermissionDenied.into());
+        let take = |slot: &Arc<Mutex<Option<AudioError>>>| slot.lock().unwrap().take();
+
+        assert_eq!(take(&slot), Some(AudioError::PermissionDenied));
+        // Already taken: nothing left until another error is recorded.
+        assert_eq!(take(&slot), None);
+
+        record_stream_error(&slot, cpal::ErrorKind::DeviceNotAvailable.into());
+        assert_eq!(take(&slot), Some(AudioError::NoDevice));
+        assert_eq!(take(&slot), None);
+    }
+
+    #[test]
+    fn a_later_stream_error_overwrites_an_untaken_earlier_one() {
+        let slot: Mutex<Option<AudioError>> = Mutex::new(None);
+
+        record_stream_error(&slot, cpal::ErrorKind::PermissionDenied.into());
+        record_stream_error(&slot, cpal::ErrorKind::DeviceNotAvailable.into());
+
+        assert_eq!(slot.lock().unwrap().take(), Some(AudioError::NoDevice));
+    }
 
     /// Opens the real default input and output devices, plays a 0.5 s 1
     /// kHz tone and records 1 s of whatever the microphone hears while it
