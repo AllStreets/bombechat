@@ -179,6 +179,7 @@ proptest! { #[test] fn never_panics(bytes in proptest::collection::vec(any::<u8>
   - `pub fn split(envelope: &[u8], tag: u16) -> Vec<Vec<u8>>`. Each item is the on-air frame: `tag u16 | seq u8 | total u8 | len u8 | data[len]`, then Reed-Solomon parity of `PARITY` bytes.
   - `pub struct Reassembler` with `new() -> Self`, `push(&mut self, frame: &[u8], now_ms: u64) -> Vec<Event>` and `expire(&mut self, now_ms: u64)`.
   - `pub enum Event { FrameOk { tag: u16, seq: u8, total: u8 }, FrameBad, Complete { tag: u16, bytes: Vec<u8> } }`
+  - `pub fn prefix(&self, tag: u16) -> Option<&[u8]>` returns the contiguous bytes received so far from frame 0, so the node can decrypt chunks as they land. (Controller ruling.)
 - Rules:
   - Duplicate frames (from repeats) are ignored.
   - Partial messages are dropped after 10 minutes without a new frame.
@@ -192,6 +193,7 @@ proptest! { #[test] fn never_panics(bytes in proptest::collection::vec(any::<u8>
 #[test] fn corrects_eight_bad_bytes() { /* flip 8 bytes in one frame: still Complete */ }
 #[test] fn nine_bad_bytes_is_frame_bad_then_repeat_fixes() { /* first copy FrameBad, clean repeat completes */ }
 #[test] fn two_senders_interleaved() { /* frames of tag 1 and tag 2 alternated: two Completes with the right bytes */ }
+#[test] fn prefix_grows_contiguously() { /* push frames 0,2: prefix = frame 0 data; push 1: prefix = frames 0..=2 data */ }
 #[test] fn partial_expires_after_ten_minutes() { /* push half, expire(600_001): later frames start fresh, no Complete from stale halves */ }
 proptest! { #[test] fn push_never_panics(b in proptest::collection::vec(any::<u8>(),0..300)) { let _=Reassembler::new().push(&b,0); } }
 ```
