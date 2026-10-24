@@ -21,7 +21,11 @@
 //!   not held: there is no contact to show it under, and holding it
 //!   would let strangers fill memory.
 //! * An envelope whose id is already in the store, or that this session
-//!   already handled, is skipped before anything is opened.
+//!   already handled, is skipped before anything is opened. An id only
+//!   counts as handled once a signature covering it has verified, so
+//!   garbage under a stolen id cannot suppress the real envelope. Control
+//!   envelopes are deduped on their inner (signed) envelope's id, since
+//!   the outer id is not signed.
 //!
 //! # Clocks
 //!
@@ -56,7 +60,7 @@ use bombechat_modem::{split, Event, Reassembler};
 use bombechat_store::{Channel, Contact, ContactId, Store, StoredMessage};
 use rand_core::{OsRng, RngCore};
 
-pub use sound::SoundTransport;
+pub use sound::{SoundTransport, MAX_QUEUED_ENVELOPES, QUEUE_FULL};
 pub use transport::{Transport, TransportEvent};
 
 /// Most complete envelopes held while the node is locked.
@@ -71,6 +75,11 @@ const SKEW_MIN: u32 = 1440;
 /// How many envelope ids this session remembers having handled, beyond
 /// what the store remembers. Oldest forgotten first.
 const SEEN_CAP: usize = 4096;
+
+/// A receipt for the same message is sent at most once in this long, so
+/// a sender who missed the first one gets another when they resend, but a
+/// replayed envelope cannot make this device transmit continuously.
+const RECEIPT_GAP_MS: u64 = 60_000;
 
 /// Returned by [`Node::send`] and [`Node::broadcast`] when nothing was
 /// sent. No real envelope has this id.
@@ -285,6 +294,10 @@ pub struct Node {
     /// Who each message sent this session went to, for checking receipts.
     sent_to: HashMap<[u8; 16], Vec<ContactId>>,
     receipts: bool,
+    /// When a receipt was last sent for each message id, by `now_ms`.
+    receipts_sent: HashMap<[u8; 16], u64>,
+    /// The `now_ms` of the current (or last) tick.
+    now_ms: u64,
 }
 
 impl Node {
@@ -303,6 +316,8 @@ impl Node {
             seen_order: VecDeque::new(),
             sent_to: HashMap::new(),
             receipts: true,
+            receipts_sent: HashMap::new(),
+            now_ms: 0,
         };
         if let Some(store) = store {
             node.unlock(store);
@@ -408,7 +423,10 @@ impl Node {
             return NOT_STORED;
         }
         if let Some(c) = store.contacts().into_iter().find(|c| &c.who == peer) {
-            return c.id;
+            return match store.set_checked(c.id, true) {
+                Ok(()) => c.id,
+                Err(_) => NOT_STORED,
+            };
         }
         store.add_contact(name, peer, true).unwrap_or(NOT_STORED)
     }
@@ -417,6 +435,9 @@ impl Node {
     /// monotonic millisecond clock.
     pub fn tick(&mut self, now_ms: u64) -> Vec<NodeEvent> {
         let mut events = Vec::new();
+        self.now_ms = now_ms;
+        self.receipts_sent
+            .retain(|_, at| now_ms.saturating_sub(*at) < RECEIPT_GAP_MS);
 
         if self.me.is_some() {
             while let Some((ti, tag, bytes)) = self.locked_inbox.pop_front() {
@@ -444,6 +465,9 @@ impl Node {
                         channel,
                         state: format!("unavailable: {reason}"),
                     }),
+                    TransportEvent::Notice(state) => {
+                        events.push(NodeEvent::ChannelState { channel, state })
+                    }
                 }
             }
             self.reassemblers[ti].expire(now_ms);
@@ -543,9 +567,13 @@ impl Node {
                 }
                 Some(Ok(layout)) => layout,
             };
+            if self.already_have(&layout.id) {
+                self.resend_receipt(layout.id);
+                self.progress.insert(key, Progress::Settled);
+                return;
+            }
             let me = self.me.as_ref().expect("checked by callers");
-            let fresh = !self.already_have(&layout.id)
-                && layout.expires_min >= now_min().saturating_sub(SKEW_MIN);
+            let fresh = layout.expires_min >= now_min().saturating_sub(SKEW_MIN);
             let opener = fresh
                 .then(|| {
                     ChunkOpener::start(
@@ -641,22 +669,54 @@ impl Node {
             return;
         }
         events.push(NodeEvent::Message(message));
+        self.send_receipt(id, &contact);
+    }
 
-        if self.receipts && !low_order(&contact.who.dh) {
-            let me = self.me.as_ref().expect("unlocked");
-            let receipt = control::heard(me, &contact.who, &id, random_id(), now, TTL_MIN);
-            self.transmit(&receipt);
+    /// A private envelope we already have arrived again. If it is a message
+    /// a contact sent us, they may have missed our receipt: send another.
+    fn resend_receipt(&mut self, id: [u8; 16]) {
+        let Some(store) = &self.store else {
+            return;
+        };
+        let Some(stored) = store.message(&id).filter(|m| !m.outgoing) else {
+            return;
+        };
+        if let Some(contact) = store
+            .contacts()
+            .into_iter()
+            .find(|c| c.id == stored.contact)
+        {
+            self.send_receipt(id, &contact);
         }
+    }
+
+    /// Send `contact` a receipt for message `id`, if receipts are on and
+    /// none went out for it in the last [`RECEIPT_GAP_MS`].
+    fn send_receipt(&mut self, id: [u8; 16], contact: &Contact) {
+        if !self.receipts || low_order(&contact.who.dh) {
+            return;
+        }
+        if let Some(at) = self.receipts_sent.get(&id) {
+            if self.now_ms.saturating_sub(*at) < RECEIPT_GAP_MS {
+                return;
+            }
+        }
+        self.receipts_sent.insert(id, self.now_ms);
+        let me = self.me.as_ref().expect("unlocked");
+        let receipt = control::heard(me, &contact.who, &id, random_id(), now_min(), TTL_MIN);
+        self.transmit(&receipt);
     }
 
     fn on_public(&mut self, env: &Envelope, events: &mut Vec<NodeEvent>) {
         if self.already_have(&env.id) {
             return;
         }
-        self.mark_seen(env.id);
+        // Marked seen only once the signature covering the id verifies, so
+        // garbage sent under a stolen id cannot suppress the real envelope.
         let Ok((signer, text, _)) = open_public(env, now_min()) else {
             return;
         };
+        self.mark_seen(env.id);
         let me = self.me.as_ref().expect("unlocked");
         if signer == me.public() || text.starts_with(control::HELLO_PREFIX) {
             return;
@@ -673,10 +733,20 @@ impl Node {
         if self.already_have(&env.id) {
             return;
         }
-        self.mark_seen(env.id);
         let me = self.me.as_ref().expect("unlocked");
-        match control::open(me, &env.body, now_min()) {
-            Some(control::Control::PairHello { identity, name }) => {
+        // The outer id is not signed; dedup on the inner envelope's id,
+        // which is, and only once it has verified.
+        let Some((control, inner_id)) = control::open(me, &env.body, now_min()) else {
+            return;
+        };
+        self.mark_seen(env.id);
+        if self.seen.contains(&inner_id) {
+            return;
+        }
+        self.mark_seen(inner_id);
+        let me = self.me.as_ref().expect("unlocked");
+        match control {
+            control::Control::PairHello { identity, name } => {
                 let mine = me.public();
                 if identity == mine || low_order(&identity.dh) {
                     return;
@@ -687,7 +757,7 @@ impl Node {
                     name,
                 });
             }
-            Some(control::Control::Heard { id, by }) => {
+            control::Control::Heard { id, by } => {
                 let Some(contact) = self.contact_for(&by) else {
                     return;
                 };
@@ -704,7 +774,6 @@ impl Node {
                     events.push(NodeEvent::Heard { id, by: contact.id });
                 }
             }
-            None => {}
         }
     }
 }
@@ -924,6 +993,152 @@ mod tests {
             .find(|n| private_envelope_len(1, *n) <= MAX_ENVELOPE)
             .unwrap();
         assert_ne!(node.send(&ids, &"x".repeat(longest)), NOT_SENT);
+    }
+
+    fn offers(events: &[NodeEvent]) -> usize {
+        events
+            .iter()
+            .filter(|e| matches!(e, NodeEvent::PairOffer { .. }))
+            .count()
+    }
+
+    #[test]
+    fn garbage_under_a_stolen_public_id_does_not_suppress_the_real_one() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (b, c) = (Identity::generate(), Identity::generate());
+        let (mut node, wire, _) = node(&dir, &b, &[]);
+        let genuine = seal_public(&c, "Road north is open.", now_min(), 60);
+        let forged = Envelope {
+            body: vec![0; 140],
+            ..genuine.clone()
+        };
+
+        wire.hear(&forged, 1);
+        assert!(node.tick(1).is_empty());
+        wire.hear(&genuine, 2);
+        let texts: Vec<_> = node
+            .tick(2)
+            .into_iter()
+            .filter_map(|e| match e {
+                NodeEvent::Broadcast { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts, vec!["Road north is open."]);
+    }
+
+    #[test]
+    fn garbage_under_a_stolen_control_id_does_not_suppress_the_real_one() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (b, c) = (Identity::generate(), Identity::generate());
+        let (mut node, wire, _) = node(&dir, &b, &[]);
+        let genuine = control::pair_hello(&c, "Cy", random_id(), now_min(), 60);
+        let forged = Envelope {
+            body: vec![1, 1, 0, 0, 0],
+            ..genuine.clone()
+        };
+
+        wire.hear(&forged, 1);
+        assert_eq!(offers(&node.tick(1)), 0);
+        wire.hear(&genuine, 2);
+        assert_eq!(offers(&node.tick(2)), 1);
+    }
+
+    #[test]
+    fn hello_with_a_bad_signature_offers_nothing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (b, c) = (Identity::generate(), Identity::generate());
+        let (mut node, wire, _) = node(&dir, &b, &[]);
+        let mut hello = control::pair_hello(&c, "Cy", random_id(), now_min(), 60);
+        let last = hello.body.len() - 1;
+        hello.body[last] ^= 1; // the inner signature's last byte
+
+        wire.hear(&hello, 1);
+        assert_eq!(offers(&node.tick(1)), 0);
+    }
+
+    #[test]
+    fn a_hello_rewrapped_under_new_ids_offers_once() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (b, c) = (Identity::generate(), Identity::generate());
+        let (mut node, wire, _) = node(&dir, &b, &[]);
+        let hello = control::pair_hello(&c, "Cy", random_id(), now_min(), 60);
+
+        wire.hear(&hello, 1);
+        assert_eq!(offers(&node.tick(1)), 1);
+        let rewrapped = Envelope {
+            id: random_id(),
+            ..hello.clone()
+        };
+        wire.hear(&rewrapped, 2);
+        assert_eq!(offers(&node.tick(2)), 0);
+    }
+
+    #[test]
+    fn a_receipt_rewrapped_under_a_new_id_is_processed_once() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (a, b) = (Identity::generate(), Identity::generate());
+        let (mut node, wire, ids) = node(&dir, &a, &[&b]);
+        let id = node.send(&[ids[0]], "for b");
+        let heard = |events: Vec<NodeEvent>| {
+            events
+                .iter()
+                .filter(|e| matches!(e, NodeEvent::Heard { .. }))
+                .count()
+        };
+
+        let receipt = control::heard(&b, &a.public(), &id, random_id(), now_min(), 60);
+        wire.hear(&receipt, 1);
+        assert_eq!(heard(node.tick(1)), 1);
+        for tag in 2..5 {
+            let rewrapped = Envelope {
+                id: random_id(),
+                ..receipt.clone()
+            };
+            wire.hear(&rewrapped, tag);
+            assert_eq!(heard(node.tick(tag as u64)), 0);
+        }
+    }
+
+    #[test]
+    fn a_resent_message_gets_another_receipt_at_most_once_a_minute() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (a, b) = (Identity::generate(), Identity::generate());
+        let (mut node, wire, _) = node(&dir, &b, &[&a]);
+        let env = seal_private(&a, &[b.public()], "resent", now_min(), 60);
+        let receipts_sent = |w: &Wire| std::mem::take(&mut *w.sent.lock().unwrap()).len();
+
+        wire.hear(&env, 1);
+        assert_eq!(messages(&node.tick(1_000)).len(), 1);
+        assert!(receipts_sent(&wire) > 0, "first receipt");
+
+        wire.hear(&env, 2);
+        assert!(messages(&node.tick(30_000)).is_empty());
+        assert_eq!(receipts_sent(&wire), 0, "too soon for another");
+
+        wire.hear(&env, 3);
+        assert!(messages(&node.tick(61_000)).is_empty(), "not shown twice");
+        assert!(receipts_sent(&wire) > 0, "receipt resent after a minute");
+
+        node.set_receipts(false);
+        wire.hear(&env, 4);
+        node.tick(200_000);
+        assert_eq!(receipts_sent(&wire), 0, "receipts off");
+    }
+
+    #[test]
+    fn confirming_a_known_contact_marks_it_checked() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (a, b) = (Identity::generate(), Identity::generate());
+        let path = dir.path().join("a.db");
+        let store = Store::create(&path, "pass", &a, "me").unwrap();
+        let id = store.add_contact("Ben", &b.public(), false).unwrap();
+        let mut node = Node::new(Some(store), vec![]);
+
+        assert_eq!(node.confirm_pairing(&b.public(), "Ben"), id);
+        let contacts = node.store.as_ref().unwrap().contacts();
+        assert_eq!(contacts.len(), 1);
+        assert!(contacts[0].checked);
     }
 
     #[test]

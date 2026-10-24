@@ -19,6 +19,9 @@ pub enum TransportEvent {
     /// The carrier cannot work, with a short human-readable reason such as
     /// "microphone permission denied". Reported once per failure.
     Unavailable(String),
+    /// Something the user should know that does not make the carrier
+    /// unavailable, e.g. "send queue full, message not sent".
+    Notice(String),
 }
 
 /// A carrier for on-air frames.

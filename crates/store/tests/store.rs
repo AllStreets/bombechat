@@ -337,3 +337,36 @@ fn files_are_created_private_on_unix() {
         assert_eq!(sidecar_mode, 0o600, "sidecar mode was {:o}", sidecar_mode);
     }
 }
+
+#[test]
+fn set_checked_updates_the_contact() {
+    let d = tempdir().unwrap();
+    let store =
+        Store::create(&d.path().join("b.db"), "pw", &Identity::generate(), "me").unwrap();
+    let c = store.add_contact("Marisol", &marisol(), false).unwrap();
+    assert!(!store.contacts()[0].checked);
+    store.set_checked(c, true).unwrap();
+    assert!(store.contacts()[0].checked);
+    store.set_checked(c, false).unwrap();
+    assert!(!store.contacts()[0].checked);
+}
+
+#[test]
+fn message_by_id() {
+    let d = tempdir().unwrap();
+    let store =
+        Store::create(&d.path().join("b.db"), "pw", &Identity::generate(), "me").unwrap();
+    let c = store.add_contact("Marisol", &marisol(), true).unwrap();
+    let m = StoredMessage {
+        id: [3u8; 16],
+        contact: c,
+        outgoing: false,
+        text: "Water is at the church on Fifth.".into(),
+        channel: Channel::Sound,
+        at_min: 7,
+        heard: false,
+    };
+    store.put_message(&m).unwrap();
+    assert_eq!(store.message(&[3u8; 16]), Some(m));
+    assert_eq!(store.message(&[4u8; 16]), None);
+}

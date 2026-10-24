@@ -351,6 +351,35 @@ impl Store {
         .map_err(|_| StoreError::Corrupt)?;
         Ok(())
     }
+
+    /// The stored message with this envelope id, if any.
+    pub fn message(&self, id: &[u8; 16]) -> Option<StoredMessage> {
+        let contact: i64 = {
+            let conn = self.conn.lock().expect("store mutex poisoned");
+            conn.query_row(
+                "SELECT contact_id FROM messages WHERE id = ?1",
+                params![id.as_slice()],
+                |row| row.get(0),
+            )
+            .optional()
+            .expect("querying message")?
+        };
+        self.conversation(ContactId(contact))
+            .into_iter()
+            .find(|m| &m.id == id)
+    }
+
+    /// Set whether a contact's safety number has been checked. Unknown
+    /// ids are ignored.
+    pub fn set_checked(&self, c: ContactId, checked: bool) -> Result<(), StoreError> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        conn.execute(
+            "UPDATE contacts SET checked = ?1 WHERE id = ?2",
+            params![checked as i64, c.0],
+        )
+        .map_err(|_| StoreError::Corrupt)?;
+        Ok(())
+    }
 }
 
 /// Derive the 32-byte SQLCipher key from `passphrase` and `salt` with

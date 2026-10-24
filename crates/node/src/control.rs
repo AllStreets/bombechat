@@ -92,7 +92,12 @@ pub(crate) fn heard(
 
 /// Open a control envelope's body. `None` for anything malformed,
 /// unverifiable, expired, or (for receipts) not addressed to `me`.
-pub(crate) fn open(me: &Identity, body: &[u8], now_min: u32) -> Option<Control> {
+///
+/// Also returns the inner envelope's id. Unlike the outer id, it is
+/// covered by the inner signature (and, for receipts, the seal), so it is
+/// the id to dedup control traffic on: an inner envelope re-wrapped under
+/// a fresh outer id is still recognised as the same message.
+pub(crate) fn open(me: &Identity, body: &[u8], now_min: u32) -> Option<(Control, [u8; 16])> {
     let [version, kind, rest @ ..] = body else {
         return None;
     };
@@ -104,18 +109,24 @@ pub(crate) fn open(me: &Identity, body: &[u8], now_min: u32) -> Option<Control> 
         TYPE_PAIR_HELLO => {
             let (identity, text, _) = open_public(&inner, now_min).ok()?;
             let name = text.strip_prefix(HELLO_PREFIX)?;
-            Some(Control::PairHello {
-                identity,
-                name: truncate(name, MAX_NAME).to_string(),
-            })
+            Some((
+                Control::PairHello {
+                    identity,
+                    name: truncate(name, MAX_NAME).to_string(),
+                },
+                inner.id,
+            ))
         }
         TYPE_HEARD => {
             let opened = open_private(me, &inner, now_min).ok()?;
             let digits = opened.text.strip_prefix(HEARD_PREFIX)?;
-            Some(Control::Heard {
-                id: unhex(digits)?,
-                by: opened.sender,
-            })
+            Some((
+                Control::Heard {
+                    id: unhex(digits)?,
+                    by: opened.sender,
+                },
+                inner.id,
+            ))
         }
         _ => None,
     }
@@ -161,7 +172,7 @@ mod tests {
         let env = pair_hello(&a, "Ana", [7; 16], 100, 60);
         assert_eq!(env.kind, Kind::Control);
         match open(&Identity::generate(), &env.body, 100) {
-            Some(Control::PairHello { identity, name }) => {
+            Some((Control::PairHello { identity, name }, _)) => {
                 assert_eq!(identity, a.public());
                 assert_eq!(name, "Ana");
             }
@@ -174,7 +185,7 @@ mod tests {
         let (a, b) = (Identity::generate(), Identity::generate());
         let env = heard(&b, &a.public(), &[0xab; 16], [1; 16], 100, 60);
         match open(&a, &env.body, 100) {
-            Some(Control::Heard { id, by }) => {
+            Some((Control::Heard { id, by }, _)) => {
                 assert_eq!(id, [0xab; 16]);
                 assert_eq!(by, b.public());
             }
