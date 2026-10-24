@@ -5,7 +5,9 @@ edition = "2021"
 
 [dependencies]
 reed-solomon = "0.2"
+rustfft = "6"
 
 [dev-dependencies]
+hound = "3"
 proptest = "1"
 rand = "0.8"
