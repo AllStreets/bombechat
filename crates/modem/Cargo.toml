@@ -2,3 +2,10 @@
 name = "bombechat-modem"
 version = "0.1.0"
 edition = "2021"
+
+[dependencies]
+reed-solomon = "0.2"
+
+[dev-dependencies]
+proptest = "1"
+rand = "0.8"
