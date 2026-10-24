@@ -15,3 +15,13 @@ opt-level = 2
 
 [profile.dev.package.rustfft]
 opt-level = 2
+
+# Argon2id at the production parameters (64 MiB, t=3) is slow unoptimised,
+# which would make every store test pay full key-derivation cost in debug
+# builds. Optimise just this dependency rather than lowering the KDF cost,
+# so dev and release always derive the same key from the same passphrase.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3
