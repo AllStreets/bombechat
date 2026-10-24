@@ -20,7 +20,7 @@ There is a separate build for airgapped computers. It contains no Bluetooth code
 
 The look is taken from the Bombe, the machine Alan Turing designed at Bletchley Park to find each day's Enigma settings. The window is the machine and its paperwork. Three rows of drums show the key, what the microphone heard, and the plain text. When a frame of a message arrives, the drums turn and the top row settles on the words, which are then pasted onto the message sheet as teleprinter tape. Your own replies are typed straight onto the sheet. The key check is a pencil menu on squared paper, the way Bombe menus were drawn.
 
-The drums make a ratchet click for every letter that passes the index and a clunk when they settle. The sound is synthesised in the browser and filtered hard above 7 kHz, so it stays out of in the band Bombechat listens on. Click anywhere to allow sound, and use the switch in the title bar to turn it off.
+The drums make a ratchet click for every letter that passes the index and a clunk when they settle. The sound is synthesised in the browser and filtered hard above 7 kHz, so it stays out of the band Bombechat listens on. Click anywhere to allow sound, and use the switch in the title bar to turn it off.
 
 Open `mockups/bombechat.html` in a browser to see it move. The earlier directions, including a spectrogram-based "Cyber" design, are in `mockups/explorations`.
 
