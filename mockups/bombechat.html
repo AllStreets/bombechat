@@ -72,8 +72,8 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
 .sndlab{cursor:pointer}
 
 /* drum bank */
-.bank{--dr:clamp(66px,min((100vw - 248px) / 12 - 8px,(100vh - 616px) / 3.24),128px);position:relative;z-index:1;margin:12px 16px 0;border-radius:3px;background:linear-gradient(#171816,#111210);box-shadow:inset 0 0 0 1px #000,inset 0 1px 0 rgba(255,255,255,.04),inset 0 10px 30px rgba(0,0,0,.4);padding:8px 18px 0 14px}
-.grid{display:grid;grid-template-columns:96px repeat(12,minmax(0,1fr)) 88px;align-items:center;min-height:calc(var(--dr) * 3.24 + 37px)}
+.bank{--dr:clamp(66px,min((100vw - 160px) / 12 - 8px,(100vh - 616px) / 3.24),128px);position:relative;z-index:1;margin:12px 16px 0;border-radius:3px;background:linear-gradient(#171816,#111210);box-shadow:inset 0 0 0 1px #000,inset 0 1px 0 rgba(255,255,255,.04),inset 0 10px 30px rgba(0,0,0,.4);padding:8px 18px 0 14px}
+.grid{display:grid;grid-template-columns:96px repeat(12,minmax(0,1fr));align-items:center;min-height:calc(var(--dr) * 3.24 + 37px)}
 .colno{font-family:var(--engr);font-size:12px;color:#9a9483;letter-spacing:.06em;text-align:center;padding-bottom:1px}
 .rowlab{align-self:center;padding-top:6px}
 .bar{grid-column:2/-1;height:6px;margin:2px -8px;border-radius:3px;background:linear-gradient(#5f5d57,#2b2a27 45%,#1a1a18);box-shadow:0 1px 0 rgba(255,255,255,.05),0 2px 4px rgba(0,0,0,.6)}
@@ -240,7 +240,7 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
 @media (max-width:1239px){
   .deck{grid-template-columns:minmax(0,1fr) 384px;grid-template-areas:"sheet panel" "sheet menu"}
   .menu{min-height:540px}
-  .bank{--dr:clamp(66px,(100vw - 248px) / 12 - 8px,112px)}
+  .bank{--dr:clamp(66px,(100vw - 160px) / 12 - 8px,112px)}
 }
 @media (prefers-reduced-motion:reduce){
   .rotor,.knob .cap,.slip,.app{transition:none!important}
@@ -387,12 +387,11 @@ function drum(rim){
   return s;
 }
 const G=document.getElementById('drums');const cells=[];
-G.insertAdjacentHTML('beforeend','<span></span>'+[...Array(12)].map((_,i)=>`<span class="colno">${i+1}</span>`).join('')+'<span></span>');
+G.insertAdjacentHTML('beforeend','<span></span>'+[...Array(12)].map((_,i)=>`<span class="colno">${i+1}</span>`).join(''));
 ['Plain','Heard','Key'].forEach((lab,r)=>{
   G.insertAdjacentHTML('beforeend',`<div class="rowlab"><span class="pl screw" title="${['What Marisol wrote','What the microphone caught','The key you and Marisol share'][r]}">${lab}</span></div>`);
   for(let c=0;c<12;c++){const d=document.createElement('div');d.className='drum';d.innerHTML='<span class="idx"></span>';const s=drum(RIMS[(c*5+r*3)%12]);d.appendChild(s);G.appendChild(d);
     cells.push({rot:[...s.querySelectorAll('.rotor')],wl:s.querySelector('.wl'),el:d,angle:0,from:0,t0:0,snap:true,t:null,pitch:0.86+((c*7+r*3)%9)*0.035})}
-  G.insertAdjacentHTML('beforeend','<span class="gearcell" aria-hidden="true"></span>');
   if(r<2)G.insertAdjacentHTML('beforeend','<div class="bar"></div>');
 });
 
@@ -688,25 +687,11 @@ async function build(){
     k.globalAlpha=op;k.fillStyle=fill;k.font='700 112px Copperplate, serif';k.textAlign='center';k.textBaseline='middle';k.fillText(ch,64,73);k.globalAlpha=1;
     k.strokeStyle='rgba(0,0,0,.35)';k.lineWidth=4;k.strokeRect(2,2,124,124);d.wt.needsUpdate=true;return true}
 
-  /* ---- rails, plates, numbers, gears ---- */
+  /* ---- rails, plates, numbers ---- */
   const rails=[];for(let i=0;i<5;i++){const m=new THREE.Mesh(new THREE.CylinderGeometry(i<3?.05:.035,i<3?.05:.035,1,24),railMat);m.rotation.z=Math.PI/2;m.castShadow=true;m.receiveShadow=true;scene.add(m);rails.push(m)}
   const plates=['Plain','Heard','Key'].map(t=>K.plate(t.toUpperCase(),0,0,{h:.2,size:56}));
   const screwGeo=new THREE.CylinderGeometry(.035,.035,.025,20);screwGeo.rotateX(Math.PI/2);const plateScrews=plates.map(()=>[0,1].map(()=>{const m=new THREE.Mesh(screwGeo,M.brassDull);m.castShadow=true;scene.add(m);return m}));
   const nums=[...Array(12)].map((_,i)=>K.engrave(String(i+1),0,0,.13,'#b8b09a'));
-  function gearGeo(N,m,th){const rp=m*N/2,ra=rp+m,rf=rp-1.25*m,s=new THREE.Shape();
-    for(let i=0;i<N;i++){const a=i*2*Math.PI/N,t=Math.PI/N;const pts=[[rf,a-t*.62],[rp*.98,a-t*.42],[ra,a-t*.26],[ra,a+t*.26],[rp*.98,a+t*.42],[rf,a+t*.62],[rf,a+t*1.38]];
-      pts.forEach(([r,an],j)=>{const x=Math.sin(an)*r,y=Math.cos(an)*r;i===0&&j===0?s.moveTo(x,y):s.lineTo(x,y)})}
-    s.closePath();const hole=new THREE.Path();hole.absarc(0,0,m*1.4,0,Math.PI*2,true);s.holes.push(hole);
-    if(N>14)for(let i=0;i<5;i++){const h=new THREE.Path();const a=i*2*Math.PI/5,cr=(rf+m*1.4)/2;h.absarc(Math.sin(a)*cr,Math.cos(a)*cr,(rf-m*1.4)*.3,0,Math.PI*2,true);s.holes.push(h)}
-    const g=new THREE.ExtrudeGeometry(s,{depth:th,bevelEnabled:true,bevelThickness:.008,bevelSize:.006,bevelSegments:2,curveSegments:6});g.translate(0,0,-th/2);return {g,rp}}
-  const MOD=.027;
-  const G1=gearGeo(12,MOD,.07),G2=gearGeo(20,MOD,.06),G3=gearGeo(10,MOD,.07);
-  const bracketMat=new THREE.MeshStandardMaterial({color:'#2e2f2b',roughness:.42,metalness:.85,bumpMap:tex.wrinkle,bumpScale:.2});const gearSteel=new THREE.MeshStandardMaterial({color:'#8d8a82',roughness:.38,metalness:1});
-  const gPlate=[0,1,2].map(()=>{const m=new THREE.Mesh(new THREE.BoxGeometry(.7,1,.04),bracketMat);m.receiveShadow=true;m.castShadow=true;scene.add(m);return m});
-  const trains=[0,1,2].map(r=>{const a=new THREE.Mesh(G1.g,M.brass),b=new THREE.Mesh(G2.g,gearSteel),c=new THREE.Mesh(G3.g,M.brassDull);
-    [a,b,c].forEach(m=>{m.castShadow=true;m.receiveShadow=true;scene.add(m)});
-    const pins=[0,1,2].map(()=>{const p=new THREE.Mesh(new THREE.CylinderGeometry(.022,.022,.12,16),M.steel);p.rotation.x=Math.PI/2;scene.add(p);return p});
-    return {a,b,c,pins,angle:0,lastSum:null}});
 
   /* ---- place everything from the HTML layout ---- */
   let U=1,BW=1,BH=1;
@@ -719,25 +704,14 @@ async function build(){
     drums.forEach(d=>{const r=d.cell.el.getBoundingClientRect();const p=toWorld(r.left-br.left+r.width/2,r.top-br.top+r.width*.08+r.width/2);d.g.position.copy(p)});
     const rowY=[0,1,2].map(r=>drums[r*12].g.position.y);const x0=drums[0].g.position.x,x1=drums[11].g.position.x;
     // shafts run behind each row, rails between rows
-    [0,1,2].forEach(r=>{const m=rails[r];m.position.set((x0+x1)/2+.25,rowY[r],-.16);m.scale.set(1,(x1-x0)+1.6,1)});
-    [0,1].forEach(i=>{const m=rails[3+i];const y=(rowY[i]+rowY[i+1])/2;m.position.set((x0+x1)/2+.2,y-.02,-.05);m.scale.set(1,(x1-x0)+1.3,1)});
+    [0,1,2].forEach(r=>{const m=rails[r];m.position.set((x0+x1)/2,rowY[r],-.16);m.scale.set(1,(x1-x0)+1.2,1)});
+    [0,1].forEach(i=>{const m=rails[3+i];const y=(rowY[i]+rowY[i+1])/2;m.position.set((x0+x1)/2,y-.02,-.05);m.scale.set(1,(x1-x0)+1.2,1)});
     const lab=[...document.querySelectorAll('.rowlab')];
     const ps=(21/U)/.2;plates.forEach((p,r)=>{p.scale.set(ps,ps,1);const lr=lab[r].getBoundingClientRect();const w=p.geometry.parameters.width*ps;const pos=toWorld(lr.left-br.left+4,0);p.position.set(pos.x+w/2,rowY[r],-.18);
       plateScrews[r][0].position.set(p.position.x-w/2-6/U,rowY[r],-.18);plateScrews[r][1].position.set(p.position.x+w/2+6/U,rowY[r],-.18);plateScrews[r].forEach(m=>m.scale.setScalar(Math.max(1,(7/U)/.07)))});
     const cn=[...document.querySelectorAll('.colno')];nums.forEach((n,i)=>{const r=cn[i].getBoundingClientRect();const p=toWorld(r.left-br.left+r.width/2,r.top-br.top+r.height/2);n.position.set(p.x,p.y+.07,-.205);n.scale.setScalar(Math.max(1,(13/U)/.13))});
-    const gc=[...document.querySelectorAll('.gearcell')];
-    trains.forEach((t,r)=>{const cr=gc[r].getBoundingClientRect();const cx=toWorld(cr.left-br.left+cr.width/2,0).x+.02,y=rowY[r];gPlate[r].position.set(cx,y,-.205);
-      const pa=new THREE.Vector3(cx-.08,y+.24,-.12);const dirB=new THREE.Vector2(.3,-.95).normalize(),dAB=G1.rp+G2.rp;
-      const pb=new THREE.Vector3(pa.x+dirB.x*dAB,pa.y+dirB.y*dAB,-.13);const dirC=new THREE.Vector2(-.55,-.83).normalize(),dBC=G2.rp+G3.rp;
-      const pc=new THREE.Vector3(pb.x+dirC.x*dBC,pb.y+dirC.y*dBC,-.12);t.a.position.copy(pa);t.b.position.copy(pb);t.c.position.copy(pc);
-      t.thAB=Math.atan2(dirB.y,dirB.x);const mx=(pa.x+pb.x+pc.x)/3,my=(pa.y+pb.y+pc.y)/3;gPlate[r].position.set(mx+.01,y-.02,-.205);gPlate[r].scale.set(1.3,1.22,1);t.thBC=Math.atan2(dirC.y,dirC.x);[pa,pb,pc].forEach((p,i)=>t.pins[i].position.set(p.x,p.y,-.1))});
-    setGears();renderer.shadowMap.needsUpdate=true;dirty=true}
+    renderer.shadowMap.needsUpdate=true;dirty=true}
   let baseD=10,dirty=true;
-  // meshing: b turns opposite a at N1/N2; phase so a tooth of one sits in a gap of the other
-  function setGears(){trains.forEach(t=>{const a=t.angle;t.a.rotation.z=a;
-    const b=-(a-t.thAB)*12/20+t.thAB+Math.PI+Math.PI/20;t.b.rotation.z=b;
-    const c=-(b-t.thBC)*20/10+t.thBC+Math.PI+Math.PI/10;t.c.rotation.z=c})}
-
   /* ---- lens ---- */
   const composer=K.makeComposer({ao:!Q.has('noao')});
   new ResizeObserver(layout).observe(bank);addEventListener('resize',layout);
@@ -755,9 +729,7 @@ async function build(){
       if(!c.snap){const k=(now-c.t0)/DUR;if(k<1){ang=c.from+(c.angle-c.from)*bez(Math.max(0,k));moving=true}}
       const z=-ang*Math.PI/180;if(d.rot.rotation.z!==z){d.rot.rotation.z=z;dirty=true}
       if(paintWindow(d))dirty=true}
-    // gears follow the row: the drive gear turns by the row's mean drum angle
-    trains.forEach((t,r)=>{let s=0;for(let i=0;i<12;i++)s+=drums[r*12+i].rot.rotation.z;const a=s/12*.6;if(a!==t.angle){t.angle=a;moving=true}});
-    if(moving){setGears();renderer.shadowMap.needsUpdate=true;dirty=true}
+    if(moving){renderer.shadowMap.needsUpdate=true;dirty=true}
     const k=1-Math.exp(-dt*4);par.x+=(parT.x-par.x)*k;par.y+=(parT.y-par.y)*k;
     const want=new THREE.Vector3(par.x*.6,-par.y*.35,baseD);if(camera.position.distanceTo(want)>1e-4){camera.position.copy(want);camera.lookAt(par.x*.15,-par.y*.08,0);dirty=true}
     if(dirty){composer.render();dirty=false}
