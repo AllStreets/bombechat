@@ -1,14 +1,18 @@
 // Quality check for the settings page (the back of the machine). Run after every change:
-//   node tools/check-settings.cjs
-// Writes checks/settings/: overview, focused rows, mid-move frames, narrow layout, 2x details.
-// Fails on page errors, a plug that does not end in the jack its setting names, or a slow frame rate.
+//   node tools/check-settings.cjs                         the app's interface, app/ui/settings.html
+//   node tools/check-settings.cjs mockups/settings.html   the frozen design reference
+// Writes checks/<folder>/settings/: overview, focused rows, mid-move frames, narrow layout, 2x details.
+// Fails on page errors, a plug that does not end in the jack its setting names, or a slow frame rate,
+// and for the app's interface on any request that leaves this machine.
 const path = require('path'), fs = require('fs');
 const { chromium } = require('playwright');
-const page = path.resolve(process.argv[2] || 'mockups/settings.html');
-const out = path.join(path.dirname(page), '..', 'checks', 'settings');
+const ROOTDIR = path.resolve(__dirname, '..');
+const page = path.resolve(process.argv[2] || 'app/ui/settings.html');
+const APP = !/[\\/]mockups[\\/]/.test(page);
+const out = path.join(ROOTDIR, 'checks', path.relative(ROOTDIR, path.dirname(page)).replace(/[\\/]/g, '-'), 'settings');
+fs.rmSync(out, { recursive: true, force: true });
 fs.mkdirSync(out, { recursive: true });
 const { start } = require('./serve.cjs');
-const ROOTDIR = path.resolve(__dirname, '..');
 const url = q => 'http://127.0.0.1:4811/' + path.relative(ROOTDIR, page) + (q ? '?' + q : '');
 (async () => {
   const server = await start(4811);
@@ -20,6 +24,7 @@ const url = q => 'http://127.0.0.1:4811/' + path.relative(ROOTDIR, page) + (q ? 
     const p = await ctx.newPage();
     p.on('pageerror', e => problems.push('page error: ' + e.message));
     p.on('console', m => m.type() === 'error' && problems.push('console: ' + m.text()));
+    if (APP) p.on('request', r => { const u = r.url(); if (!/^(data:|blob:|http:\/\/127\.0\.0\.1:4811\/)/.test(u)) problems.push('asked the network for ' + u); });
     await p.goto(url(q), { waitUntil: 'domcontentloaded', timeout: 120000 });
     await p.waitForFunction(() => window.__ready, null, { timeout: 90000 });
     await p.waitForTimeout(600);

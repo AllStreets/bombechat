@@ -1,0 +1,12 @@
+/* Typefaces shipped with the app (SIL Open Font License, texts alongside).
+   Cutive Mono for the typewriter, Libre Caslon Text for the printed forms,
+   Marcellus SC for everything engraved: plates, drums, dials. */
+@font-face{font-family:'Cutive Mono';src:url(cutive-mono.woff2) format('woff2');font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:'Libre Caslon Text';src:url(libre-caslon-text-400.woff2) format('woff2');font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:'Libre Caslon Text';src:url(libre-caslon-text-700.woff2) format('woff2');font-weight:700;font-style:normal;font-display:swap}
+@font-face{font-family:'Marcellus SC';src:url(marcellus-sc.woff2) format('woff2');font-weight:400;font-style:normal;font-display:swap}
+/* The engraving face as the machine uses it: Marcellus SC, with figures from
+   Libre Caslon Text. Marcellus's own 1 has no flag, so 10, 11 and 12 read as
+   IO, II and I2, and its 0 is round like the O. Faces are tried last first. */
+@font-face{font-family:'Bombechat Engraving';src:url(marcellus-sc.woff2) format('woff2');font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:'Bombechat Engraving';src:url(libre-caslon-text-400.woff2) format('woff2');font-weight:400;font-style:normal;font-display:swap;unicode-range:U+0030-0039;size-adjust:88%}

@@ -1,6 +1,7 @@
-// Quality check for a Bombechat mockup page. Run after every change:
-//   node tools/check.cjs mockups/bombechat.html
-// Writes to checks/<page>/:
+// Quality check for the Bombechat front page. Run after every change:
+//   node tools/check.cjs                          the app's interface, app/ui/bombechat.html
+//   node tools/check.cjs mockups/bombechat.html   the frozen design reference, for comparison
+// Writes to checks/<folder>/<page>/ (checks/app-ui/bombechat, checks/mockups/bombechat):
 //   vp-<w>x<h>.png        the page at each laptop size, frame 4, held still
 //   vp-<w>x<h>-full.png   the same, whole scrolling page
 //   full-f<N>.png         1440x900, held still on each frame
@@ -11,16 +12,22 @@
 // text under 12px, layout shift on load, a plain row that doesn't settle on the
 // frame text, the sheet not keeping its place, a reply that doesn't land, clipped
 // audio, or drum sound leaking into the 17.6 to 19.8 kHz listening band.
+// For the app's interface it also fails when the drums don't follow an injected
+// chunk, when the drums make a sound while a message is arriving by sound, when
+// the page asks for anything off this machine, or when an http(s) URL appears
+// anywhere in app/ui (licence texts and comments in vendored three.js aside).
 const path = require('path');
 const fs = require('fs');
 const { chromium } = require('playwright');
 
-const page = path.resolve(process.argv[2] || 'mockups/bombechat.html');
-const out = path.join(path.dirname(page), '..', 'checks', path.basename(page, '.html'));
+const ROOTDIR = path.resolve(__dirname, '..');
+const page = path.resolve(process.argv[2] || 'app/ui/bombechat.html');
+const APP = !/[\\/]mockups[\\/]/.test(page);
+const out = path.join(ROOTDIR, 'checks', path.relative(ROOTDIR, path.dirname(page)).replace(/[\\/]/g, '-'), path.basename(page, '.html'));
 fs.rmSync(out, { recursive: true, force: true });
 fs.mkdirSync(out, { recursive: true });
 const { start } = require('./serve.cjs');
-const ROOTDIR = path.resolve(__dirname, '..');
+const { externalUrls } = require('./offline.cjs');
 const url = q => 'http://127.0.0.1:4812/' + path.relative(ROOTDIR, page) + (q ? '?' + q : '');
 const VIEWPORTS = [[1024, 768], [1280, 800], [1440, 900], [1728, 1117]];
 const PARTS = { top: '.top', bank: '.bank', sheet: '.sheet', compose: '.compose', menu: '.menu', panel: '.panel' };
@@ -60,7 +67,11 @@ function measureText() {
   const watch = (p, tag) => {
     p.on('pageerror', e => problems.push(`${tag}: page error: ${e.message}`));
     p.on('console', m => m.type() === 'error' && !/fonts\.g/.test(m.text()) && problems.push(`${tag}: console: ${m.text()}`));
+    // the app ships everything it needs: nothing may be asked of any other host
+    if (APP) p.on('request', r => { const u = r.url(); if (!/^(data:|blob:|http:\/\/127\.0\.0\.1:4812\/)/.test(u)) problems.push(`${tag}: asked the network for ${u}`); });
   };
+  // the app's files carry no web addresses
+  if (APP) { report.externalUrls = externalUrls(path.dirname(page)); for (const u of report.externalUrls) problems.push(`external URL in ${u}`); }
 
   // 1. each laptop size: overflow, small text, layout shift while fonts arrive
   report.viewports = {};
@@ -141,11 +152,9 @@ function measureText() {
   const after = await live.evaluate(() => { const l = document.getElementById('log'); return { gap: l.scrollHeight - l.scrollTop - l.clientHeight, tab: !document.getElementById('newtab').hidden }; });
   if (after.gap > 30 || after.tab) problems.push(`"new below" did not take the reader to the bottom (gap ${after.gap})`);
   // wait for the drums to come to rest, then read the plain row
-  await live.waitForFunction(() => __bank.rows().plain === ft(+document.getElementById('fno').textContent - 1), null, { timeout: 4000 }).catch(() => {});
-  const motion = await live.evaluate(() => {
-    const plain = __bank.rows().plain;
-    return { frame: document.getElementById('fno').textContent, plain, expected: ft(+document.getElementById('fno').textContent - 1) };
-  });
+  const frameText = () => window.__bank.frame ? __bank.frame().plain : ft(+document.getElementById('fno').textContent - 1);
+  await live.waitForFunction(`__bank.rows().plain === (${frameText})()`, null, { timeout: 4000 }).catch(() => {});
+  const motion = await live.evaluate(`({ frame: document.getElementById('fno').textContent, plain: __bank.rows().plain, expected: (${frameText})() })`);
   if (motion.expected !== motion.plain) problems.push(`plain row reads ${motion.plain}, frame text is ${motion.expected}`);
   report.motion = motion;
   report.scroll = { before, scroll, after };
@@ -209,9 +218,46 @@ function measureText() {
   const rmT = await rm.evaluate(() => getComputedStyle(document.querySelector('.rotor')).transitionDuration);
   if (!/^0s/.test(rmT)) problems.push(`reduced motion still spins drums (${rmT})`);
   await rm.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
-  const rmSpin = await rm.evaluate(() => new Promise(r => { const f0 = document.getElementById('fno').textContent; const t = setInterval(() => { if (document.getElementById('fno').textContent !== f0) { clearInterval(t); setTimeout(() => r(cells.some(c => !c.snap)), 400); } }, 20); }));
+  const rmSpin = await rm.evaluate(() => new Promise(r => { const f0 = document.getElementById('fno').textContent; const t = setInterval(() => { if (document.getElementById('fno').textContent !== f0) { clearInterval(t); setTimeout(() => r((window.__bank.cells || cells).some(c => !c.snap)), 400); } }, 20); }));
   if (rmSpin) problems.push('reduced motion still turns the 3D drums');
   await rm.close();
+
+  // 6b. the drums follow the bridge: a known chunk injected through the simulator
+  // lands on the plain row, and nothing clicks while it arrives by sound
+  if (APP) {
+    const br = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    watch(br, 'bridge');
+    await br.goto(url());
+    await br.mouse.click(5, 5);
+    await br.waitForFunction(() => window.__bank && __bank.ready && window.__sim, null, { timeout: 60000 });
+    await br.waitForFunction(() => __drum.running, null, { timeout: 5000 }).catch(() => {});
+    const KNOWN = 'LOOKUNDERTHEBLUESTAIRSFORTHERADIO';
+    const bridged = await br.evaluate(async known => {
+      const audio = __drum.running;
+      __sim.inject(known);
+      const receiving = __drum.receiving;
+      const during = __drum.spin(5, 1);
+      // every turn of the drums goes through Drum.spin: count the turns, and the sounds they made
+      const calls0 = __drum.calls, sounds0 = __drum.sounds;
+      const t0 = performance.now();
+      while (performance.now() - t0 < 9000 && __bank.rows().plain !== known.slice(0, 12)) await new Promise(r => setTimeout(r, 100));
+      const plain = __bank.rows().plain;
+      await new Promise(r => setTimeout(r, 1200));
+      const turns = __drum.calls - calls0, sounds = __drum.sounds - sounds0;
+      __sim.receiving(false);
+      const after = __drum.spin(5, 1);
+      return { audio, receiving, during, turns, sounds, plain, after, ms: Math.round(performance.now() - t0) };
+    }, KNOWN);
+    report.bridge = bridged;
+    if (bridged.plain !== KNOWN.slice(0, 12)) problems.push(`injected chunk: plain row reads ${bridged.plain}, wanted ${KNOWN.slice(0, 12)}`);
+    if (!bridged.receiving) problems.push('the page did not hear that a message was arriving by sound');
+    if (bridged.during !== 0) problems.push(`Drum.spin made ${bridged.during} sounds while a message was arriving by sound`);
+    if (!bridged.turns) problems.push('the drums never turned for the injected chunk');
+    if (bridged.sounds) problems.push(`the drums made ${bridged.sounds} sounds turning while a message was arriving by sound`);
+    if (!bridged.audio) problems.push('audio never started, so muting could not be tested');
+    else if (!(bridged.after > 0)) problems.push('Drum.spin stayed silent after reception ended');
+    await br.close();
+  }
 
   // 7. offline audio
   const au = await browser.newPage();

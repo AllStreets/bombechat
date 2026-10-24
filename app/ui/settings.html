@@ -1,0 +1,410 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Bombechat, the back of the machine</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preload" href="fonts/marcellus-sc.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="fonts/fonts.css">
+<script type="importmap">
+{ "imports": {
+  "three": "./vendor/three/build/three.module.js",
+  "three/addons/": "./vendor/three/examples/jsm/"
+} }
+</script>
+<style>
+:root{
+  --enamel:#1b1c1a; --plate-ink:#ece6d6;
+  --buff:#eadfc4; --green-ink:#2f5a4b; --type-ink:#25211b; --muted:#6b6150;
+  --brass:#b8955c; --amber:#e7a63c;
+  --engr:'Bombechat Engraving',Georgia,serif;
+  --print:'Libre Caslon Text',Georgia,serif;
+  --type:'Cutive Mono','Courier New',monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;background:#0b0b0a;color:var(--plate-ink)}
+body{-webkit-font-smoothing:antialiased;display:grid;grid-template-rows:46px minmax(0,1fr);height:100vh;overflow:hidden}
+
+/* top bar, same language as the front */
+.top{display:flex;align-items:center;gap:14px;padding:0 16px;background:linear-gradient(#20211f,#181917);box-shadow:inset 0 -1px 0 #000,0 1px 0 rgba(255,255,255,.04);position:relative;z-index:5}
+.maker{font-family:var(--engr);font-size:15px;letter-spacing:.12em;color:#d9d2bf}
+.maker small{font-size:12px;letter-spacing:.08em;color:#8d887a;margin-left:10px}
+.pl{display:inline-flex;align-items:center;gap:8px;background:linear-gradient(#141413,#0b0b0a);color:var(--plate-ink);font-family:var(--engr);font-size:12px;letter-spacing:.06em;
+  padding:4px 12px 3px;border-radius:1.5px;box-shadow:inset 0 0 0 1px rgba(255,255,255,.06),0 1px 0 rgba(255,255,255,.05),0 -1px 0 rgba(0,0,0,.6);white-space:nowrap}
+a.pl,button.pl{all:unset;display:inline-flex;align-items:center;gap:9px;background:linear-gradient(#171716,#0b0b0a);color:var(--plate-ink);font-family:var(--engr);font-size:12px;letter-spacing:.06em;
+  padding:5px 12px 4px;border-radius:1.5px;box-shadow:inset 0 0 0 1px rgba(255,255,255,.08),0 1px 0 rgba(255,255,255,.05),0 2px 0 #000;cursor:pointer;transition:transform .08s,box-shadow .08s}
+a.pl:hover,button.pl:hover{box-shadow:inset 0 0 0 1px rgba(231,166,60,.5),0 1px 0 rgba(255,255,255,.05),0 2px 0 #000}
+a.pl:active,button.pl:active{transform:translateY(1px);box-shadow:inset 0 0 0 1px rgba(231,166,60,.5),0 1px 0 #000}
+a.pl:focus-visible,button.pl:focus-visible{outline:1px solid var(--amber);outline-offset:3px}
+a.pl svg{display:block}
+.top .rt{margin-left:auto;display:flex;gap:10px;align-items:center}
+.maker,.pl,a.pl,button.pl{-webkit-text-stroke:.25px currentColor}
+.saved{font-family:var(--type);font-size:12.5px;color:#9d978a;min-width:150px;text-align:right;transition:opacity .4s}
+
+.stage{display:grid;grid-template-columns:minmax(380px,440px) minmax(0,1fr);min-height:0;background:var(--enamel)}
+
+/* wiring schedule card */
+.cardwrap{min-height:0;padding:16px 0 16px 16px;display:flex}
+.card{position:relative;flex:1;min-height:0;display:flex;flex-direction:column;background:var(--buff);color:var(--type-ink);border-radius:1px;
+  box-shadow:0 10px 24px rgba(0,0,0,.55),0 2px 3px rgba(0,0,0,.5);
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='300' height='300'><filter id='p'><feTurbulence type='fractalNoise' baseFrequency='.55' numOctaves='4' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .45  0 0 0 0 .38  0 0 0 0 .25  0 0 0 .09 0'/></filter><rect width='300' height='300' filter='url(%23p)'/></svg>")}
+.card-h{padding:16px 22px 8px;border-bottom:1.5px solid var(--green-ink);display:flex;justify-content:space-between;align-items:flex-end;color:var(--green-ink)}
+.card-h h1{font-family:var(--print);font-weight:400;font-size:21px}
+.card-h span{font-family:var(--print);font-size:12px}
+.card-h span b{font-family:var(--type);font-weight:400;font-size:14px;color:var(--type-ink);margin-left:4px}
+.sched{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:0 22px 24px;scrollbar-width:thin;scrollbar-color:rgba(75,74,71,.55) transparent}
+.sched::-webkit-scrollbar{width:8px}.sched::-webkit-scrollbar-thumb{background:rgba(75,74,71,.45);border-radius:4px;border:2px solid var(--buff)}
+.grp{position:sticky;top:0;z-index:2;background:var(--buff);font-family:var(--print);font-size:13px;color:var(--green-ink);padding:14px 0 5px;border-bottom:1px solid var(--green-ink);display:flex;justify-content:space-between}
+.grp small{font-family:var(--type);font-size:12px;color:var(--muted)}
+.row{position:relative;padding:10px 8px 11px;margin:0 -8px;border-bottom:1px solid rgba(47,90,75,.3);border-radius:1px;transition:background .2s}
+.row:hover,.row.focus{background:rgba(47,90,75,.06)}
+.row.active{background:rgba(231,166,60,.12)}
+.row .hd{display:flex;justify-content:space-between;align-items:baseline;gap:12px}
+.row .nm{font-family:var(--print);font-size:15px;color:var(--type-ink)}
+.row .val{font-family:var(--type);font-size:14px;color:var(--type-ink);white-space:nowrap}
+.row .desc{font-family:var(--type);font-size:12.5px;line-height:1.45;color:var(--muted);max-height:0;overflow:hidden;opacity:0;transition:max-height .25s ease,opacity .2s,margin .25s}
+.row.focus .desc,.row.active .desc{max-height:60px;opacity:1;margin-top:5px}
+.jacks{display:flex;gap:4px;margin-top:9px;flex-wrap:wrap}
+.jk{all:unset;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:3px;min-width:34px;padding:2px 2px 0;border-radius:2px}
+.jk i{width:18px;height:18px;border-radius:50%;display:block;position:relative;
+  background:radial-gradient(circle at 50% 50%,#0f0e0c 0 5px,transparent 5.5px),radial-gradient(circle at 38% 32%,#f0dcae,#b8955c 55%,#6e5631);
+  box-shadow:0 1px 1px rgba(60,40,10,.4),inset 0 0 0 .5px rgba(0,0,0,.4)}
+.jk span{font-family:var(--type);font-size:12px;color:var(--muted);white-space:nowrap}
+.jk[aria-checked="true"] i::after{content:"";position:absolute;inset:-2px;border-radius:50%;
+  background:radial-gradient(circle at 50% 50%,#c9a465 0 3px,transparent 3.5px),radial-gradient(circle at 38% 30%,#4a4640,#141311 60%,#050505);box-shadow:0 2px 3px rgba(0,0,0,.45);
+  animation:seat .22s cubic-bezier(.3,1.5,.5,1)}
+@keyframes seat{from{transform:scale(1.35);opacity:.2}to{transform:scale(1);opacity:1}}
+.jk[aria-checked="true"] span{color:var(--type-ink)}
+.jk:hover i{box-shadow:0 1px 1px rgba(60,40,10,.4),0 0 0 2px rgba(47,90,75,.35)}
+.jk:focus-visible{outline:1px solid var(--green-ink);outline-offset:2px}
+.notfitted{margin-top:8px;padding:10px 12px;border:1px dashed rgba(124,35,29,.5);font-family:var(--type);font-size:12.5px;line-height:1.45;color:#5c3a33;background:rgba(124,35,29,.05)}
+.card-f{border-top:1.5px solid var(--green-ink);padding:8px 22px 12px;display:flex;justify-content:space-between;align-items:baseline;font-family:var(--print);font-size:12px;color:var(--green-ink)}
+.card-f b{font-family:var(--type);font-weight:400;color:var(--type-ink);font-size:13px}
+
+/* machine view */
+.view{position:relative;min-height:0;min-width:0;overflow:hidden}
+.view canvas{display:block;width:100%;height:100%;touch-action:none}
+.view.grab canvas{cursor:grab}.view.grabbing canvas{cursor:grabbing}
+.tag{position:absolute;left:0;top:0;pointer-events:none;transform:translate(-50%,-100%);opacity:0;transition:opacity .25s;
+  font-family:var(--type);font-size:13px;color:#1c1a16;background:linear-gradient(#efe6cc,#dccfab);padding:5px 10px 4px 18px;border-radius:2px;
+  box-shadow:0 4px 12px rgba(0,0,0,.55),inset 0 0 0 1px rgba(110,86,49,.45);white-space:nowrap}
+.tag::before{content:"";position:absolute;left:6px;top:50%;width:6px;height:6px;margin-top:-3px;border-radius:50%;background:#0b0b0a;box-shadow:0 0 0 1.5px var(--brass)}
+.tag::after{content:"";position:absolute;left:50%;bottom:-26px;width:1px;height:26px;background:rgba(236,230,214,.55)}
+.tag.on{opacity:1}
+.fullview[hidden]{display:none!important}
+.fullview{position:absolute!important;left:16px;top:12px;z-index:3}
+.fullview .kb{font-family:var(--type);font-size:12px;letter-spacing:0;color:#9d978a;border:1px solid rgba(236,230,214,.25);padding:0 4px;border-radius:2px;margin-left:2px}
+.hint{position:absolute;right:16px;top:12px;background:rgba(11,11,10,.72);padding:4px 9px;border-radius:2px;font-family:var(--type);font-size:12.5px;color:#8d887a;pointer-events:none;transition:opacity .6s}
+.fallback{position:absolute;inset:0;display:none;place-items:center;font-family:var(--type);color:#9d978a;padding:40px;text-align:center}
+.loading{position:absolute;inset:0;display:grid;place-items:center;font-family:var(--type);font-size:13px;color:#8d887a;transition:opacity .6s;pointer-events:none}
+
+@media (max-width:980px){
+  body{height:auto;overflow:auto}
+  .stage{grid-template-columns:1fr;grid-template-rows:56vh auto}
+  .view{order:-1;position:sticky;top:0;height:56vh;z-index:1}
+  .cardwrap{padding:12px}
+  .sched{overflow:visible}
+}
+@media (prefers-reduced-motion:reduce){.jk[aria-checked="true"] i::after{animation:none}.row .desc{transition:none}}
+</style>
+</head>
+<body>
+<div class="top">
+  <a class="pl" href="bombechat.html" id="back" aria-label="Back to the front of the machine"><svg width="11" height="9" viewBox="0 0 11 9" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M4.5 1 1 4.5 4.5 8M1 4.5h9.5"/></svg>Front of the machine</a>
+  <span class="maker">Bombechat<small>airgapped build</small></span>
+  <div class="rt"><span class="saved" id="saved" aria-live="polite"></span><span class="pl">Build 0.4</span></div>
+</div>
+
+<div class="stage">
+  <div class="cardwrap">
+    <section class="card" aria-label="Wiring schedule">
+      <div class="card-h"><h1>Wiring schedule</h1><span>Machine<b>No. 1</b></span></div>
+      <div class="sched" id="sched"></div>
+      <div class="card-f"><span>Every setting is a plug. Move one here or on the machine.</span></div>
+    </section>
+  </div>
+  <div class="view" id="view">
+    <div class="loading" id="loading">warming up the machine</div>
+    <div class="tag" id="tag"></div>
+    <div class="hint" id="hint">drag a plug to another jack</div>
+    <button class="pl fullview" id="fullview" hidden>Full view<span class="kb">Esc</span></button>
+    <div class="fallback" id="fallback">This view needs WebGL. Every setting still works from the wiring schedule.</div>
+  </div>
+</div>
+
+<script type="module">
+import { createMachine, engravingFace } from './machine-kit.js';
+import { bridge } from './bridge.js';
+
+const Q=new URLSearchParams(location.search);
+const REDUCED=matchMedia('(prefers-reduced-motion: reduce)').matches||Q.has('still');
+
+/* ---------- settings model ---------- */
+const GROUPS=['Sound','Light','Bluetooth','Machine','Passing on','Quiet sending','Privacy'];
+const SETTINGS=[
+ {id:'listen',g:'Sound',name:'Listen by sound',values:['Off','On'],v:1,desc:'Use the microphone to hear messages sent nearby.'},
+ {id:'volume',g:'Sound',name:'Send volume',values:['1','2','3','4','5'],v:2,desc:'Louder reaches further across a room, and is easier for others to notice.'},
+ {id:'band',g:'Sound',name:'Tone band',values:['Near silent','Audible'],v:0,desc:'Near silent sends on 17.6 to 19.8 kHz. Audible suits older speakers that cannot reach that high.'},
+ {id:'read',g:'Light',name:'Read by camera',values:['Off','On'],v:0,desc:'Watch the camera for a screen flashing a message at it.'},
+ {id:'flash',g:'Light',name:'Flash speed',values:['Slow','Normal','Fast'],v:1,desc:'Slower is more reliable in bright rooms and from further away.'},
+ {id:'machine',g:'Machine',name:'Machine sound',values:['Off','On'],v:1,desc:'Drum clicks and plug sounds, kept below 7 kHz so they never mix with messages.'},
+ {id:'machvol',g:'Machine',name:'Machine volume',values:['1','2','3','4','5'],v:2,desc:'How loud the drums and plugs are.'},
+ {id:'carry',g:'Passing on',name:'Carry for others',values:['Off','On'],v:1,desc:'Hold sealed messages for people out of reach and pass them on. You cannot read them.'},
+ {id:'hops',g:'Passing on',name:'Hop limit',values:['1','2','3','4','5','6','7'],v:3,desc:'How many devices a message may pass through on its way to someone.'},
+ {id:'hold',g:'Passing on',name:'Hold for',values:['1 h','6 h','1 day','3 days','7 days'],v:2,desc:'How long to keep a message for someone before letting it go.'},
+ {id:'quiet',g:'Quiet sending',name:'Send under',values:['30','35','40','45','50'],unit:' dB',v:2,desc:'Wait until the room is quieter than this before playing a message.'},
+ {id:'repeats',g:'Quiet sending',name:'Repeats',values:['0','1','2','3'],v:2,desc:'Play each message again, a minute and a half apart, in case the first was missed.'},
+ {id:'lock',g:'Privacy',name:'Lock with passphrase',values:['Off','On'],v:1,desc:'Ask for your passphrase when Bombechat opens. Contacts and messages are encrypted either way.'},
+ {id:'expire',g:'Privacy',name:'Delete messages after',values:['Never','1 day','7 days','30 days'],v:2,desc:'Older messages are erased from this laptop.'},
+ {id:'inperson',g:'Privacy',name:'New contacts need a key check',values:['Off','On'],v:1,desc:'Only add someone once you have compared keys face to face.'},
+];
+const byId=Object.fromEntries(SETTINGS.map(s=>[s.id,s]));
+try{const saved=JSON.parse(localStorage.getItem('bombechat.settings')||'{}');for(const k in saved)if(byId[k]&&saved[k]<byId[k].values.length)byId[k].v=saved[k]}catch(e){}
+function persist(){try{localStorage.setItem('bombechat.settings',JSON.stringify(Object.fromEntries(SETTINGS.map(s=>[s.id,s.v]))))}catch(e){}}
+const label=s=>s.values[s.v]+(s.unit||'');
+
+/* ---------- schedule card ---------- */
+const sched=document.getElementById('sched');
+const rows={};
+for(const g of GROUPS){
+  const items=SETTINGS.filter(s=>s.g===g);
+  const h=document.createElement('div');h.className='grp';h.innerHTML=`<span>${g}</span><small>${g==='Bluetooth'?'not fitted':items.length+(items.length===1?' plug':' plugs')}</small>`;sched.appendChild(h);
+  if(g==='Bluetooth'){const n=document.createElement('div');n.className='notfitted';n.textContent='This build carries no Bluetooth code, so there is nothing here to switch on. The standard build adds discovery and requests to connect from people you have not met.';sched.appendChild(n);continue}
+  for(const s of items){
+    const r=document.createElement('div');r.className='row';r.dataset.id=s.id;
+    r.innerHTML=`<div class="hd"><span class="nm" id="nm-${s.id}">${s.name}</span><span class="val">${label(s)}</span></div>
+      <div class="desc">${s.desc}</div>
+      <div class="jacks" role="radiogroup" aria-labelledby="nm-${s.id}">${s.values.map((v,i)=>`<button class="jk" role="radio" aria-checked="${i===s.v}" tabindex="${i===s.v?0:-1}" data-i="${i}" aria-label="${v}${s.unit||''}"><i></i><span>${v}</span></button>`).join('')}</div>`;
+    sched.appendChild(r);rows[s.id]=r;
+    r.addEventListener('mouseenter',()=>focusSetting(s.id,'hover'));
+    r.addEventListener('mouseleave',()=>focusSetting(null,'hover'));
+    r.addEventListener('focusin',()=>{r.classList.add('focus');focusSetting(s.id,'focus')});
+    r.addEventListener('focusout',()=>{r.classList.remove('focus')});
+    r.querySelectorAll('.jk').forEach(b=>{
+      b.addEventListener('click',()=>setValue(s.id,+b.dataset.i,'card'));
+      b.addEventListener('keydown',e=>{const n=s.values.length;let i=s.v;
+        if(e.key==='ArrowRight'||e.key==='ArrowDown')i=(i+1)%n;else if(e.key==='ArrowLeft'||e.key==='ArrowUp')i=(i-1+n)%n;else if(e.key==='Home')i=0;else if(e.key==='End')i=n-1;else return;
+        e.preventDefault();setValue(s.id,i,'card');r.querySelectorAll('.jk')[i].focus()})});
+  }
+}
+function syncRow(id){const s=byId[id],r=rows[id];r.querySelector('.val').textContent=label(s);
+  r.querySelectorAll('.jk').forEach((b,i)=>{b.setAttribute('aria-checked',i===s.v);b.tabIndex=i===s.v?0:-1})}
+const savedEl=document.getElementById('saved');let savedT;
+function setValue(id,i,from){const s=byId[id];if(s.v===i){focusSetting(id,'pin');return}s.v=i;syncRow(id);persist();
+  savedEl.textContent=`${s.name}: ${label(s)}`;savedEl.style.opacity=1;clearTimeout(savedT);savedT=setTimeout(()=>savedEl.style.opacity=0,2600);
+  Object.values(rows).forEach(r=>r.classList.remove('active'));rows[id].classList.add('active');bridge.setSetting(id,i);
+  if(from!=='card')rows[id].scrollIntoView({block:'nearest',behavior:REDUCED?'auto':'smooth'});
+  machine&&machine.move(id,i);}
+let focusId=null,pinId=null;
+function focusSetting(id,why){if(why==='pin')pinId=id;const show=id||pinId;focusId=show;machine&&machine.focus(show);
+  document.getElementById('fullview').hidden=!show;document.getElementById('hint').textContent=show?'click anywhere on the machine for the full view':'drag a plug to another jack'}
+// back to the whole machine: click the machine away from a plug or jack, press Escape, or use the plate
+function fullView(){pinId=null;Object.values(rows).forEach(r=>r.classList.remove('active'));focusSetting(null,'clear')}
+addEventListener('keydown',e=>{if(e.key==='Escape'&&focusId){fullView();if(document.activeElement&&document.activeElement.closest('.sched'))document.activeElement.blur()}});
+document.getElementById('fullview').addEventListener('click',fullView);
+document.getElementById('sched').addEventListener('click',e=>{if(!e.target.closest('.row'))fullView()});
+
+/* ---------- plug sounds (same rules as the drums: synthesised, low-passed under 7 kHz) ---------- */
+let receiving=false;bridge.on('channel',s=>{if(s.channel==='sound')receiving=s.state==='receiving'});
+const Snd=(()=>{let ctx,out,nb;function ensure(){if(!ctx){ctx=new (window.AudioContext||window.webkitAudioContext)();let node=ctx.createGain();out=node;
+  for(let i=0;i<4;i++){const lp=ctx.createBiquadFilter();lp.type='lowpass';lp.frequency.value=7000;lp.Q.value=.6;node.connect(lp);node=lp}node.connect(ctx.destination);
+  nb=ctx.createBuffer(1,ctx.sampleRate*.05,ctx.sampleRate);const d=nb.getChannelData(0);for(let i=0;i<d.length;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/d.length,2)}if(ctx.state==='suspended')ctx.resume()}
+  function vol(){return byId.machine.v&&!receiving?(.35+.16*byId.machvol.v):0}
+  function burst(t,f,q,g,len){const s=ctx.createBufferSource();s.buffer=nb;const bp=ctx.createBiquadFilter();bp.type='bandpass';bp.frequency.value=f;bp.Q.value=q;const ga=ctx.createGain();
+    ga.gain.setValueAtTime(0,t);ga.gain.linearRampToValueAtTime(g*vol(),t+.001);ga.gain.exponentialRampToValueAtTime(.0005,t+len);s.connect(bp);bp.connect(ga);ga.connect(out);s.start(t);s.stop(t+len+.02)}
+  function thud(t,f,g){const o=ctx.createOscillator();o.frequency.setValueAtTime(f,t);o.frequency.exponentialRampToValueAtTime(f*.45,t+.08);const ga=ctx.createGain();ga.gain.setValueAtTime(0,t);ga.gain.linearRampToValueAtTime(g*vol(),t+.002);ga.gain.exponentialRampToValueAtTime(.0005,t+.1);o.connect(ga);ga.connect(out);o.start(t);o.stop(t+.12)}
+  return{arm(){ensure()},pull(){if(!ctx||!vol())return;const t=ctx.currentTime;burst(t,900,1.2,.25,.06);thud(t,260,.12)},
+    seat(){if(!ctx||!vol())return;const t=ctx.currentTime;burst(t,3200,4,.4,.018);burst(t+.012,1800,3,.25,.03);thud(t+.004,170,.3)}}})();
+addEventListener('pointerdown',()=>Snd.arm(),{once:true});addEventListener('keydown',()=>Snd.arm(),{once:true});
+
+/* ---------- the machine ---------- */
+const view=document.getElementById('view');
+let machine=null;
+try{machine=await build()}catch(err){console.error(err);document.getElementById('fallback').style.display='grid';document.getElementById('loading').style.opacity=0}
+
+async function build(){
+  await engravingFace();
+  const K=createMachine(view,{still:Q.has('still')});
+  const {THREE,renderer,scene,camera,M,cableMat,CABLE_COLORS,bolt,plate,engrave,tex}=K;const {wrinkle,knurl}=tex;
+  const lamp=new THREE.SpotLight('#ffe2b8',0,12,Math.PI/6,.85,1.4);lamp.castShadow=false;scene.add(lamp);scene.add(lamp.target);
+
+  /* the back panel */
+  const PW=19.6,PH=20.2,CY=.9;// the panel runs from y -9.2 up to 11
+  const panel=new THREE.Mesh(new THREE.BoxGeometry(PW,PH,.3),M.panel);panel.position.set(0,CY,-.15);panel.receiveShadow=true;scene.add(panel);
+  const rimFrame=new THREE.Mesh(new THREE.BoxGeometry(PW+.5,PH+.5,.2),new THREE.MeshStandardMaterial({color:'#121311',roughness:.6,metalness:.5}));rimFrame.position.set(0,CY,-.32);scene.add(rimFrame);
+  for(let i=0;i<=12;i++){bolt(-PW/2+.35+i*(PW-.7)/12,CY+PH/2-.35);bolt(-PW/2+.35+i*(PW-.7)/12,CY-PH/2+.35)}
+  for(let i=1;i<10;i++){bolt(-PW/2+.35,CY-PH/2+.35+i*(PH-.7)/10);bolt(PW/2-.35,CY-PH/2+.35+i*(PH-.7)/10)}
+
+  /* ---------- upper field: the drum wiring, 12 by 3 big connectors ---------- */
+  const conGeo=(()=>{const pts=[[0,0],[.42,0],[.42,.05],[.36,.08],[.36,.34],[.32,.38],[.3,.62],[.22,.7],[.16,.78],[.16,.95],[0,.95]].map(([r,y])=>new THREE.Vector2(r,y));const g=new THREE.LatheGeometry(pts,48);g.rotateX(Math.PI/2);return g})();
+  const ringGeo=new THREE.TorusGeometry(.43,.035,12,48);
+  const bigCons=[];
+  const CROWS=5,CY0=9.1;for(let r=0;r<CROWS;r++)for(let c=0;c<12;c++){const x=-7.9+c*1.436,y=CY0-r*1.42;
+    const ring=new THREE.Mesh(ringGeo,M.brassDull);ring.position.set(x,y,.03);scene.add(ring);
+    const body=new THREE.Mesh(conGeo,M.bakelite);body.position.set(x,y,0);body.castShadow=true;body.receiveShadow=true;scene.add(body);
+    const k=new THREE.Mesh(new THREE.CylinderGeometry(.305,.305,.1,48,1,true),new THREE.MeshStandardMaterial({color:'#2a2a28',roughness:.4,metalness:.8,bumpMap:knurl,bumpScale:2}));k.rotation.x=Math.PI/2;k.position.set(x,y,.5);scene.add(k);
+    bigCons.push(new THREE.Vector3(x,y,.95))}
+  for(let c=0;c<12;c++)engrave(String(c+1),-7.9+c*1.436,CY0+.92,.17);
+  for(let r=0;r<CROWS;r++)engrave('ROW '+(r+1),-9.1,CY0-r*1.42,.12);
+
+  /* cable builder: a hanging curve that leaves each end straight out of its socket */
+  function hangPoints(a,b,{sag=.6,out=.55,bulge=.25,droop=0}={}){
+    const A1=a.clone().add(new THREE.Vector3(0,-droop,out)),B1=b.clone().add(new THREE.Vector3(0,-droop,out));
+    const d=A1.distanceTo(B1),pts=[a.clone(),a.clone().add(new THREE.Vector3(0,0,out*.45)),A1];
+    for(let i=1;i<8;i++){const t=i/8;const p=A1.clone().lerp(B1,t);p.y-=sag*(.6+Math.min(d,4.5)*.22)*Math.sin(Math.PI*t);p.z+=bulge*Math.sin(Math.PI*t);pts.push(p)}
+    pts.push(B1,b.clone().add(new THREE.Vector3(0,0,out*.45)),b.clone());return pts}
+  function tube(points,radius,mat,seg=120){const curve=new THREE.CatmullRomCurve3(points,false,'centripetal');const g=new THREE.TubeGeometry(curve,seg,radius,12,false);const m=new THREE.Mesh(g,mat);m.castShadow=true;m.receiveShadow=true;return m}
+
+  // decorative drum-to-drum looms: seeded so the tangle is the same every visit
+  let seed=1931;const rnd=()=>{seed=(seed*16807)%2147483647;return seed/2147483647};
+  const decor=[];
+  const NC=CROWS*12;for(let i=0;i<NC;i++){const a=bigCons[i];const n=1+(rnd()<.55?1:0);
+    for(let k=0;k<n;k++){let j;const roll=rnd();if(roll<.45)j=i+(rnd()<.5?1:2);else if(roll<.8)j=i+12+Math.floor(rnd()*3)-1;else j=Math.floor(rnd()*NC);
+      if(j<0||j>=NC||j===i)continue;const b=bigCons[j];
+      const pts=hangPoints(a,b,{sag:.25+rnd()*.4,out:.3,bulge:.15+rnd()*.55,droop:.25});
+      const m=tube(pts,.085+rnd()*.03,cableMat(CABLE_COLORS[Math.floor(rnd()*CABLE_COLORS.length)]),90);scene.add(m);decor.push(m)}}
+  // a few heavy looms that hang lower, the way the real back looked
+  for(let i=0;i<14;i++){const a=bigCons[NC-12+Math.floor(rnd()*12)],b=bigCons[NC-12+Math.floor(rnd()*12)];if(a===b)continue;
+    const m=tube(hangPoints(a,b,{sag:.4+rnd()*.25,out:.35,bulge:.5+rnd()*.5,droop:.3}),.1,cableMat(CABLE_COLORS[i%CABLE_COLORS.length]),110);scene.add(m);decor.push(m)}
+
+  // trunks: heavy cables from the top row rising out of view, toward the rest of the machine
+  for(let c=0;c<12;c++){const a=bigCons[c];const n=c%3===1?2:1;for(let k=0;k<n;k++){const x2=a.x+(rnd()-.5)*1.4;
+    const pts=[a.clone(),a.clone().add(new THREE.Vector3(0,.1,.35)),new THREE.Vector3(a.x+(x2-a.x)*.3,a.y+.75,1.0+rnd()*.3),new THREE.Vector3(x2,a.y+1.7,.9+rnd()*.4),new THREE.Vector3(x2+(rnd()-.5)*.4,CY+PH/2+1.5,.7+rnd()*.5)];
+    const m=tube(pts,.1+rnd()*.03,cableMat(CABLE_COLORS[(c*5+k)%CABLE_COLORS.length]),80);scene.add(m);decor.push(m)}}
+
+  // the cable trough along the bottom: an open steel channel with a bundle running sideways through it
+  {const TY=-8.05;const chMat=new THREE.MeshStandardMaterial({color:'#2b2c29',roughness:.42,metalness:.85,bumpMap:wrinkle,bumpScale:.25});
+   const back=new THREE.Mesh(new THREE.BoxGeometry(PW-.9,1.15,.04),chMat);back.position.set(0,TY,.02);back.receiveShadow=true;scene.add(back);
+   for(const dy of [-.58,.58]){const lip=new THREE.Mesh(new THREE.BoxGeometry(PW-.9,.05,.62),chMat);lip.position.set(0,TY+dy,.31);lip.castShadow=true;lip.receiveShadow=true;scene.add(lip);
+     const edge=new THREE.Mesh(new THREE.BoxGeometry(PW-.9,.12,.05),chMat);edge.position.set(0,TY+dy-Math.sign(dy)*.035,.62);edge.castShadow=true;scene.add(edge)}
+   for(let i=0;i<9;i++){const pts=[];const yy=TY-.38+(i%3)*.36+(rnd()-.5)*.08,zz=.12+Math.floor(i/3)*.15;
+     for(let k=0;k<=8;k++){const x=-PW/2-1+k*(PW+2)/8;pts.push(new THREE.Vector3(x,yy+Math.sin(k*1.3+i)*.05,zz+Math.cos(k*.9+i*2)*.04))}
+     const m=tube(pts,.085+rnd()*.025,cableMat(CABLE_COLORS[(i*3+1)%CABLE_COLORS.length]),160);scene.add(m);decor.push(m)}
+   for(let i=0;i<7;i++){const strap=new THREE.Mesh(new THREE.BoxGeometry(.09,1.02,.06),M.brassDull);strap.position.set(-8+i*2.67,TY,.66);strap.castShadow=true;scene.add(strap)}}
+
+  K.makersPlate(-.35,1.45);
+
+  /* ---------- lower field: one plug per setting ---------- */
+  const jackGeo=new THREE.TorusGeometry(.105,.03,12,32);const nutGeo=new THREE.CylinderGeometry(.15,.15,.04,6);nutGeo.rotateX(Math.PI/2);
+  const holeGeo=new THREE.CircleGeometry(.08,24);
+  const plugGeo=(()=>{const pts=[[0,-.14],[.036,-.14],[.036,0],[.07,0],[.07,.07],[.092,.08],[.098,.38],[.08,.42],[.06,.44],[.05,.56],[0,.56]].map(([r,y])=>new THREE.Vector2(r,y));const g=new THREE.LatheGeometry(pts,40);g.rotateX(Math.PI/2);return g})();
+  const sleeveGeo=new THREE.CylinderGeometry(.071,.071,.07,32,1,true);sleeveGeo.rotateX(Math.PI/2);
+  
+  const LAYOUT={left:{x:-8.9,groups:['Sound','Light','Bluetooth','Machine']},right:{x:.55,groups:['Passing on','Quiet sending','Privacy']}};
+  const ROWH=.74,TOP=.75;
+  const plugs={};const jackMeshes=[];
+      for(const side of Object.values(LAYOUT)){let y=TOP;
+    for(const g of side.groups){plate(g.toUpperCase(),side.x,y,{h:.24,red:g==='Bluetooth',align:'left'});y-=.42;
+      if(g==='Bluetooth'){const cov=new THREE.Mesh(new THREE.BoxGeometry(5.6,.9,.05),new THREE.MeshStandardMaterial({color:'#262724',roughness:.45,metalness:.6,bumpMap:wrinkle,bumpScale:.4}));cov.position.set(side.x+2.8,y-.3,.025);cov.castShadow=true;cov.receiveShadow=true;scene.add(cov);
+        [[-2.65,.33],[2.65,.33],[-2.65,-.33],[2.65,-.33]].forEach(([dx,dy])=>bolt(side.x+2.8+dx,y-.3+dy));const e=engrave('NOT FITTED TO THIS BUILD',side.x+2.8,y-.3,.15,'#6f6a5e');e.position.z=.055;y-=1.12;continue}
+      for(const s of SETTINGS.filter(q=>q.g===g)){
+        {const e=engrave(s.name.toUpperCase(),0,y-.01,.12,'#ddd5c0');e.geometry.computeBoundingBox();const w=e.geometry.boundingBox.max.x-e.geometry.boundingBox.min.x;e.position.x=side.x+w/2+.02}
+        const n=s.values.length,x0=side.x+3.55,span=4.9,step=Math.min(.74,span/n);const jacks=[];
+        s.values.forEach((v,i)=>{const x=x0+i*step,p=new THREE.Vector3(x,y,0);
+          const nut=new THREE.Mesh(nutGeo,M.brassDull);nut.position.set(x,y,.02);nut.castShadow=true;nut.receiveShadow=true;scene.add(nut);
+          const ring=new THREE.Mesh(jackGeo,M.brass);ring.position.set(x,y,.05);ring.castShadow=true;scene.add(ring);
+          const hole=new THREE.Mesh(holeGeo,M.hole);hole.position.set(x,y,.045);scene.add(hole);
+          const hit=new THREE.Mesh(new THREE.CircleGeometry(.24,12),new THREE.MeshBasicMaterial({visible:false}));hit.position.set(x,y,.06);hit.userData={id:s.id,i};scene.add(hit);jackMeshes.push(hit);
+          engrave(v.toUpperCase(),x,y+.225,.1,'#b3ab95');jacks.push(p)});
+        const src=new THREE.Vector3(side.x+2.75,y,0);engrave('FROM',src.x,y+.225,.088,'#958f80');
+        const sn=new THREE.Mesh(nutGeo,M.brassDull);sn.position.set(src.x,src.y,.02);scene.add(sn);const sr=new THREE.Mesh(jackGeo,M.brass);sr.position.set(src.x,src.y,.05);scene.add(sr);
+        const color=CABLE_COLORS[(SETTINGS.indexOf(s)*3)%CABLE_COLORS.length];
+        const mat=cableMat(color);mat.userData.base=new THREE.Color(color);
+        const head=new THREE.Group();const body=new THREE.Mesh(plugGeo,M.bakelite);body.castShadow=true;const sl=new THREE.Mesh(sleeveGeo,M.brass);sl.position.z=.035;head.add(body,sl);
+        const headSrc=head.clone();headSrc.position.copy(src);scene.add(headSrc);
+        head.userData={id:s.id};body.userData={id:s.id,plug:true};scene.add(head);
+        const P={s,jacks,src,nameX:side.x,head,mat,mesh:null,end:jacks[s.v].clone(),lift:0,liftT:0,anim:null,dim:0,dimT:0,seed:rnd()};
+        plugs[s.id]=P;y-=ROWH}
+      y-=.18}}
+
+  function cablePoints(P){const e=P.end.clone();e.z+=P.lift;const top=e.clone().add(new THREE.Vector3(0,0,.56));
+    const s=P.src.clone().add(new THREE.Vector3(0,0,.56));const d=Math.abs(top.x-s.x);
+    return hangPoints(s,top,{sag:.04+d*.016+P.seed*.03,out:.2,bulge:.06+d*.02,droop:.08})}
+  function rebuild(P){const pts=cablePoints(P);if(P.mesh){P.mesh.geometry.dispose();scene.remove(P.mesh)}renderer.shadowMap.needsUpdate=true;P.mesh=tube(pts,.05,P.mat,140);P.mesh.userData={id:P.s.id};scene.add(P.mesh);
+    P.head.position.copy(P.end);P.head.position.z+=P.lift}
+  Object.values(plugs).forEach(rebuild);
+
+  /* ---------- camera framing ---------- */
+  const look=new THREE.Vector3(),lookT=new THREE.Vector3(0,0,0),pos=new THREE.Vector3(),posT=new THREE.Vector3();let par={x:0,y:0},parT={x:0,y:0};
+  function fitDist(w,h){const fov=camera.fov*Math.PI/180;return Math.max(h/2/Math.tan(fov/2),w/2/Math.tan(fov/2)/camera.aspect)}
+  function overview(){const d=fitDist(PW-.3,12.5);lookT.set(0,-.4,0);posT.set(.7,-1.0,d)}
+  function frameRow(id){const P=plugs[id];const a=P.src,b=P.jacks[P.jacks.length-1];const cx=(P.nameX+b.x)/2,w=Math.abs(b.x-P.nameX)+1.4;
+    lookT.set(cx,a.y-.15,0);posT.set(cx+.3,a.y+.55,fitDist(w,3.8))}
+  function resize(){const w=view.clientWidth,h=view.clientHeight;renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix();composer.setSize(w,h);if(!focusId)overview()}
+  const composer=K.makeComposer({ao:!Q.has('noao')});
+  new ResizeObserver(resize).observe(view);resize();
+  pos.copy(posT);look.copy(lookT);camera.position.copy(pos);camera.lookAt(look);
+
+  /* ---------- focus, dim, tag ---------- */
+  const tag=document.getElementById('tag');
+  function focus(id){Object.values(plugs).forEach(P=>{P.dimT=id&&P.s.id!==id?1:0;P.liftT=id===P.s.id?.12:0});decorDim=id?1:0;
+    if(id){frameRow(id);tag.textContent=`${byId[id].name}: ${label(byId[id])}`;tag.classList.add('on');lamp.intensity=0}else{overview();tag.classList.remove('on')}}
+  let decorDim=0,decorDimNow=0;
+  function updateTag(){if(!focusId){return}const P=plugs[focusId];const v=P.head.position.clone();v.z+=.6;v.y+=.42;v.project(camera);
+    const tw=tag.offsetWidth/2+10;tag.style.left=Math.max(tw,Math.min(view.clientWidth-tw,(v.x*.5+.5)*view.clientWidth))+'px';tag.style.top=(-v.y*.5+.5)*view.clientHeight-14+'px';tag.textContent=`${byId[focusId].name}: ${label(byId[focusId])}`}
+
+  /* ---------- moving a plug: pull, carry, seat ---------- */
+  function move(id,i){const P=plugs[id];focusSetting(id,'pin');const from=P.end.clone(),to=P.jacks[i].clone();
+    if(REDUCED){P.end.copy(to);P.lift=0;rebuild(P);Snd.seat();return}
+    P.anim={t0:performance.now(),from,to,pulled:false,seated:false};Snd.pull()}
+  function stepAnim(P,now){const a=P.anim;const t=(now-a.t0)/1000;const PULL=.18,CARRY=.42,SEAT=.16;
+    if(t<PULL){const k=t/PULL;P.lift=.45*easeOut(k)}
+    else if(t<PULL+CARRY){const k=easeInOut((t-PULL)/CARRY);P.end.copy(a.from).lerp(a.to,k);P.lift=.45+.35*Math.sin(Math.PI*k)}
+    else if(t<PULL+CARRY+SEAT){P.end.copy(a.to);const k=(t-PULL-CARRY)/SEAT;P.lift=.45*(1-easeIn(k))}
+    else{P.end.copy(a.to);P.lift=0;P.anim=null;Snd.seat();P.liftT=.12;P.kick=performance.now()}
+    rebuild(P)}
+  const easeOut=k=>1-Math.pow(1-k,3),easeIn=k=>k*k*k,easeInOut=k=>k<.5?4*k*k*k:1-Math.pow(-2*k+2,3)/2;
+
+  /* ---------- direct manipulation on the machine ---------- */
+  const ray=new THREE.Raycaster(),ptr=new THREE.Vector2();const plane=new THREE.Plane(new THREE.Vector3(0,0,1),-.5);let drag=null,hoverId=null;
+  function pick(e,list){const r=renderer.domElement.getBoundingClientRect();ptr.set((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1);ray.setFromCamera(ptr,camera);return ray.intersectObjects(list,true)[0]}
+  const plugBodies=()=>Object.values(plugs).map(P=>P.head);
+  renderer.domElement.addEventListener('pointermove',e=>{
+    if(drag){const r=renderer.domElement.getBoundingClientRect();ptr.set((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1);ray.setFromCamera(ptr,camera);const hitP=new THREE.Vector3();if(ray.ray.intersectPlane(plane,hitP)){
+      const P=plugs[drag.id];const x=Math.max(P.jacks[0].x,Math.min(P.jacks[P.jacks.length-1].x,hitP.x));P.end.set(x,P.jacks[0].y,0);P.lift=.5;rebuild(P)}return}
+    const h=pick(e,plugBodies())||pick(e,jackMeshes);const id=h?(h.object.userData.id||h.object.parent.userData.id):null;
+    view.classList.toggle('grab',!!h);if(id!==hoverId){hoverId=id;if(id)focusSetting(id,'hover');else focusSetting(null,'hover')}});
+  renderer.domElement.addEventListener('pointerdown',e=>{const h=pick(e,plugBodies());
+    if(h){const id=h.object.userData.id||h.object.parent.userData.id;drag={id};view.classList.add('grabbing');renderer.domElement.setPointerCapture(e.pointerId);focusSetting(id,'pin');Snd.arm();Snd.pull();hideHint();return}
+    const j=pick(e,jackMeshes);if(j){setValue(j.object.userData.id,j.object.userData.i,'machine');hideHint();return}
+    // anywhere else on the machine: back to the full view
+    hoverId=null;fullView()});
+  renderer.domElement.addEventListener('pointerup',e=>{if(!drag)return;const P=plugs[drag.id];let best=0,bd=1e9;P.jacks.forEach((p,i)=>{const d=Math.abs(p.x-P.end.x);if(d<bd){bd=d;best=i}});
+    const s=byId[drag.id];view.classList.remove('grabbing');const id=drag.id;drag=null;
+    P.anim={t0:performance.now()-180,from:P.end.clone(),to:P.jacks[best].clone()};if(s.v!==best){s.v=best;syncRow(id);persist();bridge.setSetting(id,best);savedEl.textContent=`${s.name}: ${label(s)}`;savedEl.style.opacity=1;clearTimeout(savedT);savedT=setTimeout(()=>savedEl.style.opacity=0,2600);Object.values(rows).forEach(r=>r.classList.remove('active'));rows[id].classList.add('active');rows[id].scrollIntoView({block:'nearest',behavior:'smooth'})}});
+  view.addEventListener('pointermove',e=>{const r=view.getBoundingClientRect();parT.x=(e.clientX-r.left)/r.width-.5;parT.y=(e.clientY-r.top)/r.height-.5});
+  view.addEventListener('pointerleave',()=>{parT.x=parT.y=0;if(!drag&&hoverId){hoverId=null;focusSetting(null,'hover')}});
+  const hint=document.getElementById('hint');function hideHint(){}
+
+  /* ---------- loop ---------- */
+  const tmpC=new THREE.Color();let last=performance.now(),frames=0;
+  function frame(now){const dt=Math.min(.05,(now-last)/1000);last=now;const k=REDUCED?1:1-Math.exp(-dt*3.2);
+    pos.lerp(posT,k);look.lerp(lookT,k);par.x+=(parT.x-par.x)*(REDUCED?1:1-Math.exp(-dt*4));par.y+=(parT.y-par.y)*(REDUCED?1:1-Math.exp(-dt*4));
+    camera.position.set(pos.x+par.x*(REDUCED?0:.9),pos.y-par.y*(REDUCED?0:.6),pos.z);camera.lookAt(look);
+    for(const P of Object.values(plugs)){
+      if(P.anim)stepAnim(P,now);
+      else if(Math.abs(P.lift-P.liftT)>.002&&!(drag&&drag.id===P.s.id)){P.lift+=(P.liftT-P.lift)*(REDUCED?1:1-Math.exp(-dt*8));rebuild(P)}
+      P.dim+=(P.dimT-P.dim)*(REDUCED?1:1-Math.exp(-dt*6));tmpC.copy(P.mat.userData.base).multiplyScalar(1-.55*P.dim);P.mat.color.copy(tmpC);P.mat.sheen=.6*(1-P.dim*.7)}
+    decorDimNow+=(decorDim-decorDimNow)*(REDUCED?1:1-Math.exp(-dt*5));
+    decor.forEach(m=>{if(!m.material.userData.base)m.material.userData.base=m.material.color.clone();m.material.color.copy(m.material.userData.base).multiplyScalar(1-.5*decorDimNow)});
+    if(focusId){const P=plugs[focusId];lamp.position.set(P.head.position.x-1.5,P.head.position.y+2.5,4);lamp.target.position.copy(P.head.position);lamp.intensity+=(9-lamp.intensity)*(1-Math.exp(-dt*4))}else lamp.intensity*=Math.exp(-dt*4);
+    composer.render();updateTag();
+    if(++frames===3){document.getElementById('loading').style.opacity=0;window.__ready=true}
+    requestAnimationFrame(frame)}
+  requestAnimationFrame(frame);
+
+  function toScreen(v3){const v=v3.clone().project(camera);const r=renderer.domElement.getBoundingClientRect();return {x:r.left+(v.x*.5+.5)*r.width,y:r.top+(-v.y*.5+.5)*r.height}}
+  const screen=id=>{const P=plugs[id];const h=P.head.position.clone();h.z+=.35;return {plug:toScreen(h),first:toScreen(P.jacks[0].clone().setZ(.3))}};
+  return {focus,move,plugs,camera,screen,get ready(){return frames>2},endOf:id=>{const P=plugs[id];return {x:P.end.x,jack:P.jacks.findIndex(j=>Math.abs(j.x-P.end.x)<1e-3&&Math.abs(j.y-P.end.y)<1e-3),lift:P.lift}}};
+}
+
+/* arriving from the front: finish the turn the front started */
+try{if(sessionStorage.getItem('bombechat-turn')==='front-to-back'&&!REDUCED){sessionStorage.removeItem('bombechat-turn');
+  document.body.animate([{transform:'perspective(1600px) rotateY(80deg)',opacity:0},{transform:'perspective(1600px) rotateY(0deg)',opacity:1}],{duration:520,easing:'cubic-bezier(.2,.8,.3,1)'})}}catch(e){}
+/* tests and links */
+window.__bc={screen:id=>machine.screen(id),focused:()=>focusId,get:id=>byId[id].v,set:(id,i)=>setValue(id,i,'test'),focus:id=>focusSetting(id,'pin'),end:id=>machine&&machine.endOf(id),settings:SETTINGS.map(s=>s.id)};
+if(Q.has('focus'))focusSetting(Q.get('focus'),'pin');
+document.getElementById('back').addEventListener('click',e=>{if(REDUCED)return;e.preventDefault();const href=e.currentTarget.href;try{sessionStorage.setItem('bombechat-turn','back-to-front')}catch(_){}document.body.animate([{transform:'perspective(1600px) rotateY(0deg)',opacity:1},{transform:'perspective(1600px) rotateY(-80deg)',opacity:0}],{duration:420,easing:'cubic-bezier(.5,0,.75,0)'}).onfinish=()=>location.href=href});
+</script>
+</body>
+</html>
