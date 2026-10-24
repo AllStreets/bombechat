@@ -3,7 +3,9 @@
   "private": true,
   "description": "Messaging by sound, light and Bluetooth, with no internet.",
   "scripts": {
-    "check": "node tools/check.cjs mockups/bombechat.html"
+    "check": "node tools/check.cjs mockups/bombechat.html && node tools/check-settings.cjs",
+    "check:front": "node tools/check.cjs mockups/bombechat.html",
+    "check:settings": "node tools/check-settings.cjs"
   },
   "devDependencies": {
     "playwright": "1.63.0"

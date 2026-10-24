@@ -22,7 +22,15 @@ The look is taken from the Bombe, the machine Alan Turing designed at Bletchley 
 
 The drums make a ratchet click for every letter that passes the index and a clunk when they settle. The sound is synthesised in the browser and filtered hard above 7 kHz, so it stays out of the band Bombechat listens on. Click anywhere to allow sound, and use the switch in the title bar to turn it off.
 
-Open `mockups/bombechat.html` in a browser to see it move. The earlier directions, including a spectrogram-based "Cyber" design, are in `mockups/explorations`.
+## Settings
+
+Settings live on the back of the machine. The page is a wiring schedule on the left and a 3D view of the machine's rear panel on the right, rendered in WebGL with three.js. The top of the panel is the drum wiring: five rows of connectors with the cable looms running between them and trunks rising out of view. Below that, every setting is a row of jacks with a patch cord. On and off settings have two jacks, and number settings have one jack per value, so a hop limit of 4 means the cord sits in jack 4.
+
+Changing a setting on the card pulls that cord out, carries it along the row and seats it in the new jack, with the camera moving in on that row and the rest of the wiring dimming. You can also drag a plug on the machine itself, or click a jack. Settings are saved in the browser.
+
+![The back of the machine: drum wiring above, patch rows for each setting below, and the wiring schedule card](mockups/settings.png)
+
+Open `mockups/bombechat.html` in a browser to see it move, and use the Settings plate to turn the machine round. The earlier directions, including a spectrogram-based "Cyber" design, are in `mockups/explorations`.
 
 ## Checks
 
@@ -33,6 +41,10 @@ npm install
 npm run check
 ```
 
-`tools/check.cjs` loads the page in Chromium and saves a screenshot of every message frame, close-up crops of each part of the window at double resolution, and a capture of the drums mid-turn. It confirms that the plain-text row settles on the right letters, then renders one drum turn offline and measures it: how many distinct clicks it makes, whether it clips, and how much of its energy falls in the listening band. It fails on any page error. The output goes to `checks/`, which is not committed.
+`npm run check` runs both pages. `npm run check:front` and `npm run check:settings` run one each.
+
+`tools/check.cjs` loads the page in Chromium and saves a screenshot of every message frame, close-up crops of each part of the window at double resolution, and a capture of the drums mid-turn. It confirms that the plain-text row settles on the right letters, then renders one drum turn offline and measures it: how many distinct clicks it makes, whether it clips, and how much of its energy falls in the listening band. It also checks four laptop sizes for sideways scrolling, text under 12px and layout shift, and tests scrolling the message sheet, typing a reply, and the turn to the settings page. It fails on any page error.
+
+`tools/check-settings.cjs` runs the settings page in Chrome on the GPU. It sets every setting to a new value and confirms the cord ends up in the matching jack, tests the arrow keys, measures the frame rate, and saves the overview, a focused row, a cord in mid-air and the narrow layout. The output of both goes to `checks/`, which is not committed.
 
 The fonts on the engraved plates use Copperplate, which ships with macOS. A web release will need a licensed engraving face.
