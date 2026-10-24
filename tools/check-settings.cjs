@@ -7,8 +7,11 @@ const { chromium } = require('playwright');
 const page = path.resolve(process.argv[2] || 'mockups/settings.html');
 const out = path.join(path.dirname(page), '..', 'checks', 'settings');
 fs.mkdirSync(out, { recursive: true });
-const url = q => 'file://' + page + (q ? '?' + q : '');
+const { start } = require('./serve.cjs');
+const ROOTDIR = path.resolve(__dirname, '..');
+const url = q => 'http://127.0.0.1:4811/' + path.relative(ROOTDIR, page) + (q ? '?' + q : '');
 (async () => {
+  const server = await start(4811);
   const browser = await chromium.launch({ channel: 'chrome', args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
   const problems = [];
   const open = async (vp, q, dpr = 1) => {
@@ -38,6 +41,34 @@ const url = q => 'file://' + page + (q ? '?' + q : '');
   await p.screenshot({ path: path.join(out, 'move-hops-midair.png') });
   await p.waitForTimeout(900);
   await p.screenshot({ path: path.join(out, 'move-hops-seated.png') });
+  // drag a plug on the machine itself: hops plug from its jack to the first jack
+  const drag = await p.evaluate(() => window.__bc.screen('hops'));
+  await p.mouse.move(drag.plug.x, drag.plug.y); await p.mouse.down();
+  await p.mouse.move((drag.plug.x + drag.first.x) / 2, drag.first.y, { steps: 8 });
+  await p.mouse.move(drag.first.x, drag.first.y, { steps: 8 }); await p.mouse.up();
+  await p.waitForTimeout(900);
+  const dragged = await p.evaluate(() => window.__bc.get('hops'));
+  if (dragged !== 0) problems.push('dragging the hops plug to jack 1 left it at ' + dragged);
+  // back to the full view: click the machine away from any plug, then Escape from a hover pin
+  const vb = await p.locator('#view').boundingBox();
+  await p.mouse.click(vb.x + 30, vb.y + vb.height * .25);
+  await p.waitForTimeout(1400);
+  const afterClick = await p.evaluate(() => window.__bc.focused());
+  if (afterClick) problems.push('clicking the machine did not return to the full view, still on ' + afterClick);
+  await p.screenshot({ path: path.join(out, 'back-to-full.png') });
+  await p.click('.row[data-id="volume"] .jk[data-i="4"]');
+  await p.waitForTimeout(900);
+  const plateShown = await p.isVisible('#fullview');
+  if (!plateShown) problems.push('Full view plate not shown while zoomed');
+  await p.mouse.move(vb.x + vb.width / 2, vb.y + 5);
+  await p.keyboard.press('Escape');
+  await p.waitForTimeout(300);
+  if (await p.evaluate(() => window.__bc.focused())) problems.push('Escape did not return to the full view');
+  await p.click('.row[data-id="volume"] .jk[data-i="2"]');
+  await p.waitForTimeout(900);
+  await p.click('#fullview');
+  await p.waitForTimeout(300);
+  if (await p.evaluate(() => window.__bc.focused())) problems.push('Full view plate did not return to the full view');
   // every setting: set each value and confirm the plug lands in that jack
   const ids = await p.evaluate(() => window.__bc.settings);
   const results = {};
@@ -71,5 +102,6 @@ const url = q => 'file://' + page + (q ? '?' + q : '');
   if (overflow) problems.push('horizontal overflow at 900px');
   await browser.close();
   console.log(JSON.stringify({ out, fps, results, keyboard: [before, after], problems }, null, 2));
+  server.close();
   process.exit(problems.length ? 1 : 0);
 })();
