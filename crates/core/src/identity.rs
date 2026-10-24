@@ -6,10 +6,10 @@
 //! devices verify out of band that they hold the identities they think
 //! they hold.
 
-use ed25519_dalek::SigningKey;
+use ed25519_dalek::{Signature, Signer, SigningKey};
 use rand_core::OsRng;
 use sha2::{Digest, Sha256, Sha512};
-use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
+use x25519_dalek::{PublicKey as X25519PublicKey, SharedSecret, StaticSecret};
 use zeroize::Zeroizing;
 
 /// Number of SHA-512 rounds used to derive the digits for one side of a
@@ -52,6 +52,19 @@ impl Identity {
         out[0..32].copy_from_slice(self.signing.as_bytes());
         out[32..64].copy_from_slice(self.dh.as_bytes());
         Zeroizing::new(out)
+    }
+
+    /// Sign `msg` with this identity's Ed25519 key. Crate-internal so the
+    /// signing key never has to be copied out of this type.
+    pub(crate) fn sign(&self, msg: &[u8]) -> Signature {
+        self.signing.sign(msg)
+    }
+
+    /// X25519 agreement between this identity's DH key and `their` public
+    /// key. The returned secret zeroizes on drop. Callers must check
+    /// `was_contributory()` before using it.
+    pub(crate) fn agree(&self, their: &[u8; 32]) -> SharedSecret {
+        self.dh.diffie_hellman(&X25519PublicKey::from(*their))
     }
 
     /// The public half of this identity, safe to share with other devices.

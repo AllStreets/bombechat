@@ -16,7 +16,7 @@ const VERSION: u8 = 1;
 
 /// Size in bytes of everything before the body: version, kind, id,
 /// expires_min, hops and body_len.
-const HEADER_LEN: usize = 25;
+pub(crate) const HEADER_LEN: usize = 25;
 
 /// What kind of payload an envelope's body carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
