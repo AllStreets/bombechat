@@ -72,8 +72,8 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
 .sndlab{cursor:pointer}
 
 /* drum bank */
-.bank{--dr:clamp(66px,min((100vw - 160px) / 12 - 8px,(100vh - 616px) / 3.24),128px);position:relative;z-index:1;margin:12px 16px 0;border-radius:3px;background:linear-gradient(#171816,#111210);box-shadow:inset 0 0 0 1px #000,inset 0 1px 0 rgba(255,255,255,.04),inset 0 10px 30px rgba(0,0,0,.4);padding:8px 18px 0 14px}
-.grid{display:grid;grid-template-columns:96px repeat(12,minmax(0,1fr));align-items:center;min-height:calc(var(--dr) * 3.24 + 37px)}
+.bank{--dr:clamp(66px,min((100vw - 248px) / 12 - 8px,(100vh - 616px) / 3.24),128px);position:relative;z-index:1;margin:12px 16px 0;border-radius:3px;background:linear-gradient(#171816,#111210);box-shadow:inset 0 0 0 1px #000,inset 0 1px 0 rgba(255,255,255,.04),inset 0 10px 30px rgba(0,0,0,.4);padding:8px 18px 0 14px}
+.grid{display:grid;grid-template-columns:96px repeat(12,minmax(0,1fr)) 88px;align-items:center;min-height:calc(var(--dr) * 3.24 + 37px)}
 .colno{font-family:var(--engr);font-size:12px;color:#9a9483;letter-spacing:.06em;text-align:center;padding-bottom:1px}
 .rowlab{align-self:center;padding-top:6px}
 .bar{grid-column:2/-1;height:6px;margin:2px -8px;border-radius:3px;background:linear-gradient(#5f5d57,#2b2a27 45%,#1a1a18);box-shadow:0 1px 0 rgba(255,255,255,.05),0 2px 4px rgba(0,0,0,.6)}
@@ -82,6 +82,12 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
 .drum .idx{position:absolute;left:50%;top:0;width:0;height:0;border-left:4.5px solid transparent;border-right:4.5px solid transparent;border-top:7px solid #d8d3c6;transform:translateX(-50%);filter:drop-shadow(0 1px 0 #000)}
 .rotor{transform-box:view-box;transform-origin:0 0;transition:transform .95s cubic-bezier(.2,.85,.25,1.04)}
 .wl{transition:opacity .18s}
+.bank3d{position:absolute;inset:0;border-radius:3px;overflow:hidden;z-index:0}
+.bank3d canvas{display:block;width:100%;height:100%}
+.bank.gl{background:#151614}
+.bank.gl .grid{position:relative;z-index:1;opacity:0}
+.bank.gl .bankfoot{position:relative;z-index:2;border-top-color:transparent;box-shadow:none}
+.srmirror{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 .bankfoot{display:flex;flex-wrap:wrap;align-items:center;gap:10px 26px;margin:6px -4px 0 96px;padding:9px 0 10px;border-top:1px solid rgba(0,0,0,.6);box-shadow:inset 0 1px 0 rgba(255,255,255,.035)}
 .rd{display:flex;align-items:center;gap:8px}
 .odo{display:flex;gap:2px;padding:3px;background:#050505;border-radius:2px;box-shadow:0 0 0 2px #3a3934,0 0 0 3px #000}
@@ -234,7 +240,7 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
 @media (max-width:1239px){
   .deck{grid-template-columns:minmax(0,1fr) 384px;grid-template-areas:"sheet panel" "sheet menu"}
   .menu{min-height:540px}
-  .bank{--dr:clamp(66px,(100vw - 160px) / 12 - 8px,112px)}
+  .bank{--dr:clamp(66px,(100vw - 248px) / 12 - 8px,112px)}
 }
 @media (prefers-reduced-motion:reduce){
   .rotor,.knob .cap,.slip,.app{transition:none!important}
@@ -242,6 +248,12 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
   .cur,.state.live::after{animation:none}
 }
 </style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
 </head>
 <body>
 <div id="back" aria-hidden="true"><span class="pl screw">Rear panel</span></div>
@@ -262,6 +274,7 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
 
   <section class="bank" id="bank" aria-label="Drum bank: the current frame of the message, as plain text, as heard, and the key">
     <div class="grid" id="drums"></div>
+    <div class="srmirror" id="mirror"><p aria-live="polite" id="mirror-plain"></p><p id="mirror-heard"></p><p id="mirror-key"></p></div>
     <div class="bankfoot">
       <span class="rd" title="Messages arrive in frames of twelve letters"><span class="pl">Frame</span><span class="odo"><i id="fno">4</i></span><span class="of">of <span id="fnt">6</span></span></span>
       <span class="rd"><span class="pl">Bytes a second</span><span class="odo"><i>0</i><i>6</i><i>4</i></span></span>
@@ -272,7 +285,7 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
 
   <main class="deck">
     <article class="sheet" aria-label="Message sheet with Marisol Ortega">
-      <div class="sh-head"><h1>Message sheet</h1><span class="no">No.<b>0241</b></span></div>
+      <div class="sh-head"><h1>Message sheet</h1><span class="no">No.<b>1</b></span></div>
       <div class="fields">
         <div>With<b>Marisol Ortega</b></div>
         <div>Opened<b>06.52, 24 Oct</b></div>
@@ -374,16 +387,17 @@ function drum(rim){
   return s;
 }
 const G=document.getElementById('drums');const cells=[];
-G.insertAdjacentHTML('beforeend','<span></span>'+[...Array(12)].map((_,i)=>`<span class="colno">${i+1}</span>`).join(''));
+G.insertAdjacentHTML('beforeend','<span></span>'+[...Array(12)].map((_,i)=>`<span class="colno">${i+1}</span>`).join('')+'<span></span>');
 ['Plain','Heard','Key'].forEach((lab,r)=>{
   G.insertAdjacentHTML('beforeend',`<div class="rowlab"><span class="pl screw" title="${['What Marisol wrote','What the microphone caught','The key you and Marisol share'][r]}">${lab}</span></div>`);
   for(let c=0;c<12;c++){const d=document.createElement('div');d.className='drum';d.innerHTML='<span class="idx"></span>';const s=drum(RIMS[(c*5+r*3)%12]);d.appendChild(s);G.appendChild(d);
-    cells.push({rot:[...s.querySelectorAll('.rotor')],wl:s.querySelector('.wl'),angle:0,t:null,pitch:0.86+((c*7+r*3)%9)*0.035})}
+    cells.push({rot:[...s.querySelectorAll('.rotor')],wl:s.querySelector('.wl'),el:d,angle:0,from:0,t0:0,snap:true,t:null,pitch:0.86+((c*7+r*3)%9)*0.035})}
+  G.insertAdjacentHTML('beforeend','<span class="gearcell" aria-hidden="true"></span>');
   if(r<2)G.insertAdjacentHTML('beforeend','<div class="bar"></div>');
 });
 
 
-function setLetter(cell,ch,turns){const i=A.indexOf(ch);let base=cell.angle-(cell.angle%360);const a=base-(i*360/26)-360*(turns||0);const prev=cell.angle;cell.angle=a;
+function setLetter(cell,ch,turns){const i=A.indexOf(ch);let base=cell.angle-(cell.angle%360);const a=base-(i*360/26)-360*(turns||0);const prev=cell.angle;cell.angle=a;cell.from=prev;cell.t0=performance.now();cell.snap=!turns||RM.matches;
   clearInterval(cell.t);
   if(turns&&RM.matches){ // reduced motion: no spin, no flicker, just a short fade to the new letter
     cell.rot.forEach(g=>g.style.transform=`rotate(${a}deg)`);cell.wl.style.opacity=0;setTimeout(()=>{cell.wl.textContent=ch;cell.wl.style.opacity=1},180);Drum.spin(1,cell.pitch);return}
@@ -603,6 +617,154 @@ if(Q.has('audiotest'))(async()=>{
 // arriving back from the settings page: finish the turn
 try{if(sessionStorage.getItem('bombechat-turn')==='back-to-front'&&!matchMedia('(prefers-reduced-motion: reduce)').matches){sessionStorage.removeItem('bombechat-turn');
   document.body.animate([{transform:'perspective(1600px) rotateY(-80deg)',opacity:0},{transform:'perspective(1600px) rotateY(0deg)',opacity:1}],{duration:520,easing:'cubic-bezier(.2,.8,.3,1)'})}}catch(e){}
+</script>
+<script type="module">
+/* The drum bank in 3D. Same machine as the back panel: built from machine-kit.js.
+   The SVG drums above stay as the model and the fallback: setLetter() records each
+   turn (from, to, start time) and the window letters, and this scene draws them. */
+import { createMachine } from './machine-kit.js';
+const bank=document.getElementById('bank');
+const mirror={plain:document.getElementById('mirror-plain'),heard:document.getElementById('mirror-heard'),key:document.getElementById('mirror-key')};
+const rowText=r=>cells.slice(r*12,r*12+12).map(c=>c.wl.textContent).join('');
+window.__bank={rows:()=>({plain:rowText(0),heard:rowText(1),key:rowText(2)}),ready:false,gl:false};
+function syncMirror(){const r=window.__bank.rows();if(mirror.plain.textContent!==r.plain)mirror.plain.textContent=r.plain.replace(/X/g,' ');mirror.heard.textContent=r.heard;mirror.key.textContent=r.key}
+syncMirror();
+try{await build()}catch(e){console.warn('drum bank stays flat:',e.message);window.__bank.ready=true}
+
+async function build(){
+  const host=document.createElement('div');host.className='bank3d';host.setAttribute('aria-hidden','true');bank.prepend(host);
+  const K=createMachine(host,{still:STILL,background:'#151614'});
+  const {THREE,renderer,scene,camera,M,tex,key,rim}=K;
+  bank.classList.add('gl');window.__bank.gl=true;
+  camera.fov=19;
+  key.position.set(-6,9,22);key.intensity=2.7;
+  Object.assign(key.shadow.camera,{left:-14,right:14,top:7,bottom:-7,near:1,far:60});key.shadow.camera.updateProjectionMatrix();
+  rim.intensity=.45;
+
+  /* ---- shared parts ---- */
+  const R=.46;// drum radius in world units; one unit = drum width / 0.92
+  const ringTex=K.canvasTex(1024,1024,(k,w)=>{const c=w/2;
+    const g=k.createRadialGradient(c*.8,c*.6,c*.1,c,c,c);g.addColorStop(0,'#2e2a26');g.addColorStop(.65,'#161412');g.addColorStop(1,'#0a0908');k.fillStyle=g;k.fillRect(0,0,w,w);
+    k.translate(c,c);k.fillStyle='#d8d0ba';k.font='600 104px Copperplate, serif';k.textAlign='center';k.textBaseline='middle';
+    for(let i=0;i<26;i++){k.save();k.rotate(i*2*Math.PI/26);k.fillText('ABCDEFGHIJKLMNOPQRSTUVWXYZ'[i],0,-c*.74);k.restore()}
+    k.strokeStyle='rgba(220,214,200,.28)';k.lineWidth=3;for(let i=0;i<26;i++){k.save();k.rotate((i+.5)*2*Math.PI/26);k.beginPath();k.moveTo(0,-c*.97);k.lineTo(0,-c*.88);k.stroke();k.restore()}
+    k.strokeStyle='rgba(220,214,200,.1)';k.lineWidth=2;k.beginPath();k.arc(0,0,c*.5,0,7);k.stroke();
+    for(let i=0;i<4;i++){k.save();k.rotate(Math.PI/4+i*Math.PI/2);k.fillStyle='#070605';k.beginPath();k.arc(0,-c*.37,c*.045,0,7);k.fill();k.strokeStyle='rgba(220,214,200,.2)';k.stroke();k.restore()}});
+  ringTex.wrapS=ringTex.wrapT=THREE.ClampToEdgeWrapping;ringTex.colorSpace=THREE.SRGBColorSpace;ringTex.anisotropy=16;
+  const faceMat=new THREE.MeshStandardMaterial({map:ringTex,roughness:.55,metalness:.05});
+  // rim: a turned profile with a bevel on both edges
+  const rimGeo=(()=>{const p=[[.395,0],[.445,0],[.462,.012],[.47,.04],[.47,.17],[.462,.2],[.445,.212],[.395,.212]].map(([r,y])=>new THREE.Vector2(r,y));const g=new THREE.LatheGeometry(p,96);g.rotateX(Math.PI/2);return g})();
+  const faceGeo=new THREE.CircleGeometry(.402,96);
+  const hubGeo=(()=>{const p=[[0,.0],[.075,0],[.08,.01],[.074,.034],[.05,.052],[0,.058]].map(([r,y])=>new THREE.Vector2(r,y));const g=new THREE.LatheGeometry(p,48);g.rotateX(Math.PI/2);return g})();
+  const slotGeo=new THREE.BoxGeometry(.1,.012,.02);
+  const shaftGeo=new THREE.CylinderGeometry(.03,.03,.2,16);shaftGeo.rotateX(Math.PI/2);
+  const rimMats={};const rimMat=c=>rimMats[c]||(rimMats[c]=new THREE.MeshPhysicalMaterial({color:new THREE.Color(c).multiplyScalar(.82),roughness:.46,metalness:.05,clearcoat:.45,clearcoatRoughness:.4,bumpMap:tex.wrinkle,bumpScale:.15}));
+  const tabMatBase={roughness:.45,metalness:0};
+  const pointerGeo=(()=>{const s=new THREE.Shape();s.moveTo(-.045,0);s.lineTo(.045,0);s.lineTo(0,-.07);s.closePath();return new THREE.ExtrudeGeometry(s,{depth:.02,bevelEnabled:true,bevelThickness:.006,bevelSize:.006,bevelSegments:2})})();
+  const railMat=new THREE.MeshStandardMaterial({color:'#8e8b84',roughness:.3,metalness:1});
+
+  /* ---- panel ---- */
+  const panel=new THREE.Mesh(new THREE.BoxGeometry(1,1,.3),M.panel);panel.position.z=-.36;panel.receiveShadow=true;scene.add(panel);
+
+  /* ---- drums ---- */
+  const drums=cells.map((cell,i)=>{const r=Math.floor(i/12),c=i%12;
+    const g=new THREE.Group();scene.add(g);
+    const rimM=new THREE.Mesh(rimGeo,rimMat(RIMS[(c*5+r*3)%12]));rimM.castShadow=true;rimM.receiveShadow=true;
+    const rot=new THREE.Group();
+    const face=new THREE.Mesh(faceGeo,faceMat);face.position.z=.19;face.receiveShadow=true;
+    const hub=new THREE.Mesh(hubGeo,M.steel);hub.position.z=.192;hub.castShadow=true;
+    const slot=new THREE.Mesh(slotGeo,M.hole);slot.position.z=.247;slot.rotation.z=-.5;
+    rot.add(rimM,face,hub,slot);g.add(rot);
+    const shaft=new THREE.Mesh(shaftGeo,M.steel);shaft.position.z=-.08;g.add(shaft);
+    // reading window: cream enamel tab, fixed, with the letter
+    const cv=document.createElement('canvas');cv.width=cv.height=128;const wt=new THREE.CanvasTexture(cv);wt.colorSpace=THREE.SRGBColorSpace;wt.anisotropy=8;
+    const tab=new THREE.Mesh(new THREE.BoxGeometry(.26,.25,.03),[new THREE.MeshStandardMaterial({color:'#e9e1cb',...tabMatBase}),new THREE.MeshStandardMaterial({color:'#e9e1cb',...tabMatBase}),new THREE.MeshStandardMaterial({color:'#e9e1cb',...tabMatBase}),new THREE.MeshStandardMaterial({color:'#e9e1cb',...tabMatBase}),new THREE.MeshStandardMaterial({map:wt,...tabMatBase}),new THREE.MeshStandardMaterial({color:'#e9e1cb'})]);
+    tab.position.set(0,R*.645,.225);tab.castShadow=true;g.add(tab);
+    const ptr=new THREE.Mesh(pointerGeo,M.brass);ptr.position.set(0,R+.1,-.18);ptr.scale.setScalar(1.35);ptr.castShadow=true;g.add(ptr);
+    return {cell,g,rot,cv,wt,last:'',r,c}});
+  function paintWindow(d){const wl=d.cell.wl;const ch=wl.textContent,fill=wl.getAttribute('fill')||'#15130f',op=+(wl.getAttribute('opacity')||1)*(+wl.style.opacity===0&&wl.style.opacity!==''?0:1);
+    const sig=ch+fill+op;if(sig===d.last)return false;d.last=sig;
+    const k=d.cv.getContext('2d');k.fillStyle='#ece4cd';k.fillRect(0,0,128,128);const sh=k.createLinearGradient(0,0,0,128);sh.addColorStop(0,'rgba(0,0,0,.09)');sh.addColorStop(.25,'rgba(0,0,0,0)');k.fillStyle=sh;k.fillRect(0,0,128,128);
+    k.globalAlpha=op;k.fillStyle=fill;k.font='700 112px Copperplate, serif';k.textAlign='center';k.textBaseline='middle';k.fillText(ch,64,73);k.globalAlpha=1;
+    k.strokeStyle='rgba(0,0,0,.35)';k.lineWidth=4;k.strokeRect(2,2,124,124);d.wt.needsUpdate=true;return true}
+
+  /* ---- rails, plates, numbers, gears ---- */
+  const rails=[];for(let i=0;i<5;i++){const m=new THREE.Mesh(new THREE.CylinderGeometry(i<3?.05:.035,i<3?.05:.035,1,24),railMat);m.rotation.z=Math.PI/2;m.castShadow=true;m.receiveShadow=true;scene.add(m);rails.push(m)}
+  const plates=['Plain','Heard','Key'].map(t=>K.plate(t.toUpperCase(),0,0,{h:.2,size:56}));
+  const screwGeo=new THREE.CylinderGeometry(.035,.035,.025,20);screwGeo.rotateX(Math.PI/2);const plateScrews=plates.map(()=>[0,1].map(()=>{const m=new THREE.Mesh(screwGeo,M.brassDull);m.castShadow=true;scene.add(m);return m}));
+  const nums=[...Array(12)].map((_,i)=>K.engrave(String(i+1),0,0,.13,'#b8b09a'));
+  function gearGeo(N,m,th){const rp=m*N/2,ra=rp+m,rf=rp-1.25*m,s=new THREE.Shape();
+    for(let i=0;i<N;i++){const a=i*2*Math.PI/N,t=Math.PI/N;const pts=[[rf,a-t*.62],[rp*.98,a-t*.42],[ra,a-t*.26],[ra,a+t*.26],[rp*.98,a+t*.42],[rf,a+t*.62],[rf,a+t*1.38]];
+      pts.forEach(([r,an],j)=>{const x=Math.sin(an)*r,y=Math.cos(an)*r;i===0&&j===0?s.moveTo(x,y):s.lineTo(x,y)})}
+    s.closePath();const hole=new THREE.Path();hole.absarc(0,0,m*1.4,0,Math.PI*2,true);s.holes.push(hole);
+    if(N>14)for(let i=0;i<5;i++){const h=new THREE.Path();const a=i*2*Math.PI/5,cr=(rf+m*1.4)/2;h.absarc(Math.sin(a)*cr,Math.cos(a)*cr,(rf-m*1.4)*.3,0,Math.PI*2,true);s.holes.push(h)}
+    const g=new THREE.ExtrudeGeometry(s,{depth:th,bevelEnabled:true,bevelThickness:.008,bevelSize:.006,bevelSegments:2,curveSegments:6});g.translate(0,0,-th/2);return {g,rp}}
+  const MOD=.027;
+  const G1=gearGeo(12,MOD,.07),G2=gearGeo(20,MOD,.06),G3=gearGeo(10,MOD,.07);
+  const bracketMat=new THREE.MeshStandardMaterial({color:'#2e2f2b',roughness:.42,metalness:.85,bumpMap:tex.wrinkle,bumpScale:.2});const gearSteel=new THREE.MeshStandardMaterial({color:'#8d8a82',roughness:.38,metalness:1});
+  const gPlate=[0,1,2].map(()=>{const m=new THREE.Mesh(new THREE.BoxGeometry(.7,1,.04),bracketMat);m.receiveShadow=true;m.castShadow=true;scene.add(m);return m});
+  const trains=[0,1,2].map(r=>{const a=new THREE.Mesh(G1.g,M.brass),b=new THREE.Mesh(G2.g,gearSteel),c=new THREE.Mesh(G3.g,M.brassDull);
+    [a,b,c].forEach(m=>{m.castShadow=true;m.receiveShadow=true;scene.add(m)});
+    const pins=[0,1,2].map(()=>{const p=new THREE.Mesh(new THREE.CylinderGeometry(.022,.022,.12,16),M.steel);p.rotation.x=Math.PI/2;scene.add(p);return p});
+    return {a,b,c,pins,angle:0,lastSum:null}});
+
+  /* ---- place everything from the HTML layout ---- */
+  let U=1,BW=1,BH=1;
+  const toWorld=(px,py)=>new THREE.Vector3((px-BW/2)/U,-(py-BH/2)/U,0);
+  function layout(){const br=bank.getBoundingClientRect();BW=br.width;BH=br.height;if(!BW||!BH)return;
+    const dr=cells[0].el.getBoundingClientRect().width;U=dr/.92;
+    renderer.setSize(BW,BH,false);camera.aspect=BW/BH;
+    const D=(BH/U/2)/Math.tan(camera.fov*Math.PI/360);baseD=D;camera.updateProjectionMatrix();composer.setSize(BW,BH);
+    panel.scale.set(BW/U+.4,BH/U+.4,1);
+    drums.forEach(d=>{const r=d.cell.el.getBoundingClientRect();const p=toWorld(r.left-br.left+r.width/2,r.top-br.top+r.width*.08+r.width/2);d.g.position.copy(p)});
+    const rowY=[0,1,2].map(r=>drums[r*12].g.position.y);const x0=drums[0].g.position.x,x1=drums[11].g.position.x;
+    // shafts run behind each row, rails between rows
+    [0,1,2].forEach(r=>{const m=rails[r];m.position.set((x0+x1)/2+.25,rowY[r],-.16);m.scale.set(1,(x1-x0)+1.6,1)});
+    [0,1].forEach(i=>{const m=rails[3+i];const y=(rowY[i]+rowY[i+1])/2;m.position.set((x0+x1)/2+.2,y-.02,-.05);m.scale.set(1,(x1-x0)+1.3,1)});
+    const lab=[...document.querySelectorAll('.rowlab')];
+    const ps=(21/U)/.2;plates.forEach((p,r)=>{p.scale.set(ps,ps,1);const lr=lab[r].getBoundingClientRect();const w=p.geometry.parameters.width*ps;const pos=toWorld(lr.left-br.left+4,0);p.position.set(pos.x+w/2,rowY[r],-.18);
+      plateScrews[r][0].position.set(p.position.x-w/2-6/U,rowY[r],-.18);plateScrews[r][1].position.set(p.position.x+w/2+6/U,rowY[r],-.18);plateScrews[r].forEach(m=>m.scale.setScalar(Math.max(1,(7/U)/.07)))});
+    const cn=[...document.querySelectorAll('.colno')];nums.forEach((n,i)=>{const r=cn[i].getBoundingClientRect();const p=toWorld(r.left-br.left+r.width/2,r.top-br.top+r.height/2);n.position.set(p.x,p.y+.07,-.205);n.scale.setScalar(Math.max(1,(13/U)/.13))});
+    const gc=[...document.querySelectorAll('.gearcell')];
+    trains.forEach((t,r)=>{const cr=gc[r].getBoundingClientRect();const cx=toWorld(cr.left-br.left+cr.width/2,0).x+.02,y=rowY[r];gPlate[r].position.set(cx,y,-.205);
+      const pa=new THREE.Vector3(cx-.08,y+.24,-.12);const dirB=new THREE.Vector2(.3,-.95).normalize(),dAB=G1.rp+G2.rp;
+      const pb=new THREE.Vector3(pa.x+dirB.x*dAB,pa.y+dirB.y*dAB,-.13);const dirC=new THREE.Vector2(-.55,-.83).normalize(),dBC=G2.rp+G3.rp;
+      const pc=new THREE.Vector3(pb.x+dirC.x*dBC,pb.y+dirC.y*dBC,-.12);t.a.position.copy(pa);t.b.position.copy(pb);t.c.position.copy(pc);
+      t.thAB=Math.atan2(dirB.y,dirB.x);const mx=(pa.x+pb.x+pc.x)/3,my=(pa.y+pb.y+pc.y)/3;gPlate[r].position.set(mx+.01,y-.02,-.205);gPlate[r].scale.set(1.3,1.22,1);t.thBC=Math.atan2(dirC.y,dirC.x);[pa,pb,pc].forEach((p,i)=>t.pins[i].position.set(p.x,p.y,-.1))});
+    setGears();renderer.shadowMap.needsUpdate=true;dirty=true}
+  let baseD=10,dirty=true;
+  // meshing: b turns opposite a at N1/N2; phase so a tooth of one sits in a gap of the other
+  function setGears(){trains.forEach(t=>{const a=t.angle;t.a.rotation.z=a;
+    const b=-(a-t.thAB)*12/20+t.thAB+Math.PI+Math.PI/20;t.b.rotation.z=b;
+    const c=-(b-t.thBC)*20/10+t.thBC+Math.PI+Math.PI/10;t.c.rotation.z=c})}
+
+  /* ---- lens ---- */
+  const composer=K.makeComposer({ao:!Q.has('noao')});
+  new ResizeObserver(layout).observe(bank);addEventListener('resize',layout);
+  document.fonts&&document.fonts.ready.then(()=>{drums.forEach(d=>d.last='');layout()});
+  let par={x:0,y:0},parT={x:0,y:0};
+  bank.addEventListener('pointermove',e=>{if(RM.matches||STILL)return;const r=bank.getBoundingClientRect();parT.x=(e.clientX-r.left)/r.width-.5;parT.y=(e.clientY-r.top)/r.height-.5});
+  bank.addEventListener('pointerleave',()=>{parT.x=parT.y=0});
+
+  // the same curve as the CSS turn: cubic-bezier(.2,.85,.25,1.04) over .95 s
+  function bez(x){const cx=3*.2,bx=3*(.25-.2)-cx,ax=1-cx-bx,cy=3*.85,by=3*(1.04-.85)-cy,ay=1-cy-by;let t=x;
+    for(let i=0;i<6;i++){const fx=((ax*t+bx)*t+cx)*t-x,d=(3*ax*t+2*bx)*t+cx;if(Math.abs(fx)<1e-5)break;t-=fx/d}return((ay*t+by)*t+cy)*t}
+  const DUR=950;let last=performance.now(),frames=0;
+  function frame(now){const dt=Math.min(.05,(now-last)/1000);last=now;let moving=false;
+    for(const d of drums){const c=d.cell;let ang=c.angle;
+      if(!c.snap){const k=(now-c.t0)/DUR;if(k<1){ang=c.from+(c.angle-c.from)*bez(Math.max(0,k));moving=true}}
+      const z=-ang*Math.PI/180;if(d.rot.rotation.z!==z){d.rot.rotation.z=z;dirty=true}
+      if(paintWindow(d))dirty=true}
+    // gears follow the row: the drive gear turns by the row's mean drum angle
+    trains.forEach((t,r)=>{let s=0;for(let i=0;i<12;i++)s+=drums[r*12+i].rot.rotation.z;const a=s/12*.6;if(a!==t.angle){t.angle=a;moving=true}});
+    if(moving){setGears();renderer.shadowMap.needsUpdate=true;dirty=true}
+    const k=1-Math.exp(-dt*4);par.x+=(parT.x-par.x)*k;par.y+=(parT.y-par.y)*k;
+    const want=new THREE.Vector3(par.x*.6,-par.y*.35,baseD);if(camera.position.distanceTo(want)>1e-4){camera.position.copy(want);camera.lookAt(par.x*.15,-par.y*.08,0);dirty=true}
+    if(dirty){composer.render();dirty=false}
+    if(++frames===3){window.__bank.ready=true}
+    syncMirror();requestAnimationFrame(frame)}
+  layout();requestAnimationFrame(frame);
+}
 </script>
 </body>
 </html>

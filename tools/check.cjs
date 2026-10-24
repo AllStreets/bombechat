@@ -19,7 +19,9 @@ const page = path.resolve(process.argv[2] || 'mockups/bombechat.html');
 const out = path.join(path.dirname(page), '..', 'checks', path.basename(page, '.html'));
 fs.rmSync(out, { recursive: true, force: true });
 fs.mkdirSync(out, { recursive: true });
-const url = q => 'file://' + page + (q ? '?' + q : '');
+const { start } = require('./serve.cjs');
+const ROOTDIR = path.resolve(__dirname, '..');
+const url = q => 'http://127.0.0.1:4812/' + path.relative(ROOTDIR, page) + (q ? '?' + q : '');
 const VIEWPORTS = [[1024, 768], [1280, 800], [1440, 900], [1728, 1117]];
 const PARTS = { top: '.top', bank: '.bank', sheet: '.sheet', compose: '.compose', menu: '.menu', panel: '.panel' };
 
@@ -51,7 +53,8 @@ function measureText() {
 }
 
 (async () => {
-  const browser = await chromium.launch();
+  const server = await start(4812);
+  const browser = await chromium.launch({ channel: 'chrome', args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
   const problems = [];
   const report = {};
   const watch = (p, tag) => {
@@ -69,6 +72,7 @@ function measureText() {
       new PerformanceObserver(l => { for (const e of l.getEntries()) if (!e.hadRecentInput) window.__cls += e.value; }).observe({ type: 'layout-shift', buffered: true });
     });
     await p.goto(url('f=3&still'), { waitUntil: 'networkidle' });
+    await p.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
     await p.evaluate(() => document.fonts.ready);
     await p.waitForTimeout(400);
     const r = await p.evaluate(() => ({
@@ -95,6 +99,7 @@ function measureText() {
   const frames = await still.evaluate(() => +document.getElementById('fnt').textContent);
   for (let f = 0; f < frames; f++) {
     await still.goto(url(`f=${f}&still`));
+    await still.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
     await still.evaluate(() => document.fonts.ready);
     await still.waitForTimeout(250);
     await still.screenshot({ path: path.join(out, `full-f${f + 1}.png`) });
@@ -105,6 +110,7 @@ function measureText() {
   const hi = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 });
   watch(hi, 'detail');
   await hi.goto(url('f=3&still'));
+  await hi.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
   await hi.evaluate(() => document.fonts.ready);
   await hi.waitForTimeout(300);
   for (const [name, sel] of Object.entries(PARTS)) await hi.locator(sel).first().screenshot({ path: path.join(out, `detail-${name}.png`) });
@@ -118,7 +124,12 @@ function measureText() {
   await live.waitForTimeout(400);
   const before = await live.evaluate(() => { const l = document.getElementById('log'); l.scrollTop = 0; return { top: l.scrollTop, room: l.scrollHeight - l.clientHeight }; });
   if (before.room <= 0) problems.push('sheet has nothing to scroll at 1440x900');
-  await live.waitForTimeout(4150);
+  await live.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
+  report.gl = await live.evaluate(() => __bank.gl);
+  if (!report.gl) problems.push('drum bank fell back to flat drums (no WebGL)');
+  report.fps = await live.evaluate(() => new Promise(r => { let n = 0; const t0 = performance.now(); const f = () => { n++; performance.now() - t0 < 2000 ? requestAnimationFrame(f) : r(Math.round(n / 2)); }; requestAnimationFrame(f); }));
+  if (report.fps < 50) problems.push('front frame rate ' + report.fps);
+  await live.waitForTimeout(1750);
   await live.screenshot({ path: path.join(out, 'motion.png'), clip: await live.locator('.bank').boundingBox() });
   await live.waitForTimeout(2600);
   const scroll = await live.evaluate(() => ({ top: document.getElementById('log').scrollTop, tab: !document.getElementById('newtab').hidden }));
@@ -130,9 +141,9 @@ function measureText() {
   const after = await live.evaluate(() => { const l = document.getElementById('log'); return { gap: l.scrollHeight - l.scrollTop - l.clientHeight, tab: !document.getElementById('newtab').hidden }; });
   if (after.gap > 30 || after.tab) problems.push(`"new below" did not take the reader to the bottom (gap ${after.gap})`);
   // wait for the drums to come to rest, then read the plain row
-  await live.waitForFunction(() => [...document.querySelectorAll('.wl')].slice(0, 12).map(t => t.textContent).join('') === ft(+document.getElementById('fno').textContent - 1), null, { timeout: 4000 }).catch(() => {});
+  await live.waitForFunction(() => __bank.rows().plain === ft(+document.getElementById('fno').textContent - 1), null, { timeout: 4000 }).catch(() => {});
   const motion = await live.evaluate(() => {
-    const plain = [...document.querySelectorAll('.wl')].slice(0, 12).map(t => t.textContent).join('');
+    const plain = __bank.rows().plain;
     return { frame: document.getElementById('fno').textContent, plain, expected: ft(+document.getElementById('fno').textContent - 1) };
   });
   if (motion.expected !== motion.plain) problems.push(`plain row reads ${motion.plain}, frame text is ${motion.expected}`);
@@ -179,12 +190,27 @@ function measureText() {
   if (!/settings\.html/.test(live2.url())) problems.push('Settings did not go to settings.html');
   await live2.close();
 
+  // 2x crops of the bank, turning and at rest
+  const hb = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 });
+  watch(hb, 'bank 2x');
+  await hb.goto(url());
+  await hb.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
+  await hb.evaluate(() => new Promise(r => { const f0 = document.getElementById('fno').textContent; const t = setInterval(() => { if (document.getElementById('fno').textContent !== f0) { clearInterval(t); r(); } }, 20); }));
+  await hb.waitForTimeout(650);
+  await hb.locator('.bank').screenshot({ path: path.join(out, 'bank-turning.png') });
+  await hb.waitForTimeout(1600);
+  await hb.locator('.bank').screenshot({ path: path.join(out, 'bank-settled.png') });
+  await hb.close();
+
   // 6. reduced motion: drums change letters without spinning
   const rm = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: 'reduce' });
   watch(rm, 'reduced motion');
   await rm.goto(url());
   const rmT = await rm.evaluate(() => getComputedStyle(document.querySelector('.rotor')).transitionDuration);
   if (!/^0s/.test(rmT)) problems.push(`reduced motion still spins drums (${rmT})`);
+  await rm.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
+  const rmSpin = await rm.evaluate(() => new Promise(r => { const f0 = document.getElementById('fno').textContent; const t = setInterval(() => { if (document.getElementById('fno').textContent !== f0) { clearInterval(t); setTimeout(() => r(cells.some(c => !c.snap)), 400); } }, 20); }));
+  if (rmSpin) problems.push('reduced motion still turns the 3D drums');
   await rm.close();
 
   // 7. offline audio
@@ -199,5 +225,6 @@ function measureText() {
 
   await browser.close();
   console.log(JSON.stringify({ out, frames, ...report, problems }, null, 2));
+  server.close();
   process.exit(problems.length ? 1 : 0);
 })();
