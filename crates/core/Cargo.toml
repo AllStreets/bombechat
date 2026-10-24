@@ -2,3 +2,10 @@
 name = "bombechat-core"
 version = "0.1.0"
 edition = "2021"
+
+[dependencies]
+ed25519-dalek = { version = "2.2.0", features = ["rand_core"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+sha2 = "0.10"
+x25519-dalek = { version = "2.0.1", features = ["static_secrets"] }
+zeroize = "1"
