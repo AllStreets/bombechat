@@ -428,6 +428,57 @@ fn joining_mid_frame_waits_for_the_next_preamble() {
     assert_eq!(decode(cfg, &x), vec![f]);
 }
 
+/// The first 100 ms of a transmission: the preamble chirp alone.
+fn chirp_only(cfg: &ModemConfig, amplitude: f32) -> Vec<f32> {
+    let f = split(&[], 7).remove(0);
+    modulate(cfg, &f)[..cfg.sample_rate as usize / 10]
+        .iter()
+        .map(|v| v * amplitude)
+        .collect()
+}
+
+// With the default config the first preamble search block ends near stream
+// position 11_000 and threshold crossings are only taken up to about 9_000
+// (the rest of the block is kept for finding the true peak). The sweeps below
+// straddle both edges, for the current block size and for the larger one an
+// earlier version used.
+
+#[test]
+fn overlapping_chirps_never_panic() {
+    // A chirp that crosses the threshold late in a search block, then a
+    // stronger one about 2000 samples later: the strongest peak lands at the
+    // block's end, and acquiring it must not read past the input.
+    let cfg = ModemConfig::default();
+    let (weak, strong) = (chirp_only(&cfg, 1.0), chirp_only(&cfg, 2.0));
+    let mut runs = 0;
+    for first in (9_200..9_480).step_by(10) {
+        for second in (11_200..11_500).step_by(10) {
+            let mut x = vec![0f32; second + strong.len() + 20_000];
+            for (i, v) in weak.iter().enumerate() {
+                x[first + i] += v;
+            }
+            for (i, v) in strong.iter().enumerate() {
+                x[second + i] += v;
+            }
+            // Bare chirps carry no frame; getting through without a panic is
+            // the test.
+            let _ = Demodulator::new(cfg).push(&x);
+            runs += 1;
+        }
+    }
+    assert_eq!(runs, 28 * 30);
+}
+
+#[test]
+fn preamble_across_search_block_edge_decodes() {
+    let f = sample_frame();
+    let cfg = ModemConfig::default();
+    for lead in (8_800..11_600).step_by(37) {
+        let x = padded(&cfg, &f, lead, lead as u64);
+        assert_eq!(decode(cfg, &x), vec![f.clone()], "lead {lead}");
+    }
+}
+
 #[test]
 fn shortest_frame_decodes() {
     let cfg = ModemConfig::default();

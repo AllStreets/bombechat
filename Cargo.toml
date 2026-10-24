@@ -6,3 +6,12 @@ members = [
     "crates/store",
     "crates/node",
 ]
+
+# The modem's signal processing (FFT matched filters, per-sample filtering)
+# is slow unoptimised; its sweep tests decode hundreds of seconds of audio.
+# Optimise it and its FFT even in dev/test builds.
+[profile.dev.package.bombechat-modem]
+opt-level = 2
+
+[profile.dev.package.rustfft]
+opt-level = 2

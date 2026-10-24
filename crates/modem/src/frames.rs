@@ -27,7 +27,7 @@ pub const FRAME_DATA: usize = 48;
 pub const PARITY: usize = 16;
 
 /// Size in bytes of the frame header: `tag u16 | seq u8 | total u8 | len u8`.
-const HEADER_LEN: usize = 5;
+pub(crate) const HEADER_LEN: usize = 5;
 
 /// A partial or complete message resolves after this many milliseconds
 /// without a new frame.

@@ -34,15 +34,12 @@ use std::sync::Arc;
 use rustfft::num_complex::Complex;
 use rustfft::{Fft, FftPlanner};
 
-use crate::frames::{FRAME_DATA, PARITY};
+use crate::frames::{FRAME_DATA, HEADER_LEN, PARITY};
 
-/// Frame header size (`tag u16 | seq u8 | total u8 | len u8`), mirrored from
-/// `frames.rs`.
-const FRAME_HEADER: usize = 5;
 /// Shortest frame on the air: a header, no data, and parity.
-const MIN_FRAME: usize = FRAME_HEADER + PARITY;
+const MIN_FRAME: usize = HEADER_LEN + PARITY;
 /// Longest frame on the air: a header, full data and parity.
-const MAX_FRAME: usize = FRAME_HEADER + FRAME_DATA + PARITY;
+const MAX_FRAME: usize = HEADER_LEN + FRAME_DATA + PARITY;
 /// How many times the frame length is repeated after the preamble.
 const LENGTH_COPIES: usize = 3;
 
@@ -411,7 +408,12 @@ impl Demodulator {
         let coupling = m as f64 + lo * m as f64 / (hi - lo);
         let peak_span = (2.0 * MAX_CLOCK_ERROR * coupling).ceil() as usize + m / 16;
         let half_radius = m / 32;
-        let block = fft_len - longest + 1;
+        // Lags per search block. A lag is only searched if, besides the full
+        // chirp's matched filter, the half-chirp search in `acquire` (which
+        // reaches up to `half_radius + 1` samples past the end of the
+        // longest scaled chirp) also fits inside the block's samples, so a
+        // peak anywhere in the block can be acquired without waiting.
+        let block = fft_len - (longest + half_radius + 2) + 1;
         assert!(block > 2 * peak_span, "preamble search block too short");
 
         // The stream is treated as starting after a short stretch of
@@ -611,7 +613,11 @@ impl Demodulator {
             let offset = k as f64 * half as f64 / hyp.rho;
             let centre = peak + offset.round() as usize;
             let lo = centre.checked_sub(r)?;
-            if lo < self.origin {
+            let hi = centre + r + reference.len();
+            // `search` only picks peaks whose window fits; this guard keeps
+            // any slip in that bookkeeping from ever panicking on air input.
+            debug_assert!(hi <= self.end(), "acquire window past buffered input");
+            if lo < self.origin || hi > self.end() {
                 return None;
             }
             let mags: Vec<f64> = (lo..=centre + r)
