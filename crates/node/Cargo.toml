@@ -4,9 +4,22 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+bombechat-core = { path = "../core" }
+bombechat-modem = { path = "../modem" }
+bombechat-store = { path = "../store" }
+rand_core = { version = "0.6", features = ["getrandom"] }
+x25519-dalek = "2.0.1"
 # Optional, feature-gated Bluetooth transport. Never present in the airgapped
 # build (`--no-default-features`); see tools/check-airgapped.sh.
 btleplug = { version = "0.11", optional = true }
+
+[dev-dependencies]
+# FakeAudio / LoopbackAudio for the two-node tests. A dev-dependency only, so
+# `fake-audio` never reaches a normal build (tools/check-airgapped.sh follows
+# normal edges only).
+bombechat-modem = { path = "../modem", features = ["fake-audio"] }
+rand = "0.8"
+tempfile = "3"
 
 [features]
 default = []

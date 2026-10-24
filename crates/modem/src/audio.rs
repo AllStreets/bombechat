@@ -58,6 +58,16 @@ pub trait AudioIo: Send {
     /// The sample rate, in Hz, that both the input and output streams run
     /// at.
     fn sample_rate(&self) -> u32;
+
+    /// An error a stream reported asynchronously since the last call (a
+    /// device unplugged, a backend failure), if any; each one is returned
+    /// at most once. `start_input` and `play` only report synchronous
+    /// failures, so a caller polls this to learn that a running stream
+    /// has died. Devices with no asynchronous errors keep the default,
+    /// which never reports one.
+    fn take_error(&mut self) -> Option<AudioError> {
+        None
+    }
 }
 
 /// Maps a [`cpal::Error`] to an [`AudioError`], by its [`cpal::ErrorKind`].
@@ -238,6 +248,10 @@ impl AudioIo for CpalAudio {
 
     fn sample_rate(&self) -> u32 {
         self.sample_rate
+    }
+
+    fn take_error(&mut self) -> Option<AudioError> {
+        self.take_stream_error()
     }
 }
 

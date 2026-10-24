@@ -83,6 +83,13 @@ impl QuietGate {
         self.last_room_db = Some(room_db);
     }
 
+    /// Whether `item` is still waiting to play (its first play or a
+    /// repeat). False once it has played `1 + repeats` times, so a caller
+    /// keeping the item's samples elsewhere knows when to drop them.
+    pub fn is_queued(&self, item: usize) -> bool {
+        self.queue.iter().any(|e| e.item == item)
+    }
+
     /// The item to play now, if any. Marks that item as played at
     /// `now_ms` and removes it from the queue once it has played
     /// `1 + repeats` times.
@@ -120,6 +127,19 @@ mod tests {
         assert_eq!(dbfs_to_room_db(-40.0, DEFAULT_CALIBRATION_OFFSET), 54.0);
         assert_eq!(dbfs_to_room_db(-40.0, 94.0), 54.0);
         assert_eq!(dbfs_to_room_db(0.0, 94.0), 94.0);
+    }
+
+    #[test]
+    fn is_queued_until_the_last_repeat_has_played() {
+        let mut g = QuietGate::new(40.0, 1, 90);
+        assert!(!g.is_queued(3));
+        g.enqueue(3);
+        assert!(g.is_queued(3));
+        g.observe(10.0, 0);
+        assert_eq!(g.due(0), Some(3));
+        assert!(g.is_queued(3), "one repeat still to play");
+        assert_eq!(g.due(90_000), Some(3));
+        assert!(!g.is_queued(3));
     }
 
     #[test]

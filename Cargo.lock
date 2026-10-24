@@ -202,7 +202,14 @@ dependencies = [
 name = "bombechat-node"
 version = "0.1.0"
 dependencies = [
+ "bombechat-core",
+ "bombechat-modem",
+ "bombechat-store",
  "btleplug",
+ "rand 0.8.8",
+ "rand_core 0.6.4",
+ "tempfile",
+ "x25519-dalek",
 ]
 
 [[package]]
