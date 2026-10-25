@@ -99,7 +99,11 @@ function tauriStub({ hello, safety, pairOfferMs = 1200, people, talk, afterUnloc
           return Promise.resolve(null);
         }
         case 'confirm_pair': return Promise.resolve(7);
-        case 'set_setting': return refuseSetting ? Promise.reject(refuseSetting) : Promise.resolve(null);
+        // refused as the device refuses a save that fails: left as it was, except Light turned down, which the
+        // machine keeps for the session (Escape always stops) and its settings then answer
+        case 'set_setting': if (!refuseSetting) return Promise.resolve(null);
+          if (args.id === 'light' && settings && typeof settings === 'object' && args.valueIndex < settings.light) settings.light = args.valueIndex;
+          return Promise.reject(refuseSetting);
         case 'send': return Promise.reject('not sent');
         // as the broadcast command answers; an accepted one waits, plays and is sent, as the node reports it
         case 'broadcast': {
@@ -1079,7 +1083,8 @@ function measureText() {
           problems.push(`${tag}: Flash at Read was not refused as it should be: ${JSON.stringify([refusedNotice.pubnote, refusedReply.pubnote, refusedReply.sends])}`);
         // the eyepiece's shutter: shut, the machine is asked for no picture; open again, it is
         if (w === 1440) {
-          // Escape the machine refuses (the setting can't be saved): the lamp stays up, says why, and the switch stays
+          // Escape when the setting can't be saved: the machine stops flashing all the same (Light is at Read for this
+          // session), so the lamp goes, the switch is at Read, and the page says the setting wasn't kept
           const rp = await browser.newPage({ viewport: { width: w, height: h }, deviceScaleFactor: 2 });
           watch(rp, `${tag} escape refused`);
           await rp.addInitScript(tauriStub, { hello: 'Marisol Ortega', safety: '', people: [{ id: 1, name: 'Marisol Ortega', checked: true, safety: '' }], refuseSetting: 'the setting was not saved: disk full',
@@ -1090,9 +1095,12 @@ function measureText() {
           await emit(rp, 'display', frame(1, 0)); await paint(rp); await rp.waitForTimeout(50);
           await rp.keyboard.press('Escape'); await rp.waitForTimeout(300);
           const held = await rp.evaluate(view);
-          if (!held.shown || held.light !== '2' || held.say !== 'Hold this screen up to their camera. Not stopped. The setting was not saved: disk full.' || /Flashing stopped/.test(held.said)) problems.push(`${tag}: a refused Escape: ${JSON.stringify(held)}`);
-          await rp.locator('.lamp').screenshot({ path: path.join(out, `light-${w}-stop-refused.png`) });
-          r.escapeRefused = held.say;
+          await emit(rp, 'display', frame(1, 1)); await paint(rp);
+          const after = await rp.evaluate(view);
+          if (held.shown || after.light !== '1' || held.said !== 'Flashing stopped. Light is at Read, but the setting could not be saved.' || after.shown)
+            problems.push(`${tag}: Escape when the setting can't be saved: ${JSON.stringify({ held, after })}`);
+          await rp.locator('.top').screenshot({ path: path.join(out, `light-${w}-stop-unsaved.png`) });
+          r.escapeUnsaved = held.said;
           await rp.close();
           await lp.click('#eyepiece'); await paint(lp);
           const shut = await lp.evaluate(() => ({ on: __calls.filter(c => c[0] === 'eyepiece').map(c => c[1].on).pop(), shut: document.getElementById('eyepiece').getAttribute('aria-checked'), kept: localStorage.getItem('bombechat.eyepiece') }));

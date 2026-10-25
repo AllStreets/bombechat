@@ -239,6 +239,50 @@ fn a_notice_by_light_is_handed_to_the_page_as_frames_at_the_flash_speed() {
     assert_eq!(stopped, Some(json!({ "tag": shown[0]["tag"] })));
 }
 
+#[test]
+fn escape_stops_flashing_even_when_the_setting_cannot_be_saved() {
+    let dir = TempDir::new().unwrap();
+    let cam = FakeCamera::new(Vec::new());
+    let mut b = Bench::new(&store(&dir), &cam);
+    commands::unlock(&b.s, "correct horse".into(), Some("Ana".into())).unwrap();
+    b.set("light", 2);
+    commands::broadcast(&b.s, "Water at the church.".into(), "light".into()).unwrap();
+    let shown = |events: Vec<NodeEvent>| {
+        events
+            .iter()
+            .map(commands::bridge_event)
+            .filter(|(name, _)| *name == "display")
+            .count()
+    };
+    assert!(shown(b.steps(20)) > 0, "flashing");
+
+    // The settings file can't be written: a folder stands where it goes.
+    let file = dir.path().join("settings.json");
+    std::fs::remove_file(&file).unwrap();
+    std::fs::create_dir(&file).unwrap();
+
+    // Turned up, refused and left as it was.
+    let why = commands::set_setting(&b.s, "flash".into(), 2).unwrap_err();
+    assert!(why.starts_with("The setting was not saved"), "{why}");
+    assert_eq!(commands::settings(&b.s)["flash"], 1);
+
+    // Turned down to Read (Escape): not saved, but in effect, so the
+    // screen clears and nothing more is shown.
+    let why = commands::set_setting(&b.s, "light".into(), 1).unwrap_err();
+    assert!(why.starts_with("The setting was not saved"), "{why}");
+    assert_eq!(commands::settings(&b.s)["light"], 1, "Read, for this session");
+    let after: Vec<_> = b.steps(300).iter().map(commands::bridge_event).collect();
+    assert!(after.iter().any(|(name, _)| *name == "displayStopped"));
+    assert!(!after.iter().any(|(name, _)| *name == "display"), "nothing flashed after Escape");
+    assert_eq!(b.light()["state"], "listening", "still reading");
+
+    // Turned back up while the file still can't be written: refused, and
+    // the screen stays clear.
+    assert!(commands::set_setting(&b.s, "light".into(), 2).is_err());
+    assert_eq!(commands::settings(&b.s)["light"], 1);
+    assert_eq!(shown(b.steps(50)), 0);
+}
+
 /// A picture of a light code with a finger over its middle: in view, but
 /// not readable.
 fn covered_code() -> GrayImage {

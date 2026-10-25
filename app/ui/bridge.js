@@ -28,7 +28,9 @@
 //                                corrected it on the card (the hello's name is only a suggestion)
 //   setSetting(id, valueIndex)   [set_setting { id, valueIndex }]  only for a change the person just made: the
 //                                machine keeps every setting and is their only record. Rejects with a sentence to show
-//                                when the machine won't take it, e.g. 'Unlock first, then the lock can come off'
+//                                when the machine won't take it, e.g. 'Unlock first, then the lock can come off'.
+//                                One exception: Light turned down when the setting can't be saved is in effect for
+//                                the session all the same (Escape always stops); it rejects, and settings() says so
 //   settingNotes()               [setting_notes]                    resolves to { [id]: { note, value? } } for each setting this
 //                                machine can't change: note is what its row says instead ('comes with relay', 'always,
 //                                on this build', 'Keychain only on macOS'); value the one it is held at,

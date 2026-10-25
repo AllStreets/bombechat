@@ -654,6 +654,12 @@ impl Machine for Device {
     /// Applied and kept, or refused and left as it was. Delete messages
     /// after deletes nothing here: the next purge (at unlock, or within
     /// the hour) does, which leaves time to put a plug back.
+    ///
+    /// One exception: Light turned down (toward less flashing, or the
+    /// camera closed) stays turned down for this session even when it
+    /// can't be saved, so Escape always stops a flashing screen. The
+    /// save's failure is still returned; the settings answer the lower
+    /// value, and the next setting saved writes it to disk.
     fn set_setting(&mut self, id: &str, value_index: usize) -> Result<(), String> {
         let before = self.setting(id);
         if id == "lock" {
@@ -667,6 +673,9 @@ impl Machine for Device {
         self.settings.insert(id.to_string(), value_index);
         if let Err(e) = save_settings(&settings_path(&self.store_path), &self.settings) {
             let old = before.or_else(|| default_of(id)).unwrap_or(0);
+            if id == "light" && value_index < old {
+                return Err(format!("The setting was not saved: {e}"));
+            }
             match before {
                 Some(b) => self.settings.insert(id.to_string(), b),
                 None => self.settings.remove(id),

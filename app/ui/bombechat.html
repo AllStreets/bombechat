@@ -881,8 +881,13 @@ function turnKnob(id,pos,again){const k=KNOBS[id];if(k.held)return Promise.resol
   const cap=document.querySelector(`#${id} .cap`);cap.style.transform=`rotate(${ANG[pos]}deg)`;setTimeout(()=>drawKnob(id),RM.matches?0:330);
   Drum.spin(2,0.7);
   // Light taken off Read and flash: the machine ends a pairing by light, and so does the card
-  const taken=Promise.resolve(bridge.setSetting(k.setting,pos)).then(()=>{if(id==='k2'&&pos<2)lightLeftFlash();return true},why=>{const t=String(why&&why.message||why);if(k.pos!==pos)return t;k.pos=was.pos;k.read=was.read;drawKnob(id);applyChannels();
-    say(t.charAt(0).toUpperCase()+t.slice(1));return t});
+  // refused: back to where the machine keeps it. Light turned down is the exception the machine makes: it stays down
+  // for this session even when it can't be saved (so Escape always stops), and the machine's settings say so
+  const back=t=>{if(k.pos!==pos)return t;k.pos=was.pos;k.read=was.read;drawKnob(id);applyChannels();say(t.charAt(0).toUpperCase()+t.slice(1));return t};
+  const taken=Promise.resolve(bridge.setSetting(k.setting,pos)).then(()=>{if(id==='k2'&&pos<2)lightLeftFlash();return true},why=>{const t=String(why&&why.message||why);
+    if(!(id==='k2'&&pos<was.pos))return back(t);
+    return Promise.resolve(bridge.settings()).then(m=>{if(!m||m.light!==pos)return back(t);if(k.pos!==pos)return t;
+      lightLeftFlash();say(`Light is at ${k.labels[pos]}, but the setting could not be saved.`);return {unsaved:t}},()=>back(t))});
   applyChannels();return taken}
 ['k1','k2'].forEach(id=>{drawKnob(id);const el=document.getElementById(id);
   el.addEventListener('click',()=>turnKnob(id,(KNOBS[id].pos+1)%3));
@@ -1384,6 +1389,8 @@ async function stopFlashing(){if(Lamp.state==='closed'||Lamp.stopping)return;
   Lamp.stopping=true;
   const taken=await turnKnob('k2',1,true);Lamp.stopping=false;
   if(taken===true){if(Lamp.state!=='closed'){Lamp.stopped=true;lampClose()}say('Flashing stopped. Light is at Read, and the message waits.');return}
+  // the machine stopped, but couldn't keep the setting on disk: stopped all the same, and the page says what wasn't kept
+  if(taken&&taken.unsaved){if(Lamp.state!=='closed'){Lamp.stopped=true;lampClose()}say('Flashing stopped. Light is at Read, but the setting could not be saved.');return}
   if(Lamp.state!=='closed'){Lamp.refused=`Not stopped. ${sentence(taken)}`;lampCaption()}}
 lampStop.addEventListener('click',stopFlashing);
 addEventListener('keydown',e=>{if(e.key==='Escape'&&Lamp.state!=='closed'){e.preventDefault();stopFlashing()}});
