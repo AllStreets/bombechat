@@ -1,17 +1,23 @@
 //! The light code end to end: encode, render, read back, collect.
 
-use bombechat_light::{encode, read_clean, render, CodeSpec, Collector, LightEvent};
+use bombechat_light::code::{BLOCK_DARK_MAX, BLOCK_DARK_MIN};
+use bombechat_light::{
+    encode, geometry, orientation, read_clean, render, CodeSpec, Collector, Layout, LightEvent,
+    Orientation,
+};
+use image::GrayImage;
 use proptest::prelude::*;
 use rand::rngs::StdRng;
+use rand::seq::SliceRandom;
 use rand::{Rng, RngCore, SeedableRng};
 
 const PX: u32 = 480;
 
-fn presets() -> [(&'static str, CodeSpec, u32); 3] {
+fn presets() -> [(&'static str, CodeSpec); 3] {
     [
-        ("slow", CodeSpec::slow(), 6),
-        ("normal", CodeSpec::normal(), 12),
-        ("fast", CodeSpec::fast(), 20),
+        ("slow", CodeSpec::slow()),
+        ("normal", CodeSpec::normal()),
+        ("fast", CodeSpec::fast()),
     ]
 }
 
@@ -28,8 +34,12 @@ fn completed(events: &[LightEvent]) -> Option<(u16, Vec<u8>)> {
     })
 }
 
-/// Feed frames from `frames` into a fresh collector until one completes;
-/// returns the bytes and how many frames were pushed.
+fn accepted(events: &[LightEvent]) -> bool {
+    matches!(events.first(), Some(LightEvent::FrameOk { .. }))
+}
+
+/// Feed frames into a fresh collector until one completes; returns the
+/// bytes and how many frames were pushed.
 fn collect_until_complete(frames: impl Iterator<Item = Vec<u8>>, limit: usize) -> (Vec<u8>, usize) {
     let mut collector = Collector::new();
     for (i, frame) in frames.take(limit).enumerate() {
@@ -40,9 +50,19 @@ fn collect_until_complete(frames: impl Iterator<Item = Vec<u8>>, limit: usize) -
     panic!("did not complete within {limit} frames");
 }
 
+/// Whether the cell at `row`, `col` of a rendered image is dark.
+fn cell_dark(spec: &CodeSpec, img: &GrayImage, row: u16, col: u16) -> bool {
+    let (x, y) = geometry(spec, img.width()).centre(row, col);
+    img.get_pixel(x, y).0[0] < 128
+}
+
+fn flip_bit(frame: &mut [u8], bit: usize) {
+    frame[bit / 8] ^= 0x80 >> (bit % 8);
+}
+
 #[test]
 fn round_trip_through_the_rendered_image() {
-    for (name, spec, _) in presets() {
+    for (name, spec) in presets() {
         let env = envelope(1500, 1);
         let mut enc = encode(&spec, &env, 7);
         let mut collector = Collector::new();
@@ -104,7 +124,7 @@ fn frame_ok_counts_distinct_symbols() {
 
 #[test]
 fn joining_late_with_heavy_loss_still_completes() {
-    for (name, spec, _) in presets() {
+    for (name, spec) in presets() {
         let env = envelope(4096, 3);
         let mut enc = encode(&spec, &env, 11);
         for _ in 0..37 {
@@ -143,25 +163,61 @@ fn interleaved_tags_complete_separately() {
 }
 
 #[test]
-fn a_completed_tag_does_not_complete_again() {
+fn a_preset_change_mid_send_completes_under_the_new_preset() {
+    let old = envelope(4096, 20);
+    let new = envelope(3000, 21);
+    let mut slow = encode(&CodeSpec::slow(), &old, 42);
+    let mut fast = encode(&CodeSpec::fast(), &new, 42);
+    let mut c = Collector::new();
+    for i in 0..5 {
+        assert!(completed(&c.push(&slow.next_frame(), i)).is_none());
+    }
+    let mut done = None;
+    for i in 5..60 {
+        let events = c.push(&fast.next_frame(), i);
+        assert!(accepted(&events), "frame {i} after the change was refused");
+        if let Some(d) = completed(&events) {
+            done = Some(d);
+            break;
+        }
+    }
+    assert_eq!(done, Some((42, new)));
+}
+
+#[test]
+fn a_completed_tag_is_not_delivered_twice_during_a_long_send() {
     let spec = CodeSpec::fast();
     let env = envelope(300, 7);
     let mut enc = encode(&spec, &env, 9);
     let mut c = Collector::new();
     assert!(completed(&c.push(&enc.next_frame(), 0)).is_some());
-    assert!(c.push(&enc.next_frame(), 1).is_empty());
+    // The sender keeps flashing for twenty minutes; every frame refreshes
+    // the memory that tag 9 is done.
+    for minute in 1..=20u64 {
+        assert!(c.push(&enc.next_frame(), minute * 60_000).is_empty());
+    }
 }
 
 #[test]
-fn partials_expire_after_ten_minutes() {
+fn a_rejected_tag_is_collected_afresh() {
+    let spec = CodeSpec::fast();
+    let env = envelope(300, 8);
+    let mut enc = encode(&spec, &env, 9);
+    let mut c = Collector::new();
+    assert!(completed(&c.push(&enc.next_frame(), 0)).is_some());
+    c.reject(9);
+    assert_eq!(completed(&c.push(&enc.next_frame(), 1)), Some((9, env)));
+}
+
+#[test]
+fn partials_expire_after_ten_minutes_even_without_an_expire_call() {
     let spec = CodeSpec::slow();
     let env = envelope(2000, 8);
     let mut enc = encode(&spec, &env, 5);
     let mut c = Collector::new();
     c.push(&enc.next_frame(), 0);
-    c.expire(600_001);
     // The first symbol was forgotten: the count starts again.
-    let events = c.push(&enc.next_frame(), 600_002);
+    let events = c.push(&enc.next_frame(), 600_001);
     assert!(
         matches!(events[0], LightEvent::FrameOk { got: 1, .. }),
         "{events:?}"
@@ -169,39 +225,95 @@ fn partials_expire_after_ten_minutes() {
 }
 
 #[test]
-fn frames_with_a_bad_crc_are_rejected() {
-    let spec = CodeSpec::normal();
-    let env = envelope(4096, 9);
-    let mut enc = encode(&spec, &env, 1);
-    let frame = enc.next_frame();
-    let mut rng = StdRng::seed_from_u64(10);
-    for _ in 0..200 {
-        let mut bad = frame.clone();
-        let bit = rng.gen_range(0..bad.len() * 8);
-        bad[bit / 8] ^= 0x80 >> (bit % 8);
-        assert!(
-            Collector::new().push(&bad, 0).is_empty(),
-            "flipped bit {bit} accepted"
-        );
+fn scattered_misread_cells_are_corrected() {
+    // One percent of the data cells, flipped at random, in 100 frames per
+    // preset.
+    for (name, spec) in presets() {
+        let env = envelope(4096, 12);
+        let mut enc = encode(&spec, &env, 1);
+        let cells = spec.frame_bytes() * 8;
+        let n = cells / 100;
+        let mut rng = StdRng::seed_from_u64(13);
+        let mut all: Vec<usize> = (0..cells).collect();
+        for i in 0..100 {
+            let mut frame = enc.next_frame();
+            all.shuffle(&mut rng);
+            for &bit in &all[..n] {
+                flip_bit(&mut frame, bit);
+            }
+            assert!(
+                accepted(&Collector::new().push(&frame, 0)),
+                "{name}: frame {i} with {n} flipped cells refused"
+            );
+        }
     }
-    assert!(!Collector::new().push(&frame, 0).is_empty());
+}
+
+#[test]
+fn a_band_of_misread_rows_is_corrected() {
+    // Every data cell in a band of adjacent rows read wrong, the band
+    // swept down the grid. For normal and fast the band is more than one
+    // codeword can repair; interleaving spreads it over both.
+    for (name, spec, rows) in [
+        ("slow", CodeSpec::slow(), 4u16),
+        ("normal", CodeSpec::normal(), 5),
+        ("fast", CodeSpec::fast(), 6),
+    ] {
+        let layout = Layout::new(&spec);
+        let env = envelope(4096, 14);
+        let mut enc = encode(&spec, &env, 1);
+        for top in 2..spec.cells - rows {
+            let mut frame = enc.next_frame();
+            let mut flipped = 0;
+            for (bit, &(row, _)) in layout.data_positions().iter().enumerate() {
+                if bit < frame.len() * 8 && row >= top && row < top + rows {
+                    flip_bit(&mut frame, bit);
+                    flipped += 1;
+                }
+            }
+            assert!(
+                accepted(&Collector::new().push(&frame, 0)),
+                "{name}: rows {top}..{} ({flipped} cells) not corrected",
+                top + rows
+            );
+        }
+    }
+}
+
+#[test]
+fn frames_past_repair_are_rejected() {
+    for (name, spec) in presets() {
+        let env = envelope(4096, 9);
+        let mut enc = encode(&spec, &env, 1);
+        let mut rng = StdRng::seed_from_u64(10);
+        for i in 0..200 {
+            let mut frame = enc.next_frame();
+            // Trash a third of the coded region's bytes.
+            for b in frame.iter_mut().skip(8) {
+                if rng.gen_bool(0.33) {
+                    *b ^= rng.gen_range(1..=255u8);
+                }
+            }
+            assert!(
+                Collector::new().push(&frame, 0).is_empty(),
+                "{name}: trashed frame {i} accepted"
+            );
+        }
+    }
 }
 
 #[test]
 fn a_4096_byte_envelope_completes_within_budget() {
-    for (name, spec, fps) in presets() {
+    for (name, spec) in presets() {
         let env = envelope(4096, 11);
         let mut enc = encode(&spec, &env, 2);
         let k = enc.source_symbols() as usize;
         let (bytes, used) =
             collect_until_complete(std::iter::from_fn(|| Some(enc.next_frame())), k + 2);
         assert_eq!(bytes, env, "{name}");
-        // Every preset sends 4096 bytes in at most 20 frames, 3.5 seconds.
-        assert!(used <= 20, "{name}: {used} frames");
-        assert!(
-            used as f64 / fps as f64 <= 3.5,
-            "{name}: {used} frames at {fps} fps"
-        );
+        let seconds = used as f64 / spec.frames_per_second() as f64;
+        assert!(used <= 26, "{name}: {used} frames");
+        assert!(seconds <= 4.5, "{name}: {seconds:.2} s");
     }
 }
 
@@ -213,49 +325,58 @@ fn an_empty_envelope_completes() {
     assert_eq!(completed(&events), Some((4, Vec::new())));
 }
 
-/// Fraction of a frame's data cells that are dark.
-fn dark_fraction(frame: &[u8]) -> f64 {
-    let ones: u32 = frame.iter().map(|b| b.count_ones()).sum();
-    ones as f64 / (frame.len() * 8) as f64
-}
-
-/// Mean luma of a whole rendered image, 0.0 to 1.0.
-fn mean_luma(img: &image::GrayImage) -> f64 {
-    let sum: u64 = img.pixels().map(|p| p.0[0] as u64).sum();
-    sum as f64 / (img.width() as u64 * img.height() as u64 * 255) as f64
-}
-
 #[test]
-fn every_frame_darkens_about_half_its_cells() {
-    for (name, spec, _) in presets() {
+fn every_8x8_block_stays_40_to_60_percent_dark() {
+    for (name, spec) in presets() {
+        let n = spec.cells;
         for (kind, env) in [
             ("random", envelope(4096, 12)),
             ("zeros", vec![0u8; 4096]),
             ("ones", vec![0xffu8; 4096]),
         ] {
             let mut enc = encode(&spec, &env, 0xa5a5);
-            let mut last_luma: Option<f64> = None;
-            for i in 0..200 {
-                let frame = enc.next_frame();
-                let f = dark_fraction(&frame);
-                assert!(
-                    (0.45..=0.55).contains(&f),
-                    "{name} {kind} frame {i}: {f:.3} dark"
-                );
-
-                // Whole-image mean luma, quiet zone and marks included, moves
-                // only a few percent from one frame to the next.
-                let luma = mean_luma(&render(&spec, &frame, PX));
-                if let Some(prev) = last_luma {
-                    let change = (luma - prev).abs();
-                    assert!(
-                        change < 0.05,
-                        "{name} {kind} frame {i}: luma moved {change:.3}"
-                    );
+            for i in 0..300 {
+                let img = render(&spec, &enc.next_frame(), PX);
+                for br in 0..n / 8 {
+                    for bc in 0..n / 8 {
+                        let mut dark = 0;
+                        for r in 0..8 {
+                            for c in 0..8 {
+                                dark += cell_dark(&spec, &img, br * 8 + r, bc * 8 + c) as u32;
+                            }
+                        }
+                        assert!(
+                            (BLOCK_DARK_MIN..=BLOCK_DARK_MAX).contains(&dark),
+                            "{name} {kind} frame {i} block ({br}, {bc}): {dark} of 64 dark"
+                        );
+                    }
                 }
-                last_luma = Some(luma);
             }
         }
+    }
+}
+
+#[test]
+fn a_mirrored_picture_is_detected_as_mirrored() {
+    for (name, spec) in presets() {
+        let mut enc = encode(&spec, &envelope(500, 15), 1);
+        let img = render(&spec, &enc.next_frame(), PX);
+        // A mirrored picture, once its three finders are lined up the
+        // usual way round, is the drawing reflected across its diagonal.
+        let mut mirrored = GrayImage::new(PX, PX);
+        for (x, y, p) in img.enumerate_pixels() {
+            mirrored.put_pixel(y, x, *p);
+        }
+        assert_eq!(
+            orientation(&spec, |r, c| cell_dark(&spec, &img, r, c)),
+            Some(Orientation::Normal),
+            "{name}"
+        );
+        assert_eq!(
+            orientation(&spec, |r, c| cell_dark(&spec, &mirrored, r, c)),
+            Some(Orientation::Mirrored),
+            "{name}"
+        );
     }
 }
 
@@ -268,7 +389,7 @@ proptest! {
 
     #[test]
     fn push_never_panics_on_damaged_frames(
-        flips in proptest::collection::vec((any::<usize>(), any::<u8>()), 1..20),
+        flips in proptest::collection::vec((any::<usize>(), any::<u8>()), 1..60),
         truncate in any::<Option<usize>>(),
     ) {
         let spec = CodeSpec::slow();

@@ -9,7 +9,7 @@
 
 use image::{GrayImage, Luma};
 
-use crate::code::{Cell, CodeSpec, QUIET};
+use crate::code::{CodeSpec, Layout, QUIET};
 
 /// Luma of a dark cell.
 pub const DARK: u8 = 0;
@@ -24,6 +24,16 @@ pub struct Geometry {
     /// Pixel offset of the grid's top-left corner from the image's, on
     /// both axes.
     pub origin: u32,
+}
+
+impl Geometry {
+    /// The pixel at the centre of cell `row`, `col`, as `(x, y)`.
+    pub fn centre(&self, row: u16, col: u16) -> (u32, u32) {
+        (
+            self.origin + col as u32 * self.cell_px + self.cell_px / 2,
+            self.origin + row as u32 * self.cell_px + self.cell_px / 2,
+        )
+    }
 }
 
 /// The geometry [`render`] uses for `spec` at `px` pixels.
@@ -41,13 +51,14 @@ pub fn geometry(spec: &CodeSpec, px: u32) -> Geometry {
 }
 
 /// Draw `frame` (from [`crate::Encoder::next_frame`]) as a square image
-/// `px` pixels a side.
+/// `px` pixels a side, balance cells filled in.
 ///
 /// # Panics
 ///
-/// Panics if `frame` is not exactly `spec.frame_bytes()` long, or if `px`
-/// is too small (see [`geometry`]).
+/// Panics if `spec` is not a preset, `frame` is not exactly
+/// `spec.frame_bytes()` long, or `px` is too small (see [`geometry`]).
 pub fn render(spec: &CodeSpec, frame: &[u8], px: u32) -> GrayImage {
+    assert!(spec.is_valid(), "{spec:?} is not a light code preset");
     assert_eq!(
         frame.len(),
         spec.frame_bytes(),
@@ -56,39 +67,19 @@ pub fn render(spec: &CodeSpec, frame: &[u8], px: u32) -> GrayImage {
         spec.frame_bytes()
     );
     let g = geometry(spec, px);
+    let grid = Layout::new(spec).grid(frame);
+    let n = spec.cells as usize;
     let mut img = GrayImage::from_pixel(px, px, Luma([LIGHT]));
-
-    let mut data_index = 0usize;
-    for row in 0..spec.cells {
-        for col in 0..spec.cells {
-            let dark = match spec.cell(row, col) {
-                Cell::Fixed(dark) => dark,
-                Cell::Data => {
-                    let i = data_index;
-                    data_index += 1;
-                    match frame.get(i / 8) {
-                        Some(byte) => byte & (0x80 >> (i % 8)) != 0,
-                        // Filler past the last whole byte.
-                        None => i % 2 == 1,
-                    }
-                }
-            };
-            if dark {
-                fill_cell(&mut img, &g, row, col);
+    for (i, _) in grid.iter().enumerate().filter(|(_, &dark)| dark) {
+        let x0 = g.origin + (i % n) as u32 * g.cell_px;
+        let y0 = g.origin + (i / n) as u32 * g.cell_px;
+        for y in y0..y0 + g.cell_px {
+            for x in x0..x0 + g.cell_px {
+                img.put_pixel(x, y, Luma([DARK]));
             }
         }
     }
     img
-}
-
-fn fill_cell(img: &mut GrayImage, g: &Geometry, row: u16, col: u16) {
-    let x0 = g.origin + col as u32 * g.cell_px;
-    let y0 = g.origin + row as u32 * g.cell_px;
-    for y in y0..y0 + g.cell_px {
-        for x in x0..x0 + g.cell_px {
-            img.put_pixel(x, y, Luma([DARK]));
-        }
-    }
 }
 
 /// Read the frame bytes back from an image exactly as [`render`] drew it,
@@ -102,12 +93,12 @@ pub fn read_clean(spec: &CodeSpec, img: &GrayImage) -> Vec<u8> {
     assert_eq!(img.width(), img.height(), "a rendered code is square");
     let g = geometry(spec, img.width());
     let mut out = vec![0u8; spec.frame_bytes()];
-    for (i, (row, col)) in spec.data_positions().into_iter().enumerate() {
+    let layout = Layout::new(spec);
+    for (i, &(row, col)) in layout.data_positions().iter().enumerate() {
         if i / 8 >= out.len() {
             break;
         }
-        let x = g.origin + col as u32 * g.cell_px + g.cell_px / 2;
-        let y = g.origin + row as u32 * g.cell_px + g.cell_px / 2;
+        let (x, y) = g.centre(row, col);
         if img.get_pixel(x, y).0[0] < 128 {
             out[i / 8] |= 0x80 >> (i % 8);
         }

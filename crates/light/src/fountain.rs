@@ -1,28 +1,36 @@
 //! RaptorQ fountain framing: an endless stream of frames for one envelope,
 //! and a collector that rebuilds envelopes from whichever frames it sees.
 //!
-//! [`encode`] turns an envelope into an [`Encoder`] whose frames carry the
-//! envelope's source symbols first and then fresh repair symbols forever,
-//! so a receiver that starts watching late, or misses frames, still
-//! completes once it has seen about `K + 2` distinct symbols, where `K` is
-//! [`CodeSpec::source_symbols`] for the envelope, in any order.
+//! [`encode`] turns an envelope into an [`Encoder`] whose frames carry
+//! RaptorQ symbols, source symbols first and then fresh repair symbols
+//! forever, so a receiver that starts watching late, or misses frames,
+//! still completes once it has seen about `K + 2` distinct symbols, where
+//! `K` is [`CodeSpec::source_symbols`] for the envelope, in any order. A
+//! symbol whose frame cannot be drawn within the photosensitivity bound
+//! under any mask is skipped (see [`crate::code`]); the fountain makes
+//! that free.
 //!
 //! [`Collector`] takes frame bytes as the camera reads them, by tag, and
 //! emits [`LightEvent`]s. Like the sound path's reassembler, a partial
 //! envelope (and the memory of a completed tag) is dropped ten minutes
-//! after its last frame; see [`Collector::expire`].
+//! after its last frame. It holds at most [`MAX_PARTIALS`] envelopes in
+//! progress, dropping the stalest when a new tag arrives.
 
 use std::collections::{HashMap, HashSet};
 
+use bombechat_core::MAX_ENVELOPE;
 use raptorq::{
     Decoder, EncodingPacket, ObjectTransmissionInformation, PayloadId, SourceBlockEncoder,
 };
 
-use crate::code::{read_frame, write_frame, CodeSpec, MAX_SOURCE_SYMBOLS};
+use crate::code::{code_region, finish_frame, read_frame, CodeSpec, Layout, MASKS};
 
 /// A partial or completed envelope is forgotten this many milliseconds
 /// after its last frame.
 const EXPIRY_MS: u64 = 600_000;
+
+/// Most envelopes a collector holds in progress at once.
+pub const MAX_PARTIALS: usize = 16;
 
 /// RaptorQ encoding symbol ids are 24 bits.
 const SYMBOL_ID_LIMIT: u32 = 1 << 24;
@@ -37,20 +45,17 @@ fn transmission_info(spec: &CodeSpec, len: u16) -> ObjectTransmissionInformation
 ///
 /// # Panics
 ///
-/// Panics if `spec` is not valid ([`CodeSpec::is_valid`]), if `envelope`
-/// is longer than 65535 bytes, or if it would need more than
-/// [`MAX_SOURCE_SYMBOLS`] symbols at this spec's symbol size. Envelopes
-/// are capped at 4096 bytes upstream, well inside every preset.
+/// Panics if `spec` is not a preset, or if `envelope` is longer than
+/// `bombechat_core::MAX_ENVELOPE`.
 pub fn encode(spec: &CodeSpec, envelope: &[u8], tag: u16) -> Encoder {
-    assert!(spec.is_valid(), "invalid light code spec {spec:?}");
-    let len = u16::try_from(envelope.len()).expect("envelope longer than 65535 bytes");
-    let k = spec.source_symbols(envelope.len());
+    assert!(spec.is_valid(), "{spec:?} is not a light code preset");
     assert!(
-        k <= MAX_SOURCE_SYMBOLS,
-        "envelope of {} bytes needs {k} symbols of {} bytes, more than {MAX_SOURCE_SYMBOLS}",
-        envelope.len(),
-        spec.symbol_size,
+        envelope.len() <= MAX_ENVELOPE,
+        "envelope of {} bytes is over the {MAX_ENVELOPE} byte cap",
+        envelope.len()
     );
+    let len = envelope.len() as u16;
+    let k = spec.source_symbols(envelope.len());
 
     let (block, source) = if envelope.is_empty() {
         (None, Vec::new())
@@ -69,6 +74,7 @@ pub fn encode(spec: &CodeSpec, envelope: &[u8], tag: u16) -> Encoder {
 
     Encoder {
         spec: *spec,
+        layout: Layout::new(spec),
         tag,
         len,
         k,
@@ -81,6 +87,7 @@ pub fn encode(spec: &CodeSpec, envelope: &[u8], tag: u16) -> Encoder {
 /// An endless stream of frames for one envelope; see [`encode`].
 pub struct Encoder {
     spec: CodeSpec,
+    layout: Layout,
     tag: u16,
     len: u16,
     k: u32,
@@ -90,16 +97,25 @@ pub struct Encoder {
 }
 
 impl Encoder {
-    /// The next frame's bytes, ready for [`crate::render`]. Source symbols
-    /// come first, then repair symbols; symbol ids wrap after 2^24.
+    /// The next frame's bytes, ready for [`crate::render`]. Every frame
+    /// returned keeps each 8 by 8 block of the drawn code between 40 and
+    /// 60 percent dark. Symbol ids wrap after 2^24.
     pub fn next_frame(&mut self) -> Vec<u8> {
         let count = self.spec.packets_per_frame() as u32;
-        let first = self.next_id;
-        let symbols: Vec<Vec<u8>> = (0..count)
-            .map(|i| self.symbol((first + i) % SYMBOL_ID_LIMIT))
-            .collect();
-        self.next_id = (first + count) % SYMBOL_ID_LIMIT;
-        write_frame(&self.spec, self.tag, self.len, first, &symbols)
+        loop {
+            let first = self.next_id;
+            self.next_id = (first + count) % SYMBOL_ID_LIMIT;
+            let symbols: Vec<Vec<u8>> = (0..count)
+                .map(|i| self.symbol((first + i) % SYMBOL_ID_LIMIT))
+                .collect();
+            let region = code_region(&self.spec, self.tag, self.len, first, &symbols);
+            for mask in 0..MASKS {
+                let frame = finish_frame(&self.spec, &region, mask);
+                if self.layout.is_balanced(&frame) {
+                    return frame;
+                }
+            }
+        }
     }
 
     /// Number of distinct symbols a receiver needs at minimum.
@@ -139,12 +155,25 @@ struct Partial {
     last_ms: u64,
 }
 
+impl Partial {
+    fn new(spec: CodeSpec, len: u16, now_ms: u64) -> Self {
+        Partial {
+            spec,
+            len,
+            decoder: Decoder::new(transmission_info(&spec, len)),
+            seen: HashSet::new(),
+            last_ms: now_ms,
+        }
+    }
+}
+
 /// Rebuilds envelopes from light frames, by tag. Frames may arrive in any
 /// order, repeat, or go missing.
 pub struct Collector {
     partials: HashMap<u16, Partial>,
-    /// Tags that already completed, with when, so the sender's frames that
-    /// keep arriving afterwards produce nothing.
+    /// Tags that already completed, with when one of their frames was last
+    /// seen, so the sender's frames that keep arriving afterwards produce
+    /// nothing.
     completed: HashMap<u16, u64>,
 }
 
@@ -157,34 +186,35 @@ impl Collector {
     }
 
     /// Feed one frame's bytes in, as read from the camera. Never panics,
-    /// whatever `frame_bytes` holds.
+    /// whatever `frame_bytes` holds. Expires stale state first.
     ///
-    /// Returns nothing for a frame that fails its CRC, does not match what
-    /// its tag has carried so far, or belongs to a tag that already
-    /// completed. Otherwise returns `FrameOk`, followed by `Complete` if
-    /// this frame was enough to recover the envelope.
+    /// Returns nothing for a frame that cannot be repaired or fails its
+    /// CRC, claims an envelope over `MAX_ENVELOPE`, or belongs to a tag
+    /// that already completed. Otherwise returns `FrameOk`, followed by
+    /// `Complete` if this frame was enough to recover the envelope. If a
+    /// frame's preset or length disagrees with what its tag carried so
+    /// far, the newest wins: the partial starts again from this frame.
     pub fn push(&mut self, frame_bytes: &[u8], now_ms: u64) -> Vec<LightEvent> {
+        self.expire(now_ms);
         let Some(frame) = read_frame(frame_bytes) else {
             return Vec::new();
         };
         let tag = frame.tag;
-        if self.completed.contains_key(&tag) {
+        if let Some(seen) = self.completed.get_mut(&tag) {
+            *seen = now_ms;
             return Vec::new();
         }
-        let need = frame.spec.source_symbols(frame.transfer_length as usize);
-        if need > MAX_SOURCE_SYMBOLS {
+        let len = frame.transfer_length;
+        if len as usize > MAX_ENVELOPE {
             return Vec::new();
         }
+        let need = frame.spec.source_symbols(len as usize);
 
-        if frame.transfer_length == 0 {
+        if len == 0 {
             self.partials.remove(&tag);
             self.completed.insert(tag, now_ms);
             return vec![
-                LightEvent::FrameOk {
-                    tag,
-                    got: 0,
-                    need: 0,
-                },
+                LightEvent::FrameOk { tag, got: 0, need },
                 LightEvent::Complete {
                     tag,
                     bytes: Vec::new(),
@@ -192,22 +222,32 @@ impl Collector {
             ];
         }
 
-        let partial = self.partials.entry(tag).or_insert_with(|| Partial {
-            spec: frame.spec,
-            len: frame.transfer_length,
-            decoder: Decoder::new(transmission_info(&frame.spec, frame.transfer_length)),
-            seen: HashSet::new(),
-            last_ms: now_ms,
-        });
-        if partial.spec != frame.spec || partial.len != frame.transfer_length {
-            return Vec::new();
+        let stale = self
+            .partials
+            .get(&tag)
+            .is_some_and(|p| p.spec != frame.spec || p.len != len);
+        if stale {
+            self.partials.remove(&tag);
         }
+        if !self.partials.contains_key(&tag) && self.partials.len() >= MAX_PARTIALS {
+            if let Some(oldest) = self
+                .partials
+                .iter()
+                .min_by_key(|(_, p)| p.last_ms)
+                .map(|(t, _)| *t)
+            {
+                self.partials.remove(&oldest);
+            }
+        }
+        let partial = self
+            .partials
+            .entry(tag)
+            .or_insert_with(|| Partial::new(frame.spec, len, now_ms));
         partial.last_ms = now_ms;
 
         let mut recovered = None;
         for (i, symbol) in frame.symbols.into_iter().enumerate() {
-            let id = (frame.symbol_id as u64 + i as u64) % SYMBOL_ID_LIMIT as u64;
-            let id = id as u32;
+            let id = ((frame.symbol_id as u64 + i as u64) % SYMBOL_ID_LIMIT as u64) as u32;
             if !partial.seen.insert(id) {
                 continue;
             }
@@ -221,7 +261,7 @@ impl Collector {
         let got = partial.seen.len() as u32;
         let mut events = vec![LightEvent::FrameOk { tag, got, need }];
         if let Some(mut bytes) = recovered {
-            bytes.truncate(partial.len as usize);
+            bytes.truncate(len as usize);
             self.partials.remove(&tag);
             self.completed.insert(tag, now_ms);
             events.push(LightEvent::Complete { tag, bytes });
@@ -229,9 +269,18 @@ impl Collector {
         events
     }
 
+    /// Forget that `tag` completed, and any partial for it, so its frames
+    /// are collected afresh: for an envelope that arrived but would not
+    /// open.
+    pub fn reject(&mut self, tag: u16) {
+        self.completed.remove(&tag);
+        self.partials.remove(&tag);
+    }
+
     /// Drop partial envelopes whose last frame arrived more than ten
-    /// minutes before `now_ms`, and forget tags that completed more than
-    /// ten minutes before it (so the tag number can be reused).
+    /// minutes before `now_ms`, and forget completed tags none of whose
+    /// frames arrived in the last ten minutes (so the tag number can be
+    /// reused).
     pub fn expire(&mut self, now_ms: u64) {
         self.partials
             .retain(|_, p| now_ms.saturating_sub(p.last_ms) <= EXPIRY_MS);
@@ -253,34 +302,57 @@ mod tests {
 
     proptest! {
         /// Frames that pass the CRC but carry nonsense (any tag, length,
-        /// symbol id or symbol bytes, any preset) never panic the collector,
-        /// even mixed together under one tag.
+        /// symbol id or symbol bytes, any preset or mask) never panic the
+        /// collector, even mixed together under one tag.
         #[test]
         fn push_never_panics_on_crc_valid_nonsense(
             frames in proptest::collection::vec(
-                (0usize..3, 0u16..4, any::<u16>(), any::<u32>(), any::<u8>()),
+                (0u8..3, 0u16..4, any::<u16>(), 0u32..(1 << 24), any::<u8>(), 0u8..MASKS),
                 1..40,
             ),
         ) {
-            let presets = [CodeSpec::slow(), CodeSpec::normal(), CodeSpec::fast()];
             let mut c = Collector::new();
-            for (i, (p, tag, len, id, fill)) in frames.into_iter().enumerate() {
-                let spec = presets[p];
+            for (i, (p, tag, len, id, fill, mask)) in frames.into_iter().enumerate() {
+                let spec = CodeSpec::from_preset(p).unwrap();
                 let symbols = vec![vec![fill; spec.symbol_size as usize]; spec.packets_per_frame()];
-                let bytes = write_frame(&spec, tag, len, id, &symbols);
-                c.push(&bytes, i as u64);
+                let region = code_region(&spec, tag, len, id, &symbols);
+                c.push(&finish_frame(&spec, &region, mask), i as u64);
             }
         }
 
         /// Arbitrary bytes of exactly a preset's frame length never panic.
         #[test]
         fn push_never_panics_on_frame_sized_noise(
-            p in 0usize..3,
-            seed in proptest::collection::vec(any::<u8>(), 471),
+            p in 0u8..3,
+            noise in proptest::collection::vec(any::<u8>(), 512),
         ) {
-            let spec = [CodeSpec::slow(), CodeSpec::normal(), CodeSpec::fast()][p];
+            let spec = CodeSpec::from_preset(p).unwrap();
             let mut c = Collector::new();
-            c.push(&seed[..spec.frame_bytes()], 0);
+            c.push(&noise[..spec.frame_bytes()], 0);
         }
+    }
+
+    #[test]
+    fn lengths_over_the_envelope_cap_are_refused() {
+        let spec = CodeSpec::normal();
+        let symbols = vec![vec![0; spec.symbol_size as usize]];
+        let region = code_region(&spec, 1, MAX_ENVELOPE as u16 + 1, 0, &symbols);
+        assert!(Collector::new()
+            .push(&finish_frame(&spec, &region, 0), 0)
+            .is_empty());
+    }
+
+    #[test]
+    fn at_most_sixteen_partials_are_held_dropping_the_stalest() {
+        let spec = CodeSpec::slow();
+        let mut c = Collector::new();
+        let env = vec![7u8; 1000];
+        for tag in 0..20u16 {
+            let mut enc = encode(&spec, &env, tag);
+            c.push(&enc.next_frame(), tag as u64);
+        }
+        assert_eq!(c.partials.len(), MAX_PARTIALS);
+        assert!(!c.partials.contains_key(&0));
+        assert!(c.partials.contains_key(&19));
     }
 }

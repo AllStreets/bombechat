@@ -8,6 +8,6 @@ pub mod code;
 pub mod fountain;
 pub mod render;
 
-pub use code::{Cell, CodeSpec};
+pub use code::{orientation, Cell, CodeSpec, Layout, Orientation};
 pub use fountain::{encode, Collector, Encoder, LightEvent};
 pub use render::{geometry, read_clean, render, Geometry};

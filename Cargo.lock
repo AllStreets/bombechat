@@ -316,11 +316,13 @@ dependencies = [
 name = "bombechat-light"
 version = "0.1.0"
 dependencies = [
+ "bombechat-core",
  "crc32fast",
  "image",
  "proptest",
  "rand 0.8.8",
  "raptorq",
+ "reed-solomon",
 ]
 
 [[package]]

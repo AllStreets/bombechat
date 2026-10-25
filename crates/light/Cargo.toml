@@ -4,10 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+bombechat-core = { path = "../core" }
 crc32fast = "1"
 # Only the in-memory buffer types (GrayImage); no codecs, no I/O.
 image = { version = "0.25", default-features = false }
 raptorq = "2"
+reed-solomon = "0.2"
 
 [dev-dependencies]
 proptest = "1"
