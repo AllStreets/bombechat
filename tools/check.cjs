@@ -1299,7 +1299,7 @@ function measureText() {
       // frames: the sheet, the still field as the lamp opens, 117 code frames, and the sheet back, at the preset's rate
       // (every frame one 1/fps step).
       report.photosensitivity = {};
-      for (const spec of [1, 2]) {
+      for (const spec of [0, 1, 2]) {
         const fps = [6, 10, 15][spec];
         const lp = await openLight(1440, 900, 2, { dpr: 1, q: 'still&ready=300' });
         const caps = [];
