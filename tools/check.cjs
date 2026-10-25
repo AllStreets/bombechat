@@ -62,7 +62,7 @@ function tauriStub({ hello, safety, people, talk, afterUnlock, settings }) {
         case 'unlock': unlocked = true; for (const [name, payload] of afterUnlock || []) window.__emit(name, payload); return Promise.resolve(null);
         case 'machine': return Promise.resolve({ name: 'Machine No. 1', key: 'a3f09c1e'.repeat(16), you: 'Ana Lima', held: 0, version: '0.1.0' });
         case 'conversation': return Promise.resolve((talk || {})[args.contactId] || []);
-        case 'settings': return Promise.resolve(settings || { sound: 2, volume: 2, band: 0, light: 0, flash: 1, machine: 1, machvol: 2, carry: 1, hops: 3, hold: 2, quiet: 2, repeats: 2, lock: 1, expire: 2, inperson: 1 });
+        case 'settings': return settings === 'unread' ? Promise.reject('the machine did not answer') : Promise.resolve(settings || { sound: 2, volume: 2, band: 0, light: 0, flash: 1, machine: 1, machvol: 2, carry: 1, hops: 3, hold: 2, quiet: 2, repeats: 2, lock: 1, expire: 2, inperson: 1 });
         case 'channels': return Promise.resolve([{ channel: 'sound', state: 'listening', rate: 16.1 }]);
         case 'pair': setTimeout(() => window.__emit('pairOffer', { peer: { sign: Array(32).fill(5), dh: Array(32).fill(6) }, name: hello, safety }), 1200); return Promise.resolve(null);
         case 'confirm_pair': return Promise.resolve(7);
@@ -415,6 +415,27 @@ function measureText() {
       if (where === 'app' ? JSON.stringify(turned) !== JSON.stringify([{ id: 'sound', valueIndex: 2 }]) : turned !== 1 || kept.sound !== 2) problems.push(`${tag}: turning the Sound switch sent ${JSON.stringify(turned)}, kept ${JSON.stringify(kept)}`);
       report.settingsAtBoot[tag] = { ...booted, turned };
       await sb.close();
+    }
+    // a machine that cannot say its settings: the switches show Off and say so, nothing is sent
+    {
+      const un = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 });
+      watch(un, 'settings unread');
+      await un.addInitScript(tauriStub, { hello: 'Marisol Ortega', safety: '', people: [{ id: 1, name: 'Marisol Ortega', checked: true, safety: '' }], settings: 'unread' });
+      await un.goto(url('still'));
+      await un.waitForSelector('.unlock input[name=pass]');
+      await un.fill('.unlock input[name=pass]', 'correct horse');
+      await un.click('.unlock button');
+      await un.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
+      const unread = await un.evaluate(() => ({ sound: document.getElementById('k1').getAttribute('aria-valuenow'), light: document.getElementById('k2').getAttribute('aria-valuenow'),
+        top: document.getElementById('toplisten').textContent, title: document.getElementById('k1').title, sendOff: document.getElementById('sendsound').getAttribute('aria-disabled'),
+        sets: __calls.filter(c => c[0] === 'set_setting').length }));
+      if (unread.sound !== '0' || unread.light !== '0' || unread.sendOff !== 'true') problems.push(`unread settings: the switches are not at Off: ${JSON.stringify(unread)}`);
+      if (unread.top !== 'Switches not read' || !/not read from the machine/.test(unread.title)) problems.push(`unread settings: the page does not say the switches were not read: ${JSON.stringify(unread)}`);
+      if (unread.sets) problems.push(`unread settings: the page sent ${unread.sets} settings`);
+      await un.locator('.top').screenshot({ path: path.join(out, 'settings-unread-top.png') });
+      await un.locator('.panel').screenshot({ path: path.join(out, 'settings-unread-panel.png') });
+      report.settingsUnread = unread;
+      await un.close();
     }
 
     // pairing by sound on the key check card, in a plain browser (the simulator) and in the app

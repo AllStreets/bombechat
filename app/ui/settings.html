@@ -161,10 +161,13 @@ const SETTINGS=[
 ];
 const byId=Object.fromEntries(SETTINGS.map(s=>[s.id,s]));
 // the machine keeps every setting and is the only record of them: render from it, and send one back only when
-// the person changes it. v above is each one's default, for a machine that cannot answer.
-{const kept=await bridge.settings().catch(()=>({}));for(const s of SETTINGS){const v=kept[s.id];if(Number.isInteger(v)&&v>=0&&v<s.values.length)s.v=v}}
+// the person changes it. v above is each one's default. A machine that cannot answer leaves every row saying it was
+// not read, with Sound and Light at Off rather than their most permissive positions.
+function takeKept(kept){const changed=[];for(const s of SETTINGS){const v=kept[s.id];if(Number.isInteger(v)&&v>=0&&v<s.values.length&&(v!==s.v||!s.read)){s.v=v;s.read=true;changed.push(s.id)}}return changed}
+SETTINGS.forEach(s=>s.read=true);
+try{takeKept(await bridge.settings())}catch(e){SETTINGS.forEach(s=>s.read=false);byId.sound.v=0;byId.light.v=0}
 try{localStorage.removeItem('bombechat.settings')}catch(e){}
-const label=s=>s.values[s.v]+(s.unit||'');
+const label=s=>s.read?s.values[s.v]+(s.unit||''):'Not read';
 
 /* ---------- schedule card ---------- */
 const sched=document.getElementById('sched');
@@ -193,7 +196,7 @@ for(const g of GROUPS){
 function syncRow(id){const s=byId[id],r=rows[id];r.querySelector('.val').textContent=label(s);
   r.querySelectorAll('.jk').forEach((b,i)=>{b.setAttribute('aria-checked',i===s.v);b.tabIndex=i===s.v?0:-1})}
 const savedEl=document.getElementById('saved');let savedT;
-function setValue(id,i,from){const s=byId[id];if(s.v===i){focusSetting(id,'pin');return}s.v=i;syncRow(id);
+function setValue(id,i,from){const s=byId[id];if(s.v===i&&s.read){focusSetting(id,'pin');return}s.v=i;s.read=true;syncRow(id);
   savedEl.textContent=`${s.name}: ${label(s)}`;savedEl.style.opacity=1;clearTimeout(savedT);savedT=setTimeout(()=>savedEl.style.opacity=0,2600);
   Object.values(rows).forEach(r=>r.classList.remove('active'));rows[id].classList.add('active');bridge.setSetting(id,i);
   if(from!=='card')rows[id].scrollIntoView({block:'nearest',behavior:REDUCED?'auto':'smooth'});
@@ -354,6 +357,8 @@ async function build(){
   function move(id,i){const P=plugs[id];focusSetting(id,'pin');const from=P.end.clone(),to=P.jacks[i].clone();
     if(REDUCED){P.end.copy(to);P.lift=0;rebuild(P);Snd.seat();return}
     P.anim={t0:performance.now(),from,to,pulled:false,seated:false};Snd.pull()}
+  // put a plug straight into a jack, quietly: the machine's record moved it, not the person
+  function seat(id,i){const P=plugs[id];P.anim=null;P.end.copy(P.jacks[i]);P.lift=0;rebuild(P)}
   function stepAnim(P,now){const a=P.anim;const t=(now-a.t0)/1000;const PULL=.18,CARRY=.42,SEAT=.16;
     if(t<PULL){const k=t/PULL;P.lift=.45*easeOut(k)}
     else if(t<PULL+CARRY){const k=easeInOut((t-PULL)/CARRY);P.end.copy(a.from).lerp(a.to,k);P.lift=.45+.35*Math.sin(Math.PI*k)}
@@ -378,7 +383,7 @@ async function build(){
     hoverId=null;fullView()});
   renderer.domElement.addEventListener('pointerup',e=>{if(!drag)return;const P=plugs[drag.id];let best=0,bd=1e9;P.jacks.forEach((p,i)=>{const d=Math.abs(p.x-P.end.x);if(d<bd){bd=d;best=i}});
     const s=byId[drag.id];view.classList.remove('grabbing');const id=drag.id;drag=null;
-    P.anim={t0:performance.now()-180,from:P.end.clone(),to:P.jacks[best].clone()};if(s.v!==best){s.v=best;syncRow(id);bridge.setSetting(id,best);savedEl.textContent=`${s.name}: ${label(s)}`;savedEl.style.opacity=1;clearTimeout(savedT);savedT=setTimeout(()=>savedEl.style.opacity=0,2600);Object.values(rows).forEach(r=>r.classList.remove('active'));rows[id].classList.add('active');rows[id].scrollIntoView({block:'nearest',behavior:'smooth'})}});
+    P.anim={t0:performance.now()-180,from:P.end.clone(),to:P.jacks[best].clone()};if(s.v!==best||!s.read){s.v=best;s.read=true;syncRow(id);bridge.setSetting(id,best);savedEl.textContent=`${s.name}: ${label(s)}`;savedEl.style.opacity=1;clearTimeout(savedT);savedT=setTimeout(()=>savedEl.style.opacity=0,2600);Object.values(rows).forEach(r=>r.classList.remove('active'));rows[id].classList.add('active');rows[id].scrollIntoView({block:'nearest',behavior:'smooth'})}});
   view.addEventListener('pointermove',e=>{const r=view.getBoundingClientRect();parT.x=(e.clientX-r.left)/r.width-.5;parT.y=(e.clientY-r.top)/r.height-.5});
   view.addEventListener('pointerleave',()=>{parT.x=parT.y=0;if(!drag&&hoverId){hoverId=null;focusSetting(null,'hover')}});
   const hint=document.getElementById('hint');function hideHint(){}
@@ -402,13 +407,16 @@ async function build(){
 
   function toScreen(v3){const v=v3.clone().project(camera);const r=renderer.domElement.getBoundingClientRect();return {x:r.left+(v.x*.5+.5)*r.width,y:r.top+(-v.y*.5+.5)*r.height}}
   const screen=id=>{const P=plugs[id];const h=P.head.position.clone();h.z+=.35;return {plug:toScreen(h),first:toScreen(P.jacks[0].clone().setZ(.3))}};
-  return {focus,move,plugs,camera,screen,get ready(){return frames>2},endOf:id=>{const P=plugs[id];return {x:P.end.x,jack:P.jacks.findIndex(j=>Math.abs(j.x-P.end.x)<1e-3&&Math.abs(j.y-P.end.y)<1e-3),lift:P.lift}}};
+  return {focus,move,seat,plugs,camera,screen,get ready(){return frames>2},endOf:id=>{const P=plugs[id];return {x:P.end.x,jack:P.jacks.findIndex(j=>Math.abs(j.x-P.end.x)<1e-3&&Math.abs(j.y-P.end.y)<1e-3),lift:P.lift}}};
 }
 
 /* arriving from the front: finish the turn the front started */
 try{if(sessionStorage.getItem('bombechat-turn')==='front-to-back'&&!REDUCED){sessionStorage.removeItem('bombechat-turn');
   document.body.animate([{transform:'perspective(1600px) rotateY(80deg)',opacity:0},{transform:'perspective(1600px) rotateY(0deg)',opacity:1}],{duration:520,easing:'cubic-bezier(.2,.8,.3,1)'})}}catch(e){}
 /* tests and links */
+// back here by history (bfcache): the settings may have moved on the front, so read them again from the machine
+// and show them, sending nothing
+addEventListener('pageshow',e=>{if(!e.persisted)return;bridge.settings().then(kept=>{for(const id of takeKept(kept)){syncRow(id);machine&&machine.seat(id,byId[id].v)}},()=>{})});
 window.__bc={screen:id=>machine.screen(id),focused:()=>focusId,get:id=>byId[id].v,set:(id,i)=>setValue(id,i,'test'),focus:id=>focusSetting(id,'pin'),end:id=>machine&&machine.endOf(id),settings:SETTINGS.map(s=>s.id)};
 if(Q.has('focus'))focusSetting(Q.get('focus'),'pin');
 document.getElementById('back').addEventListener('click',e=>{if(REDUCED)return;e.preventDefault();const href=e.currentTarget.href;try{sessionStorage.setItem('bombechat-turn','back-to-front')}catch(_){}document.body.animate([{transform:'perspective(1600px) rotateY(0deg)',opacity:1},{transform:'perspective(1600px) rotateY(-80deg)',opacity:0}],{duration:420,easing:'cubic-bezier(.5,0,.75,0)'}).onfinish=()=>location.href=href});

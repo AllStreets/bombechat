@@ -16,7 +16,8 @@ const { start } = require('./serve.cjs');
 const url = q => 'http://127.0.0.1:4811/' + path.relative(ROOTDIR, page) + (q ? '?' + q : '');
 (async () => {
   const server = await start(4811);
-  const browser = await chromium.launch({ channel: 'chrome', args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
+  // with the back/forward cache on (Playwright turns it off), so the history check meets a restored page
+  const browser = await chromium.launch({ channel: 'chrome', args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'], ignoreDefaultArgs: ['--disable-back-forward-cache'] });
   const problems = [];
   const open = async (vp, q, dpr = 1) => {
     const ctx = await browser.newContext({ viewport: vp, deviceScaleFactor: dpr });
@@ -142,8 +143,66 @@ const url = q => 'http://127.0.0.1:4811/' + path.relative(ROOTDIR, page) + (q ? 
     atBoot[tag] = { shown, sent, changed };
     await ctx.close();
   }
+  // back here by history: settings, to the front, turn the Sound switch there, then back. The page restored from the
+  // back/forward cache reads the machine again: rows and plugs match what it keeps, and it sends nothing.
+  let history = null;
+  if (APP) {
+    const ctx = await browser.newContext({ viewport: vp, deviceScaleFactor: 2 });
+    await ctx.addInitScript(() => { window.__restored = 0; addEventListener('pageshow', e => { if (e.persisted) window.__restored++; }); });
+    const hp = await ctx.newPage();
+    hp.on('pageerror', e => problems.push('history: page error: ' + e.message));
+    await hp.goto(url('still'), { waitUntil: 'domcontentloaded', timeout: 120000 });
+    await hp.waitForFunction(() => window.__ready, null, { timeout: 90000 });
+    const sound0 = await hp.evaluate(() => window.__bc.get('sound'));
+    await hp.click('#back');
+    await hp.waitForURL(/bombechat\.html/, { timeout: 10000 });
+    await hp.waitForSelector('#k1 svg', { timeout: 60000 });
+    await hp.waitForTimeout(400);
+    await hp.click('#k1');
+    await hp.waitForTimeout(700);
+    const turnedTo = +(await hp.getAttribute('#k1', 'aria-valuenow'));
+    await hp.goBack({ waitUntil: 'commit' });
+    await hp.waitForURL(/settings\.html/, { timeout: 10000, waitUntil: 'commit' });
+    await hp.waitForTimeout(800);
+    history = await hp.evaluate(() => ({ restored: window.__restored, row: +document.querySelector('.row[data-id="sound"] .jk[aria-checked="true"]').dataset.i,
+      label: document.querySelector('.row[data-id="sound"] .val').textContent, v: window.__bc.get('sound'), plug: window.__bc.end('sound').jack, sets: __sim.settingsSet }));
+    history.before = sound0; history.turnedTo = turnedTo;
+    if (!history.restored) problems.push('history: the settings page was not restored from the back/forward cache, so the refresh went untested');
+    if (turnedTo === sound0) problems.push(`history: the front's Sound switch did not turn (${turnedTo})`);
+    if (history.row !== turnedTo || history.v !== turnedTo || history.plug !== turnedTo) problems.push(`history: back on the settings page the Sound row shows ${JSON.stringify(history)}, the machine keeps ${turnedTo}`);
+    if (history.sets) problems.push(`history: the restored page sent ${history.sets} settings`);
+    await hp.screenshot({ path: path.join(out, 'history-back.png'), clip: { x: 0, y: 46, width: 460, height: 400 } });
+    // the row's jack for the old value now changes it again (it is not swallowed as already set)
+    await hp.click(`.row[data-id="sound"] .jk[data-i="${sound0}"]`);
+    await hp.waitForTimeout(200);
+    const again = await hp.evaluate(() => ({ sets: __sim.settingsSet, v: window.__bc.get('sound') }));
+    if (again.sets !== 1 || again.v !== sound0) problems.push(`history: choosing ${sound0} again after the refresh gave ${JSON.stringify(again)}`);
+    history.again = again;
+    await ctx.close();
+
+    // a machine that cannot say its settings: every row says Not read, Sound and Light sit at Off, nothing is sent
+    const uctx = await browser.newContext({ viewport: vp, deviceScaleFactor: 2 });
+    await uctx.addInitScript(() => {
+      window.__calls = [];
+      window.__TAURI__ = { event: { listen: () => Promise.resolve(() => {}) }, core: { invoke: (cmd, args) => { window.__calls.push([cmd, args]);
+        return cmd === 'settings' ? Promise.reject('the machine did not answer') : Promise.resolve(cmd === 'channels' ? [{ channel: 'sound', state: 'listening', rate: 16.1 }] : null); } } };
+    });
+    const up = await uctx.newPage();
+    up.on('pageerror', e => problems.push('unread: page error: ' + e.message));
+    await up.goto(url('still'), { waitUntil: 'domcontentloaded', timeout: 120000 });
+    await up.waitForFunction(() => window.__ready, null, { timeout: 90000 });
+    await up.waitForTimeout(300);
+    const unread = await up.evaluate(() => ({ sound: window.__bc.get('sound'), light: window.__bc.get('light'), soundPlug: window.__bc.end('sound').jack, lightPlug: window.__bc.end('light').jack,
+      labels: [...new Set([...document.querySelectorAll('.row .val')].map(e => e.textContent))], sets: __calls.filter(c => c[0] === 'set_setting').length }));
+    if (unread.sound !== 0 || unread.light !== 0 || unread.soundPlug !== 0 || unread.lightPlug !== 0) problems.push(`unread: Sound and Light are not at Off: ${JSON.stringify(unread)}`);
+    if (JSON.stringify(unread.labels) !== '["Not read"]') problems.push(`unread: rows do not say Not read: ${JSON.stringify(unread.labels)}`);
+    if (unread.sets) problems.push(`unread: the page sent ${unread.sets} settings`);
+    await up.screenshot({ path: path.join(out, 'unread.png'), clip: { x: 0, y: 46, width: 460, height: 854 } });
+    history.unread = unread;
+    await uctx.close();
+  }
   await browser.close();
-  console.log(JSON.stringify({ out, fps, results, keyboard: [before, after], atBoot, problems }, null, 2));
+  console.log(JSON.stringify({ out, fps, results, keyboard: [before, after], atBoot, history, problems }, null, 2));
   server.close();
   process.exit(problems.length ? 1 : 0);
 })();

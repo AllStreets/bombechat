@@ -396,23 +396,34 @@ fn every_setting_is_one_the_settings_page_has_with_its_default() {
 #[test]
 fn the_simulator_keeps_the_same_settings_with_the_same_defaults() {
     let sim = include_str!("../../ui/simulator.js");
-    let line = sim
-        .lines()
-        .find(|l| l.starts_with("const DEFAULTS = {"))
-        .expect("simulator.js lists its settings");
-    let mut kept: Vec<String> = line
-        .trim_start_matches("const DEFAULTS = {")
-        .trim_end_matches("};")
-        .split(',')
-        .map(|kv| kv.replace(' ', ""))
-        .collect();
-    let mut want: Vec<String> = commands::SETTINGS
-        .iter()
-        .map(|(id, _, default)| format!("{id}:{default}"))
-        .collect();
-    kept.sort();
-    want.sort();
-    assert_eq!(kept, want);
+    let table = |name: &str| -> Vec<String> {
+        let start = format!("const {name} = {{");
+        let line = sim
+            .lines()
+            .find(|l| l.starts_with(&start))
+            .unwrap_or_else(|| panic!("simulator.js has no {name}"));
+        let mut entries: Vec<String> = line
+            .trim_start_matches(start.as_str())
+            .trim_end_matches("};")
+            .split(',')
+            .map(|kv| kv.replace(' ', ""))
+            .collect();
+        entries.sort();
+        entries
+    };
+    let want = |f: fn(&(&str, usize, usize)) -> String| -> Vec<String> {
+        let mut v: Vec<String> = commands::SETTINGS.iter().map(f).collect();
+        v.sort();
+        v
+    };
+    assert_eq!(
+        table("DEFAULTS"),
+        want(|(id, _, default)| format!("{id}:{default}"))
+    );
+    assert_eq!(
+        table("COUNTS"),
+        want(|(id, count, _)| format!("{id}:{count}"))
+    );
 }
 
 #[test]
@@ -601,18 +612,10 @@ fn a_tick_that_keeps_panicking_is_reported_once_in_a_while() {
         .lock()
         .unwrap()
         .extend([None, None, None, Some(vec![NodeEvent::RoomDb(39.0)])]);
-    assert_eq!(
-        commands::tick(&r.shared, 20).len(),
-        1,
-        "the first is reported"
-    );
+    assert_eq!(commands::tick(&r.shared, 20).len(), 1, "the first is reported");
     assert!(commands::tick(&r.shared, 40).is_empty(), "the next is not");
     assert!(commands::tick(&r.shared, 60).is_empty());
-    assert_eq!(
-        commands::tick(&r.shared, 80).len(),
-        1,
-        "and a good tick still is"
-    );
+    assert_eq!(commands::tick(&r.shared, 80).len(), 1, "and a good tick still is");
 }
 
 #[test]

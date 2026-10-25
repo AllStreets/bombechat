@@ -464,7 +464,9 @@ nameTheSheet(CONTACT);
 // in the app, this machine: its key punches the tape, its name signs the sheet (realSheet, below)
 const ME=bridge.simulated?null:await bridge.machine();
 // the settings as the machine keeps them: its record is the only one, and this page never sends them back
-const KEPT=await bridge.settings().catch(()=>({}));
+// if it cannot answer, the switches show Off and say they were not read: never the most permissive position
+let KEPT_READ=true;
+const KEPT=await bridge.settings().catch(()=>{KEPT_READ=false;return {sound:0,light:0}});
 try{localStorage.removeItem('bombechat.settings')}catch(e){}
 // true while the page replays what happened before it opened: nothing animates
 let booting=true;
@@ -639,10 +641,10 @@ function drawKnob(id){const el=document.getElementById(id),k=KNOBS[id];let fl=''
   el.innerHTML=`<svg viewBox="-69 -51 138 96" aria-hidden="true"><defs><radialGradient id="kb${id}" cx="40%" cy="30%" r="80%"><stop offset="0" stop-color="#3b3935"/><stop offset=".6" stop-color="#1a1917"/><stop offset="1" stop-color="#0a0a09"/></radialGradient></defs>
   ${marks}<circle class="body" r="26" cy="3" fill="#000" opacity=".6"/><circle r="25.5" fill="url(#kb${id})"/>
   <g class="cap" style="transform:rotate(${ANG[k.pos]}deg)">${fl}<circle r="17" fill="#1d1c1a" stroke="rgba(0,0,0,.75)"/><circle r="17" fill="none" stroke="rgba(255,255,255,.07)" transform="translate(0,-.7)"/><rect x="-1.5" y="-24" width="3" height="12.5" rx="1.1" fill="#e9e3d2"/></g></svg>`;
-  el.setAttribute('aria-valuenow',k.pos);el.setAttribute('aria-valuetext',k.labels[k.pos].toLowerCase());el.title=`${k.name}: ${k.say[k.pos]}. Click or use the arrow keys to turn.`}
+  el.setAttribute('aria-valuenow',k.pos);el.setAttribute('aria-valuetext',k.labels[k.pos].toLowerCase());el.title=k.read?`${k.name}: ${k.say[k.pos]}. Click or use the arrow keys to turn.`:`${k.name}: not read from the machine, shown at off. Click or use the arrow keys to turn.`}
 // the switches and the back panel's Sound and Light rows are the same two settings, kept by the machine
-for(const k of Object.values(KNOBS)){const v=KEPT[k.setting];if(v>=0&&v<=2)k.pos=v}
-function turnKnob(id,pos){const k=KNOBS[id];pos=Math.max(0,Math.min(2,pos));if(pos===k.pos)return;k.pos=pos;
+for(const k of Object.values(KNOBS)){const v=KEPT[k.setting];if(v>=0&&v<=2)k.pos=v;k.read=KEPT_READ}
+function turnKnob(id,pos){const k=KNOBS[id];pos=Math.max(0,Math.min(2,pos));if(pos===k.pos&&k.read)return;k.pos=pos;k.read=true;
   const cap=document.querySelector(`#${id} .cap`);cap.style.transform=`rotate(${ANG[pos]}deg)`;setTimeout(()=>drawKnob(id),RM.matches?0:330);
   Drum.spin(2,0.7);bridge.setSetting(k.setting,pos);applyChannels()}
 ['k1','k2'].forEach(id=>{drawKnob(id);const el=document.getElementById(id);
@@ -652,7 +654,7 @@ const sendBtn=document.getElementById('sendsound'),flashBtn=document.getElementB
 function applyChannels(){const s=KNOBS.k1.pos,l=KNOBS.k2.pos;
   document.getElementById('j1').classList.toggle('off',s===0);document.getElementById('j2').classList.toggle('off',l===0);
   document.getElementById('topjewel').classList.toggle('off',s===0&&l===0);
-  document.getElementById('toplisten').textContent=s>0?'Listening by sound':l>0?'Reading by light':'Not listening';
+  document.getElementById('toplisten').textContent=!(KNOBS.k1.read&&KNOBS.k2.read)?'Switches not read':s>0?'Listening by sound':l>0?'Reading by light':'Not listening';
   sendBtn.setAttribute('aria-disabled',s<2);document.getElementById('sendlamp').classList.toggle('off',s<2);
   sendBtn.title=s<2?`Sound is set to ${KNOBS.k1.labels[s].toLowerCase()}. Turn it to Listen and send to play replies.`:'Plays the message through the speaker. Enter does the same.';
   flashBtn.setAttribute('aria-disabled',l<2);
@@ -805,7 +807,8 @@ document.getElementById('settings').addEventListener('click',e=>{
   setTimeout(()=>{location.href=href},650)});
 // back from the settings page by history: the switches may have moved there, so read them again from the machine
 addEventListener('pageshow',e=>{if(e.persisted){document.body.classList.remove('turning');document.getElementById('app').classList.remove('turning');
-  bridge.settings().then(k=>{Object.assign(KEPT,k);for(const [id,kn] of Object.entries(KNOBS)){const v=k[kn.setting];if(v>=0&&v<=2&&v!==kn.pos){kn.pos=v;drawKnob(id)}}applyChannels();drawOutbox()},()=>{})}});
+  bridge.settings().then(k=>{Object.assign(KEPT,k);for(const [id,kn] of Object.entries(KNOBS)){const v=k[kn.setting];if(v>=0&&v<=2&&(v!==kn.pos||!kn.read)){kn.pos=v;kn.read=true;drawKnob(id)}}
+    applyChannels();drawOutbox();vuTitle();outbox.forEach(status)},()=>{})}});
 
 /* ---------- ?audiotest: render one drum turn offline and report what it contains ---------- */
 if(Q.has('audiotest'))(async()=>{
@@ -944,7 +947,8 @@ yesBtn.addEventListener('click',()=>{const o=offer;if(!o)return;
 
 /* ---------- open: replay what came before, then listen ---------- */
 drawOutbox();applyChannels();cardRest();
-document.querySelector('.vu').title=`Loudness of the room. Messages wait to play until it drops under ${sendUnder()} dB.`;
+function vuTitle(){document.querySelector('.vu').title=`Loudness of the room. Messages wait to play until it drops under ${sendUnder()} dB.`}
+vuTitle();
 if(!bridge.simulated)await realSheet();
 bridge.start();
 // a page opened (or reloaded) after the channel last changed still learns its state
