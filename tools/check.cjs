@@ -10,6 +10,7 @@
 //   reply.png             the sheet after typing and sending a reply
 //   card-<path>-<w>-<state>.png  2x crops of the key check card through pairing, in the
 //                         browser (simulator) and on the app path, at 1024, 1440 and 1728
+//   unlock-<w>-<state>.png  2x crops of the passphrase form on the app path at 1024, 1440 and 1728
 //   broadcast-<path>-<w>-<state>.png  2x crops of the message sheet writing a public notice
 //                         (idle, composing, sent; refused at 1440), browser and app path
 // and prints what it measured. Exits non-zero on page errors, horizontal overflow,
@@ -25,7 +26,9 @@
 // path (the Reply/Public toggle, the line saying who can read it and the key that signs it,
 // empty, too long and Sound at Listen refused in sentence case with nothing sent, a sent
 // notice on the sheet as a signed public entry with its outbox status, the toggle springing
-// back to Reply), when the bytes-a-second readout
+// back to Reply), when the passphrase form (first run, refusals, the key being worked out, a later run,
+// a wrong passphrase) is off-centre, unlabelled, out of Tab order, or not refused in place and announced,
+// or appears at all on a Keychain launch, when the bytes-a-second readout
 // doesn't show the rate the bridge reports, when
 // the page asks for anything off this machine, or when an http(s) URL appears
 // anywhere in app/ui (licence texts and comments in vendored three.js aside).
@@ -58,8 +61,10 @@ const PARTS = { top: '.top', bank: '.bank', sheet: '.sheet', compose: '.compose'
 // Broadcasts: `broadcastMax` is the longest the machine reports (3939 if not given); the store's kept
 // notices (`kept`, then each accepted one) live in sessionStorage, so a reload replays them as the device
 // would; `refuseBroadcast` is a reason the machine gives for refusing every broadcast.
-function tauriStub({ hello, safety, people, talk, afterUnlock, settings, broadcastMax = 3939, kept = [], refuseBroadcast }) {
-  let unlocked = false;
+// Unlocking: `keychain` opens the store before the page asks (the Lock Off launch); `unlockMs` is how long
+// working out the key takes (0 if not given); the first `wrong` unlocks are refused as 'wrong passphrase'.
+function tauriStub({ hello, safety, people, talk, afterUnlock, settings, broadcastMax = 3939, kept = [], refuseBroadcast, keychain, unlockMs = 0, wrong = 0 }) {
+  let unlocked = !!keychain, refusals = wrong;
   const KEPT = 'stub.notices';
   const notices = () => JSON.parse(sessionStorage.getItem(KEPT) || 'null') || kept;
   const keep = list => sessionStorage.setItem(KEPT, JSON.stringify(list));
@@ -72,7 +77,9 @@ function tauriStub({ hello, safety, people, talk, afterUnlock, settings, broadca
     core: { invoke: (cmd, args) => { window.__calls.push([cmd, args]);
       switch (cmd) {
         case 'contacts': return unlocked ? Promise.resolve(people || []) : Promise.reject(people ? 'locked' : 'no store yet');
-        case 'unlock': unlocked = true; for (const [name, payload] of afterUnlock || []) window.__emit(name, payload); return Promise.resolve(null);
+        case 'unlock': return new Promise(r => setTimeout(r, unlockMs)).then(() => {
+          if (refusals > 0) { refusals--; return Promise.reject('wrong passphrase'); }
+          unlocked = true; for (const [name, payload] of afterUnlock || []) window.__emit(name, payload); return null; });
         case 'machine': return Promise.resolve({ name: 'Machine No. 1', key: 'a3f09c1e'.repeat(16), you: 'Ana Lima', held: 0, version: '0.1.0', broadcast_max: broadcastMax });
         case 'conversation': return Promise.resolve((talk || {})[args.contactId] || []);
         case 'settings': return settings === 'unread' ? Promise.reject('the machine did not answer') : Promise.resolve(settings || { sound: 2, volume: 2, band: 0, light: 0, flash: 1, machine: 1, machvol: 2, carry: 1, hops: 3, hold: 2, quiet: 2, repeats: 2, lock: 1, expire: 0, inperson: 1 });
@@ -511,6 +518,105 @@ function measureText() {
       await ms.close();
     }
 
+    // the passphrase form on the app path (window.__TAURI__ stubbed) at 1024, 1440 and 1728, with 2x crops
+    // of each state (unlock-<w>-<state>.png): first run empty and focused on the name; refused without a
+    // name, with no passphrase and with two that differ, each typed under its field and announced; the
+    // stamp down and the key's wheels turning while the key is worked out; a later run asking once and
+    // refusing a wrong passphrase; and the Keychain launch (Lock Off), where the form never appears.
+    // Every field has a label, Tab runs name, passphrase, again, stamp, and Enter submits.
+    report.unlockForm = {};
+    const LATER = [{ id: 3, name: 'Marisol Ortega', checked: true }];
+    for (const [w, h] of [[1024, 768], [1440, 900], [1728, 1117]]) {
+      const uf = await browser.newPage({ viewport: { width: w, height: h }, deviceScaleFactor: 2 });
+      watch(uf, `unlock form ${w}`);
+      await uf.addInitScript(tauriStub, { unlockMs: 1100 });
+      await uf.goto(url('still'));
+      await uf.waitForSelector('.unlock input[name=who]');
+      await uf.evaluate(() => document.fonts.ready);
+      const crop = async st => { const r = await uf.locator('.unlock .stand').boundingBox(); await uf.screenshot({ path: path.join(out, `unlock-${w}-${st}.png`), clip: { x: r.x - 12, y: r.y - 12, width: r.width + 24, height: r.height + 24 } }); };
+      const state = () => uf.evaluate(() => {
+        const f = document.querySelector('.unlock'), e = f && f.querySelector('.err'), bad = f && f.querySelector('.row.bad input');
+        const labels = f ? [...f.querySelectorAll('input')].map(i => i.labels.length ? i.labels[0].textContent.trim() : '') : [];
+        const text = f ? f.innerText : '';
+        return { shown: !!f, focus: document.activeElement && document.activeElement.name, err: e ? e.textContent : '', alert: e ? e.getAttribute('role') : '', bad: bad ? bad.name : '',
+          invalid: bad ? bad.getAttribute('aria-invalid') : '', working: !!f && f.classList.contains('working'), status: f ? f.querySelector('[role=status]').textContent : '', labels,
+          dashes: /—|–|--/.test(text), turning: f ? getComputedStyle(f.querySelector('.turn .odo i span')).animationName : '' };
+      });
+      const check = (cond, what, st) => { if (!cond) problems.push(`unlock form ${w}: ${what}: ${JSON.stringify(st)}`); };
+      let st = await state();
+      check(st.focus === 'who' && JSON.stringify(st.labels) === JSON.stringify(['Your nameas people you pair with see it', 'Passphrase', 'Againto check it']) && !st.dashes, 'first run should focus a labelled name field', st);
+      const box = await uf.locator('.unlock .stand').boundingBox();
+      check(box.y >= 0 && box.y + box.height <= h && Math.abs(box.x + box.width / 2 - w / 2) < 2, 'the form should sit in the middle of the window', box);
+      const small = (await uf.evaluate(`(${measureText.toString()})()`));
+      check(!small.length, 'text under 12px', small);
+      // keyboard order: name, passphrase, again, the stamp
+      const order = [];
+      for (let i = 0; i < 4; i++) { order.push(await uf.evaluate(() => document.activeElement.name || document.activeElement.textContent)); await uf.keyboard.press('Tab'); }
+      check(JSON.stringify(order) === JSON.stringify(['who', 'pass', 'again', 'Lock and open']), 'Tab order', order);
+      await uf.focus('.unlock input[name=who]');
+      await crop('firstrun');
+      // Enter with no name: refused under the name
+      await uf.keyboard.press('Enter');
+      st = await state();
+      check(st.err === 'Write your name.' && st.bad === 'who' && st.alert === 'alert' && st.invalid === 'true' && st.focus === 'who', 'no name should be refused under the name', st);
+      await crop('no-name');
+      await uf.keyboard.type('Ana Lima'); await uf.keyboard.press('Enter');
+      st = await state();
+      check(st.err === 'Choose a passphrase.' && st.bad === 'pass', 'no passphrase should be refused', st);
+      await uf.keyboard.type('correct horse'); await uf.keyboard.press('Tab'); await uf.keyboard.type('correct horsx'); await uf.keyboard.press('Enter');
+      st = await state();
+      check(st.err === 'The two passphrases do not match.' && st.bad === 'again' && st.focus === 'again', 'differing passphrases should be refused under Again', st);
+      await crop('mismatch');
+      const none = await uf.evaluate(() => __calls.filter(c => c[0] === 'unlock').length);
+      check(none === 0, 'an unlock was sent before the form was right', none);
+      await uf.keyboard.type('correct horse'); await uf.keyboard.press('Enter');
+      await uf.waitForTimeout(450);
+      st = await state();
+      check(st.working && st.status === 'Locking' && st.err === '' && st.turning === 'wheel', 'the key should be worked out with the stamp down', st);
+      await crop('locking');
+      await uf.waitForFunction(() => !document.querySelector('.unlock'), null, { timeout: 10000 });
+      const sent = await uf.evaluate(() => __calls.filter(c => c[0] === 'unlock').map(c => c[1]));
+      check(JSON.stringify(sent) === JSON.stringify([{ passphrase: 'correct horse', name: 'Ana Lima' }]), 'the unlock carried', sent);
+      report.unlockForm[w] = { firstRun: 'ok' };
+      await uf.close();
+
+      // a later run: the passphrase once; a wrong one is refused and the form stays
+      const lr = await browser.newPage({ viewport: { width: w, height: h }, deviceScaleFactor: 2 });
+      watch(lr, `unlock form later ${w}`);
+      await lr.addInitScript(tauriStub, { people: LATER, unlockMs: 900, wrong: 1 });
+      await lr.goto(url('still'));
+      await lr.waitForSelector('.unlock input[name=pass]');
+      await lr.evaluate(() => document.fonts.ready);
+      const lcrop = async st2 => { const r = await lr.locator('.unlock .stand').boundingBox(); await lr.screenshot({ path: path.join(out, `unlock-${w}-${st2}.png`), clip: { x: r.x - 12, y: r.y - 12, width: r.width + 24, height: r.height + 24 } }); };
+      const later = await lr.evaluate(() => ({ fields: [...document.querySelectorAll('.unlock input')].map(i => i.name), focus: document.activeElement.name, head: document.querySelector('.unlock h2').textContent }));
+      if (JSON.stringify(later) !== JSON.stringify({ fields: ['pass'], focus: 'pass', head: 'Unlocking' })) problems.push(`unlock form ${w}: a later run should ask the passphrase once: ${JSON.stringify(later)}`);
+      await lcrop('unlock');
+      await lr.keyboard.type('wrong horse'); await lr.keyboard.press('Enter');
+      await lr.waitForTimeout(300);
+      await lcrop('opening');
+      await lr.waitForFunction(() => !document.querySelector('.unlock.working'), null, { timeout: 10000 });
+      const wrongShown = await lr.evaluate(() => ({ err: document.querySelector('.unlock .err').textContent, bad: (document.querySelector('.unlock .row.bad input') || {}).name, focus: document.activeElement.name,
+        selected: document.activeElement.selectionEnd - document.activeElement.selectionStart }));
+      if (wrongShown.err !== 'Wrong passphrase.' || wrongShown.bad !== 'pass' || wrongShown.focus !== 'pass' || wrongShown.selected !== 11) problems.push(`unlock form ${w}: a wrong passphrase: ${JSON.stringify(wrongShown)}`);
+      await lcrop('wrong');
+      await lr.keyboard.type('correct horse'); await lr.keyboard.press('Enter');
+      await lr.waitForFunction(() => !document.querySelector('.unlock'), null, { timeout: 10000 });
+      await lr.close();
+    }
+    // the Keychain launch (Lock Off): the store is open before the page asks, and no form appears
+    {
+      const kc = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+      watch(kc, 'keychain launch');
+      await kc.addInitScript(tauriStub, { people: [{ id: 3, name: 'Marisol Ortega', checked: true }], keychain: true });
+      await kc.addInitScript(() => new MutationObserver(m => { if (document.querySelector('.unlock')) window.__formSeen = true; }).observe(document, { childList: true, subtree: true }));
+      await kc.goto(url('still'));
+      await kc.waitForFunction(() => document.documentElement.classList.contains('real'), null, { timeout: 60000 });
+      const kcSeen = await kc.evaluate(() => ({ seen: !!window.__formSeen, unlocks: __calls.filter(c => c[0] === 'unlock').length }));
+      if (kcSeen.seen || kcSeen.unlocks) problems.push(`keychain launch showed the passphrase form: ${JSON.stringify(kcSeen)}`);
+      report.unlockForm.keychain = kcSeen;
+      await kc.close();
+    }
+
     // pairing by sound on the key check card, in a plain browser (the simulator) and in the app
     // (window.__TAURI__ stubbed, from first run), at 1024, 1440 and 1728, with 2x crops of each state
     // (card-<path>-<width>-<state>.png): listening; the offer's 60 digits in 12 pencilled groups,
@@ -527,7 +633,7 @@ function measureText() {
       if (where === 'app') {
         // first run: the passphrase card asks for your name, and the unlock carries it
         await pr.waitForSelector('.unlock input[name=who]');
-        await pr.screenshot({ path: path.join(out, `card-app-${w}-firstrun.png`), clip: await pr.locator('.unlock .card').boundingBox() });
+        await pr.screenshot({ path: path.join(out, `card-app-${w}-firstrun.png`), clip: await pr.locator('.unlock .stand').boundingBox() });
         await pr.fill('.unlock input[name=pass]', 'correct horse'); await pr.fill('.unlock input[name=again]', 'correct horse');
         await pr.click('.unlock button');
         const refusedNameless = await pr.evaluate(() => document.querySelector('.unlock .err').textContent);

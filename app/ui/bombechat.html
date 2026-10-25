@@ -29,15 +29,68 @@ button{font:inherit;color:inherit}
 
 /* the app: nothing shows until the real sheet is in place (realSheet) */
 .in-app:not(.real) .app{visibility:hidden}
-/* the passphrase, asked before the sheet opens (the app only) */
-.unlock{position:fixed;inset:0;z-index:20;display:grid;place-items:center;background:#0c0c0b}
-.unlock .card{width:min(380px,calc(100vw - 32px));display:grid;gap:12px;padding:24px 26px 22px;background:#151614;border:1px solid rgba(236,230,214,.16);border-radius:6px;color:var(--plate-ink)}
-.unlock h2{font-family:var(--print);font-weight:400;font-size:21px;line-height:1.15}
-.unlock p{font-family:var(--print);font-size:14px;line-height:1.45;color:#c9c2b0}
-.unlock label{display:grid;gap:5px;font-family:var(--engr);font-size:13px;letter-spacing:.06em;color:var(--lab)}
-.unlock input{font-family:var(--type);font-size:15px;color:#1c1a16;background:var(--tape);border:0;border-radius:2px;padding:7px 10px}
-.unlock .err{min-height:20px;font-family:var(--type);font-size:13px;color:#e0a08f}
-.unlock .key{justify-self:end;cursor:pointer;border:0}
+/* the passphrase, asked before the sheet opens (the app only): a registration form, printed like
+   the message sheet and typed in, laid on the machine's enamel and stamped to open. Below it the
+   key's counter, whose wheels turn while the key is worked out (Argon2id, most of a second). */
+/* body's perspective (for the turn to the back panel) would make it the box the form is fixed to:
+   while the form is up, the window is */
+body:has(>.unlock){perspective:none;overflow:hidden;height:100vh}
+.unlock{position:fixed;inset:0;z-index:20;display:grid;place-items:center;overflow:auto;padding:24px 16px;background:var(--enamel)}
+.unlock::before{content:"";position:fixed;inset:0;pointer-events:none;opacity:.55;mix-blend-mode:overlay;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .5  0 0 0 0 .5  0 0 0 0 .5  0 0 0 .55 0'/></filter><rect width='240' height='240' filter='url(%23n)'/></svg>")}
+.unlock .stand{position:relative;display:grid;justify-items:center;gap:22px;padding:14px 18px 6px}
+.unlock .maker{font-size:15px}
+.unlock .card{width:min(452px,calc(100vw - 32px));background:var(--buff);color:var(--type-ink);border-radius:1px;padding:17px 0 14px;transform:rotate(-.25deg);
+  box-shadow:0 1px 0 rgba(255,255,255,.2) inset,0 14px 34px rgba(0,0,0,.6),0 2px 3px rgba(0,0,0,.5);
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='300' height='300'><filter id='p'><feTurbulence type='fractalNoise' baseFrequency='.55' numOctaves='4' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .45  0 0 0 0 .38  0 0 0 0 .25  0 0 0 .09 0'/></filter><rect width='300' height='300' filter='url(%23p)'/></svg>")}
+.unlock .card>*{margin-left:24px;margin-right:24px}
+.unlock .rh{display:flex;align-items:flex-end;justify-content:space-between;border-bottom:1.5px solid var(--green-ink);padding-bottom:6px;color:var(--green-ink)}
+.unlock h2{font-family:var(--print);font-weight:400;font-size:21px;line-height:1.1;letter-spacing:.01em}
+.unlock .rh span{font-family:var(--print);font-size:13px}
+/* each field a row of the form: printed label left of a green rule, the typing on the right */
+.unlock .row{position:relative;display:grid;grid-template-columns:118px minmax(0,1fr);border-bottom:1px solid var(--green-ink);min-height:50px}
+.unlock .row label{font-family:var(--print);font-size:13px;line-height:1.25;color:var(--green-ink);padding:8px 10px 8px 0;border-right:1px solid rgba(47,90,75,.5);cursor:text}
+.unlock .row label small{display:block;font-size:12px;color:#4f6f61;margin-top:2px}
+.unlock .row .f{display:flex;flex-direction:column;justify-content:flex-end;padding-left:12px;min-width:0}
+.unlock .ln{position:relative;display:block}
+.unlock input{all:unset;box-sizing:border-box;display:block;width:100%;font-family:var(--type);font-size:15px;line-height:20px;color:#2a2620;text-shadow:0 0 .7px rgba(42,38,32,.6);caret-color:#1c1a16;padding:14px 0 6px;letter-spacing:.02em}
+.unlock input[type=password]{letter-spacing:.16em}
+.unlock input:disabled{color:#5c5446}
+/* the row being typed in: the drum's index mark points at its line, and its rule is inked twice as heavy */
+.unlock .ln::before{content:"";position:absolute;left:-12px;bottom:10px;width:0;height:0;border-top:4.5px solid transparent;border-bottom:4.5px solid transparent;border-left:7px solid var(--green-ink);opacity:0;transition:opacity .12s}
+.unlock .row:focus-within .ln::before{opacity:1}
+.unlock .row:focus-within::after{content:"";position:absolute;left:0;right:0;bottom:-2px;height:1px;background:var(--green-ink)}
+.unlock .row.bad:focus-within{border-bottom-color:#8a2a22}
+.unlock .row.bad:focus-within::after{background:#8a2a22}
+.unlock input::selection{background:rgba(47,90,75,.16);color:#1c1a16}
+/* a field the machine refused: its label in red ink, the reason typed under it in red */
+.unlock .row.bad label{color:#8a2a22}
+.unlock .row.bad .ln::before{border-left-color:#8a2a22}
+.unlock .err{font-family:var(--type);font-size:12.5px;line-height:1.3;color:#8a2a22;padding:0 0 7px}
+.unlock .err:empty{display:none}
+.unlock .ft{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:16px;align-items:end;padding-top:11px}
+.unlock ol{list-style:none;font-family:var(--print);font-size:12.5px;line-height:1.45;color:var(--green-ink)}
+.unlock ol li{display:grid;grid-template-columns:17px 1fr}
+/* the rubber stamp that opens it, inked harder as it is pressed */
+.unlock .rs{font-size:15px;padding:5px 11px 4px;margin:0 2px 1px 0;--ink:var(--violet);--tilt:-2.5deg;border-style:double;border-width:3px;opacity:.86}
+.unlock .rs:focus-visible{outline:1.5px dotted var(--graphite);outline-offset:4px}
+.unlock .rs[aria-disabled="true"]{cursor:default;opacity:1;background:rgba(91,63,134,.1);transform:rotate(var(--tilt)) scale(.97);animation:press .22s cubic-bezier(.3,1.4,.5,1)}
+@keyframes press{0%{transform:rotate(var(--tilt)) scale(1.08);opacity:.6}100%{transform:rotate(var(--tilt)) scale(.97);opacity:1}}
+/* the key's counter, on the enamel under the form: still until the stamp goes down, then its wheels
+   run through the alphabet like the drums, stopping one after another when the store is open */
+.unlock .turn{display:flex;align-items:center;gap:10px;opacity:.55;transition:opacity .2s}
+.unlock .turn .jewel{width:10px;height:10px}
+.unlock.working .turn{opacity:1}
+.unlock .turn .odo i{overflow:hidden;position:relative}
+.unlock .turn .odo i span{position:absolute;left:0;right:0;top:0;display:flex;flex-direction:column;align-items:center}
+.unlock .turn .odo i span b{font-weight:400;height:20px;line-height:20px}
+.unlock.working .turn .odo i span{animation:wheel 1.3s steps(26) infinite}
+.unlock.working .turn .odo i:nth-child(2) span{animation-duration:.9s;animation-delay:-.3s}
+.unlock.working .turn .odo i:nth-child(3) span{animation-duration:1.1s;animation-delay:-.7s}
+.unlock.working .turn .odo i:nth-child(4) span{animation-duration:.7s;animation-delay:-.2s}
+.unlock.working .turn .odo i:nth-child(5) span{animation-duration:1.5s;animation-delay:-1s}
+@keyframes wheel{to{transform:translateY(-520px)}}
+.unlock .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 
 /* the whole app is one wrinkle-finish enamel panel */
 .app{position:relative;min-height:100vh;min-width:980px;display:grid;grid-template-rows:auto auto minmax(410px,1fr);background:var(--enamel);
@@ -335,6 +388,7 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
   .ent.fresh,.stamp.new{animation:none}
   .cur,.state.live::after,.ears path{animation:none}
   .menu .stmp.new div,.gstmp.new{animation:none}
+  .unlock.working .turn .odo i span,.unlock .rs[aria-disabled="true"]{animation:none}
 }
 </style>
 <script>/* in the app, the panel stays hidden until it shows this machine rather than the mockups' story */if(window.__TAURI__)document.documentElement.classList.add('in-app')</script>
@@ -443,23 +497,53 @@ import { bridge } from './bridge.js';
    contacts() refuses until the store is open, saying whether one exists yet; then the
    page asks for the passphrase (the first time, chooses one) and asks again. */
 const sentence=s=>{s=String(s);return s.charAt(0).toUpperCase()+s.slice(1)+(/[.!?]$/.test(s)?'':'.')};
+// The registration form (first run: your name, then the passphrase twice) or, on later runs, the
+// passphrase once. Your name is kept inside the locked store, so the later form can't greet you by
+// it. A refusal is typed in red under the field it is about and said aloud; the stamp stays down
+// and the key's wheels turn while the machine works the key out.
 function askPassphrase(first){return new Promise(done=>{
-  const f=document.createElement('form');f.className='unlock';f.autocomplete='off';
-  f.innerHTML=`<div class="card" role="dialog" aria-modal="true" aria-labelledby="unlock-h">
-    <h2 id="unlock-h">${first?'Your name and a passphrase':'Enter your passphrase'}</h2>
-    <p>${first?'Your name is what the people you pair with see. The passphrase locks the contacts and messages kept on this laptop, and nobody can recover it for you.':'Contacts and messages on this laptop are locked with it.'}</p>
-    ${first?'<label>Your name<input type="text" name="who" autocomplete="name" maxlength="40"></label>':''}
-    <label>Passphrase<input type="password" name="pass" autocomplete="${first?'new-password':'current-password'}" required></label>
-    ${first?'<label>Again<input type="password" name="again" autocomplete="new-password" required></label>':''}
-    <p class="err" role="alert"></p>
-    <button class="key" type="submit">${first?'Lock and open':'Open'}</button></div>`;
-  document.body.appendChild(f);const pass=f.elements.pass,who=f.elements.who,err=f.querySelector('.err'),btn=f.querySelector('button');(who||pass).focus();
+  const f=document.createElement('form');f.className='unlock';f.autocomplete='off';f.noValidate=true;
+  const row=(name,label,note,type,auto)=>`<div class="row"><label for="unlock-${name}">${label}${note?`<small>${note}</small>`:''}</label>
+    <div class="f"><span class="ln"><input id="unlock-${name}" name="${name}" type="${type}" autocomplete="${auto}" spellcheck="false"${name==='who'?' maxlength="40"':''} required></span></div></div>`;
+  const wheels=Array.from({length:5},()=>`<i><span>${'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map(c=>`<b>${c}</b>`).join('')}</span></i>`).join('');
+  f.innerHTML=`<div class="stand">
+    <span class="maker" aria-hidden="true">Bombechat<small>airgapped build</small></span>
+    <div class="card" role="dialog" aria-modal="true" aria-labelledby="unlock-h">
+      <div class="rh"><h2 id="unlock-h">${first?'Registration':'Unlocking'}</h2><span>For this laptop</span></div>
+      ${first?row('who','Your name','as people you pair with see it','text','name'):''}
+      ${row('pass','Passphrase','','password',first?'new-password':'current-password')}
+      ${first?row('again','Again','to check it','password','new-password'):''}
+      <div class="ft"><ol>${first?'<li><span>1.</span>The passphrase locks the contacts and messages on this laptop.</li><li><span>2.</span>Nobody can recover it for you.</li>':'<li><span>1.</span>The passphrase chosen at registration.</li>'}</ol>
+        <button class="rs" type="submit">${first?'Lock and open':'Open'}</button></div>
+      <p class="err" id="unlock-err" role="alert"></p>
+      <p class="sr" role="status" aria-live="polite"></p>
+    </div>
+    <div class="turn" aria-hidden="true"><span class="jewel off"></span><span class="pl">Key</span><span class="odo">${wheels}</span></div></div>`;
+  document.body.appendChild(f);
+  const pass=f.elements.pass,who=f.elements.who,again=f.elements.again,err=f.querySelector('.err'),btn=f.querySelector('.rs'),
+    said=f.querySelector('.sr'),jewel=f.querySelector('.turn .jewel'),plate=f.querySelector('.turn .pl');
+  // the refusal goes under the field it is about, which takes the red ink and the focus
+  const clear=()=>{err.textContent='';
+    for(const r of f.querySelectorAll('.row.bad'))r.classList.remove('bad');
+    for(const i of f.querySelectorAll('input'))i.removeAttribute('aria-invalid'),i.removeAttribute('aria-describedby')};
+  const refuse=(field,why)=>{clear();
+    const r=field.closest('.row');r.classList.add('bad');r.querySelector('.f').appendChild(err);
+    field.setAttribute('aria-invalid','true');field.setAttribute('aria-describedby','unlock-err');
+    err.textContent=why;field.focus();if(field.type==='password')field.select()};
+  const working=on=>{f.classList.toggle('working',on);jewel.classList.toggle('off',!on);
+    plate.textContent=on?'Working out the key':'Key';
+    if(on)btn.setAttribute('aria-disabled','true');else btn.removeAttribute('aria-disabled');
+    for(const i of f.querySelectorAll('input'))i.readOnly=on;
+    said.textContent=on?(first?'Locking':'Opening'):''};
+  (who||pass).focus();
   f.addEventListener('submit',async e=>{e.preventDefault();
-    if(first&&!who.value.trim()){err.textContent='Write your name.';who.focus();return}
-    if(first&&pass.value!==f.elements.again.value){err.textContent='The two passphrases do not match.';return}
-    btn.disabled=true;err.textContent=first?'Locking':'Opening';
+    if(f.classList.contains('working'))return;
+    if(first&&!who.value.trim())return refuse(who,'Write your name.');
+    if(!pass.value)return refuse(pass,first?'Choose a passphrase.':'Write your passphrase.');
+    if(first&&pass.value!==again.value)return refuse(again,'The two passphrases do not match.');
+    clear();working(true);
     try{await bridge.unlock(pass.value,first?who.value.trim():undefined);f.remove();done()}
-    catch(why){err.textContent=sentence(why);btn.disabled=false;pass.select()}})})}
+    catch(why){working(false);refuse(pass,sentence(why))}})})}
 async function openContacts(){
   for(;;){
     try{return await bridge.contacts()}catch(why){if(why!=='locked'&&why!=='no store yet')throw why;await askPassphrase(why==='no store yet')}}}
