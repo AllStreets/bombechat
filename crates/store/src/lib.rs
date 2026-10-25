@@ -129,6 +129,11 @@ COMMIT;
 /// once, leaving no free page behind. `VACUUM` cannot run inside a
 /// transaction; it is atomic on its own, and if it is cut short the
 /// version stays at 3 and the next open does it again.
+///
+/// A `VACUUM` needs room to rewrite the whole file, so it is the one
+/// migration step that can fail on an otherwise healthy store, e.g. on a
+/// full disk. That failure does not mean the store is corrupt: see
+/// [`migrate_to_4`], which is what actually runs this.
 const MIGRATE_TO_4: &str = "
 PRAGMA auto_vacuum = INCREMENTAL;
 VACUUM;
@@ -720,7 +725,8 @@ impl Store {
     /// one it heard (no envelope). Stored again under the same id, it
     /// updates the row but keeps the age it was first stored at. Only the
     /// newest [`HEARD_BROADCASTS_KEPT`] heard ones are kept; this device's
-    /// own are never let go here.
+    /// own are never let go here. Pages any erased heard broadcast frees
+    /// are given back, as [`Store::forget_older_than`] does.
     pub fn put_broadcast(
         &self,
         b: &StoredBroadcast,
@@ -756,12 +762,16 @@ impl Store {
         )
         .map_err(|_| StoreError::Corrupt)?;
         if !b.outgoing {
-            conn.execute(
-                "DELETE FROM broadcasts WHERE outgoing = 0 AND rowid NOT IN
-                     (SELECT rowid FROM broadcasts WHERE outgoing = 0 ORDER BY rowid DESC LIMIT ?1)",
-                params![HEARD_BROADCASTS_KEPT as i64],
-            )
-            .map_err(|_| StoreError::Corrupt)?;
+            let removed = conn
+                .execute(
+                    "DELETE FROM broadcasts WHERE outgoing = 0 AND rowid NOT IN
+                         (SELECT rowid FROM broadcasts WHERE outgoing = 0 ORDER BY rowid DESC LIMIT ?1)",
+                    params![HEARD_BROADCASTS_KEPT as i64],
+                )
+                .map_err(|_| StoreError::Corrupt)?;
+            if removed > 0 {
+                give_back_free_pages(&conn);
+            }
         }
         Ok(())
     }
@@ -938,6 +948,13 @@ fn verify_identity_present(conn: &Connection) -> Result<(), StoreError> {
 
 /// Bring a store made by an earlier version of this crate up to
 /// [`SCHEMA_VERSION`], in one transaction.
+///
+/// The v3-to-v4 step ([`migrate_to_4`]) is the exception: a `VACUUM`
+/// failure there does not leave the store corrupt, only still at v3, so
+/// it is reported by logging the reason rather than by failing `open`.
+/// The data is fully usable at v3 (`secure_delete` is already on; the
+/// store just does not give pages back yet), and the next open tries the
+/// `VACUUM` again.
 fn migrate(conn: &Connection) -> Result<(), StoreError> {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
@@ -945,18 +962,49 @@ fn migrate(conn: &Connection) -> Result<(), StoreError> {
     if version > SCHEMA_VERSION {
         return Err(StoreError::Newer);
     }
-    for (to, step) in [
-        (1, MIGRATE_TO_1),
-        (2, MIGRATE_TO_2),
-        (3, MIGRATE_TO_3),
-        (4, MIGRATE_TO_4),
-    ] {
+    for (to, step) in [(1, MIGRATE_TO_1), (2, MIGRATE_TO_2), (3, MIGRATE_TO_3)] {
         if version < to && conn.execute_batch(step).is_err() {
             let _ = conn.execute_batch("ROLLBACK;");
             return Err(StoreError::Corrupt);
         }
     }
+    if version < 4 {
+        if let Err(e) = migrate_to_4(conn) {
+            eprintln!(
+                "bombechat-store: could not reclaim free space (v3 to v4 migration); \
+                 opening at v3 and retrying on the next open: {e}"
+            );
+        }
+    }
     Ok(())
+}
+
+/// Run the v3-to-v4 migration step ([`MIGRATE_TO_4`]): a `VACUUM`. Split
+/// out from [`migrate`] so a test can force it to fail, standing in for a
+/// real failure such as a full disk, without needing one.
+fn migrate_to_4(conn: &Connection) -> rusqlite::Result<()> {
+    #[cfg(test)]
+    if FORCE_VACUUM_FAILURE_FOR_TESTS.with(std::cell::Cell::get) {
+        // Stands in for a VACUUM that failed partway (e.g. a full disk):
+        // a real SQLite error, raised before `user_version` is bumped.
+        return conn.execute_batch(
+            "PRAGMA auto_vacuum = INCREMENTAL;
+             SELECT this_function_does_not_exist_and_makes_vacuum_fail();",
+        );
+    }
+    conn.execute_batch(MIGRATE_TO_4)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only fault injection for [`migrate_to_4`]: forces its `VACUUM`
+    /// step to fail deterministically, so the "VACUUM fails but the store
+    /// still opens at v3" path can be tested without a real full disk.
+    /// Thread-local, not a shared global: Rust's test harness gives each
+    /// `#[test]` its own thread, so setting this in one test cannot make
+    /// an unrelated test (running concurrently, opening its own pre-v4
+    /// store) see a forced failure too.
+    static FORCE_VACUUM_FAILURE_FOR_TESTS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Open an already-existing database file for read/write without SQLite's
@@ -1338,6 +1386,56 @@ mod tests {
         assert_eq!(store.my_name(), "me");
     }
 
+    /// Sets [`FORCE_VACUUM_FAILURE_FOR_TESTS`] for the life of the guard,
+    /// so [`migrate_to_4`]'s `VACUUM` step fails deterministically; resets
+    /// it on drop, including on panic, so a failed assertion in the test
+    /// using it can never leak the fault into another test.
+    struct ForcedVacuumFailure;
+
+    impl ForcedVacuumFailure {
+        fn engage() -> ForcedVacuumFailure {
+            FORCE_VACUUM_FAILURE_FOR_TESTS.with(|f| f.set(true));
+            ForcedVacuumFailure
+        }
+    }
+
+    impl Drop for ForcedVacuumFailure {
+        fn drop(&mut self) {
+            FORCE_VACUUM_FAILURE_FOR_TESTS.with(|f| f.set(false));
+        }
+    }
+
+    #[test]
+    fn a_failed_vacuum_still_opens_the_store_at_v3_and_retries_next_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v3-stuck.db");
+        {
+            let salt = random_salt();
+            write_salt_sidecar(&path, &salt).unwrap();
+            create_private_db_file(&path).unwrap();
+            let conn = open_existing(&path).unwrap();
+            key_connection(&conn, &derive_key("pw", &salt).unwrap()).unwrap();
+            // the version 3 schema: today's, without auto_vacuum
+            conn.execute_batch(&SCHEMA.replace("PRAGMA auto_vacuum = INCREMENTAL;", "")
+                .replace("user_version = 4", "user_version = 3"))
+                .unwrap();
+            store_identity(&conn, &Identity::generate(), "me").unwrap();
+        }
+
+        let guard = ForcedVacuumFailure::engage();
+        let store = Store::open(&path, "pw").expect("a failed VACUUM must not stop the store opening");
+        assert_eq!(pragma(&store, "user_version"), 3, "left at v3 for the next open to retry");
+        assert_eq!(pragma(&store, "secure_delete"), 1, "still on; the store is fully usable at v3");
+        assert_eq!(store.my_name(), "me", "the data is readable");
+        drop(store);
+        drop(guard);
+
+        // the next open, without the forced failure, completes the migration
+        let store = Store::open(&path, "pw").unwrap();
+        assert_eq!(pragma(&store, "user_version"), 4, "retried and completed on the next open");
+        assert_eq!(pragma(&store, "auto_vacuum"), 2);
+    }
+
     #[test]
     fn a_store_from_a_newer_build_is_refused_as_such_and_left_alone() {
         let dir = tempfile::tempdir().unwrap();
@@ -1395,6 +1493,28 @@ mod tests {
         assert_eq!(kept[0], own, "our own stays");
         assert_eq!(kept[1].text, format!("heard {extra}"), "the oldest heard went");
         assert_eq!(kept.last().unwrap().text, format!("heard {}", HEARD_BROADCASTS_KEPT as u16 + extra - 1));
+    }
+
+    #[test]
+    fn the_broadcast_cap_gives_back_the_pages_the_oldest_heard_one_frees() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cap.db");
+        let store = Store::create(&path, "pw", &Identity::generate(), "me").unwrap();
+
+        // long enough to spill onto overflow pages, which freeing frees whole
+        let overflowing = StoredBroadcast {
+            text: "Carrier-Quokka-7731 ".repeat(400),
+            ..heard(0)
+        };
+        store.put_broadcast(&overflowing, None).unwrap();
+        for n in 1..=(HEARD_BROADCASTS_KEPT as u16) {
+            store.put_broadcast(&heard(n), None).unwrap();
+        }
+
+        let kept = store.broadcasts();
+        assert_eq!(kept.len(), HEARD_BROADCASTS_KEPT, "the cap held");
+        assert!(kept.iter().all(|b| b.id != overflowing.id), "the oldest, overflowing one was pushed out");
+        assert_eq!(pragma(&store, "freelist_count"), 0, "the cap gave back the pages it freed");
     }
 
     #[test]
