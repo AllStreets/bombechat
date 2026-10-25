@@ -25,7 +25,8 @@
 // change, which setSetting refuses with the device's sentence.
 //
 // Light: a send or notice by light at Read and flash is shown as the node shows one: display frames at the Flash
-// speed's rate (synthetic bits, the size of that preset's grid) for at least four seconds after the page's still
+// speed's rate (synthetic bits, the size of that preset's grid, or the core's own frames when a page has been handed
+// them as window.__lightFrames, [preset] -> [bits], as tools/media.cjs does) for at least four seconds after the page's still
 // moment, then displayStopped, then sent. At Read or Off it is refused as the node refuses it. Turning Light down mid-flash clears the screen and the
 // send waits; turning it back to Read and flash carries on.
 //
@@ -230,7 +231,11 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
     const i = flashes.indexOf(f); if (i >= 0) flashes.splice(i, 1);
     if (flashing === f) { flashing = null; if (f.lit) cleared(f.tag); }
   }
-  const frameBits = (spec, tag, index) => { const r = seeded((tag << 12) ^ index ^ (spec << 28)); return Array.from({ length: Math.ceil(LIGHT_CELLS[spec] ** 2 / 8) }, r); };
+  const frameBits = (spec, tag, index) => {
+    const real = typeof window !== 'undefined' && window.__lightFrames && window.__lightFrames[spec];
+    if (real && real.length) return real[index % real.length];
+    const r = seeded((tag << 12) ^ index ^ (spec << 28)); return Array.from({ length: Math.ceil(LIGHT_CELLS[spec] ** 2 / 8) }, r);
+  };
   function flashTick() {
     if (!flashing) { flashing = flashes.shift() || null; if (flashing) { flashing.spec = settings.flash; if (!flashing.hello && !flashing.test) flashing.window = lightWindow(flashing.spec); } }
     const f = flashing;

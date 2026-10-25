@@ -1665,7 +1665,14 @@ impl Node {
     /// transport of the given channels, without remembering its id: only
     /// the self-test is sent this way, to be heard. Returns the tag.
     fn put_on_air(&mut self, env: &Envelope, channels: &[Channel]) -> u16 {
-        let tag = OsRng.next_u32() as u16;
+        // a tag no send in the outbox (nor the self-test) has: two envelopes on one tag would share a queue slot in
+        // the transport and one outbox entry, so a refusal or a sent report would land on the wrong message
+        let tag = loop {
+            let tag = OsRng.next_u32() as u16;
+            if !self.outbox.contains_key(&tag) && self.self_test.as_ref().is_none_or(|t| t.tag != tag) {
+                break tag;
+            }
+        };
         let frames = split(&env.encode(), tag);
         for t in &mut self.transports {
             if !channels.contains(&t.name()) {

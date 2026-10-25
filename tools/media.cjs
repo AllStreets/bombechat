@@ -1,10 +1,10 @@
 // Renders the README's pictures from the app itself, headless, on the GPU:
-//   node tools/media.cjs [logo] [banner] [shots] [demo] [settings]     (all of them when none is named)
-// Writes to docs/media/. Every picture is a page of this repository served by
+//   node tools/media.cjs [icon] [logo] [banner] [shots] [demo] [settings] [light]     (all of them when none is named)
+// Writes to docs/media/, and the app icon to app/src-tauri/icons/. Every picture is a page of this repository served by
 // tools/serve.cjs (the browser simulator for the front, a stand-in for the
 // Tauri shell for the first run); nothing on the screen is captured.
 // Needs Google Chrome (Playwright's channel 'chrome', for Metal) and ffmpeg for the GIFs, and gifsicle to make
-// the settings clip small enough.
+// the clips small enough. The icon needs python3 with Pillow, and macOS's iconutil for icon.icns.
 const path = require('path');
 const fs = require('fs');
 const { execFileSync } = require('child_process');
@@ -82,11 +82,13 @@ function virtualClock() {
   const ctx = (w, h, scale = 2) => browser.newContext({ viewport: { width: w, height: h }, deviceScaleFactor: scale, reducedMotion: 'no-preference' });
   const errors = p => p.on('pageerror', e => console.error('page error:', e.message));
   try {
+    if (doing('icon')) await icon();
     if (doing('logo')) { await logo(); await logoSvg(); }
     if (doing('banner')) await banner();
     if (doing('shots')) await shots();
     if (doing('demo')) await demo();
     if (doing('settings')) await settingsClip();
+    if (doing('light')) await lightClip();
     shrink();
   } finally {
     await browser.close();
@@ -96,7 +98,7 @@ function virtualClock() {
   // Shrink the PNGs: full-window shots down to 1.5x, then everything but the logo to 256 colours (Pillow,
   // when python3 has it; the pictures are left as rendered otherwise).
   function shrink() {
-    const full = ['front.png'];
+    const full = ['front.png', 'light.png'];
     const py = `
 import sys
 from PIL import Image
@@ -115,6 +117,53 @@ for name in sys.argv[2:]:
 `;
     const names = fs.readdirSync(OUT).filter(n => n.endsWith('.png') && n !== 'logo.png');// the logo stays as rendered
     try { execFileSync('python3', ['-c', py, OUT, ...names], { stdio: 'inherit' }); } catch (e) { console.warn('PNGs left as rendered:', e.message); }
+  }
+  // The app icon: one drum off the bank seated on an enamel plate, on Apple's grid (an 824 px plate in a 1024 px
+  // canvas). It is rendered in four cuts, each for the sizes it reads at: the whole drum from 128 px up; without the
+  // tick marks and with a heavier ring at 48 and 64; at 32 without the ring, with a bigger window and a plain hub; at
+  // 16 without the hub too. Each size is scaled down from its cut's 1024 px render. Writes the PNGs tauri.conf.json
+  // lists (and the 64 px one tauri icon makes), icon.icns through iconutil, and icon.ico.
+  async function icon() {
+    const dir = path.join(ROOT, 'app', 'src-tauri', 'icons'), tmp = path.join(ROOT, 'checks', 'media', 'icon');
+    fs.rmSync(tmp, { recursive: true, force: true }); fs.mkdirSync(tmp, { recursive: true });
+    for (const cut of [0, 1, 2, 3]) {
+      const c = await ctx(1024, 1024, 2);
+      const p = await c.newPage(); errors(p);
+      await p.goto(at(`tools/media/drum.html?rim=7a2a22&letter=B&turn=1&icon&simple=${cut}`));
+      await p.waitForFunction(() => window.__drum && window.__drum.ready, null, { timeout: 30000 });
+      const png = await p.evaluate(() => window.__icon());
+      fs.writeFileSync(path.join(tmp, `cut${cut}.png`), Buffer.from(png.split(',')[1], 'base64'));
+      await c.close();
+    }
+    const cutFor = px => px <= 16 ? 3 : px <= 32 ? 2 : px <= 64 ? 1 : 0;
+    const iconset = path.join(tmp, 'icon.iconset'); fs.mkdirSync(iconset);
+    const jobs = [[1024, path.join(dir, 'icon.png')], [32, path.join(dir, '32x32.png')], [64, path.join(dir, '64x64.png')],
+      [128, path.join(dir, '128x128.png')], [256, path.join(dir, '128x128@2x.png')]];
+    for (const pt of [16, 32, 128, 256, 512]) for (const k of [1, 2]) jobs.push([pt * k, path.join(iconset, `icon_${pt}x${pt}${k === 2 ? '@2x' : ''}.png`)]);
+    const ico = [16, 24, 32, 48, 64, 128, 256]; for (const px of ico) jobs.push([px, path.join(tmp, `ico${px}.png`)]);
+    // Lanczos from the 1024 px render, then at 32 px and under a light unsharp mask to bring back the edges the
+    // scaling softens
+    const py = `
+import sys, json
+from PIL import Image, ImageFilter
+cuts = {}
+for px, cut, out in json.loads(sys.argv[2]):
+    src = cuts.get(cut) or cuts.setdefault(cut, Image.open(sys.argv[1] + '/cut%d.png' % cut).convert('RGBA'))
+    im = src if px == src.width else src.resize((px, px), Image.LANCZOS, reducing_gap=3.0)
+    if px <= 32: im = im.filter(ImageFilter.UnsharpMask(radius=0.6, percent=60, threshold=1))
+    im.save(out, optimize=True)
+`;
+    execFileSync('python3', ['-c', py, tmp, JSON.stringify(jobs.map(([px, out]) => [px, cutFor(px), out]))], { stdio: 'inherit' });
+    execFileSync('iconutil', ['-c', 'icns', iconset, '-o', path.join(dir, 'icon.icns')]);
+    // icon.ico: PNG entries, one per size, each from its own cut
+    const pngs = ico.map(px => fs.readFileSync(path.join(tmp, `ico${px}.png`)));
+    const head = Buffer.alloc(6 + 16 * ico.length); head.writeUInt16LE(1, 2); head.writeUInt16LE(ico.length, 4);
+    let off = head.length;
+    ico.forEach((px, i) => { const e = 6 + 16 * i; head[e] = px & 255; head[e + 1] = px & 255; head.writeUInt16LE(1, e + 4); head.writeUInt16LE(32, e + 6);
+      head.writeUInt32LE(pngs[i].length, e + 8); head.writeUInt32LE(off, e + 12); off += pngs[i].length; });
+    fs.writeFileSync(path.join(dir, 'icon.ico'), Buffer.concat([head, ...pngs]));
+    for (const f of ['icon.png', '32x32.png', '64x64.png', '128x128.png', '128x128@2x.png', 'icon.icns', 'icon.ico'])
+      console.log(f, (fs.statSync(path.join(dir, f)).size / 1024).toFixed(0), 'KB');
   }
   // one drum, face on, cut out round
   async function logo() {
@@ -163,7 +212,7 @@ for name in sys.argv[2:]:
 <radialGradient id="face" cx="40%" cy="30%" r="80%"><stop offset="0" stop-color="#3a3530"/><stop offset=".65" stop-color="#1d1a17"/><stop offset="1" stop-color="#0d0c0a"/></radialGradient>
 <linearGradient id="rim" x1="0" y1="0" x2=".35" y2="1"><stop offset="0" stop-color="#b34a3d"/><stop offset=".5" stop-color="#8e3328"/><stop offset="1" stop-color="#5e1f18"/></linearGradient>
 <linearGradient id="bevel" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".22"/><stop offset=".5" stop-color="#fff" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".35"/></linearGradient>
-<radialGradient id="hub" cx="35%" cy="28%" r="80%"><stop offset="0" stop-color="#fff3d2"/><stop offset=".25" stop-color="#e2be78"/><stop offset=".65" stop-color="#9a7232"/><stop offset="1" stop-color="#4a3414"/></radialGradient>
+<radialGradient id="hub" cx="35%" cy="28%" r="80%"><stop offset="0" stop-color="#f6f5f1"/><stop offset=".25" stop-color="#c9c7c0"/><stop offset=".65" stop-color="#7f7d77"/><stop offset="1" stop-color="#34332f"/></radialGradient>
 <linearGradient id="tab" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ddd4bb"/><stop offset=".22" stop-color="#ece4cd"/><stop offset="1" stop-color="#e6ddc4"/></linearGradient>
 </defs>
 <circle r="42" fill="url(#rim)"/><circle r="42" fill="url(#bevel)"/>
@@ -359,12 +408,73 @@ for name in sys.argv[2:]:
     console.log('focus by frame:', log.map((f, i) => i === 0 || f !== log[i - 1] ? `${i}:${f}` : null).filter(Boolean).join(' '));
     encode(tmp, n, FPS);
   }
+  // A message going out by light: the reply typed, the cursor to Flash, and the signal lamp opening in the message
+  // sheet's place, grey for its still moment, then the code at Normal (56 cells, 10 frames a second) until the message
+  // has shown its window, and the sheet again with the message sent. Stepped on the page's clock like the settings
+  // clip, at 20 frames a second, so each code frame is held for exactly two GIF frames: the code changes at its real
+  // rate. PLAY=<fps> plays the GIF back slower (the README says so if it is). Also the still of the flashing view.
+  async function lightClip() {
+    const FPS = 20, DT = 1000 / FPS, PLAY = +(process.env.PLAY || FPS);
+    const kept = { sound: 2, volume: 2, band: 0, light: 2, flash: 1, machine: 1, machvol: 2, carry: 1, hops: 3, hold: 2, quiet: 2, repeats: 2, lock: 1, expire: 0, inperson: 1 };
+    const setUp = kept => { try { localStorage.clear(); sessionStorage.clear(); sessionStorage.setItem('bombechat.simulated-machine', JSON.stringify(kept)); } catch (e) {} };
+    const TEXT = 'Water at the church on Fifth until dusk.';
+    // the core's own frames, as tools/check.cjs takes them (crates/light/examples/page_frames.rs), so the lamp shows
+    // real codes: finders, orientation mark, quiet zone and all. Handed to the simulator before the page loads.
+    const CODE = JSON.parse(execFileSync('cargo', ['run', '-q', '-p', 'bombechat-light', '--example', 'page_frames', '--', 'frames', String(kept.flash), '80', '4660'], { cwd: ROOT, encoding: 'utf8', maxBuffer: 1 << 28 }));
+    const real = ([spec, frames]) => { window.__lightFrames = { [spec]: frames }; };
+    const realArgs = [CODE.spec, CODE.frames.map(f => f.bits)];
+    fs.writeFileSync(path.join(ROOT, 'checks', 'media', 'light-frames.json'), JSON.stringify(CODE.frames.map(f => f.frame)));
+    // the still: the lamp mid-message, at 2x
+    {
+      const c = await ctx(1440, 900, 2);
+      await c.addInitScript(setUp, kept);
+      await c.addInitScript(real, realArgs);
+      const p = await front(c, 'still');
+      await p.fill('#reply', TEXT);
+      await p.click('#flash');
+      await p.waitForFunction(() => +document.getElementById('lampn').textContent > 12, null, { timeout: 20000 });
+      await p.evaluate(() => { const a = document.activeElement; if (a && a.blur) a.blur(); });
+      await p.screenshot({ path: path.join(OUT, 'light.png') });
+      await c.close();
+      console.log('light.png');
+    }
+    const tmp = path.join(ROOT, 'checks', 'media', 'light'); fs.rmSync(tmp, { recursive: true, force: true }); fs.mkdirSync(tmp, { recursive: true });
+    const c = await ctx(1280, 800, 1.5);
+    await c.addInitScript(setUp, kept);
+    await c.addInitScript(real, realArgs);
+    await c.addInitScript(virtualClock);
+    const p = await front(c, 'still');
+    await p.fill('#reply', TEXT);
+    const centre = async sel => { const b = await p.locator(sel).boundingBox(); return { x: b.x + b.width / 2, y: b.y + b.height / 2 }; };
+    const r = await p.locator('#reply').boundingBox();
+    let cur = { x: r.x + r.width * .62, y: r.y + r.height / 2 };
+    await p.mouse.move(cur.x, cur.y);
+    await p.waitForTimeout(800);
+    await p.evaluate(() => window.__clock.freeze());
+    let n = 0;
+    const frame = async () => { await p.evaluate(dt => window.__clock.step(dt), DT); await p.screenshot({ path: path.join(tmp, `f${String(n++).padStart(4, '0')}.jpg`), type: 'jpeg', quality: 94 }); };
+    const hold = async s => { for (let i = Math.round(s * FPS); i > 0; i--) await frame(); };
+    const ease = k => k < .5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2;
+    const glide = async (to, s) => { const from = { ...cur }, N = Math.round(s * FPS);
+      for (let i = 1; i <= N; i++) { const e = ease(i / N); cur = { x: from.x + (to.x - from.x) * e, y: from.y + (to.y - from.y) * e }; await p.mouse.move(cur.x, cur.y); await frame(); } };
+    await hold(.8);
+    await glide(await centre('#flash'), 1.0);
+    await hold(.3);
+    await p.mouse.down(); await p.mouse.up(); await p.evaluate(() => window.__press(true)); await frame(); await frame(); await p.evaluate(() => window.__press(false));
+    // the cursor off the code, onto the lamp's foot, while it shows
+    await glide({ x: cur.x + 40, y: cur.y + 60 }, .6);
+    // until the lamp has closed, then a moment on the sheet with the message sent
+    for (let i = 0; i < 20 * FPS && await p.evaluate(() => document.getElementById('lamp').hidden) === false; i++) await frame();
+    await hold(2.2);
+    await c.close();
+    encode(tmp, n, FPS, { W: 960, H: 600, name: 'light.gif', playFps: PLAY });
+  }
   // A GIF of a photoreal scene in motion: scaled down, softened a touch (the enamel's grain is what costs the most),
   // then held still wherever a pixel moved less than the eye can see, so the frames carry only what changed. One
   // palette for the whole clip, no dithering, then gifsicle's lossy pass when it is installed.
-  function encode(dir, n, FPS) {
-    const W = 800, H = 500, T = 8, size = W * H * 3;
-    const raw = path.join(dir, 'frames.rgb'), held = path.join(dir, 'held.rgb'), gif = path.join(dir, 'clip.gif'), out = path.join(OUT, 'settings.gif');
+  function encode(dir, n, FPS, { W = 800, H = 500, name = 'settings.gif', playFps = FPS } = {}) {
+    const T = 8, size = W * H * 3;
+    const raw = path.join(dir, 'frames.rgb'), held = path.join(dir, 'held.rgb'), gif = path.join(dir, 'clip.gif'), out = path.join(OUT, name);
     execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-framerate', String(FPS), '-i', path.join(dir, 'f%04d.jpg'), '-vf', `scale=${W}:${H}:flags=lanczos,gblur=sigma=.6`, '-f', 'rawvideo', '-pix_fmt', 'rgb24', raw]);
     // once a move has come to rest (a frame where nothing passes the threshold), the whole frame is brought up to
     // date, so what the threshold held back never lingers; the last frame is too, so the loop meets its first
@@ -381,10 +491,10 @@ for name in sys.argv[2:]:
     }
     fs.closeSync(fin); fs.closeSync(fout);
     const vf = 'split[a][b];[a]palettegen=max_colors=128:stats_mode=full[p];[b][p]paletteuse=dither=none:diff_mode=rectangle';
-    execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', `${W}x${H}`, '-framerate', String(FPS), '-i', held, '-vf', vf, '-loop', '0', gif]);
+    execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', `${W}x${H}`, '-framerate', String(playFps), '-i', held, '-vf', vf, '-loop', '0', gif]);
     try { execFileSync('gifsicle', ['-O3', '--lossy=80', '-o', out, gif]); } catch (e) { console.warn('gifsicle not found, so the GIF is left unoptimised'); fs.copyFileSync(gif, out); }
     fs.rmSync(raw); fs.rmSync(held);
-    console.log('settings.gif', n, 'frames,', (n / FPS).toFixed(2), 's,', (fs.statSync(out).size / 1e6).toFixed(2), 'MB');
+    console.log(name, n, 'frames,', (n / playFps).toFixed(2), 's,', (fs.statSync(out).size / 1e6).toFixed(2), 'MB');
   }
   // a message arriving: the drums turn, the tape types in, the sheet stamps it.
   // Frames come from Chrome's screencast (what the page painted, with their times), then ffmpeg
