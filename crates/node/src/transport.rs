@@ -22,6 +22,12 @@ pub enum TransportEvent {
     /// Something the user should know that does not make the carrier
     /// unavailable, e.g. "send queue full, message not sent".
     Notice(String),
+    /// The first frame of the envelope under this tag has gone to the
+    /// carrier.
+    Playing(u16),
+    /// Every frame of the envelope under this tag, repeats included, has
+    /// finished going out. Reported once, after [`TransportEvent::Playing`].
+    Sent(u16),
 }
 
 /// A carrier for on-air frames.

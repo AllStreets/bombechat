@@ -8,7 +8,7 @@ use bombechat_core::{Identity, PublicIdentity};
 use bombechat_modem::{
     modulate, split, AudioError, AudioIo, FakeAudio, LoopbackAudio, ModemConfig, QuietGate,
 };
-use bombechat_node::{Node, NodeEvent, SoundTransport, Transport};
+use bombechat_node::{Node, NodeEvent, OutboxState, SoundTransport, Transport};
 use bombechat_store::{Channel, ContactId, Store};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
@@ -224,7 +224,7 @@ fn pair_then_message_then_receipt() {
     let b_in_a = a.node.confirm_pairing(&b_seen_by_a, "Ben");
     let a_in_b = b.node.confirm_pairing(&a_seen_by_b, "Ana");
 
-    let id = a.node.send(&[b_in_a], TEXT);
+    let id = a.node.send(&[b_in_a], TEXT, Channel::Sound);
     run(&mut [&mut a, &mut b], &mut now, 400, |p| {
         message_text(p[1]).is_some()
             && p[0]
@@ -256,6 +256,30 @@ fn pair_then_message_then_receipt() {
         })
         .collect();
     assert_eq!(heard, vec![(id, b_in_a)]);
+
+    // A's outbox followed the message out: queued, playing, then sent once
+    // the speaker has finished (loopback delivers before the speaker would).
+    run(&mut [&mut a, &mut b], &mut now, 200, |p| {
+        p[0].events.iter().any(
+            |e| matches!(e, NodeEvent::Outbox { id: of, state: OutboxState::Sent } if *of == id),
+        )
+    });
+    let progress: Vec<_> = a
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            NodeEvent::Outbox { id: of, state } if *of == id => Some(*state),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        progress,
+        vec![
+            OutboxState::Waiting,
+            OutboxState::Playing,
+            OutboxState::Sent
+        ]
+    );
 }
 
 #[test]
@@ -264,7 +288,7 @@ fn chunks_land_in_order_with_views() {
     let (mut a, mut b, b_in_a) = paired(&dir);
     let mut now = 1_000;
 
-    a.node.send(&[b_in_a], TEXT);
+    a.node.send(&[b_in_a], TEXT, Channel::Sound);
     run(&mut [&mut a, &mut b], &mut now, 200, |p| {
         message_text(p[1]).is_some()
     });
@@ -317,7 +341,7 @@ fn message_while_locked_is_kept() {
     let mut b = Peer::new(Node::new(None, sound(rb)), ab);
     let mut now = 1_000;
 
-    a.node.send(&[b_in_a], TEXT);
+    a.node.send(&[b_in_a], TEXT, Channel::Sound);
     // Long enough for A to play every frame and B to hear them all.
     for _ in 0..6 {
         run(&mut [&mut a, &mut b], &mut now, 1, |_| true);

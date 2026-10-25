@@ -27,6 +27,19 @@
 //!   envelopes are deduped on their inner (signed) envelope's id, since
 //!   the outer id is not signed.
 //!
+//! # Channel state and the outbox
+//!
+//! Besides what it hears, the node reports how each channel is doing and
+//! how each of its sends is getting on. A channel is "receiving" while
+//! any envelope is part way through arriving on it and "listening" when
+//! none is; "failed" is reported when an arrival is given up (no frame
+//! for ten minutes) or fails its checks, followed at once by the state
+//! the channel is then in. Each message or broadcast this node sends is
+//! reported as [`OutboxState::Waiting`] when it is queued,
+//! [`OutboxState::Playing`] when its first frame goes out and
+//! [`OutboxState::Sent`] when its last repeat has finished. Receipts and
+//! pairing hellos are not reported.
+//!
 //! # Clocks
 //!
 //! `now_ms` (passed to [`Node::tick`]) is a monotonic millisecond clock
@@ -81,6 +94,10 @@ const SEEN_CAP: usize = 4096;
 /// replayed envelope cannot make this device transmit continuously.
 const RECEIPT_GAP_MS: u64 = 60_000;
 
+/// A channel's reception states, as reported in [`NodeEvent::ChannelState`].
+const RECEIVING: &str = "receiving";
+const LISTENING: &str = "listening";
+
 /// Returned by [`Node::send`] and [`Node::broadcast`] when nothing was
 /// sent. No real envelope has this id.
 pub const NOT_SENT: [u8; 16] = [0; 16];
@@ -99,6 +116,32 @@ const AEAD_TAG: usize = 16;
 const SEGMENT: usize = CHUNK + AEAD_TAG;
 /// sender sign, sender dh, sent_min and signature around the text.
 const INNER_OVERHEAD: usize = 32 + 32 + 4 + 64;
+
+/// Where one of this node's sends has got to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutboxState {
+    /// Queued, waiting for the carrier (for sound, a quiet room).
+    Waiting,
+    /// Its first frame has gone out.
+    Playing,
+    /// Every frame, repeats included, has finished going out.
+    Sent,
+}
+
+impl OutboxState {
+    /// The state as the interface names it: "waiting", "playing", "sent".
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OutboxState::Waiting => "waiting",
+            OutboxState::Playing => "playing",
+            OutboxState::Sent => "sent",
+        }
+    }
+}
+
+/// The channel state reported when a send asks for a channel this plan
+/// does not build.
+pub const NOT_IN_THIS_PLAN: &str = "unavailable: not in this plan";
 
 /// What the node reports from a [`Node::tick`].
 pub enum NodeEvent {
@@ -131,9 +174,11 @@ pub enum NodeEvent {
     },
     /// The room's loudness in approximate dB.
     RoomDb(f32),
-    /// A channel changed state, e.g. "unavailable: microphone permission
-    /// denied".
+    /// A channel changed state: "receiving", "listening", "failed", or
+    /// e.g. "unavailable: microphone permission denied".
     ChannelState { channel: Channel, state: String },
+    /// A message or broadcast this node sent, by envelope id, moved on.
+    Outbox { id: [u8; 16], state: OutboxState },
 }
 
 impl fmt::Debug for NodeEvent {
@@ -171,6 +216,11 @@ impl fmt::Debug for NodeEvent {
             NodeEvent::ChannelState { channel, state } => f
                 .debug_struct("ChannelState")
                 .field("channel", channel)
+                .field("state", state)
+                .finish(),
+            NodeEvent::Outbox { id, state } => f
+                .debug_struct("Outbox")
+                .field("id", id)
                 .field("state", state)
                 .finish(),
         }
@@ -298,6 +348,16 @@ pub struct Node {
     receipts_sent: HashMap<[u8; 16], u64>,
     /// The `now_ms` of the current (or last) tick.
     now_ms: u64,
+    /// Events raised outside a tick, reported on the next one.
+    pending: Vec<NodeEvent>,
+    /// The envelope id of each send still in the outbox, by frame tag.
+    outbox: HashMap<u16, [u8; 16]>,
+    /// Tags part way through arriving, by (transport, tag).
+    arriving: HashSet<(usize, u16)>,
+    /// Transports on which an arrival failed during this tick.
+    failed: HashSet<usize>,
+    /// The receiving/listening state last reported, by transport.
+    reception: Vec<&'static str>,
 }
 
 impl Node {
@@ -305,6 +365,7 @@ impl Node {
     /// locked; see [`Node::unlock`].
     pub fn new(store: Option<Store>, transports: Vec<Box<dyn Transport>>) -> Node {
         let reassemblers = transports.iter().map(|_| Reassembler::new()).collect();
+        let reception = transports.iter().map(|_| LISTENING).collect();
         let mut node = Node {
             store: None,
             me: None,
@@ -318,6 +379,11 @@ impl Node {
             receipts: true,
             receipts_sent: HashMap::new(),
             now_ms: 0,
+            pending: Vec::new(),
+            outbox: HashMap::new(),
+            arriving: HashSet::new(),
+            failed: HashSet::new(),
+            reception,
         };
         if let Some(store) = store {
             node.unlock(store);
@@ -338,14 +404,30 @@ impl Node {
         self.receipts = on;
     }
 
-    /// Seal `text` to the given contacts and send it. Returns the
-    /// message's envelope id, or [`NOT_SENT`] if the node is locked, no
-    /// listed contact can be sealed to, or the text is too long for one
-    /// envelope.
+    /// The contacts in the store, or none while locked.
+    pub fn contacts(&self) -> Vec<Contact> {
+        self.store.as_ref().map(Store::contacts).unwrap_or_default()
+    }
+
+    /// Seal `text` to the given contacts and send it over `channel`.
+    /// Returns the message's envelope id, or [`NOT_SENT`] if the node is
+    /// locked, no listed contact can be sealed to, or the text is too
+    /// long for one envelope.
+    ///
+    /// Only [`Channel::Sound`] is built in this plan. Any other channel
+    /// sends nothing, returns [`NOT_SENT`] and reports the channel as
+    /// [`NOT_IN_THIS_PLAN`] on the next tick.
     ///
     /// A message to several contacts is one envelope; the store keeps one
     /// row per message id, so it is filed under the first of them.
-    pub fn send(&mut self, to: &[ContactId], text: &str) -> [u8; 16] {
+    pub fn send(&mut self, to: &[ContactId], text: &str, channel: Channel) -> [u8; 16] {
+        if channel != Channel::Sound {
+            self.pending.push(NodeEvent::ChannelState {
+                channel,
+                state: NOT_IN_THIS_PLAN.to_string(),
+            });
+            return NOT_SENT;
+        }
         let (Some(me), Some(store)) = (&self.me, &self.store) else {
             return NOT_SENT;
         };
@@ -373,7 +455,7 @@ impl Node {
             contact: recipients[0].id,
             outgoing: true,
             text: text.to_string(),
-            channel: self.channel(0),
+            channel,
             at_min: now,
             heard: false,
         };
@@ -382,7 +464,8 @@ impl Node {
         }
         self.sent_to
             .insert(env.id, recipients.iter().map(|c| c.id).collect());
-        self.transmit(&env);
+        let tag = self.transmit(&env);
+        self.track(tag, env.id);
         env.id
     }
 
@@ -396,8 +479,19 @@ impl Node {
             return NOT_SENT;
         }
         let env = seal_public(me, text, now_min(), TTL_MIN);
-        self.transmit(&env);
+        let tag = self.transmit(&env);
+        self.track(tag, env.id);
         env.id
+    }
+
+    /// Put a send in the outbox: reported waiting on the next tick, then
+    /// as its transport reports its tag playing and sent.
+    fn track(&mut self, tag: u16, id: [u8; 16]) {
+        self.outbox.insert(tag, id);
+        self.pending.push(NodeEvent::Outbox {
+            id,
+            state: OutboxState::Waiting,
+        });
     }
 
     /// Announce this device for pairing: a signed hello carrying its
@@ -434,7 +528,7 @@ impl Node {
     /// Poll every transport and handle what they heard. `now_ms` is a
     /// monotonic millisecond clock.
     pub fn tick(&mut self, now_ms: u64) -> Vec<NodeEvent> {
-        let mut events = Vec::new();
+        let mut events = std::mem::take(&mut self.pending);
         self.now_ms = now_ms;
         self.receipts_sent
             .retain(|_, at| now_ms.saturating_sub(*at) < RECEIPT_GAP_MS);
@@ -452,12 +546,34 @@ impl Node {
                     TransportEvent::Frame(frame) => {
                         for e in self.reassemblers[ti].push(&frame, now_ms) {
                             match e {
-                                Event::FrameOk { tag, .. } => self.on_frame(ti, tag, &mut events),
+                                Event::FrameOk { tag, .. } => {
+                                    if self.reassemblers[ti].prefix(tag).is_some() {
+                                        self.arriving.insert((ti, tag));
+                                    }
+                                    self.on_frame(ti, tag, &mut events)
+                                }
                                 Event::Complete { tag, bytes } => {
+                                    self.arriving.remove(&(ti, tag));
                                     self.on_complete(ti, tag, bytes, &mut events)
                                 }
                                 Event::FrameBad => {}
                             }
+                        }
+                    }
+                    TransportEvent::Playing(tag) => {
+                        if let Some(id) = self.outbox.get(&tag) {
+                            events.push(NodeEvent::Outbox {
+                                id: *id,
+                                state: OutboxState::Playing,
+                            });
+                        }
+                    }
+                    TransportEvent::Sent(tag) => {
+                        if let Some(id) = self.outbox.remove(&tag) {
+                            events.push(NodeEvent::Outbox {
+                                id,
+                                state: OutboxState::Sent,
+                            });
                         }
                     }
                     TransportEvent::RoomDb(db) => events.push(NodeEvent::RoomDb(db)),
@@ -476,7 +592,44 @@ impl Node {
         let reassemblers = &self.reassemblers;
         self.progress
             .retain(|(ti, tag), _| reassemblers[*ti].prefix(*tag).is_some());
+        // An arrival the reassembler gave up on was abandoned.
+        let failed = &mut self.failed;
+        self.arriving.retain(|(ti, tag)| {
+            let alive = reassemblers[*ti].prefix(*tag).is_some();
+            if !alive {
+                failed.insert(*ti);
+            }
+            alive
+        });
+        self.report_reception(&mut events);
         events
+    }
+
+    /// Report each transport's reception state if it changed, after a
+    /// "failed" if an arrival failed on it this tick.
+    fn report_reception(&mut self, events: &mut Vec<NodeEvent>) {
+        for ti in 0..self.transports.len() {
+            let channel = self.channel(ti);
+            let failed = self.failed.remove(&ti);
+            if failed {
+                events.push(NodeEvent::ChannelState {
+                    channel,
+                    state: "failed".to_string(),
+                });
+            }
+            let now = if self.arriving.iter().any(|(t, _)| *t == ti) {
+                RECEIVING
+            } else {
+                LISTENING
+            };
+            if failed || self.reception[ti] != now {
+                self.reception[ti] = now;
+                events.push(NodeEvent::ChannelState {
+                    channel,
+                    state: now.to_string(),
+                });
+            }
+        }
     }
 
     fn channel(&self, ti: usize) -> Channel {
@@ -485,7 +638,8 @@ impl Node {
 
     /// Split `env` under a fresh random tag and queue it on every
     /// transport. Remembers its id so this node ignores its own echo.
-    fn transmit(&mut self, env: &Envelope) {
+    /// Returns the tag.
+    fn transmit(&mut self, env: &Envelope) -> u16 {
         self.mark_seen(env.id);
         let tag = OsRng.next_u32() as u16;
         let frames = split(&env.encode(), tag);
@@ -494,6 +648,7 @@ impl Node {
                 t.send(f.clone());
             }
         }
+        tag
     }
 
     fn mark_seen(&mut self, id: [u8; 16]) {
@@ -543,11 +698,12 @@ impl Node {
         }
         let Ok(env) = Envelope::decode(&bytes) else {
             self.progress.remove(&(ti, tag));
+            self.failed.insert(ti);
             return;
         };
         match env.kind {
             Kind::Private => self.advance(ti, tag, &bytes, events),
-            Kind::Public => self.on_public(&env, events),
+            Kind::Public => self.on_public(ti, &env, events),
             Kind::Control => self.on_control(&env, events),
         }
         self.progress.remove(&(ti, tag));
@@ -628,6 +784,7 @@ impl Node {
                 }),
                 Err(_) => {
                     *progress = Progress::Settled;
+                    self.failed.insert(ti);
                     return;
                 }
             }
@@ -640,8 +797,11 @@ impl Node {
         else {
             unreachable!("matched as Opening above");
         };
-        if let Ok(opened) = opener.finish() {
-            self.deliver(ti, id, opened, events);
+        match opener.finish() {
+            Ok(opened) => self.deliver(ti, id, opened, events),
+            Err(_) => {
+                self.failed.insert(ti);
+            }
         }
     }
 
@@ -707,13 +867,14 @@ impl Node {
         self.transmit(&receipt);
     }
 
-    fn on_public(&mut self, env: &Envelope, events: &mut Vec<NodeEvent>) {
+    fn on_public(&mut self, ti: usize, env: &Envelope, events: &mut Vec<NodeEvent>) {
         if self.already_have(&env.id) {
             return;
         }
         // Marked seen only once the signature covering the id verifies, so
         // garbage sent under a stolen id cannot suppress the real envelope.
         let Ok((signer, text, _)) = open_public(env, now_min()) else {
+            self.failed.insert(ti);
             return;
         };
         self.mark_seen(env.id);
@@ -928,7 +1089,7 @@ mod tests {
             Identity::generate(),
         );
         let (mut node, wire, ids) = node(&dir, &a, &[&b, &c]);
-        let id = node.send(&[ids[0]], "for b");
+        let id = node.send(&[ids[0]], "for b", Channel::Sound);
         assert_ne!(id, NOT_SENT);
 
         let from_c = control::heard(&c, &a.public(), &id, random_id(), now_min(), 60);
@@ -982,9 +1143,9 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let (a, b) = (Identity::generate(), Identity::generate());
         let (mut node, wire, ids) = node(&dir, &a, &[&b]);
-        assert_eq!(node.send(&[], "hi"), NOT_SENT);
-        assert_eq!(node.send(&[ContactId(999)], "hi"), NOT_SENT);
-        assert_eq!(node.send(&ids, &"x".repeat(4000)), NOT_SENT);
+        assert_eq!(node.send(&[], "hi", Channel::Sound), NOT_SENT);
+        assert_eq!(node.send(&[ContactId(999)], "hi", Channel::Sound), NOT_SENT);
+        assert_eq!(node.send(&ids, &"x".repeat(4000), Channel::Sound), NOT_SENT);
         assert_eq!(node.broadcast(&"x".repeat(4000)), NOT_SENT);
         assert!(wire.sent.lock().unwrap().is_empty());
 
@@ -992,7 +1153,10 @@ mod tests {
             .rev()
             .find(|n| private_envelope_len(1, *n) <= MAX_ENVELOPE)
             .unwrap();
-        assert_ne!(node.send(&ids, &"x".repeat(longest)), NOT_SENT);
+        assert_ne!(
+            node.send(&ids, &"x".repeat(longest), Channel::Sound),
+            NOT_SENT
+        );
     }
 
     fn offers(events: &[NodeEvent]) -> usize {
@@ -1014,7 +1178,10 @@ mod tests {
         };
 
         wire.hear(&forged, 1);
-        assert!(node.tick(1).is_empty());
+        assert!(!node
+            .tick(1)
+            .iter()
+            .any(|e| matches!(e, NodeEvent::Broadcast { .. })));
         wire.hear(&genuine, 2);
         let texts: Vec<_> = node
             .tick(2)
@@ -1079,7 +1246,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let (a, b) = (Identity::generate(), Identity::generate());
         let (mut node, wire, ids) = node(&dir, &a, &[&b]);
-        let id = node.send(&[ids[0]], "for b");
+        let id = node.send(&[ids[0]], "for b", Channel::Sound);
         let heard = |events: Vec<NodeEvent>| {
             events
                 .iter()
@@ -1145,7 +1312,7 @@ mod tests {
     fn locked_node_sends_nothing() {
         let wire = Wire::default();
         let mut node = Node::new(None, vec![Box::new(wire.clone())]);
-        assert_eq!(node.send(&[ContactId(1)], "hi"), NOT_SENT);
+        assert_eq!(node.send(&[ContactId(1)], "hi", Channel::Sound), NOT_SENT);
         assert_eq!(node.broadcast("hi"), NOT_SENT);
         node.start_pairing("me");
         let peer = Identity::generate().public();
@@ -1186,6 +1353,160 @@ mod tests {
 
         let public = seal_public(&a, "hi", 0, 1).encode();
         assert!(matches!(private_layout(&public), Some(Err(()))));
+    }
+
+    fn sound_states(events: &[NodeEvent]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                NodeEvent::ChannelState {
+                    channel: Channel::Sound,
+                    state,
+                } => Some(state.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn channel_is_receiving_while_a_tag_arrives_then_listening() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (a, b) = (Identity::generate(), Identity::generate());
+        let (mut node, wire, _) = node(&dir, &b, &[&a]);
+        let env = seal_private(&a, &[b.public()], &"long ".repeat(40), now_min(), 60);
+        let frames = split(&env.encode(), 9);
+        let (last, rest) = frames.split_last().unwrap();
+
+        assert!(
+            sound_states(&node.tick(1)).is_empty(),
+            "listening is the start"
+        );
+        wire.inbox.lock().unwrap().push(rest[0].clone());
+        assert_eq!(sound_states(&node.tick(2)), vec!["receiving"]);
+        wire.inbox.lock().unwrap().extend(rest[1..].iter().cloned());
+        assert!(sound_states(&node.tick(3)).is_empty(), "still receiving");
+        wire.inbox.lock().unwrap().push(last.clone());
+        let done = node.tick(4);
+        assert_eq!(messages(&done).len(), 1);
+        assert_eq!(sound_states(&done), vec!["listening"]);
+    }
+
+    #[test]
+    fn an_abandoned_arrival_reports_failed() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (a, b) = (Identity::generate(), Identity::generate());
+        let (mut node, wire, _) = node(&dir, &b, &[&a]);
+        let env = seal_private(&a, &[b.public()], &"long ".repeat(40), now_min(), 60);
+        wire.inbox
+            .lock()
+            .unwrap()
+            .push(split(&env.encode(), 9).remove(0));
+        assert_eq!(sound_states(&node.tick(1)), vec!["receiving"]);
+        assert!(sound_states(&node.tick(60_000)).is_empty());
+        // The reassembler gives a tag up after ten minutes without a frame.
+        assert_eq!(
+            sound_states(&node.tick(700_000)),
+            vec!["failed", "listening"]
+        );
+    }
+
+    #[test]
+    fn an_arrival_that_fails_verification_reports_failed() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (a, b) = (Identity::generate(), Identity::generate());
+        let (mut node, wire, _) = node(&dir, &b, &[&a]);
+        let env = seal_private(&a, &[b.public()], &"long ".repeat(40), now_min(), 60);
+        let mut bytes = env.encode();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 1; // the last chunk's tag
+        let frames = split(&bytes, 9);
+        let (end, rest) = frames.split_last().unwrap();
+
+        wire.inbox.lock().unwrap().extend(rest.iter().cloned());
+        assert_eq!(sound_states(&node.tick(1)), vec!["receiving"]);
+        wire.inbox.lock().unwrap().push(end.clone());
+        let done = node.tick(2);
+        assert!(messages(&done).is_empty());
+        assert_eq!(sound_states(&done), vec!["failed", "listening"]);
+
+        // A forged broadcast fails its signature check the same way.
+        let forged = Envelope {
+            body: vec![0; 140],
+            ..seal_public(&a, "Road north is open.", now_min(), 60)
+        };
+        wire.hear(&forged, 10);
+        assert_eq!(sound_states(&node.tick(3)), vec!["failed", "listening"]);
+    }
+
+    #[test]
+    fn sending_on_a_channel_not_in_this_plan_is_refused_and_reported() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (a, b) = (Identity::generate(), Identity::generate());
+        let (mut node, wire, ids) = node(&dir, &a, &[&b]);
+        for channel in [Channel::Light, Channel::Bluetooth] {
+            assert_eq!(node.send(&ids, "hi", channel), NOT_SENT);
+            let states: Vec<_> = node
+                .tick(1)
+                .into_iter()
+                .filter_map(|e| match e {
+                    NodeEvent::ChannelState { channel, state } => Some((channel, state)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                states,
+                vec![(channel, "unavailable: not in this plan".to_string())]
+            );
+        }
+        assert!(wire.sent.lock().unwrap().is_empty());
+        assert!(!node
+            .tick(2)
+            .iter()
+            .any(|e| matches!(e, NodeEvent::Outbox { .. })));
+    }
+
+    #[test]
+    fn a_send_is_reported_waiting_but_a_receipt_is_not() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (a, b) = (Identity::generate(), Identity::generate());
+        let (mut node, wire, ids) = node(&dir, &a, &[&b]);
+        let outbox = |events: Vec<NodeEvent>| -> Vec<([u8; 16], OutboxState)> {
+            events
+                .into_iter()
+                .filter_map(|e| match e {
+                    NodeEvent::Outbox { id, state } => Some((id, state)),
+                    _ => None,
+                })
+                .collect()
+        };
+        let id = node.send(&ids, "hi", Channel::Sound);
+        let public = node.broadcast("Road north is open.");
+        assert_eq!(
+            outbox(node.tick(1)),
+            vec![(id, OutboxState::Waiting), (public, OutboxState::Waiting)]
+        );
+
+        let env = seal_private(&b, &[a.public()], "back", now_min(), 60);
+        wire.sent.lock().unwrap().clear();
+        wire.hear(&env, 3);
+        let events = node.tick(2);
+        assert_eq!(messages(&events).len(), 1);
+        assert!(!wire.sent.lock().unwrap().is_empty(), "a receipt went out");
+        assert!(outbox(events).is_empty());
+        assert!(outbox(node.tick(3)).is_empty());
+    }
+
+    #[test]
+    fn contacts_lists_the_store_and_nothing_while_locked() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (a, b) = (Identity::generate(), Identity::generate());
+        let (node, _, ids) = node(&dir, &a, &[&b]);
+        let contacts = node.contacts();
+        assert_eq!(contacts.len(), 1);
+        assert_eq!(contacts[0].id, ids[0]);
+        assert_eq!(contacts[0].who, b.public());
+
+        assert!(Node::new(None, vec![]).contacts().is_empty());
     }
 
     #[test]

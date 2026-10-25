@@ -47,6 +47,12 @@ enum Input {
 /// it says is due. At most [`MAX_QUEUED_ENVELOPES`] envelopes wait at
 /// once; frames of a further envelope are refused and reported once as
 /// [`TransportEvent::Notice`] with [`QUEUE_FULL`].
+///
+/// Each envelope's progress is reported by its frame tag:
+/// [`TransportEvent::Playing`] when its first frame goes to the speaker,
+/// and [`TransportEvent::Sent`] once its last frame's last repeat has
+/// finished playing (the speaker plays what it is handed in order, so
+/// that is when everything handed to it before has played too).
 pub struct SoundTransport {
     io: Box<dyn AudioIo>,
     cfg: ModemConfig,
@@ -64,6 +70,11 @@ pub struct SoundTransport {
     /// Whether the last play failed, so a dead speaker is reported once,
     /// not once per frame.
     play_failed: bool,
+    /// Envelopes that have started playing, by tag, with when the last
+    /// of their audio handed to the speaker so far finishes, in `now_ms`.
+    playing: HashMap<u16, u64>,
+    /// When everything handed to the speaker so far finishes, in `now_ms`.
+    speaker_free_ms: u64,
 }
 
 impl SoundTransport {
@@ -80,6 +91,8 @@ impl SoundTransport {
             refused_tag: None,
             pending: Vec::new(),
             play_failed: false,
+            playing: HashMap::new(),
+            speaker_free_ms: 0,
         }
     }
 
@@ -170,8 +183,18 @@ impl Transport for SoundTransport {
                 continue;
             };
             let samples = modulate(&self.cfg, frame);
+            let tag = frame_tag(frame);
             if !self.gate.is_queued(item) {
                 self.queued.remove(&item);
+            }
+            let rate = u64::from(self.io.sample_rate().max(1));
+            let ends =
+                self.speaker_free_ms.max(now_ms) + (samples.len() as u64 * 1000).div_ceil(rate);
+            self.speaker_free_ms = ends;
+            if let Some(tag) = tag {
+                if self.playing.insert(tag, ends).is_none() {
+                    events.push(TransportEvent::Playing(tag));
+                }
             }
             match self.io.play(samples) {
                 Ok(()) => self.play_failed = false,
@@ -184,6 +207,20 @@ impl Transport for SoundTransport {
             }
         }
 
+        let still_queued: HashSet<Option<u16>> =
+            self.queued.values().map(|f| frame_tag(f)).collect();
+        let mut done: Vec<u16> = self
+            .playing
+            .iter()
+            .filter(|(tag, ends)| now_ms >= **ends && !still_queued.contains(&Some(**tag)))
+            .map(|(tag, _)| *tag)
+            .collect();
+        done.sort_unstable();
+        for tag in done {
+            self.playing.remove(&tag);
+            events.push(TransportEvent::Sent(tag));
+        }
+
         events
     }
 }
@@ -191,8 +228,10 @@ impl Transport for SoundTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Node, NodeEvent};
+    use crate::{Node, NodeEvent, OutboxState};
+    use bombechat_core::Identity;
     use bombechat_modem::split;
+    use bombechat_store::Store;
 
     type Sink = Box<dyn FnMut(&[f32]) + Send>;
 
@@ -276,6 +315,69 @@ mod tests {
         let played = io.played.lock().unwrap().clone();
         assert_eq!(played, vec![modulate(&ModemConfig::default(), &frame)]);
         assert!(t.queued.is_empty(), "played frame dropped");
+    }
+
+    fn progress(events: Vec<TransportEvent>) -> Vec<TransportEvent> {
+        events
+            .into_iter()
+            .filter(|e| matches!(e, TransportEvent::Playing(_) | TransportEvent::Sent(_)))
+            .collect()
+    }
+
+    #[test]
+    fn an_envelope_is_playing_from_its_first_frame_and_sent_after_its_last_repeat() {
+        let io = Scripted::default();
+        let mut t = SoundTransport::new(
+            Box::new(io.clone()),
+            ModemConfig::default(),
+            QuietGate::new(40.0, 1, 90),
+        );
+        t.poll(0);
+        let frames = split(&[1; 100], 7);
+        assert!(frames.len() > 1);
+        for f in frames {
+            t.send(f);
+        }
+        assert!(progress(t.poll(10)).is_empty(), "waiting for quiet");
+
+        io.quiet();
+        assert_eq!(progress(t.poll(100)), vec![TransportEvent::Playing(7)]);
+        assert!(progress(t.poll(60_000)).is_empty(), "one repeat to go");
+
+        // The repeat is handed to the speaker at 90.1 s, but is only sent
+        // once the speaker has finished playing it.
+        assert!(progress(t.poll(90_100)).is_empty());
+        assert!(progress(t.poll(90_101)).is_empty());
+        assert_eq!(progress(t.poll(200_000)), vec![TransportEvent::Sent(7)]);
+        assert!(progress(t.poll(300_000)).is_empty(), "reported once");
+    }
+
+    fn outbox(events: Vec<NodeEvent>) -> Vec<([u8; 16], OutboxState)> {
+        events
+            .into_iter()
+            .filter_map(|e| match e {
+                NodeEvent::Outbox { id, state } => Some((id, state)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_send_is_waiting_then_playing_then_sent() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (me, them) = (Identity::generate(), Identity::generate());
+        let store = Store::create(&dir.path().join("m.db"), "pass", &me, "me").unwrap();
+        let contact = store.add_contact("them", &them.public(), true).unwrap();
+        let io = Scripted::default();
+        let mut node = Node::new(Some(store), vec![Box::new(transport(&io))]);
+        node.tick(0);
+
+        let id = node.send(&[contact], "hi", Channel::Sound);
+        assert_eq!(outbox(node.tick(10)), vec![(id, OutboxState::Waiting)]);
+        io.quiet();
+        assert_eq!(outbox(node.tick(100)), vec![(id, OutboxState::Playing)]);
+        assert_eq!(outbox(node.tick(100_000)), vec![(id, OutboxState::Sent)]);
+        assert!(outbox(node.tick(200_000)).is_empty());
     }
 
     #[test]
