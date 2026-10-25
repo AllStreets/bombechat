@@ -7,8 +7,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use bombechat_core::{Identity, PublicIdentity};
-use bombechat_modem::{AudioIo, CpalAudio, ModemConfig, QuietGate};
-use bombechat_node::{Node, NodeEvent, SoundTransport, Transport};
+use bombechat_modem::{AudioIo, Band, CpalAudio, ModemConfig, QuietGate};
+use bombechat_node::{Node, NodeEvent, SoundSwitch, SoundTransport, Transport};
 use bombechat_store::{Channel, Contact, ContactId, Store, StoreError, StoredMessage};
 
 use crate::commands::{Lock, Machine, Opened, Unlocking};
@@ -18,6 +18,33 @@ use crate::commands::{Lock, Machine, Opened, Unlocking};
 const SEND_UNDER_DB: f32 = 40.0;
 const REPEATS: u8 = 2;
 const REPEAT_GAP_S: u32 = 90;
+
+/// The settings page's Send under values, in dB, by position.
+const SEND_UNDER_STEPS: [f32; 5] = [30.0, 35.0, 40.0, 45.0, 50.0];
+
+/// The settings file's name, beside the store. Settings are not secret
+/// (which switch is where, a threshold), so they are kept as plain JSON.
+const SETTINGS_FILE: &str = "settings.json";
+
+/// The channel state when the sound card runs too slow for either band.
+pub const RATE_TOO_LOW: &str = "unavailable: microphone sample rate too low";
+
+/// The modem configuration for a sound card at `sample_rate`: the
+/// near-silent band if the rate can carry it, else the audible band, else
+/// none.
+pub fn modem_config(sample_rate: u32) -> Option<ModemConfig> {
+    let near_silent = ModemConfig {
+        sample_rate,
+        ..ModemConfig::default()
+    };
+    let audible = ModemConfig {
+        band: Band::Audible,
+        ..near_silent
+    };
+    [near_silent, audible]
+        .into_iter()
+        .find(|cfg| cfg.validate().is_ok())
+}
 
 /// `path` with `suffix` added to its file name.
 fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
@@ -85,8 +112,9 @@ pub struct Device {
     unlocking: bool,
     /// The person's name from the store, once unlocked.
     my_name: Option<String>,
-    /// Settings as the page last set them. Plan 1's node has nothing to
-    /// retune yet (band, gate, volume), so they are only kept.
+    /// Settings as the page last set them, kept in [`SETTINGS_FILE`]
+    /// beside the store. The Sound switch and Send under are applied to
+    /// the node; the rest are only kept in this plan.
     settings: HashMap<String, usize>,
     /// Reported on the first tick, e.g. why there is no sound transport.
     pending: Vec<NodeEvent>,
@@ -98,15 +126,7 @@ impl Device {
     /// no transport and says why on its first tick.
     pub fn with_sound_card(store_path: PathBuf) -> Device {
         match CpalAudio::new() {
-            Ok(audio) => {
-                let cfg = ModemConfig {
-                    sample_rate: audio.sample_rate(),
-                    ..ModemConfig::default()
-                };
-                let gate = QuietGate::new(SEND_UNDER_DB, REPEATS, REPEAT_GAP_S);
-                let sound = SoundTransport::new(Box::new(audio), cfg, gate);
-                Device::new(store_path, vec![Box::new(sound)], Vec::new())
-            }
+            Ok(audio) => Device::with_audio(store_path, Box::new(audio)),
             Err(e) => Device::new(
                 store_path,
                 Vec::new(),
@@ -118,23 +138,106 @@ impl Device {
         }
     }
 
-    /// A machine over `transports`, reporting `pending` on its first tick.
+    /// A machine listening and playing through `audio`: on the
+    /// near-silent band if its sample rate can carry it, else on the
+    /// audible band; if neither fits it runs with no transport and
+    /// reports [`RATE_TOO_LOW`] on its first tick.
+    pub fn with_audio(store_path: PathBuf, audio: Box<dyn AudioIo>) -> Device {
+        let rate = audio.sample_rate();
+        match modem_config(rate) {
+            Some(cfg) => {
+                if cfg.band != Band::NearSilent {
+                    eprintln!("bombechat: the sound card runs at {rate} Hz, too slow for the near-silent band; using the audible band");
+                }
+                let gate = QuietGate::new(SEND_UNDER_DB, REPEATS, REPEAT_GAP_S);
+                let sound = SoundTransport::new(audio, cfg, gate);
+                Device::new(store_path, vec![Box::new(sound)], Vec::new())
+            }
+            None => Device::new(
+                store_path,
+                Vec::new(),
+                vec![NodeEvent::ChannelState {
+                    channel: Channel::Sound,
+                    state: RATE_TOO_LOW.to_string(),
+                }],
+            ),
+        }
+    }
+
+    /// A machine over `transports`, reporting `pending` on its first tick,
+    /// with the settings kept beside the store applied.
     pub fn new(
         store_path: PathBuf,
         transports: Vec<Box<dyn Transport>>,
         pending: Vec<NodeEvent>,
     ) -> Device {
         tidy_unfinished(&store_path);
-        Device {
+        let settings = load_settings(&settings_path(&store_path));
+        let mut device = Device {
             node: Node::new(None, transports),
             store_path,
             unlocked: false,
             unlocking: false,
             my_name: None,
-            settings: HashMap::new(),
+            settings,
             pending,
+        };
+        let kept: Vec<(String, usize)> = device
+            .settings
+            .iter()
+            .map(|(k, v)| (k.clone(), *v))
+            .collect();
+        for (id, value) in kept {
+            device.apply(&id, value);
+        }
+        device
+    }
+
+    /// A setting's value, as its position on the settings page, if it has
+    /// been set.
+    pub fn setting(&self, id: &str) -> Option<usize> {
+        self.settings.get(id).copied()
+    }
+
+    /// Retune the node for a setting it acts on.
+    fn apply(&mut self, id: &str, value_index: usize) {
+        match id {
+            "sound" => {
+                if let Some(switch) = SoundSwitch::from_index(value_index) {
+                    self.node.set_sound(switch);
+                }
+            }
+            "quiet" => {
+                if let Some(db) = SEND_UNDER_STEPS.get(value_index) {
+                    self.node.set_send_under(*db);
+                }
+            }
+            _ => {}
         }
     }
+}
+
+/// Where the settings are kept, beside the store at `store_path`.
+fn settings_path(store_path: &Path) -> PathBuf {
+    store_path.with_file_name(SETTINGS_FILE)
+}
+
+/// The settings kept at `path`, or none if there are none (or they
+/// cannot be read; the page sends its own on load).
+fn load_settings(path: &Path) -> HashMap<String, usize> {
+    fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+/// Keep `settings` at `path`, written beside it first and moved into
+/// place so a crash never leaves half a file.
+fn save_settings(path: &Path, settings: &HashMap<String, usize>) -> std::io::Result<()> {
+    let staged = with_suffix(path, ".new");
+    let json = serde_json::to_vec_pretty(settings).map_err(std::io::Error::other)?;
+    fs::write(&staged, json)?;
+    fs::rename(&staged, path)
 }
 
 impl Machine for Device {
@@ -146,8 +249,8 @@ impl Machine for Device {
         self.node.broadcast(text)
     }
 
-    fn start_pairing(&mut self, my_name: &str) {
-        self.node.start_pairing(my_name)
+    fn start_pairing(&mut self, my_name: &str) -> Result<(), String> {
+        self.node.start_pairing(my_name).map_err(str::to_string)
     }
 
     fn confirm_pairing(&mut self, peer: &PublicIdentity, name: &str) -> ContactId {
@@ -176,7 +279,12 @@ impl Machine for Device {
     }
 
     fn set_setting(&mut self, id: &str, value_index: usize) {
-        self.settings.insert(id.to_string(), value_index);
+        self.apply(id, value_index);
+        if self.settings.insert(id.to_string(), value_index) != Some(value_index) {
+            if let Err(e) = save_settings(&settings_path(&self.store_path), &self.settings) {
+                eprintln!("bombechat: settings not saved: {e}");
+            }
+        }
     }
 
     fn lock(&self) -> Lock {

@@ -96,12 +96,13 @@ impl Machine for Fake {
         self.calls.lock().unwrap().broadcasts.push(text.to_string());
         ID
     }
-    fn start_pairing(&mut self, my_name: &str) {
+    fn start_pairing(&mut self, my_name: &str) -> Result<(), String> {
         self.calls
             .lock()
             .unwrap()
             .pairings
             .push(my_name.to_string());
+        Ok(())
     }
     fn confirm_pairing(&mut self, peer: &PublicIdentity, name: &str) -> ContactId {
         self.calls
@@ -176,7 +177,9 @@ impl Machine for Fake {
         self.rates.lock().unwrap().clone()
     }
     fn tick(&mut self, _now_ms: u64) -> Vec<NodeEvent> {
-        match self.script.lock().unwrap().pop_front() {
+        // Taken out first, so a scripted panic does not poison the script.
+        let next = self.script.lock().unwrap().pop_front();
+        match next {
             Some(Some(events)) => events,
             Some(None) => panic!("scripted tick panic"),
             None => Vec::new(),
@@ -480,6 +483,19 @@ fn a_tick_that_panics_reports_sound_failed_and_the_pump_carries_on() {
 }
 
 #[test]
+fn a_tick_that_keeps_panicking_is_reported_once_in_a_while() {
+    let r = rig(Lock::Unlocked, None);
+    r.script
+        .lock()
+        .unwrap()
+        .extend([None, None, None, Some(vec![NodeEvent::RoomDb(39.0)])]);
+    assert_eq!(commands::tick(&r.shared, 20).len(), 1, "the first is reported");
+    assert!(commands::tick(&r.shared, 40).is_empty(), "the next is not");
+    assert!(commands::tick(&r.shared, 60).is_empty());
+    assert_eq!(commands::tick(&r.shared, 80).len(), 1, "and a good tick still is");
+}
+
+#[test]
 fn node_events_become_the_bridge_events_with_the_payloads_bridge_js_expects() {
     let chunk = NodeEvent::ChunkLanded {
         tag: 0x5a1e,
@@ -515,7 +531,8 @@ fn node_events_become_the_bridge_events_with_the_payloads_bridge_js_expects() {
         (
             "message",
             json!({ "id": ID.to_vec(), "contact": 1, "outgoing": false, "text": "Bring the radio.",
-                    "channel": "sound", "at_min": 29_000_000, "heard": false })
+                    "channel": "sound", "at_min": 29_000_000, "heard": false,
+                    "state": "sent" })
         )
     );
 
@@ -612,4 +629,23 @@ fn every_command_name_is_one_bridge_js_invokes() {
             "bridge.js does not invoke {name}"
         );
     }
+}
+
+#[test]
+fn every_command_name_is_registered_with_tauri() {
+    let lib = include_str!("../src/lib.rs");
+    let start = lib
+        .find("generate_handler![")
+        .expect("lib.rs registers its commands")
+        + "generate_handler![".len();
+    let end = start + lib[start..].find(']').expect("the list ends");
+    let mut registered: Vec<&str> = lib[start..end]
+        .split(',')
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .collect();
+    let mut names = commands::NAMES.to_vec();
+    registered.sort_unstable();
+    names.sort_unstable();
+    assert_eq!(registered, names);
 }

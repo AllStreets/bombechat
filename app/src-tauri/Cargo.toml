@@ -27,4 +27,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [dev-dependencies]
+# FakeAudio / LoopbackAudio for the sound tests. A dev-dependency only, so
+# `fake-audio` never reaches the app (tools/check-airgapped.sh follows
+# normal edges only).
+bombechat-modem = { path = "../../crates/modem", features = ["fake-audio"] }
 tempfile = "3"

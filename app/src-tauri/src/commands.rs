@@ -13,6 +13,7 @@
 use std::any::Any;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use bombechat_core::{safety_number, PublicIdentity};
 use bombechat_node::{NodeEvent, NOT_SENT, NOT_STORED};
@@ -24,6 +25,9 @@ use serde_json::{json, Value};
 /// itself. People are known by their own names (the first run asks), and
 /// a store from before that announces this instead.
 pub const MACHINE_NAME: &str = "Machine No. 1";
+
+/// A tick that keeps panicking is logged and reported at most this often.
+const PANIC_REPORT_GAP: Duration = Duration::from_secs(5);
 
 /// Longest name kept for a person, in characters (hellos cut at 64 bytes).
 const MAX_NAME_CHARS: usize = 40;
@@ -88,7 +92,9 @@ pub type Unlocking = Box<dyn FnOnce(&str, &str) -> Result<Opened, String> + Send
 pub trait Machine: Send {
     fn send(&mut self, to: &[ContactId], text: &str, channel: Channel) -> [u8; 16];
     fn broadcast(&mut self, text: &str) -> [u8; 16];
-    fn start_pairing(&mut self, my_name: &str);
+    /// Play this machine's pairing hello, or say why not (for example,
+    /// the Sound switch is at Listen).
+    fn start_pairing(&mut self, my_name: &str) -> Result<(), String>;
     fn confirm_pairing(&mut self, peer: &PublicIdentity, name: &str) -> ContactId;
     fn contacts(&self) -> Vec<Contact>;
     /// The stored messages with one contact, oldest first.
@@ -122,6 +128,8 @@ pub trait Machine: Send {
 pub struct Shared {
     machine: Mutex<Box<dyn Machine>>,
     channels: Mutex<Vec<(Channel, String)>>,
+    /// When a panicking tick was last logged and reported.
+    panic_reported: Mutex<Option<Instant>>,
 }
 
 impl Shared {
@@ -129,6 +137,7 @@ impl Shared {
         Shared {
             machine: Mutex::new(machine),
             channels: Mutex::new(Vec::new()),
+            panic_reported: Mutex::new(None),
         }
     }
 
@@ -235,6 +244,7 @@ pub fn broadcast(s: &Shared, text: String) -> Result<String, String> {
 }
 
 /// `pair`: announce this machine for pairing, under the person's name.
+/// Refused with the reason when the Sound switch does not allow sending.
 pub fn pair(s: &Shared) -> Result<(), String> {
     let mut machine = s.machine();
     if machine.lock() != Lock::Unlocked {
@@ -243,8 +253,7 @@ pub fn pair(s: &Shared) -> Result<(), String> {
     let name = machine
         .my_name()
         .unwrap_or_else(|| MACHINE_NAME.to_string());
-    machine.start_pairing(&name);
-    Ok(())
+    machine.start_pairing(&name)
 }
 
 /// `confirm_pair { peerHex, name }`: store the peer (its sign key then its
@@ -367,11 +376,18 @@ pub fn channels(s: &Shared) -> Vec<ChannelView> {
 
 /// One tick of the machine, for the pump. Records each channel's state
 /// for [`channels`]. A tick that panics is logged and reported as the
-/// sound channel failing; the next tick carries on.
+/// sound channel failing, at most once in [`PANIC_REPORT_GAP`] so a tick
+/// that panics every time does not flood the log or the page; the next
+/// tick carries on.
 pub fn tick(s: &Shared, now_ms: u64) -> Vec<NodeEvent> {
     let events = match catch_unwind(AssertUnwindSafe(|| s.machine().tick(now_ms))) {
         Ok(events) => events,
         Err(panic) => {
+            let mut last = s.panic_reported.lock().unwrap_or_else(|p| p.into_inner());
+            if last.is_some_and(|at| at.elapsed() < PANIC_REPORT_GAP) {
+                return Vec::new();
+            }
+            *last = Some(Instant::now());
             let why = panic
                 .downcast_ref::<&str>()
                 .map(|s| s.to_string())
@@ -403,7 +419,7 @@ fn identity(p: &PublicIdentity) -> Value {
 fn message_json(m: &StoredMessage) -> Value {
     json!({ "id": m.id.to_vec(), "contact": m.contact.0, "outgoing": m.outgoing,
             "text": m.text, "channel": channel_name(m.channel), "at_min": m.at_min,
-            "heard": m.heard })
+            "heard": m.heard, "state": m.delivery.as_str() })
 }
 
 /// A node event as the bridge event it becomes: its name and payload.
