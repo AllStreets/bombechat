@@ -111,6 +111,15 @@ pub trait Transport: Send {
     /// it [`TransportEvent::Sent`]; others ignore this.
     fn delivered(&mut self, _tag: u16) {}
 
+    /// Send no more of the envelope under `tag`: what is still queued of
+    /// it is dropped (what has already gone to the carrier finishes). For
+    /// the self-test, once it is heard or given up. By default as
+    /// [`Transport::delivered`]: a carrier that keeps sending until told
+    /// stops.
+    fn withdraw(&mut self, tag: u16) {
+        self.delivered(tag);
+    }
+
     /// The envelope this transport handed over under `tag` would not
     /// open (not for this machine, damaged, or tampered with). A carrier
     /// that remembers what it collected (light) forgets it, so the same

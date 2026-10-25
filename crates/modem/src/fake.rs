@@ -80,8 +80,19 @@ impl FakeAudio {
         }
     }
 
+    /// A working fake device at `sample_rate` whose speaker is heard by
+    /// its own microphone: whatever it plays is delivered straight to its
+    /// own input sink (once it has one), as one laptop hears itself. Add
+    /// noise to that path with [`FakeAudio::with_noise`].
+    pub fn looped(sample_rate: u32) -> Self {
+        let mut a = FakeAudio::new(sample_rate);
+        a.forward_to = Some(a.sink.clone());
+        a
+    }
+
     /// Mix ambient noise into every sample this device forwards to a
-    /// [`LoopbackAudio::pair`] partner (it has no effect without one). One
+    /// [`LoopbackAudio::pair`] partner, or to itself if
+    /// [`FakeAudio::looped`] (it has no effect otherwise). One
     /// `noise()` call per forwarded sample.
     pub fn with_noise(mut self, noise: impl FnMut() -> f32 + Send + 'static) -> Self {
         self.noise = Some(Arc::new(Mutex::new(Box::new(noise))));
@@ -248,6 +259,20 @@ mod tests {
         let mut a = FakeAudio::denied();
         assert!(a.start_input(Box::new(|_| {})).is_err());
         assert_eq!(a.starts(), 1);
+    }
+
+    #[test]
+    fn a_looped_device_hears_what_it_plays() {
+        let mut a = FakeAudio::looped(8_000);
+        let heard: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
+        let heard_for_sink = heard.clone();
+        a.start_input(Box::new(move |s: &[f32]| {
+            heard_for_sink.lock().unwrap().extend_from_slice(s);
+        }))
+        .unwrap();
+
+        a.play(vec![0.5, -0.5]).unwrap();
+        assert_eq!(*heard.lock().unwrap(), vec![0.5, -0.5]);
     }
 
     #[test]

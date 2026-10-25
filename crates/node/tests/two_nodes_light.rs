@@ -18,7 +18,8 @@ use std::time::{Duration, Instant};
 use bombechat_core::{Identity, PublicIdentity};
 use bombechat_light::{CodeSpec, FakeCamera};
 use bombechat_node::{
-    LightSwitch, LightTransport, Node, NodeEvent, OutboxState, ReaderWatch, SoundSwitch,
+    LightSwitch, LightTransport, Node, NodeEvent, OutboxState, ReaderWatch, SelfTestState,
+    SoundSwitch, SELF_TEST_TEXT,
 };
 use bombechat_store::{Channel, ContactId, Store};
 use camera::{shoot, Camera, Code, Pose};
@@ -114,6 +115,8 @@ struct View {
     viewer: usize,
     shown: usize,
     pose: Pose,
+    /// Seen in a mirror: the picture is reflected left to right.
+    mirror: bool,
 }
 
 fn facing(viewer: usize, shown: usize) -> View {
@@ -127,6 +130,15 @@ fn facing(viewer: usize, shown: usize) -> View {
             tilt: 15.0,
             tilt_axis: 30.0,
         },
+        mirror: false,
+    }
+}
+
+/// `viewer` sees its own screen in a mirror held in front of it.
+fn in_a_mirror(viewer: usize) -> View {
+    View {
+        mirror: true,
+        ..facing(viewer, viewer)
     }
 }
 
@@ -185,9 +197,14 @@ impl Room {
                     self.last[viewer][v.shown] = bits;
                 }
                 if let Some(s) = shown {
+                    let n = s.spec.cells as usize;
+                    let mut grid = s.grid();
+                    if v.mirror {
+                        grid.chunks_mut(n).for_each(|row| row.reverse());
+                    }
                     codes.push(Code {
-                        n: s.spec.cells as usize,
-                        grid: s.grid(),
+                        n,
+                        grid,
                         pose: v.pose.clone(),
                         occlude: None,
                     });
@@ -510,6 +527,7 @@ fn two_senders_in_view_both_arrive() {
             tilt: 10.0,
             tilt_axis: 90.0,
         },
+        mirror: false,
     };
     let mut room = Room::new(vec![a, b, c], vec![side(0, 0.27), side(2, 0.73)]);
     room.peers[0].node.send(
@@ -633,4 +651,34 @@ fn a_denied_camera_reports_light_unavailable() {
     a.tick(60);
     a.settle();
     assert_eq!(a.cam.starts(), 1, "not asked again until the switch moves");
+}
+
+#[test]
+fn a_machine_reads_its_own_self_test_in_a_mirror() {
+    let dir = TempDir::new().unwrap();
+    let a = Peer::new(&dir, "ann", FakeCamera::new(Vec::new()));
+    let mut room = Room::new(vec![a], vec![in_a_mirror(0)]);
+    room.peers[0].node.start_self_test(Channel::Light).unwrap();
+    let heard = |log: &[NodeEvent]| {
+        log.iter().find_map(|e| match e {
+            NodeEvent::SelfTest {
+                state: SelfTestState::Heard { text, .. },
+                ..
+            } => Some(text.clone()),
+            _ => None,
+        })
+    };
+    assert!(room.run_until(10_000, |r| heard(&r.peers[0].log).is_some()));
+    assert_eq!(heard(&room.peers[0].log).as_deref(), Some(SELF_TEST_TEXT));
+    assert!(room.peers[0]
+        .log
+        .iter()
+        .any(|e| matches!(e, NodeEvent::Display { test: true, .. })));
+    assert!(messages(&room.peers[0].log).is_empty());
+    room.step();
+    room.step();
+    assert!(
+        room.peers[0].screen.is_none(),
+        "taken off the screen once read"
+    );
 }
