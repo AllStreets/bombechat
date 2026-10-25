@@ -1093,7 +1093,8 @@ function measureText() {
           await rp.waitForSelector('.unlock input[name=pass]'); await rp.fill('.unlock input[name=pass]', 'correct horse'); await rp.click('.unlock button');
           await rp.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
           await emit(rp, 'display', frame(1, 0)); await paint(rp); await rp.waitForTimeout(50);
-          await rp.keyboard.press('Escape'); await rp.waitForTimeout(300);
+          // the knob is redrawn when its turn has played (330 ms): wait for it rather than a guess at the time
+          await rp.keyboard.press('Escape'); await rp.waitForFunction(() => document.getElementById('k2').getAttribute('aria-valuenow') === '1', null, { timeout: 5000 }).catch(() => {});
           const held = await rp.evaluate(view);
           await emit(rp, 'display', frame(1, 1)); await paint(rp);
           const after = await rp.evaluate(view);
@@ -1103,6 +1104,12 @@ function measureText() {
           // the top bar never cuts its sentence short
           if (held.saidClip.scroll > held.saidClip.client) problems.push(`${tag}: the top bar clips the failed-save sentence: ${JSON.stringify(held.saidClip)}`);
           await rp.locator('.top').screenshot({ path: path.join(out, `light-${w}-stop-unsaved.png`) });
+          // turning the Light switch down by hand when it can't be saved: the same short sentence, the full one in its title
+          await rp.focus('#k2'); await rp.keyboard.press('Home'); await rp.waitForFunction(() => document.getElementById('k2').getAttribute('aria-valuenow') === '0', null, { timeout: 5000 }).catch(() => {});
+          const knob = await rp.evaluate(view);
+          if (knob.light !== '0' || knob.said !== 'Light at Off, not saved.' || knob.saidClip.scroll > knob.saidClip.client
+            || knob.title !== 'Light is at Off for now. The setting was not saved: disk full. So it goes back to Read next time.')
+            problems.push(`${tag}: turning Light down when it can't be saved: ${JSON.stringify(knob)}`);
           r.escapeUnsaved = { said: held.said, clip: held.saidClip };
           await rp.close();
         }

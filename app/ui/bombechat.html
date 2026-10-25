@@ -888,7 +888,7 @@ function turnKnob(id,pos,again){const k=KNOBS[id];if(k.held)return Promise.resol
   const taken=Promise.resolve(bridge.setSetting(k.setting,pos)).then(()=>{if(id==='k2'&&pos<2)lightLeftFlash();return true},why=>{const t=String(why&&why.message||why);
     if(!(id==='k2'&&pos<was.pos))return back(t);
     return Promise.resolve(bridge.settings()).then(m=>{if(!m||m.light!==pos)return back(t);if(k.pos!==pos)return t;
-      lightLeftFlash();say(`Light is at ${k.labels[pos]}, but the setting could not be saved.`);return {unsaved:t}},()=>back(t))});
+      lightLeftFlash();say(`Light at ${k.labels[pos]}, not saved.`,`Light is at ${k.labels[pos]} for now. ${sentence(t)} So it goes back to ${k.labels[was.pos]} next time.`);return {unsaved:t}},()=>back(t))});
   applyChannels();return taken}
 ['k1','k2'].forEach(id=>{drawKnob(id);const el=document.getElementById(id);
   el.addEventListener('click',()=>turnKnob(id,(KNOBS[id].pos+1)%3));
