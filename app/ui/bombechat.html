@@ -220,9 +220,8 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
   -webkit-mask:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='90' height='90'><filter id='s'><feTurbulence baseFrequency='1.1' numOctaves='2'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 -2 1.6'/></filter><rect width='90' height='90' filter='url(%23s)'/></svg>")}
 .menu .stmp small{font-size:12px}
 .ptlab{font-family:var(--type);font-size:12.5px;color:#3d3d3b;margin-bottom:4px;background:rgba(241,238,229,.85);align-self:flex-start;padding-right:4px}
-/* pairing: rubber stamps pressed on the card, and the safety number pencilled in a ruled grid */
-.ptrow{display:flex;align-items:flex-end;justify-content:space-between;gap:10px;margin-top:12px;margin-bottom:6px;position:relative;z-index:1}
-.ptrow .ptlab{margin:0}
+/* pairing: rubber stamps pressed on the card, and the safety number pencilled in a ruled grid.
+   The grid sits in the same place from the offer to the stamped card; only the stamps change. */
 .rs{appearance:none;background:transparent;cursor:pointer;font-family:var(--print);font-size:14px;line-height:1.15;color:var(--ink);border:1.6px solid currentColor;border-radius:3px;padding:4px 9px 3px;
   --ink:#2b3a47;--tilt:-2deg;transform:rotate(var(--tilt));opacity:.84;white-space:nowrap;transition:opacity .12s,transform .08s;
   -webkit-mask:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='90' height='40'><filter id='s'><feTurbulence baseFrequency='1.4' numOctaves='2'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 -2.2 1.7'/></filter><rect width='90' height='40' filter='url(%23s)'/></svg>");mask:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='90' height='40'><filter id='s'><feTurbulence baseFrequency='1.4' numOctaves='2'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 -2.2 1.7'/></filter><rect width='90' height='40' filter='url(%23s)'/></svg>")}
@@ -232,17 +231,32 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
 .rs[disabled]{cursor:default;opacity:.4}
 .rs.ok{--ink:var(--violet);border-style:double;border-width:3px;padding:3px 9px 2px}
 .rs.no{--ink:#8a2a22;--tilt:1.5deg}
-.pairact{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;margin-top:10px;padding-left:2px;position:relative;z-index:1}
-.pairact[hidden],.rs[hidden]{display:none}
-.pencil{position:absolute;inset:0;z-index:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:6px 0;font-family:var(--type);color:#353431;text-shadow:0 0 .6px rgba(53,52,49,.55)}
+.pairact{display:flex;gap:10px 16px;align-items:flex-end;min-height:33px;margin-top:10px;margin-bottom:6px;padding-left:2px;position:relative;z-index:1}
+.pairact .ptlab{margin:0 auto 4px 0}
+.menu[data-pair=offer] .pairact .ptlab{display:none}
+.rs[hidden]{display:none}
+/* two lines kept for the note under the number, so offer and match share one layout */
+.menu.gridded .fpwrap{min-height:38px}
+.pencil{position:absolute;inset:0;z-index:2;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:6px 0;font-family:var(--type);color:#353431;text-shadow:0 0 .6px rgba(53,52,49,.55)}
 .pencil[hidden]{display:none}
-.menu:not([data-pair]) .pencil,.menu[data-pair=""] .pencil{justify-content:flex-start;padding-top:18px}
 .pencil p{background:rgba(241,238,229,.85);padding:0 4px;text-align:center}
-.pencil .pfrom{font-size:15px;transform:rotate(-1deg)}
+.pencil .pfrom{font-size:15px;transform:rotate(-1deg);min-height:26px;display:flex;align-items:center;justify-content:center}
+/* their name as the hello gave it, pencilled on a dotted rule: correct it before adding them */
+.pname{font:inherit;color:inherit;text-shadow:inherit;background:transparent;border:0;border-bottom:1.2px dotted rgba(75,74,71,.8);padding:1px 2px 2px;text-align:center;max-width:220px;border-radius:0}
+.pname:hover{border-bottom-style:solid}
+.pname:focus{outline:0;border-bottom:1.4px solid #2e2d2a;background:rgba(255,253,246,.7)}
+.snwrap{position:relative;width:100%;max-width:300px}
+/* the Matched stamp, pressed half off the corner of the number it checks */
+.gstmp{position:absolute;right:-10px;bottom:-78px;transform:rotate(-11deg);pointer-events:none;font-family:var(--print);font-size:13px;color:var(--violet);border:1.8px double var(--violet);border-radius:50%;
+  width:80px;height:80px;display:flex;flex-direction:column;align-items:center;justify-content:center;line-height:1.2;opacity:.8;text-shadow:none;
+  -webkit-mask:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='90' height='90'><filter id='s'><feTurbulence baseFrequency='1.1' numOctaves='2'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 -2 1.6'/></filter><rect width='90' height='90' filter='url(%23s)'/></svg>")}
+.gstmp small{font-size:12px}
+.gstmp.new{animation:gstmpin .34s cubic-bezier(.3,1.4,.5,1)}
+@keyframes gstmpin{0%{transform:rotate(-11deg) scale(1.35);opacity:0}100%{transform:rotate(-11deg) scale(1);opacity:.8}}
 .pencil .ph{font-size:16px;transform:rotate(-2deg)}
 .pencil .psub{font-size:12.5px;color:#4b4a47;max-width:230px;line-height:1.4}
 .sn{list-style:none;width:100%;max-width:300px;display:grid;grid-template-columns:repeat(4,1fr);
-  background:no-repeat 0 0/100% 100% url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 120' preserveAspectRatio='none'><filter id='p' x='-2%' y='-5%' width='104%' height='110%'><feTurbulence baseFrequency='.045' numOctaves='2' seed='7' result='t'/><feDisplacementMap in='SourceGraphic' in2='t' scale='3.2'/></filter><g filter='url(%23p)' fill='none' stroke='%234b4a47' stroke-opacity='.72' stroke-linecap='round'><path vector-effect='non-scaling-stroke' stroke-width='1.1' d='M3 2.5 L397 3.5 L398 118 L2.5 117.5 Z M2 40.5 L398 39 M3 79.5 L397 81 M100.5 3 L99.5 117 M200 2 L201 118 M300 3.5 L299.5 117'/></g></svg>")}
+  background:no-repeat 0 0/100% 100% url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 120' preserveAspectRatio='none'><filter id='p' x='-2%' y='-5%' width='104%' height='110%'><feTurbulence baseFrequency='.045' numOctaves='2' seed='7' result='t'/><feDisplacementMap in='SourceGraphic' in2='t' scale='1.4'/></filter><g filter='url(%23p)' fill='none' stroke='%234b4a47' stroke-opacity='.62' stroke-linecap='round'><path vector-effect='non-scaling-stroke' stroke-width='1' d='M3 2.5 L397 3.5 L398 118 L2.5 117.5 Z M2 40.5 L398 39 M3 79.5 L397 81 M100.5 3 L99.5 117 M200 2 L201 118 M300 3.5 L299.5 117'/></g></svg>")}
 .sn li{font-size:15px;letter-spacing:.07em;text-align:center;padding:7px 2px 6px;color:#2e2d2a;transform:rotate(var(--t,0deg))}
 .menu .graph .pencil svg.ears{position:static;flex:none;width:64px;height:40px;overflow:visible}
 .ears path{animation:ear 2.4s steps(1) infinite}
@@ -297,7 +311,7 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
   .rotor,.knob .cap,.slip,.app{transition:none!important}
   .ent.fresh,.stamp.new{animation:none}
   .cur,.state.live::after,.ears path{animation:none}
-  .menu .stmp.new div{animation:none}
+  .menu .stmp.new div,.gstmp.new{animation:none}
 }
 </style>
 <script>/* in the app, the panel stays hidden until it shows this machine rather than the mockups' story */if(window.__TAURI__)document.documentElement.classList.add('in-app')</script>
@@ -330,7 +344,7 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
     <div class="srmirror" id="mirror"><p aria-live="polite" id="mirror-plain"></p><p id="mirror-heard"></p><p id="mirror-key"></p></div>
     <div class="bankfoot">
       <span class="rd" title="Messages arrive in frames of twelve letters"><span class="pl">Frame</span><span class="odo"><i id="fno">4</i></span><span class="of">of <span id="fnt">6</span></span></span>
-      <span class="rd" id="raterd" title="Bytes of message a second over sound, as the modem measures it, counting the preamble, framing and error correction around them"><span class="pl">Bytes a second</span><span class="odo" id="rate"><i>0</i><i>0</i><i>0</i></span></span>
+      <span class="rd" id="raterd" style="visibility:hidden" title="Bytes of message a second over sound, as the modem measures it, counting the preamble, framing and error correction around them"><span class="pl">Bytes a second</span><span class="odo" id="rate"><i>0</i><i>0</i><i>0</i></span></span>
       <span class="rd" title="How far the signal stands above the noise in the room"><span class="pl">Over the room, dB</span><span class="odo"><i>1</i><i>4</i></span></span>
       <span class="rd" title="Each frame is checked against Marisol's key as it lands"><span class="pl">Frames checked</span><span class="lampset" id="chk"></span></span>
     </div>
@@ -375,8 +389,7 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
         </table>
         <div class="note" aria-live="polite">Checked in person, by light.</div>
       </div>
-      <div class="pairact" id="pairact" hidden><button type="button" class="rs ok" id="pairyes">Matched, add</button><button type="button" class="rs no" id="pairno">Doesn't match</button></div>
-      <div class="ptrow"><div class="ptlab">Your key, punched</div><button type="button" class="rs pair" id="pairbtn" title="Plays a hello with this machine's key once the room is quiet, and listens for theirs">Pair by sound</button></div>
+      <div class="pairact" id="pairact"><div class="ptlab">Your key, punched</div><button type="button" class="rs pair" id="pairbtn" title="Plays a hello with your name and key once the room is quiet, and listens for theirs">Pair by sound</button><button type="button" class="rs ok" id="pairyes" hidden>Matched, add</button><button type="button" class="rs no" id="pairno" hidden>Doesn't match</button></div>
       <div class="ptape" id="ptape" role="img" aria-label="Your key as punched tape, for pairing in person by camera"></div>
     </aside>
 
@@ -409,17 +422,19 @@ const sentence=s=>{s=String(s);return s.charAt(0).toUpperCase()+s.slice(1)+(/[.!
 function askPassphrase(first){return new Promise(done=>{
   const f=document.createElement('form');f.className='unlock';f.autocomplete='off';
   f.innerHTML=`<div class="card" role="dialog" aria-modal="true" aria-labelledby="unlock-h">
-    <h2 id="unlock-h">${first?'Choose a passphrase':'Enter your passphrase'}</h2>
-    <p>${first?'It locks the contacts and messages kept on this laptop. Nobody can recover it for you.':'Contacts and messages on this laptop are locked with it.'}</p>
+    <h2 id="unlock-h">${first?'Your name and a passphrase':'Enter your passphrase'}</h2>
+    <p>${first?'Your name is what the people you pair with see. The passphrase locks the contacts and messages kept on this laptop, and nobody can recover it for you.':'Contacts and messages on this laptop are locked with it.'}</p>
+    ${first?'<label>Your name<input type="text" name="who" autocomplete="name" maxlength="40"></label>':''}
     <label>Passphrase<input type="password" name="pass" autocomplete="${first?'new-password':'current-password'}" required></label>
     ${first?'<label>Again<input type="password" name="again" autocomplete="new-password" required></label>':''}
     <p class="err" role="alert"></p>
     <button class="key" type="submit">${first?'Lock and open':'Open'}</button></div>`;
-  document.body.appendChild(f);const pass=f.elements.pass,err=f.querySelector('.err'),btn=f.querySelector('button');pass.focus();
+  document.body.appendChild(f);const pass=f.elements.pass,who=f.elements.who,err=f.querySelector('.err'),btn=f.querySelector('button');(who||pass).focus();
   f.addEventListener('submit',async e=>{e.preventDefault();
-    if(first&&pass.value!==f.elements.again.value){err.textContent='The two do not match.';return}
+    if(first&&!who.value.trim()){err.textContent='Write your name.';who.focus();return}
+    if(first&&pass.value!==f.elements.again.value){err.textContent='The two passphrases do not match.';return}
     btn.disabled=true;err.textContent=first?'Locking':'Opening';
-    try{await bridge.unlock(pass.value);f.remove();done()}
+    try{await bridge.unlock(pass.value,first?who.value.trim():undefined);f.remove();done()}
     catch(why){err.textContent=sentence(why);btn.disabled=false;pass.select()}})})}
 async function openContacts(){
   for(;;){
@@ -827,67 +842,83 @@ function drawStations(){const row=document.querySelector('.row3'),counter=row.qu
 function showRate(list){const s=list.find(c=>c.channel==='sound'),rd=document.getElementById('raterd');
   if(!s||!(s.rate>0)){rd.hidden=true;return}
   document.getElementById('rate').innerHTML=String(Math.min(999,Math.round(s.rate))).padStart(3,'0').split('').map(d=>`<i>${d}</i>`).join('');
-  rd.title=`${s.rate.toFixed(1)} bytes of message a second over sound, as the modem measures it, counting the preamble, framing and error correction around them`;rd.hidden=false}
+  rd.title=`${s.rate.toFixed(1)} bytes of message a second over sound, as the modem measures it, counting the preamble, framing and error correction around them`;rd.hidden=false;rd.style.visibility=''}
 /* ---------- the key check card, and pairing by sound ----------
    At rest the card shows the last key check: in a plain browser the mockups' pencil menu,
-   in the app the safety number shared with the contact. Pair by sound plays this machine's
-   hello and listens for one; an offer pencils the peer's name and the 60-digit safety number
-   for the two people to compare. Matched, add stores the contact; Doesn't match keeps nothing.
-   A hello heard while not listening is held for two minutes, so the second to press sees the
-   first's straight away. */
-const menu=document.querySelector('.menu'),pencilEl=document.getElementById('pencil'),pairBtn=document.getElementById('pairbtn'),pairAct=document.getElementById('pairact');
+   in the app the safety number shared with the contact. Pair by sound plays your hello
+   (your name and key) and listens for one; an offer pencils their name, editable, over the
+   60-digit safety number for the two of you to compare. Matched, add stores them under the
+   name as written and stamps the card without moving the number; Doesn't match keeps nothing
+   and says so on a clean card. A hello heard while not listening is held for two minutes,
+   so the second to press sees the first's straight away. */
+const menu=document.querySelector('.menu'),pencilEl=document.getElementById('pencil'),pairBtn=document.getElementById('pairbtn');
+const yesBtn=document.getElementById('pairyes'),noBtn=document.getElementById('pairno');
 const menuNote=menu.querySelector('.note'),menuStamp=menu.querySelector('.stmp'),menuSvg=document.getElementById('menusvg'),menuWho=menu.querySelector('h2 span');
 const day=ms=>{const d=new Date(ms);return `${d.getDate()} ${MONTHS[d.getMonth()]}`};
-const HOLD_OFFER=120000;
+const HOLD_OFFER=Q.has('hold')?+Q.get('hold'):120000;
 let checkedWith=null;// the key check made on this page: {name, safety, at}
 let offer=null,heldOffer=null;
 const TILTS=[-.6,.4,-.2,.7,-.5,.2,.5,-.7,.3,-.3,.6,-.4];
-function safetyGrid(safety){const g=safety.trim().split(/\s+/);
-  return `<ol class="sn" aria-label="Safety number, 12 groups of five">${g.map((x,i)=>`<li style="--t:${TILTS[i%12]}deg">${esc(x)}</li>`).join('')}</ol>`}
+// their name above the ruled number, and (once matched) the stamp pressed on its corner
+function checkSheet(nameHtml,safety,stamp){const g=safety.trim().split(/\s+/);
+  return `<p class="pfrom">${nameHtml}</p><div class="snwrap"><ol class="sn" aria-label="Safety number, 12 groups of five">${g.map((x,i)=>`<li style="--t:${TILTS[i%12]}deg">${esc(x)}</li>`).join('')}</ol>${stamp||''}</div>`}
+const stampHtml=(date,fresh)=>`<div class="gstmp${fresh&&!RM.matches?' new':''}" aria-label="Matched${date?', '+date:''}">Matched${date?`<small>${esc(date)}</small>`:''}</div>`;
 function pencil(html){menuSvg.style.visibility='hidden';pencilEl.innerHTML=html;pencilEl.hidden=false}
-function noteSays(text){menuNote.hidden=!text;menuNote.textContent=text||''}
-function stampSays(date,fresh){menuStamp.hidden=false;const d=menuStamp.querySelector('div');d.textContent='Matched';if(date)d.appendChild(el('small',null,date));
-  menuStamp.classList.toggle('new',!!fresh&&!RM.matches)}
-function cardRest(note){menu.dataset.pair='';offer=null;pairAct.hidden=true;pairBtn.hidden=false;pairBtn.textContent='Pair by sound';
-  menu.querySelector('.fp').hidden=true;menuStamp.classList.remove('new');
-  const who=checkedWith||(!bridge.simulated&&CONTACT.id&&CONTACT.checked&&CONTACT.safety?{name:CONTACT.short,safety:CONTACT.safety}:null);
-  if(who){pencil(safetyGrid(who.safety));menuWho.textContent=who.name;noteSays(who.at?'Checked in person, by sound.':'Checked in person.');stampSays(who.at?day(who.at):'')}
+function noteSays(text){menuNote.textContent=text||''}
+function buttons(state){pairBtn.hidden=state==='offer';yesBtn.hidden=noBtn.hidden=state!=='offer';
+  pairBtn.textContent=state==='listening'?'Stop listening':'Pair by sound';yesBtn.disabled=noBtn.disabled=false}
+function setState(state,gridded){menu.dataset.pair=state;menu.classList.toggle('gridded',!!gridded);buttons(state);
+  menuStamp.hidden=true;menuStamp.classList.remove('new');menu.querySelector('.fp').hidden=true}
+function cardRest(fresh){setState('',true);offer=null;
+  const who=checkedWith||(!bridge.simulated&&CONTACT.id&&CONTACT.checked&&CONTACT.safety?{name:CONTACT.name,safety:CONTACT.safety}:null);
+  if(who){pencil(checkSheet(esc(who.name),who.safety,stampHtml(who.at?day(who.at):'',fresh)));menuWho.textContent=who.name;noteSays(who.at?'Checked in person, by sound.':'Checked in person.')}
   else if(bridge.simulated){// the mockups' story
-    pencilEl.hidden=true;menuSvg.style.visibility='';menu.querySelector('.fp').hidden=false;menuWho.textContent=`menu 7, ${CONTACT.short}`;noteSays('Checked in person, by light.');stampSays('2 Oct')}
-  else{pencil('<p class="ph">not yet paired</p>');menuWho.textContent='';noteSays('Press Pair by sound here and on their machine.');menuStamp.hidden=true}
-  if(note)noteSays(note)}
+    menu.classList.remove('gridded');pencilEl.hidden=true;menuSvg.style.visibility='';menu.querySelector('.fp').hidden=false;
+    menuWho.textContent=`menu 7, ${CONTACT.short}`;noteSays('Checked in person, by light.');
+    menuStamp.hidden=false;const d=menuStamp.querySelector('div');d.textContent='Matched';d.appendChild(el('small',null,'2 Oct'))}
+  else{menu.classList.remove('gridded');pencil('<p class="ph">not yet paired</p>');menuWho.textContent='';noteSays('Press Pair by sound here and on their machine.')}}
 async function pairBySound(){
   if(menu.dataset.pair==='listening'){cardRest();return}
   pairBtn.disabled=true;
-  try{await bridge.pair()}catch(why){pairBtn.disabled=false;cardRest(sentence(why));return}
-  pairBtn.disabled=false;menu.dataset.pair='listening';menuStamp.hidden=true;menu.querySelector('.fp').hidden=true;
+  try{await bridge.pair()}catch(why){pairBtn.disabled=false;cardRest();noteSays(sentence(why));return}
+  pairBtn.disabled=false;setState('listening');menuWho.textContent='pairing by sound';
   pencil(`<svg class="ears" viewBox="0 0 64 40" aria-hidden="true"><defs><filter id="penh" x="-10%" y="-10%" width="120%" height="120%"><feTurbulence baseFrequency=".08" numOctaves="2" seed="5" result="t"/><feDisplacementMap in="SourceGraphic" in2="t" scale="1.6"/></filter></defs>
     <g filter="url(#penh)" fill="none" stroke="#4b4a47" stroke-width="1.3" stroke-linecap="round"><circle cx="10" cy="20" r="2.4" fill="#4b4a47" stroke="none"/><path d="M20 10 Q27 20 20 30"/><path d="M30 4 Q41 20 30 36"/><path d="M40 -1 Q55 20 40 41"/></g></svg>
     <p class="ph">listening for a hello…</p><p class="psub">Your hello plays once the room is quiet. Ask them to press Pair by sound too.</p>`);
-  noteSays('');pairBtn.textContent='Stop listening';
-  if(heldOffer&&performance.now()-heldOffer.t<HOLD_OFFER)showOffer(heldOffer.o)}
-function showOffer(o){offer=o;heldOffer=null;menu.dataset.pair='offer';menuStamp.hidden=true;menu.querySelector('.fp').hidden=true;
+  noteSays('');
+  if(heldOffer)showOffer(heldOffer.o)}
+// the name field grows with what is written in it
+const fitName=i=>{i.size=Math.max(6,Math.min(28,i.value.length+1))};
+function showOffer(o){offer=o;heldOffer=null;
   const inCard=menu.contains(document.activeElement);
-  pairBtn.hidden=true;pairAct.hidden=false;pairAct.querySelectorAll('button').forEach(b=>b.disabled=false);
-  menuWho.textContent=o.name;
-  pencil(`<p class="pfrom">${esc(o.name)} said hello</p>${safetyGrid(o.safety)}`);
+  setState('offer',true);menuWho.textContent='pairing by sound';
+  pencil(checkSheet(`<input class="pname" id="peername" maxlength="40" spellcheck="false" autocomplete="off" aria-label="Their name, as you will keep it. Correct it before adding them." title="Their name, as you will keep it. Correct it before adding them."> said hello`,o.safety));
+  const nm=document.getElementById('peername');nm.value=o.name;fitName(nm);
+  nm.addEventListener('input',()=>fitName(nm));
+  nm.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();yesBtn.click()}});
   noteSays('Compare these with theirs, out loud or side by side.');
-  if(inCard)document.getElementById('pairyes').focus()}
+  if(inCard)yesBtn.focus()}
 bridge.on('pairOffer',o=>{
-  if(menu.dataset.pair==='listening')showOffer(o);
-  else if(!menu.dataset.pair){heldOffer={o,t:performance.now()};noteSays(`${o.name} said hello. Press Pair by sound to answer.`)}});
+  if(menu.dataset.pair==='listening'){showOffer(o);return}
+  if(menu.dataset.pair==='offer')return;
+  const held=heldOffer={o};noteSays(`${o.name} said hello. Press Pair by sound to answer.`);
+  setTimeout(()=>{if(heldOffer!==held)return;heldOffer=null;if(menu.dataset.pair==='')cardRest();else if(menu.dataset.pair==='refused')noteSays('')},HOLD_OFFER)});
 pairBtn.addEventListener('click',pairBySound);
-document.getElementById('pairno').addEventListener('click',()=>{cardRest('Not added. Nothing was kept.');pairBtn.focus()});
-document.getElementById('pairyes').addEventListener('click',()=>{const o=offer;if(!o)return;
-  pairAct.querySelectorAll('button').forEach(b=>b.disabled=true);
-  bridge.confirmPair(o.peer,o.name).then(id=>{
-    checkedWith={name:o.name,safety:o.safety,at:bridge.now()};
-    const p={id,name:o.name,short:o.name.split(' ')[0],checked:true,safety:o.safety};
-    if(!PEOPLE.some(x=>x.id===id))PEOPLE.push(p);
+noBtn.addEventListener('click',()=>{const o=offer;offer=null;setState('refused');menuWho.textContent='';
+  pencil(`<p class="ph">not added</p><p class="psub">${esc(o?o.name:'Their machine')} is not a contact. Nothing from this hello was kept.</p>`);
+  noteSays('Not added. Nothing was kept.');pairBtn.focus()});
+yesBtn.addEventListener('click',()=>{const o=offer;if(!o)return;
+  const nm=document.getElementById('peername'),name=(nm?nm.value:o.name).trim();
+  if(!name){noteSays('Write their name first.');nm.focus();return}
+  yesBtn.disabled=noBtn.disabled=true;
+  bridge.confirmPair(o.peer,name).then(id=>{
+    checkedWith={name,safety:o.safety,at:bridge.now()};
+    const p={id,name,short:name.split(' ')[0],checked:true,safety:o.safety};
+    const i=PEOPLE.findIndex(x=>x.id===id);if(i<0)PEOPLE.push(p);else PEOPLE[i]=p;
     if(!CONTACT.id){CONTACT=p;nameTheSheet(CONTACT)}
     if(!bridge.simulated)drawStations();
-    cardRest();stampSays(day(checkedWith.at),true);pairBtn.focus()},
-  why=>{pairAct.querySelectorAll('button').forEach(b=>b.disabled=false);noteSays(sentence(why))})});
+    cardRest(true);pairBtn.focus()},
+  why=>{yesBtn.disabled=noBtn.disabled=false;noteSays(sentence(why))})});
 
 /* ---------- open: replay what came before, then listen ---------- */
 drawOutbox();applyChannels();cardRest();

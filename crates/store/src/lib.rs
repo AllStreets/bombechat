@@ -219,6 +219,16 @@ impl Store {
         Identity::from_secret_bytes(&secret)
     }
 
+    /// This device's own display name, as given to [`Store::create`]: the
+    /// name its pairing hellos carry.
+    pub fn my_name(&self) -> String {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        conn.query_row("SELECT name FROM identity WHERE id = 0", [], |row| {
+            row.get(0)
+        })
+        .expect("identity row present")
+    }
+
     /// Add a contact, returning its newly assigned id.
     pub fn add_contact(
         &self,

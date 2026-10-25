@@ -8,16 +8,20 @@
 //   broadcast(text)              [broadcast { text }]               resolves to the message id, as hex
 //   pair()                       [pair]                             plays this machine's hello (once the room is quiet); a
 //                                peer's hello arrives as pairOffer
-//   confirmPair(peerHex, name)   [confirm_pair { peerHex, name }]   resolves to the new contact id
+//   confirmPair(peerHex, name)   [confirm_pair { peerHex, name }]   resolves to the new contact id; name as the person
+//                                corrected it on the card (the hello's name is only a suggestion)
 //   setSetting(id, valueIndex)   [set_setting { id, valueIndex }]
-//   unlock(passphrase)           [unlock { passphrase }]            rejects with a sentence to show, e.g. 'wrong passphrase'
+//   unlock(passphrase, name)     [unlock { passphrase, name }]      rejects with a sentence to show, e.g. 'wrong passphrase'.
+//                                name: your own name, needed the first time (it creates the store and goes in your
+//                                pairing hellos), ignored after
 //   contacts()                   [contacts]                         resolves to [{ id, name, short, checked, safety }]; rejects
 //                                with 'locked' (ask for the passphrase) or 'no store yet' (the first passphrase sets it).
 //                                safety: the 60-digit safety number shared with them, in 12 groups of five
 //   conversation(contactId)      [conversation { contactId }]       resolves to the stored messages, oldest first, each
 //                                shaped as the message event
-//   machine()                    [machine]                          resolves to { name, key, held, version }: key is
-//                                this machine's public identity as hex, held the messages it carries for others
+//   machine()                    [machine]                          resolves to { name, key, you, held, version }: name is the
+//                                machine's plate (Machine No. 1), key its public identity as hex, you the person's own
+//                                name, held the messages it carries for others
 //   channels()                   [channels]                         resolves to [{ channel, state, rate? }]: the last state each
 //                                channel reported, for a page that opened after the event. None reported: listening.
 //                                rate: the payload bytes a second the channel's modem measures (sound has one), for the
@@ -127,7 +131,7 @@ function tauriBackend() {
     pair: () => invoke('pair'),
     confirmPair: (peerHex, name) => invoke('confirm_pair', { peerHex, name }).then(contactId),
     setSetting: (id, valueIndex) => invoke('set_setting', { id, valueIndex }),
-    unlock: passphrase => invoke('unlock', { passphrase }),
+    unlock: (passphrase, name) => invoke('unlock', name === undefined ? { passphrase } : { passphrase, name }),
     contacts: () => invoke('contacts').then(list => list.map(person)),
     conversation: contactId => invoke('conversation', { contactId }).then(list => list.map(normalise.message)),
     machine: () => invoke('machine'),
@@ -146,7 +150,7 @@ function simulatedBackend() {
     pair: () => sim.pair(),
     confirmPair: (peerHex, name) => sim.confirmPair(peerHex, name).then(contactId),
     setSetting: (id, valueIndex) => sim.setSetting(id, valueIndex),
-    unlock: passphrase => sim.unlock(passphrase),
+    unlock: (passphrase, name) => sim.unlock(passphrase, name),
     contacts: () => sim.contacts().then(list => list.map(person)),
     conversation: contactId => sim.conversation(contactId).then(list => list.map(normalise.message)),
     machine: () => sim.machine(),
@@ -165,7 +169,7 @@ export const bridge = {
   pair: () => backend.pair(),
   confirmPair: (peerHex, name) => backend.confirmPair(peerHex, name),
   setSetting: (id, valueIndex) => backend.setSetting(id, valueIndex),
-  unlock: passphrase => backend.unlock(passphrase),
+  unlock: (passphrase, name) => backend.unlock(passphrase, name),
   contacts: () => backend.contacts(),
   conversation: contactId => backend.conversation(contactId),
   machine: () => backend.machine(),

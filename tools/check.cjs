@@ -8,14 +8,18 @@
 //   detail-<part>.png     2x crops of each part, found by selector
 //   motion.png            the drum bank mid-turn, in real time
 //   reply.png             the sheet after typing and sending a reply
+//   card-<path>-<w>-<state>.png  2x crops of the key check card through pairing, in the
+//                         browser (simulator) and on the app path, at 1024, 1440 and 1728
 // and prints what it measured. Exits non-zero on page errors, horizontal overflow,
 // text under 12px, layout shift on load, a plain row that doesn't settle on the
 // frame text, the sheet not keeping its place, a reply that doesn't land, clipped
 // audio, or drum sound leaking into the 17.6 to 19.8 kHz listening band.
 // For the app's interface it also fails when the drums don't follow an injected
 // chunk, when the drums make a sound while a message is arriving by sound, when
-// pairing by sound doesn't run (pair, a 60-digit offer legible at 1024x768, Matched, add
-// stamping the card, Doesn't match keeping nothing), when the bytes-a-second readout
+// pairing by sound doesn't run in the browser or on the app path (first run asking your name,
+// pair, a 60-digit offer legible at 1024, 1440 and 1728 under an editable name, Matched, add
+// keeping the corrected name and stamping the card in place, Doesn't match keeping nothing,
+// a held hello lapsing), when the bytes-a-second readout
 // doesn't show the rate the bridge reports, when
 // the page asks for anything off this machine, or when an http(s) URL appears
 // anywhere in app/ui (licence texts and comments in vendored three.js aside).
@@ -37,6 +41,31 @@ const url = q => 'http://127.0.0.1:4812/' + path.relative(ROOTDIR, page) + (q ? 
 const HELD = APP ? 'f=1&still' : 'f=3&still';
 const VIEWPORTS = [[1024, 768], [1280, 800], [1440, 900], [1728, 1117]];
 const PARTS = { top: '.top', bank: '.bank', sheet: '.sheet', compose: '.compose', menu: '.menu', panel: '.panel' };
+
+// The app's side of the bridge, for checking the app path in a plain browser: a first-run machine
+// (no store yet) whose commands answer as the Tauri shell's do. Every call is kept in __calls;
+// __emit sends an event as the node would. pair() hears `hello` say hello 1.2 s later.
+function tauriStub({ hello, safety }) {
+  let unlocked = false;
+  const listeners = {};
+  window.__calls = [];
+  window.__emit = (name, payload) => (listeners[name] || []).forEach(f => f({ payload }));
+  window.__TAURI__ = {
+    event: { listen: (name, f) => { (listeners[name] = listeners[name] || []).push(f); return Promise.resolve(() => {}); } },
+    core: { invoke: (cmd, args) => { window.__calls.push([cmd, args]);
+      switch (cmd) {
+        case 'contacts': return unlocked ? Promise.resolve([]) : Promise.reject('no store yet');
+        case 'unlock': unlocked = true; return Promise.resolve(null);
+        case 'machine': return Promise.resolve({ name: 'Machine No. 1', key: 'a3f09c1e'.repeat(16), you: 'Ana Lima', held: 0, version: '0.1.0' });
+        case 'conversation': return Promise.resolve([]);
+        case 'channels': return Promise.resolve([{ channel: 'sound', state: 'listening', rate: 16.1 }]);
+        case 'pair': setTimeout(() => window.__emit('pairOffer', { peer: { sign: Array(32).fill(5), dh: Array(32).fill(6) }, name: hello, safety }), 1200); return Promise.resolve(null);
+        case 'confirm_pair': return Promise.resolve(7);
+        case 'send': return Promise.reject('not sent');
+        default: return Promise.resolve(null);
+      } } },
+  };
+}
 
 // every visible piece of text, HTML or SVG, with the size it is actually drawn at.
 // Decorative scales (the 26 letters round each drum) are marked data-decor and skipped.
@@ -304,53 +333,101 @@ function measureText() {
     report.provisional = { hanging, stalled, other, done };
     await pv.close();
 
-    // pairing by sound on the key check card: pair, listen, the offer's 60 digits in 12
-    // pencilled groups (legible at 1024x768), Matched, add stamps the card; Doesn't match keeps nothing.
-    // And the bytes-a-second readout shows the rate the bridge reports, not a fixed number.
-    const pr = await browser.newPage({ viewport: { width: 1024, height: 768 } });
-    watch(pr, 'pairing');
-    await pr.goto(url('still'));
-    await pr.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
-    const card = () => {
-      const m = document.querySelector('.menu'), sn = [...m.querySelectorAll('.sn li')];
-      const vis = e => e && !e.hidden && !e.closest('[hidden]') && e.getBoundingClientRect().width > 0;
-      return { state: m.dataset.pair, pencil: (m.querySelector('#pencil:not([hidden])') || { innerText: '' }).innerText.replace(/\s+/g, ' ').trim(),
-        groups: sn.map(li => li.textContent), groupPx: sn.map(li => parseFloat(getComputedStyle(li).fontSize)), groupsFit: sn.every(li => { const r = li.getBoundingClientRect(), c = m.getBoundingClientRect(); return r.left >= c.left && r.right <= c.right && li.scrollWidth <= li.clientWidth + 1; }),
-        note: vis(m.querySelector('.note')) ? m.querySelector('.note').textContent : '', stamp: vis(m.querySelector('.stmp')) ? m.querySelector('.stmp').innerText.replace(/\s+/g, ' ') : '',
-        yes: vis(document.getElementById('pairyes')), pairBtn: vis(document.getElementById('pairbtn')) ? document.getElementById('pairbtn').textContent : '', who: m.querySelector('h2 span').textContent };
-    };
-    report.rate = await pr.evaluate(() => ({ shown: document.getElementById('rate').textContent, hidden: document.getElementById('raterd').hidden }));
-    if (report.rate.hidden || report.rate.shown !== '016') problems.push(`bytes a second reads ${JSON.stringify(report.rate)}, wanted the reported 16.1 as 016`);
-    await pr.click('#pairbtn');
-    await pr.waitForTimeout(300);
-    const listening = await pr.evaluate(`(${card})()`);
-    if (listening.state !== 'listening' || !/listening for a hello/.test(listening.pencil) || listening.pairBtn !== 'Stop listening') problems.push(`Pair by sound did not start listening: ${JSON.stringify(listening)}`);
-    await pr.locator('.menu').screenshot({ path: path.join(out, 'pair-listening.png') });
-    await pr.waitForFunction(() => document.querySelector('.menu').dataset.pair === 'offer', null, { timeout: 8000 }).catch(() => {});
-    const offered = await pr.evaluate(`(${card})()`);
-    if (offered.state !== 'offer') problems.push('no offer reached the card after Pair by sound');
-    if (offered.groups.length !== 12 || offered.groups.some(g => !/^\d{5}$/.test(g))) problems.push(`the offer's safety number is not 12 groups of five: ${offered.groups.join(' ')}`);
-    if (offered.groupPx.some(px => px < 12)) problems.push(`safety number drawn under 12px: ${offered.groupPx}`);
-    if (!offered.groupsFit) problems.push('safety number groups spill out of the card at 1024x768');
-    if (!/Teodor Vance/.test(offered.pencil) || offered.note !== 'Compare these with theirs, out loud or side by side.' || !offered.yes) problems.push(`the offer card reads wrong: ${JSON.stringify(offered)}`);
-    await pr.locator('.menu').screenshot({ path: path.join(out, 'pair-offer.png') });
-    await pr.click('#pairyes');
-    await pr.waitForTimeout(500);
-    const matched = await pr.evaluate(`(${card})()`);
-    if (matched.state !== '' || !/^Matched 24 Oct$/.test(matched.stamp.trim()) || matched.groups.join(' ') !== offered.groups.join(' ') || matched.who !== 'Teodor Vance') problems.push(`Matched, add did not stamp the card: ${JSON.stringify(matched)}`);
-    const added = await pr.evaluate(() => window.__TAURI__ ? [] : import('./bridge.js').then(m => m.bridge.contacts()).then(l => l.map(c => c.name)));
-    if (!added.includes('Teodor Vance')) problems.push(`confirmPair did not add the contact: ${added}`);
-    await pr.locator('.menu').screenshot({ path: path.join(out, 'pair-matched.png') });
-    // the other way: an offer that doesn't match leaves the card as it was, and says nothing was kept
-    await pr.click('#pairbtn');
-    await pr.waitForFunction(() => document.querySelector('.menu').dataset.pair === 'offer', null, { timeout: 8000 }).catch(() => {});
-    await pr.click('#pairno');
-    await pr.waitForTimeout(300);
-    const refused = await pr.evaluate(`(${card})()`);
-    if (refused.state !== '' || refused.note !== 'Not added. Nothing was kept.' || refused.yes || refused.pairBtn !== 'Pair by sound') problems.push(`Doesn't match did not discard the offer: ${JSON.stringify(refused)}`);
-    await pr.locator('.menu').screenshot({ path: path.join(out, 'pair-refused.png') });
-    report.pairing = { listening, offered: { ...offered, groupPx: [...new Set(offered.groupPx)] }, matched: matched.stamp, refused: refused.note };
-    await pr.close();
+    // pairing by sound on the key check card, in a plain browser (the simulator) and in the app
+    // (window.__TAURI__ stubbed, from first run), at 1024, 1440 and 1728, with 2x crops of each state
+    // (card-<path>-<width>-<state>.png): listening; the offer's 60 digits in 12 pencilled groups,
+    // legible and inside the card, under their name in an editable field; Matched, add keeps the
+    // name as corrected and stamps the card without moving the number; Doesn't match keeps nothing
+    // and leaves a clean card. The bytes-a-second readout shows the rate the bridge reports.
+    report.pairing = {};
+    for (const where of ['browser', 'app']) for (const [w, h] of [[1024, 768], [1440, 900], [1728, 1117]]) {
+      const tag = `${where} ${w}`;
+      const pr = await browser.newPage({ viewport: { width: w, height: h }, deviceScaleFactor: 2 });
+      watch(pr, `pairing ${tag}`);
+      if (where === 'app') await pr.addInitScript(tauriStub, { hello: 'Marisol Ortega', safety: '90817 26354 55102 83746 19283 74650 31415 92653 58979 32384 62643 38327' });
+      await pr.goto(url(where === 'app' ? 'still&hold=1500' : 'still'));
+      if (where === 'app') {
+        // first run: the passphrase card asks for your name, and the unlock carries it
+        await pr.waitForSelector('.unlock input[name=who]');
+        await pr.screenshot({ path: path.join(out, `card-app-${w}-firstrun.png`), clip: await pr.locator('.unlock .card').boundingBox() });
+        await pr.fill('.unlock input[name=pass]', 'correct horse'); await pr.fill('.unlock input[name=again]', 'correct horse');
+        await pr.click('.unlock button');
+        const refusedNameless = await pr.evaluate(() => document.querySelector('.unlock .err').textContent);
+        if (refusedNameless !== 'Write your name.') problems.push(`${tag}: first run went on without a name (${refusedNameless})`);
+        await pr.fill('.unlock input[name=who]', '  Ana Lima ');
+        await pr.click('.unlock button');
+      }
+      await pr.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
+      if (where === 'app') {
+        const unlocked = await pr.evaluate(() => __calls.filter(c => c[0] === 'unlock').map(c => c[1]));
+        if (JSON.stringify(unlocked) !== JSON.stringify([{ passphrase: 'correct horse', name: 'Ana Lima' }])) problems.push(`${tag}: unlock was not given the name: ${JSON.stringify(unlocked)}`);
+      }
+      const card = () => {
+        const m = document.querySelector('.menu'), sn = [...m.querySelectorAll('.sn li')], g = m.querySelector('.sn');
+        const vis = e => e && !e.hidden && !e.closest('[hidden]') && e.getBoundingClientRect().width > 0;
+        const nm = document.getElementById('peername');
+        return { state: m.dataset.pair, pencil: (m.querySelector('#pencil:not([hidden])') || { innerText: '' }).innerText.replace(/\s+/g, ' ').trim(),
+          name: nm ? nm.value : '', groups: sn.map(li => li.textContent), groupPx: [...new Set(sn.map(li => parseFloat(getComputedStyle(li).fontSize)))],
+          groupsFit: sn.every(li => { const r = li.getBoundingClientRect(), c = m.getBoundingClientRect(); return r.left >= c.left && r.right <= c.right && li.scrollWidth <= li.clientWidth + 1; }),
+          gridAt: g ? Math.round(g.getBoundingClientRect().top * 2) / 2 : null,
+          note: m.querySelector('.note').textContent, stamp: vis(m.querySelector('.gstmp')) ? m.querySelector('.gstmp').innerText.replace(/\s+/g, ' ').trim() : '',
+          oldStamp: vis(m.querySelector('.stmp')), yes: vis(document.getElementById('pairyes')), pairBtn: vis(document.getElementById('pairbtn')) ? document.getElementById('pairbtn').textContent : '',
+          who: m.querySelector('h2 span').textContent, sheetWith: document.querySelector('.fields div:first-child b').textContent };
+      };
+      const contacts = () => window.__TAURI__ ? __calls.filter(c => c[0] === 'confirm_pair').map(c => c[1].name) : import('./bridge.js').then(m => m.bridge.contacts()).then(l => l.map(c => c.name));
+      const shot = st => pr.locator('.menu').screenshot({ path: path.join(out, `card-${where}-${w}-${st}.png`) });
+      const rate = await pr.evaluate(() => ({ shown: document.getElementById('rate').textContent, visible: getComputedStyle(document.getElementById('raterd')).visibility === 'visible' && !document.getElementById('raterd').hidden }));
+      if (!rate.visible || rate.shown !== '016') problems.push(`${tag}: bytes a second reads ${JSON.stringify(rate)}, wanted the reported 16.1 as 016`);
+      await shot('rest');
+      if (where === 'app' && w === 1440) {
+        // a hello heard while not listening is offered for a while, then the note clears (hold shortened to 1.5 s)
+        await pr.evaluate(() => __emit('pairOffer', { peer: { sign: Array(32).fill(3), dh: Array(32).fill(4) }, name: 'Teodor Vance', safety: '11111 22222 33333 44444 55555 66666 77777 88888 99999 00000 12121 34343' }));
+        const heldNote = await pr.evaluate(() => document.querySelector('.menu .note').textContent);
+        await pr.waitForTimeout(1900);
+        const lapsed = await pr.evaluate(() => document.querySelector('.menu .note').textContent);
+        if (heldNote !== 'Teodor Vance said hello. Press Pair by sound to answer.' || /said hello/.test(lapsed)) problems.push(`${tag}: a held hello's note: ${JSON.stringify({ heldNote, lapsed })}`);
+      }
+      await pr.click('#pairbtn');
+      await pr.waitForTimeout(300);
+      const listening = await pr.evaluate(`(${card})()`);
+      if (listening.state !== 'listening' || !/listening for a hello/.test(listening.pencil) || listening.pairBtn !== 'Stop listening' || listening.who !== 'pairing by sound') problems.push(`${tag}: Pair by sound did not start listening: ${JSON.stringify(listening)}`);
+      await shot('listening');
+      await pr.waitForFunction(() => document.querySelector('.menu').dataset.pair === 'offer', null, { timeout: 8000 }).catch(() => {});
+      const offered = await pr.evaluate(`(${card})()`);
+      const hello = where === 'app' ? 'Marisol Ortega' : 'Teodor Vance';
+      if (offered.state !== 'offer') problems.push(`${tag}: no offer reached the card after Pair by sound`);
+      if (offered.groups.length !== 12 || offered.groups.some(g => !/^\d{5}$/.test(g))) problems.push(`${tag}: the offer's safety number is not 12 groups of five: ${offered.groups.join(' ')}`);
+      if (offered.groupPx.some(px => px < 12)) problems.push(`${tag}: safety number drawn under 12px: ${offered.groupPx}`);
+      if (!offered.groupsFit) problems.push(`${tag}: safety number groups spill out of the card`);
+      if (offered.name !== hello || offered.note !== 'Compare these with theirs, out loud or side by side.' || !offered.yes) problems.push(`${tag}: the offer card reads wrong: ${JSON.stringify(offered)}`);
+      await shot('offer');
+      // correct their name before adding them
+      const kept = where === 'app' ? 'Marisol O.' : 'Teodor V.';
+      await pr.fill('#peername', kept);
+      await shot('offer-named');
+      await pr.click('#pairyes');
+      await pr.waitForTimeout(500);
+      const matched = await pr.evaluate(`(${card})()`);
+      if (matched.state !== '' || !/^Matched \d+ [A-Z][a-z]{2}$/.test(matched.stamp) || matched.oldStamp || matched.groups.join(' ') !== offered.groups.join(' ') || matched.who !== kept || matched.note !== 'Checked in person, by sound.') problems.push(`${tag}: Matched, add did not stamp the card: ${JSON.stringify(matched)}`);
+      if (where === 'browser' && matched.stamp !== 'Matched 24 Oct') problems.push(`${tag}: the stamp is not dated today: ${matched.stamp}`);
+      if (Math.abs(matched.gridAt - offered.gridAt) > 1) problems.push(`${tag}: the number moved from ${offered.gridAt} to ${matched.gridAt} when it was matched`);
+      if (where === 'app' && matched.sheetWith !== kept) problems.push(`${tag}: the first contact did not become the sheet's: ${matched.sheetWith}`);
+      const added = await pr.evaluate(contacts);
+      if (!added.includes(kept)) problems.push(`${tag}: confirmPair was not given the name as corrected: ${added}`);
+      await shot('matched');
+      // the other way: an offer that doesn't match keeps nothing and leaves a clean card
+      await pr.click('#pairbtn');
+      await pr.waitForFunction(() => document.querySelector('.menu').dataset.pair === 'offer', null, { timeout: 8000 }).catch(() => {});
+      await pr.click('#pairno');
+      await pr.waitForTimeout(300);
+      const refused = await pr.evaluate(`(${card})()`);
+      const after = await pr.evaluate(contacts);
+      if (refused.state !== 'refused' || refused.note !== 'Not added. Nothing was kept.' || refused.groups.length || refused.stamp || refused.oldStamp || refused.yes || refused.pairBtn !== 'Pair by sound' || !/not added/.test(refused.pencil)) problems.push(`${tag}: Doesn't match did not leave a clean card: ${JSON.stringify(refused)}`);
+      if (JSON.stringify(after) !== JSON.stringify(added)) problems.push(`${tag}: Doesn't match changed the contacts: ${JSON.stringify(added)} to ${JSON.stringify(after)}`);
+      await shot('refused');
+      report.pairing[tag] = { listening: listening.state, offered: { name: offered.name, groupPx: offered.groupPx, gridAt: offered.gridAt }, matched: { stamp: matched.stamp, gridAt: matched.gridAt, who: matched.who }, refused: refused.note, contacts: after };
+      await pr.close();
+    }
   }
 
   // 7. offline audio

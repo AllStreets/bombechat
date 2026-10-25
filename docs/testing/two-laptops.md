@@ -15,7 +15,7 @@ cargo tauri build
 
 The app lands at `target/release/bundle/macos/Bombechat.app` (relative to the repository root). Copy it to `/Applications` or open it where it is. The first time it opens, macOS asks for microphone access: allow it, or the sound channel reports "unavailable" and nothing can be heard.
 
-The first run asks you to choose a passphrase. It creates the store in the app data folder (`~/Library/Application Support/app.bombechat.airgapped/bombechat.db`). To start a Mac over from first run, quit the app and delete that file and its `.salt` beside it.
+The first run asks for your name and a passphrase. Your name is what the people you pair with see; the passphrase locks the store. It creates the store in the app data folder (`~/Library/Application Support/app.bombechat.airgapped/bombechat.db`). To start a Mac over from first run, quit the app and delete that file and its `.salt` beside it.
 
 Before you start:
 
@@ -80,9 +80,9 @@ Every step lists what to look for. Write what actually happened on the result li
 
 ### 1. Open both machines
 
-On A and B, open Bombechat and choose a passphrase.
+On A, open Bombechat, write `Ana` as your name and choose a passphrase. On B, do the same as `Ben`.
 
-Look for: the passphrase card, then the machine. The top reads "Listening by sound", the Bytes a second readout shows 016 (hover it for 16.1), the key check card says "not yet paired" with a "Pair by sound" stamp, and the station reads "No contacts yet, pair by sound to add one".
+Look for: the card titled "Your name and a passphrase" (pressing Lock and open with no name says "Write your name."), then the machine. The top reads "Listening by sound", the Bytes a second readout shows 016 (hover it for 16.1), the key check card says "not yet paired" with a "Pair by sound" stamp, and the station reads "No contacts yet, pair by sound to add one".
 
 Result: ______________________________________________
 
@@ -90,7 +90,9 @@ Result: ______________________________________________
 
 Press "Pair by sound" on A, then on B.
 
-Look for: each card pencils "listening for a hello…" and the stamp turns into "Stop listening". Each machine waits for the room to drop under 40 dB on its meter, then plays its hello (near silent: you may hear a faint tick at most). The drums don't turn for a hello. Within about 15 to 30 seconds each card shows "Machine No. 1 said hello" over a ruled grid of 60 digits in 12 groups of five, the note "Compare these with theirs, out loud or side by side.", and two stamps, "Matched, add" and "Doesn't match". If B was pressed second it may show A's hello straight away: a hello heard before pressing is held for two minutes.
+Look for: each card's corner reads "pairing by sound", it pencils "listening for a hello…" and the stamp turns into "Stop listening". Each machine waits for the room to drop under 40 dB on its meter, then plays its hello (near silent: you may hear a faint tick at most). The drums don't turn for a hello. Within about 15 to 30 seconds each card shows the other's name ("Ben said hello" on A) on a dotted pencil line you can write in, over a ruled grid of 60 digits in 12 groups of five, the note "Compare these with theirs, out loud or side by side.", and two stamps, "Matched, add" and "Doesn't match". If B was pressed second it may show A's hello straight away: a hello heard before pressing is held for two minutes (the card notes "Ana said hello. Press Pair by sound to answer." and the note clears when the two minutes are up).
+
+"Stop listening" only puts the card back. It can't call back a hello that is already queued: if the room hasn't gone quiet yet, your hello still plays when it does, and anyone listening nearby gets your offer. That shares only your name and public key; nothing is added on either side until someone presses "Matched, add".
 
 Result: ______________________________________________
 
@@ -98,9 +100,9 @@ Result: ______________________________________________
 
 Read the 12 groups on A aloud; B checks each against its own grid.
 
-Look for: the two grids are identical, digit for digit, group for group. Every digit is easy to read at arm's length. Then try the refusal once: on one machine press "Doesn't match". The card goes back to rest with "Not added. Nothing was kept." and nothing is added. Press "Pair by sound" on both again, compare, and this time press "Matched, add" on both.
+Look for: the two grids are identical, digit for digit, group for group. Every digit is easy to read at arm's length. Then try the refusal once: on one machine press "Doesn't match". The card clears to "not added", with "Not added. Nothing was kept." and no number or stamp left on it, and nothing is added. Press "Pair by sound" on both again and compare. Before adding, correct the name if you like: on A, change "Ben" to "Ben Okafor". Then press "Matched, add" on both.
 
-Look for after "Matched, add": the card keeps the grid, the round violet stamp reads "Matched" with today's date, the note reads "Checked in person, by sound.", the sheet now reads "With Machine No. 1", and the station shows the new contact.
+Look for after "Matched, add": the number stays exactly where it was, the round violet stamp "Matched" with today's date is pressed beside it, the name above it and in the card's corner is the one you wrote ("Ben Okafor" on A), the note reads "Checked in person, by sound.", the sheet now reads "With Ben Okafor", and the station shows him.
 
 Result (numbers matched?): ______________________________________________
 
@@ -126,7 +128,7 @@ Result: ______________________________________________
 
 Keep watching A.
 
-Look for on A: shortly after B finishes receiving, B plays a receipt (once its room is quiet) and A's line gains the violet stamp "heard by Machine, HH.MM". (The stamp uses the contact's first word; both machines are named Machine No. 1.)
+Look for on A: shortly after B finishes receiving, B plays a receipt (once its room is quiet) and A's line gains the violet stamp "heard by Ben, HH.MM" (the first word of the name you kept).
 
 Result: ______________________________________________
 
@@ -142,13 +144,13 @@ Result: ______________________________________________
 
 Quit Bombechat on B and open it again.
 
-Look for: it asks for the passphrase ("Enter your passphrase"). A wrong one reads "Wrong passphrase." and stays. The right one opens the machine with the same contact, the conversation from steps 4 to 7 on the sheet, and the key check card still stamped "Matched". Then send one more message from A to confirm B is listening again after the restart.
+Look for: it asks for the passphrase ("Enter your passphrase"). A wrong one reads "Wrong passphrase." and stays. The right one opens the machine with the same contact, the conversation from steps 4 to 7 on the sheet, and the key check card still showing the number (stamped "Matched", without a date: the store doesn't keep when you paired). Then send one more message from A to confirm B is listening again after the restart.
 
 Result: ______________________________________________
 
 ### 9. A broadcast from a third, unpaired laptop
 
-Bring in C, a third Mac with its own fresh store, paired with nobody. Plan 1 has no screen for writing a broadcast, so on C build the app with `cargo tauri build --debug` (debug builds keep the Web Inspector: right-click the window, Inspect), unlock it, and in the inspector's console run `window.__TAURI__.core.invoke('broadcast', { text: 'Road north is open.' })`. It waits for quiet like any send.
+Bring in C, a third Mac with its own fresh store (name it `Cal`), paired with nobody. Plan 1 has no screen for writing a broadcast, so on C build the app with `cargo tauri build --debug` (debug builds keep the Web Inspector: right-click the window, Inspect), unlock it, and in the inspector's console run `window.__TAURI__.core.invoke('broadcast', { text: 'Road north is open.' })`. It waits for quiet like any send.
 
 Look for on A and B: a new entry on the sheet marked "public", the text on tape, and under it "signed, not checked," followed by the first four hex digits of C's signing key. Nothing on C is marked as a contact on A or B. A broadcast from A (paired, checked) would instead read "signed".
 

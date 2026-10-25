@@ -59,8 +59,12 @@ fn set_setting(state: State<'_, Shared>, id: String, value_index: usize) -> Resu
 /// Async, so the key derivation (Argon2id, most of a second) runs off the
 /// window's thread as well as off the machine's lock.
 #[tauri::command]
-async fn unlock(state: State<'_, Shared>, passphrase: String) -> Result<(), String> {
-    commands::unlock(&state, passphrase)
+async fn unlock(
+    state: State<'_, Shared>,
+    passphrase: String,
+    name: Option<String>,
+) -> Result<(), String> {
+    commands::unlock(&state, passphrase, name)
 }
 
 #[tauri::command]

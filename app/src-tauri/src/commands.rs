@@ -20,8 +20,13 @@ use bombechat_store::{Channel, Contact, ContactId, StoredMessage};
 use serde::Serialize;
 use serde_json::{json, Value};
 
-/// The name this machine announces when pairing and gives its store.
+/// The machine's plate: the sheet's number and the name it shows for
+/// itself. People are known by their own names (the first run asks), and
+/// a store from before that announces this instead.
 pub const MACHINE_NAME: &str = "Machine No. 1";
+
+/// Longest name kept for a person, in characters (hellos cut at 64 bytes).
+const MAX_NAME_CHARS: usize = 40;
 
 /// The command names, exactly as `bridge.js` invokes them.
 pub const NAMES: [&str; 10] = [
@@ -72,8 +77,10 @@ pub enum Lock {
 pub type Opened = Box<dyn Any + Send>;
 
 /// The slow part of an unlock (key derivation), run without holding the
-/// machine: given the passphrase, open or create the store.
-pub type Unlocking = Box<dyn FnOnce(&str) -> Result<Opened, String> + Send>;
+/// machine: given the passphrase and the person's name (trimmed; empty if
+/// none was given, and only used when the store is created), open or
+/// create the store.
+pub type Unlocking = Box<dyn FnOnce(&str, &str) -> Result<Opened, String> + Send>;
 
 /// The node as the commands see it. The app's is [`crate::Device`], a
 /// [`bombechat_node::Node`] over the sound card and the store in the app
@@ -86,6 +93,8 @@ pub trait Machine: Send {
     fn contacts(&self) -> Vec<Contact>;
     /// The stored messages with one contact, oldest first.
     fn conversation(&self, contact: ContactId) -> Vec<StoredMessage>;
+    /// The person's name, as their pairing hellos carry it, once unlocked.
+    fn my_name(&self) -> Option<String>;
     /// This machine's public identity, once unlocked.
     fn me(&self) -> Option<PublicIdentity>;
     /// How many sealed messages it holds for other people.
@@ -148,13 +157,14 @@ pub struct ChannelView {
     pub rate: Option<f32>,
 }
 
-/// This machine as the page sees it: its name, its public identity (sign
-/// key then dh key, as hex), how many messages it holds for others, and
-/// the build.
+/// This machine as the page sees it: its plate name, its public identity
+/// (sign key then dh key, as hex), the person's own name, how many
+/// messages it holds for others, and the build.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MachineView {
     pub name: &'static str,
     pub key: String,
+    pub you: String,
     pub held: usize,
     pub version: &'static str,
 }
@@ -224,13 +234,16 @@ pub fn broadcast(s: &Shared, text: String) -> Result<String, String> {
     sent(s.machine().broadcast(&text))
 }
 
-/// `pair`: announce this machine for pairing.
+/// `pair`: announce this machine for pairing, under the person's name.
 pub fn pair(s: &Shared) -> Result<(), String> {
     let mut machine = s.machine();
     if machine.lock() != Lock::Unlocked {
         return Err("locked".to_string());
     }
-    machine.start_pairing(MACHINE_NAME);
+    let name = machine
+        .my_name()
+        .unwrap_or_else(|| MACHINE_NAME.to_string());
+    machine.start_pairing(&name);
     Ok(())
 }
 
@@ -265,11 +278,20 @@ pub fn set_setting(s: &Shared, id: String, value_index: usize) -> Result<(), Str
     }
 }
 
-/// `unlock { passphrase }`. The key is derived (Argon2id, most of a
-/// second) with the machine released, so the pump keeps ticking.
-pub fn unlock(s: &Shared, passphrase: String) -> Result<(), String> {
+/// `unlock { passphrase, name? }`. The key is derived (Argon2id, most of a
+/// second) with the machine released, so the pump keeps ticking. `name`
+/// is the person's own name, needed the first time (when the store is
+/// created) and ignored after; it is trimmed and cut to 40 characters.
+pub fn unlock(s: &Shared, passphrase: String, name: Option<String>) -> Result<(), String> {
+    let name: String = name
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .chars()
+        .take(MAX_NAME_CHARS)
+        .collect();
     let work = s.machine().begin_unlock()?;
-    let opened = work(&passphrase);
+    let opened = work(&passphrase, &name);
     s.machine().finish_unlock(opened)
 }
 
@@ -312,6 +334,9 @@ pub fn machine(s: &Shared) -> Result<MachineView, String> {
     Ok(MachineView {
         name: MACHINE_NAME,
         key: hex(&me.sign) + &hex(&me.dh),
+        you: machine
+            .my_name()
+            .unwrap_or_else(|| MACHINE_NAME.to_string()),
         held: machine.held_for_others(),
         version: env!("CARGO_PKG_VERSION"),
     })

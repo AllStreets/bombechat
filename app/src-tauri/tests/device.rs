@@ -31,14 +31,27 @@ fn the_first_passphrase_creates_the_store_and_later_ones_open_it() {
     let first = Shared::new(Box::new(device(&path)));
     assert_eq!(commands::contacts(&first).unwrap_err(), "no store yet");
     assert_eq!(
-        commands::unlock(&first, String::new()),
+        commands::unlock(&first, String::new(), None),
         Err("choose a passphrase".to_string())
     );
     assert!(
         files(&dir).is_empty(),
         "nothing made for an empty passphrase"
     );
-    assert_eq!(commands::unlock(&first, "correct horse".into()), Ok(()));
+    assert_eq!(
+        commands::unlock(&first, "correct horse".into(), Some("  ".into())),
+        Err("your name is needed".to_string())
+    );
+    assert!(files(&dir).is_empty(), "nothing made without a name");
+    assert_eq!(
+        commands::unlock(&first, "correct horse".into(), Some(" Ana Lima ".into())),
+        Ok(())
+    );
+    assert_eq!(
+        commands::machine(&first).unwrap().you,
+        "Ana Lima",
+        "the name hellos carry"
+    );
     assert_eq!(commands::contacts(&first), Ok(vec![]));
     assert_eq!(commands::machine(&first).unwrap().name, "Machine No. 1");
     assert_eq!(files(&dir), vec!["bombechat.db", "bombechat.db.salt"]);
@@ -48,13 +61,21 @@ fn the_first_passphrase_creates_the_store_and_later_ones_open_it() {
     let later = Shared::new(Box::new(device(&path)));
     assert_eq!(commands::contacts(&later).unwrap_err(), "locked");
     assert_eq!(
-        commands::unlock(&later, "wrong".into()),
+        commands::unlock(&later, "wrong".into(), None),
         Err("wrong passphrase".to_string())
     );
-    assert_eq!(commands::unlock(&later, "correct horse".into()), Ok(()));
+    assert_eq!(
+        commands::unlock(&later, "correct horse".into(), None),
+        Ok(())
+    );
     assert_eq!(commands::machine(&later).unwrap().key, key, "same identity");
     assert_eq!(
-        commands::unlock(&later, "correct horse".into()),
+        commands::machine(&later).unwrap().you,
+        "Ana Lima",
+        "the name is kept in the store"
+    );
+    assert_eq!(
+        commands::unlock(&later, "correct horse".into(), None),
         Err("already unlocked".to_string())
     );
 }
@@ -69,7 +90,7 @@ fn a_second_unlock_is_refused_while_the_first_derives_its_key() {
         Some("already unlocking".to_string())
     );
     assert_eq!(
-        d.finish_unlock(work("")),
+        d.finish_unlock(work("", "Ana")),
         Err("choose a passphrase".to_string())
     );
     assert_eq!(d.lock(), Lock::NoStore);
@@ -91,7 +112,10 @@ fn a_first_run_that_never_finished_leaves_nothing_to_ask_a_passphrase_for() {
     let s = Shared::new(Box::new(device(&path)));
     assert!(files(&dir).is_empty());
     assert_eq!(commands::contacts(&s).unwrap_err(), "no store yet");
-    assert_eq!(commands::unlock(&s, "correct horse".into()), Ok(()));
+    assert_eq!(
+        commands::unlock(&s, "correct horse".into(), Some("Ana".into())),
+        Ok(())
+    );
 }
 
 #[test]

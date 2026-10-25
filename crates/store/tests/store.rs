@@ -147,6 +147,7 @@ fn reopen_keeps_contacts_and_messages() {
     let reopened = Store::open(&path, "correct horse").unwrap();
 
     assert_eq!(reopened.me().public(), me.public());
+    assert_eq!(reopened.my_name(), "Kitchen laptop");
 
     let contacts: Vec<Contact> = reopened.contacts();
     assert_eq!(contacts.len(), 1);

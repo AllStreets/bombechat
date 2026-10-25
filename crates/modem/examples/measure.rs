@@ -302,10 +302,17 @@ fn score(cfg: &ModemConfig, heard: &[f32], sent: &[Vec<u8>]) -> ExitCode {
     for f in &got {
         for e in reasm.push(f, 0) {
             match e {
-                Event::FrameOk { tag: TAG, seq, .. } => {
-                    ok.insert(seq);
+                // One of the frames this run sent: same tag, same count, a
+                // sequence number in range. Anything else (another run's
+                // frames in a longer recording) is counted as bad, so the
+                // rate can't pass 100%.
+                Event::FrameOk {
+                    tag: TAG,
+                    seq,
+                    total,
+                } if total as usize == sent.len() && (seq as usize) < sent.len() => {
                     let want = &sent[seq as usize];
-                    if f == want {
+                    if ok.insert(seq) && f == want {
                         exact += 1;
                     }
                     if f.len() == want.len() {

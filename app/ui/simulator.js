@@ -8,8 +8,9 @@
 // keystream and ciphertext. The keys and signature are made up, but seeded, so
 // every visit (and every screenshot) shows the same letters.
 //
-// Pairing: pair() hears Teodor's machine say hello 2.4 s later (a pairOffer with
-// a made-up key and a seeded safety number); confirmPair adds him to contacts().
+// Pairing: pair() hears Teodor say hello 2.4 s later (a pairOffer with a made-up
+// key and a seeded safety number); confirmPair adds him to contacts() under the
+// name as the page corrected it.
 //
 // Query parameters: ?f=N starts the incoming message at chunk N (0 based),
 // ?still holds everything where it lands (no room meter, no further chunks).

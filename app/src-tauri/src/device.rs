@@ -11,7 +11,7 @@ use bombechat_modem::{AudioIo, CpalAudio, ModemConfig, QuietGate};
 use bombechat_node::{Node, NodeEvent, SoundTransport, Transport};
 use bombechat_store::{Channel, Contact, ContactId, Store, StoreError, StoredMessage};
 
-use crate::commands::{Lock, Machine, Opened, Unlocking, MACHINE_NAME};
+use crate::commands::{Lock, Machine, Opened, Unlocking};
 
 /// The quiet gate's defaults, as the settings page shows them: send under
 /// 40 dB, two repeats a minute and a half apart.
@@ -52,11 +52,11 @@ pub fn tidy_unfinished(path: &Path) {
 /// Make a new store at `path` without ever leaving a half-made one there:
 /// build it under a staging name, move the salt and then the database
 /// into place, and open it again from there (so SQLite's own files follow
-/// the real name).
-pub fn create_store(path: &Path, passphrase: &str) -> Result<Store, StoreError> {
+/// the real name). `name` is the person's own name, kept in the store.
+pub fn create_store(path: &Path, passphrase: &str, name: &str) -> Result<Store, StoreError> {
     tidy_unfinished(path);
     let staged = staging(path);
-    let made = Store::create(&staged, passphrase, &Identity::generate(), MACHINE_NAME);
+    let made = Store::create(&staged, passphrase, &Identity::generate(), name);
     if made.is_err() {
         tidy_unfinished(path);
     }
@@ -83,6 +83,8 @@ pub struct Device {
     unlocked: bool,
     /// An unlock is deriving its key right now.
     unlocking: bool,
+    /// The person's name from the store, once unlocked.
+    my_name: Option<String>,
     /// Settings as the page last set them. Plan 1's node has nothing to
     /// retune yet (band, gate, volume), so they are only kept.
     settings: HashMap<String, usize>,
@@ -128,6 +130,7 @@ impl Device {
             store_path,
             unlocked: false,
             unlocking: false,
+            my_name: None,
             settings: HashMap::new(),
             pending,
         }
@@ -157,6 +160,10 @@ impl Machine for Device {
 
     fn conversation(&self, contact: ContactId) -> Vec<StoredMessage> {
         self.node.conversation(contact)
+    }
+
+    fn my_name(&self) -> Option<String> {
+        self.my_name.clone()
     }
 
     fn me(&self) -> Option<PublicIdentity> {
@@ -193,13 +200,15 @@ impl Machine for Device {
         };
         self.unlocking = true;
         let path = self.store_path.clone();
-        Ok(Box::new(move |passphrase: &str| {
+        Ok(Box::new(move |passphrase: &str, name: &str| {
             let store = if !create {
                 Store::open(&path, passphrase)
             } else if passphrase.is_empty() {
                 return Err("choose a passphrase".to_string());
+            } else if name.is_empty() {
+                return Err("your name is needed".to_string());
             } else {
-                create_store(&path, passphrase)
+                create_store(&path, passphrase, name)
             };
             store.map(|s| Box::new(s) as Opened).map_err(store_error)
         }))
@@ -210,6 +219,7 @@ impl Machine for Device {
         let store = opened?
             .downcast::<Store>()
             .map_err(|_| "not a store".to_string())?;
+        self.my_name = Some(store.my_name());
         self.node.unlock(*store);
         self.unlocked = true;
         Ok(())

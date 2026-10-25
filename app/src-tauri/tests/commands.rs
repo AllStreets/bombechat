@@ -22,6 +22,8 @@ struct Calls {
     confirmed: Vec<(PublicIdentity, String)>,
     settings: Vec<(String, usize)>,
     passphrases: Arc<Mutex<Vec<String>>>,
+    /// The name each unlock was given.
+    names: Arc<Mutex<Vec<String>>>,
 }
 
 /// What each tick returns, in turn: events, or `None` to panic.
@@ -122,6 +124,9 @@ impl Machine for Fake {
             Vec::new()
         }
     }
+    fn my_name(&self) -> Option<String> {
+        (self.lock == Lock::Unlocked).then(|| "Ana Lima".to_string())
+    }
     fn me(&self) -> Option<PublicIdentity> {
         (self.lock == Lock::Unlocked).then(me)
     }
@@ -145,7 +150,9 @@ impl Machine for Fake {
         self.unlocking = true;
         let slow = self.slow.take();
         let passphrases = self.calls.lock().unwrap().passphrases.clone();
-        Ok(Box::new(move |passphrase: &str| {
+        let names = self.calls.lock().unwrap().names.clone();
+        Ok(Box::new(move |passphrase: &str, name: &str| {
+            names.lock().unwrap().push(name.to_string());
             if let Some((started, go)) = slow {
                 started.send(()).unwrap();
                 go.recv().unwrap();
@@ -249,10 +256,10 @@ fn broadcast_returns_the_id_as_hex() {
 }
 
 #[test]
-fn pair_announces_machine_no_1_and_refuses_while_locked() {
+fn pair_announces_your_name_and_refuses_while_locked() {
     let (m, calls) = fake(Lock::Unlocked);
     commands::pair(&m).unwrap();
-    assert_eq!(calls.lock().unwrap().pairings, vec!["Machine No. 1"]);
+    assert_eq!(calls.lock().unwrap().pairings, vec!["Ana Lima"]);
 
     let (locked, calls) = fake(Lock::Locked);
     assert_eq!(commands::pair(&locked), Err("locked".to_string()));
@@ -296,12 +303,17 @@ fn set_setting_takes_the_ids_and_values_the_settings_page_has() {
 fn unlock_passes_the_passphrase_and_returns_the_error_the_page_shows() {
     let (m, calls) = fake(Lock::NoStore);
     assert_eq!(
-        commands::unlock(&m, "wrong".into()),
+        commands::unlock(&m, "wrong".into(), None),
         Err("wrong passphrase".to_string())
     );
-    assert_eq!(commands::unlock(&m, "correct horse".into()), Ok(()));
+    assert_eq!(
+        commands::unlock(&m, "correct horse".into(), Some("Ana Lima".into())),
+        Ok(())
+    );
     let passphrases = calls.lock().unwrap().passphrases.lock().unwrap().clone();
     assert_eq!(passphrases, vec!["wrong", "correct horse"]);
+    let names = calls.lock().unwrap().names.lock().unwrap().clone();
+    assert_eq!(names, vec!["", "Ana Lima"], "no name given is an empty one");
 }
 
 #[test]
@@ -310,7 +322,7 @@ fn unlock_derives_the_key_without_holding_the_machine() {
     let (go, go_rx) = channel();
     let r = rig(Lock::NoStore, Some((started_tx, go_rx)));
     let shared = r.shared.clone();
-    let unlocking = thread::spawn(move || commands::unlock(&shared, "correct horse".into()));
+    let unlocking = thread::spawn(move || commands::unlock(&shared, "correct horse".into(), None));
     started.recv().unwrap();
 
     // Mid-derivation, the pump still ticks and commands still answer.
@@ -322,7 +334,7 @@ fn unlock_derives_the_key_without_holding_the_machine() {
     let shared = r.shared.clone();
     thread::spawn(move || {
         let ticked = commands::tick(&shared, 20).len();
-        let second = commands::unlock(&shared, "correct horse".into());
+        let second = commands::unlock(&shared, "correct horse".into(), None);
         done_tx.send((ticked, second)).unwrap();
     });
     let (ticked, second) = done
@@ -373,7 +385,7 @@ fn machine_is_named_machine_no_1_with_its_public_key() {
     assert_eq!(
         view,
         json!({ "name": "Machine No. 1", "key": "01".repeat(32) + &"02".repeat(32),
-                "held": 3, "version": env!("CARGO_PKG_VERSION") })
+                "you": "Ana Lima", "held": 3, "version": env!("CARGO_PKG_VERSION") })
     );
     let (fresh, _) = fake(Lock::NoStore);
     assert!(commands::machine(&fresh).is_err());
