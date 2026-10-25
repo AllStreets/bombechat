@@ -1108,6 +1108,13 @@ function measureText() {
           await lp.click('#eyepiece'); await paint(lp);
           const open = await lp.evaluate(() => ({ on: __calls.filter(c => c[0] === 'eyepiece').map(c => c[1].on).pop(), kept: localStorage.getItem('bombechat.eyepiece') }));
           if (shut.on !== false || shut.shut !== 'false' || shut.kept !== 'shut' || open.on !== true || open.kept !== null) problems.push(`${tag}: the eyepiece's shutter: ${JSON.stringify({ shut, open })}`);
+          // leaving the page lets go of the eyepiece; back from the back/forward cache, it is asked for again
+          const lastEye = () => lp.evaluate(() => __calls.filter(c => c[0] === 'eyepiece').map(c => c[1].on).pop());
+          await lp.evaluate(() => dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true })));
+          const hid = await lastEye();
+          await lp.evaluate(() => dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })));
+          const back = await lastEye();
+          if (hid !== false || back !== true) problems.push(`${tag}: the eyepiece on pagehide and pageshow: ${JSON.stringify({ hid, back })}`);
           // a message by light lands on the drums and the sheet as one by sound does, its margin saying light
           const said = 'Meet by the north door.', bytes = [...Buffer.from(said)];
           const plain = [...Array(68).fill(0), ...bytes, ...Array(64).fill(0)];

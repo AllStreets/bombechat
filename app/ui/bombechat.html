@@ -1415,6 +1415,10 @@ bridge.on('eyepiece',p=>{if(!eyeAsked||!(p.width>0&&p.height>0)||p.pixels.length
   const img=eyeCtx.createImageData(p.width,p.height);for(let i=0;i<p.pixels.length;i++){const v=p.pixels[i];img.data[i*4]=img.data[i*4+1]=img.data[i*4+2]=v;img.data[i*4+3]=255}
   eyeCtx.putImageData(img,0,0)});
 // what the camera says goes on a strip of tape by the eyepiece: a code it sees and can't read, or why it can't open
+// leaving the page (to the settings page, or closing) lets go of the eyepiece even where visibilitychange doesn't come;
+// coming back from the back/forward cache asks again
+addEventListener('pagehide',()=>{if(eyeAsked){eyeAsked=false;Promise.resolve(bridge.eyepiece(false)).catch(()=>{})}});
+addEventListener('pageshow',e=>{if(e.persisted){eyeAsked=null;showEyepiece()}});
 const TILT_OR_DIM='seeing a code: tilt or dim the screen';
 const lightNote=document.querySelector('#lightnote b');
 // (the camera sees a code it can't read: the tape says what to do, its label says why)
