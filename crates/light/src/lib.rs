@@ -12,6 +12,6 @@ pub mod fountain;
 pub mod render;
 
 pub use code::{orientation, Cell, CodeSpec, Layout, Orientation};
-pub use decode::{read, ReadOutcome};
+pub use decode::{read, read_within, ReadOutcome, Reader, DEFAULT_BUDGET};
 pub use fountain::{encode, Collector, Encoder, LightEvent};
 pub use render::{geometry, read_clean, render, Geometry};

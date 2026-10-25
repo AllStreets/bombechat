@@ -1,44 +1,116 @@
 //! Reading light codes out of a camera picture.
 //!
-//! [`read`] finds every code in view and returns the frame bytes of each
-//! it can read, ready for [`crate::Collector::push`]. It needs no spec:
-//! it tries each preset grid size the finder spacing allows, and the
-//! frame's own Reed-Solomon parity and CRC decide which reading is right.
+//! [`read`] finds every code in one picture and returns the frame bytes
+//! of each it can read, ready for [`crate::Collector::push`]. A camera
+//! stream should go through a [`Reader`] instead, which remembers where it
+//! saw each code. Neither needs a spec: they try each preset grid size the
+//! finder spacing allows, and the frame's own Reed-Solomon parity and CRC
+//! decide which reading is right.
+//!
+//! # Time
+//!
+//! Every reading has a wall-clock budget, [`DEFAULT_BUDGET`] (12 ms)
+//! unless given another ([`read_within`], [`Reader::with_budget`]). The
+//! budget is checked between stages and inside every loop: every sixteen
+//! finder checks, before each timing-line walk, each format-field check
+//! and each fit. Once it has passed, the reading stops and gives what it
+//! has: the frames read so far, else [`ReadOutcome::Unreadable`] if it saw
+//! a code (or had a fit whose format field read still to try), else
+//! [`ReadOutcome::NoCode`]. Each stage stops at its own share, so a slow
+//! stage leaves the later ones time: the finder search at 65 percent of
+//! the budget, the walks at half of what is left after it, the fits whose
+//! format field reads at four fifths of what is left after that.
+//!
+//! What this does and does not promise:
+//!
+//! - A reading runs over its budget by at most one unit of work, the
+//!   longest being one fit (under a millisecond), plus the fixed cost of
+//!   preparing the picture, which is not cut: thresholding it, and first
+//!   shrinking it if it is over 1280 pixels on its longer side (about
+//!   2.5 ms for 1280x720 and 7 ms for 4K on the machine the tests were
+//!   measured on, an Apple M5 Pro). The slowest reading of any test
+//!   picture, run alone in release, was 13.2 ms; `decode_time_per_frame`
+//!   asserts under 15.
+//! - The budget is wall-clock time, not work: on a slower or busier core
+//!   less of the search gets done in it. A camera reader should run on a
+//!   thread that gets a performance core; on an efficiency core a picture
+//!   takes about three times as long.
+//! - Running out of time is not an error and loses nothing for good: at
+//!   30 pictures a second the next picture comes 33 ms later, and a
+//!   [`Reader`] that has read a code once tries it first in every later
+//!   picture.
+//! - It does not promise that a code is found within the budget. The
+//!   search below is ordered so that clutter cannot push a code far back,
+//!   but every mark found costs a little, and enough of them can use the
+//!   budget up first. The tests measure how often that happens.
+//!
+//! # Following a code
+//!
+//! A code on a screen stays where it is while its frames change. A
+//! [`Reader`] that has seen a code (read or not) starts each later picture
+//! there, before any search: it finds each of the code's three finders
+//! again within a few cells of where it was (so a code that drifts with a
+//! hand-held camera stays followed), fits the grid on them, and reads it.
+//! That costs three finder searches over a few cells each and one or two
+//! fits, whatever else is in the picture, and needs only the code's own
+//! cells, not its quiet zone, so clutter that
+//! comes right up to the code, or that the search could not see past in
+//! the time, does not matter once the code has been found. The rest of
+//! the budget goes on a search of the rest of the picture for other codes.
+//! A followed code missing from 15 pictures in a row is forgotten, as is
+//! everything when the picture size changes; at most two codes are
+//! followed.
 //!
 //! # Which finders
 //!
 //! A picture can hold far more finder-like marks than a code has: tiles,
-//! a print of dots, the edge of a patterned cloth. Each mark is first
-//! tested for a code corner's surroundings (`code_corner`): light quiet
-//! zone round more than half of it, and the code's own cells, not all
-//! light, round the rest. A mark in a lattice of others, or alone on a
-//! blank ground, fails.
+//! a print of dots, other kinds of code. The search keeps clutter from
+//! getting ahead of a code by taking turns, never by ranking marks by how
+//! crisp they look, and checks the cheapest sign of a real code before
+//! spending a fit on it.
 //!
-//! Triples are then tried in two groups, each most plausible first:
+//! - **Corners.** Each mark is tested for a code corner's surroundings
+//!   (`code_corner`): light quiet zone round more than half of it, and the
+//!   code's own cells, not all light, round the rest. A mark in a lattice
+//!   of others, or alone on a blank ground, fails.
+//! - **Timing lines.** Each mark that looks like a corner walks to its
+//!   partners, marks of about its size at a distance that suits a preset
+//!   (those that look like corners first), looking for the timing line a
+//!   code's finders have between them, beside the line through their
+//!   centres (`detect::timing_lines`, which allows for perspective: each
+//!   finder's own size along and across the line sets the walk). The
+//!   marks take turns, one walk each, before any takes another, the
+//!   64-pixel squares of the picture taking turns within a turn; walks
+//!   stop at `MAX_WALK` (500 thousand) pixels or the walks' share of the
+//!   budget. A mark with timing lines to two others, each on the side
+//!   facing the third, makes a linked triple, so a code whose finders all
+//!   look like corners, or two of them do, is linked.
+//! - **Triples by shape.** The best `MAX_CANDIDATES` (16) marks' triples
+//!   by shape alone (corners first) are added, for a code with only one
+//!   finder that looks like a corner. These can be crowded out by more
+//!   than 16 marks that look better.
+//! - **Order.** Each triple's top left mark gives one triple (linked ones
+//!   first, then by how near the three are to a code's geometry: a right
+//!   angle, equal legs, equal finder sizes, a preset's spacing) before
+//!   any mark gives another, the squares of the picture again taking
+//!   turns. So a code's own triple comes in the first turn, after at most
+//!   one triple from each other top left mark.
+//! - **Format field first.** Before a triple is fitted, its format field
+//!   (in the code's first two rows, between the top finders, where even a
+//!   rough grid from the three finders falls right) is read, straight and
+//!   transposed, by comparing the two cells of each pair. A fit is tried
+//!   at once if the field is within 9 of a field of its preset (see
+//!   `crate::code::format_distance`): 99 percent of real codes in the
+//!   sweep read 0 to 9, clutter reads 17 to 29 and passes about three
+//!   times in ten thousand. The others are tried after, linked ones first,
+//!   while attempts and time remain. A picture tries at most
+//!   `MAX_ATTEMPTS` (12) fits.
 //!
-//! - Triples joined by timing lines. Among the marks that look like code
-//!   corners, every pair of about the same size whose distance apart
-//!   suits a preset is tested for the timing line a code's finders have
-//!   between them (`detect::timing_line`), and a mark with such lines to
-//!   two others, each on the side facing the third, makes a triple. So a
-//!   code whose finders look like corners is found among any number of
-//!   other marks, however much cleaner they are than its own blurred
-//!   finders, up to a bound on walking: the walks stop at `MAX_WALK`
-//!   (500 thousand) pixels, pairs closest to a preset's spacing first. A
-//!   pair that is not a code's costs a few cells' walk; the most any test
-//!   picture has needed is 155 thousand.
-//! - The best `MAX_CANDIDATES` (16) marks' triples by shape alone (code
-//!   corners first, then the rest, each by how well they keep the finder
-//!   ratio), for a code whose timing lines cannot be walked or whose
-//!   quiet zone is partly covered. Such a code can still be crowded out
-//!   by more than 16 marks that look better.
-//!
-//! For each triple and each grid size that fits its spacing, the reader
-//! solves the perspective, samples every cell, and thresholds each cell
-//! against the mean of the cells around it. That local mean sits halfway
-//! between light and dark because every 8 by 8 block of a drawn code is
-//! 40 to 60 percent dark, so blur, glare and dim light move the threshold
-//! with the cells.
+//! For each fit the reader solves the perspective, samples every cell,
+//! and thresholds each cell against the mean of the cells around it. That
+//! local mean sits halfway between light and dark because every 8 by 8
+//! block of a drawn code is 40 to 60 percent dark, so blur, glare and dim
+//! light move the threshold with the cells.
 //!
 //! The orientation mark says whether the picture is mirrored (front
 //! cameras often mirror their feed); a mirrored picture is read
@@ -59,35 +131,73 @@
 //! accepted only if, after Reed-Solomon repair, its version and preset
 //! bytes are right and its CRC-32 matches its data. Treating a wrong
 //! repair as random bytes, that is one chance in 2^16 times 2^32 = 2^48
-//! per reading checked. One picture checks at most 12 fits, 2 readings
-//! (straight and transposed) each, 3 repairs (errors only, then two
-//! erasure counts) each, under 1 mask, or all 16 when the format field
-//! is unreadable: at most 1152 readings, so a wrong frame at most once in
-//! 2^48 / 1152, about 2.4 * 10^11 pictures, or once in 250 years of a
-//! code in view at 30 pictures a second. Wrong readings of real frames
-//! (a picture blending two frames, say) have the right version and
-//! preset already, so only the CRC's 2^32 counts: at most once in 3.7
-//! million pictures if every format field were unreadable, once in 60
-//! million with one mask (72 readings). Repairs that use erasures keep
+//! per reading checked. One picture checks at most 16 fits (12 in the
+//! search, and two for each of the two codes a [`Reader`] follows), 2
+//! readings (straight and transposed) each, 3 repairs (errors only, then
+//! two erasure counts) each, under 1 mask, or all 16 when the format
+//! field is unreadable: at most 1536 readings, so a wrong frame at most
+//! once in 2^48 / 1536, about 1.8 * 10^11 pictures, or once in 190 years
+//! of a code in view at 30 pictures a second. Wrong readings of real
+//! frames (a picture blending two frames, say) have the right version and
+//! preset already, so only the CRC's 2^32 counts: at most once in 2.8
+//! million pictures if every format field were unreadable, once in 45
+//! million with one mask (96 readings). Repairs that use erasures keep
 //! some parity spare, so Reed-Solomon itself turns most wrong guesses
 //! away before the CRC is asked, and a frame that did slip through would
 //! still fail the envelope's own authentication.
 
+use std::borrow::Cow;
+use std::collections::HashSet;
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use image::GrayImage;
 
-use crate::code::{orientation, repair_frame, Cell, CodeSpec, Layout, Orientation};
-use crate::detect::{find_finders, locate, sample_cells, timing_line, Finder, Picture};
+use crate::code::{
+    format_distance, orientation, repair_frame, Cell, CodeSpec, Layout, Orientation, FORMAT_CELLS,
+};
+use crate::detect::{
+    contrast, find_finders, locate, rough, sample_cells, timing_lines, Deadline, Finder,
+    Homography, Picture,
+};
 
-/// Most finder candidates considered when forming triples.
+/// How long [`read`] and [`Reader::read`] spend on one picture: they stop
+/// once it has passed, over by at most one fit (about half a millisecond)
+/// and never less than the fixed cost of preparing the picture (see the
+/// module docs, Time).
+pub const DEFAULT_BUDGET: Duration = Duration::from_millis(12);
+
+/// Share of the budget, in thousandths, the finder search may run to.
+const FINDERS_END: u32 = 650;
+
+/// Share of the time left after the finder search, in thousandths, the
+/// timing-line walks may take.
+const WALKS_SHARE: u32 = 500;
+
+/// Share of the time left after the walks, in thousandths, the fits whose
+/// format field reads may take; the other fits are tried in the rest.
+const CHECKS_SHARE: u32 = 800;
+
+/// Furthest a format field may read from one of its preset's (see
+/// `format_field`) for its fit to be tried first.
+const FORMAT_GATE: u32 = 9;
+
+/// Most finder candidates considered when forming triples by shape alone.
 const MAX_CANDIDATES: usize = 16;
 
 /// Most pixels the timing-line walks of one picture may take together.
 const MAX_WALK: usize = 500_000;
 
-/// Most grid fits (one triple at one grid size) tried in one picture.
+/// Most grid fits (one triple at one grid size) tried in one picture's
+/// search.
 const MAX_ATTEMPTS: usize = 12;
+
+/// Most codes a [`Reader`] follows from picture to picture.
+const MAX_TRACKS: usize = 2;
+
+/// Pictures in a row a followed code may be missing from before a
+/// [`Reader`] forgets it.
+const LOST_AFTER: u32 = 15;
 
 /// Pictures whose longer side is over this are shrunk by a whole factor
 /// before reading.
@@ -95,6 +205,9 @@ const MAX_SIDE: u32 = 1280;
 
 /// Side of the window, in cells, a cell's threshold is the mean of.
 const THRESHOLD_WINDOW: usize = 9;
+
+/// Side, in pixels, of the squares marks take turns by.
+const TILE: f32 = 64.0;
 
 /// What one camera picture showed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,92 +220,407 @@ pub enum ReadOutcome {
     Frames(Vec<Vec<u8>>),
 }
 
-/// Read every light code in `image`, a grey camera picture of any size.
-/// A picture whose longer side is over 1280 pixels is first shrunk by the
-/// smallest whole factor that brings that side to 1280 or under
-/// (averaging each square of pixels), so a 4K picture, landscape or
-/// portrait, costs about what a 720p one does; codes in
-/// it must then still have cells of about 3 pixels or more after
+/// Read every light code in `image`, a grey camera picture of any size,
+/// within [`DEFAULT_BUDGET`]. A picture whose longer side is over 1280
+/// pixels is first shrunk by the smallest whole factor that brings that
+/// side to 1280 or under (averaging each square of pixels), so a 4K
+/// picture, landscape or portrait, costs about what a 720p one does; codes
+/// in it must then still have cells of about 3 pixels or more after
 /// shrinking. Never panics.
+///
+/// This reads each picture on its own. A camera stream should go through
+/// a [`Reader`], which looks first where it last saw a code.
 pub fn read(image: &GrayImage) -> ReadOutcome {
-    if image.width() < 32 || image.height() < 32 {
+    read_within(image, DEFAULT_BUDGET)
+}
+
+/// [`read`] with a time budget of `budget` instead of the default. When
+/// the budget runs out the reading stops where it is and gives what it has
+/// found: the frames read so far, else [`ReadOutcome::Unreadable`] if it
+/// saw a code or had a likely one still to try, else
+/// [`ReadOutcome::NoCode`].
+pub fn read_within(image: &GrayImage, budget: Duration) -> ReadOutcome {
+    let deadline = Deadline::new(budget);
+    let Some(image) = prepare(image) else {
         return ReadOutcome::NoCode;
+    };
+    let pic = Picture::new(&image);
+    let mut found = Found::default();
+    search(&pic, deadline, &[], &mut found);
+    found.outcome()
+}
+
+/// Reads light codes out of successive pictures from one camera.
+///
+/// A code on a screen stays put from picture to picture while its frames
+/// change, so once a code has been seen (read or not) the reader tries the
+/// same place first in the next picture: it looks for each finder again
+/// close to where it was (so a code that drifts a little is kept), fits
+/// the grid there, and only then searches the rest of the picture with
+/// what is left of the budget. However cluttered the picture, a code that
+/// has been seen once is tried first. A code missing from 15 pictures in
+/// a row is forgotten, as is everything when the picture size changes.
+/// Each picture takes at most the budget, as for [`read_within`].
+#[derive(Debug, Clone)]
+pub struct Reader {
+    budget: Duration,
+    tracks: Vec<Track>,
+    size: (u32, u32),
+}
+
+/// A code a [`Reader`] is following.
+#[derive(Debug, Clone, Copy)]
+struct Track {
+    finders: [Finder; 3],
+    spec: CodeSpec,
+    /// Pictures in a row it was not found in.
+    misses: u32,
+}
+
+impl Default for Reader {
+    fn default() -> Self {
+        Reader::new()
     }
+}
+
+impl Reader {
+    /// A reader with the [`DEFAULT_BUDGET`] per picture.
+    pub fn new() -> Self {
+        Reader::with_budget(DEFAULT_BUDGET)
+    }
+
+    /// A reader that takes at most `budget` per picture.
+    pub fn with_budget(budget: Duration) -> Self {
+        Reader {
+            budget,
+            tracks: Vec::new(),
+            size: (0, 0),
+        }
+    }
+
+    /// Read every light code in the next camera picture.
+    pub fn read(&mut self, image: &GrayImage) -> ReadOutcome {
+        let deadline = Deadline::new(self.budget);
+        let Some(image) = prepare(image) else {
+            self.tracks.clear();
+            return ReadOutcome::NoCode;
+        };
+        if image.dimensions() != self.size {
+            self.tracks.clear();
+            self.size = image.dimensions();
+        }
+        let pic = Picture::new(&image);
+        let mut found = Found::default();
+        let mut known = Vec::new();
+        for track in &mut self.tracks {
+            if deadline.passed() {
+                break;
+            }
+            match follow(&pic, track, deadline) {
+                Some((finders, grid)) => {
+                    track.finders = finders;
+                    track.misses = 0;
+                    known.push(finders);
+                    found.add(&grid, finders);
+                }
+                None => track.misses += 1,
+            }
+        }
+        let followed = found.codes.len();
+        search(&pic, deadline, &known, &mut found);
+        for &(finders, spec) in &found.codes[followed..] {
+            self.tracks.retain(|t| !same_place(&t.finders, &finders));
+            self.tracks.push(Track {
+                finders,
+                spec,
+                misses: 0,
+            });
+        }
+        self.tracks.retain(|t| t.misses < LOST_AFTER);
+        self.tracks.sort_by_key(|t| t.misses);
+        self.tracks.truncate(MAX_TRACKS);
+        found.outcome()
+    }
+}
+
+/// `image` ready to read: shrunk if it is too big, `None` if it is too
+/// small.
+fn prepare(image: &GrayImage) -> Option<Cow<'_, GrayImage>> {
     let side = image.width().max(image.height());
-    if side > MAX_SIDE {
-        return read(&shrink(image, side.div_ceil(MAX_SIDE)));
+    let image = if side > MAX_SIDE {
+        Cow::Owned(shrink(image, side.div_ceil(MAX_SIDE)))
+    } else {
+        Cow::Borrowed(image)
+    };
+    (image.width() >= 32 && image.height() >= 32).then_some(image)
+}
+
+/// Whether two codes' finders are in about the same place.
+fn same_place(a: &[Finder; 3], b: &[Finder; 3]) -> bool {
+    let centre = |f: &[Finder; 3]| {
+        (
+            f.iter().map(|g| g.x).sum::<f32>() / 3.0,
+            f.iter().map(|g| g.y).sum::<f32>() / 3.0,
+        )
+    };
+    let ((ax, ay), (bx, by)) = (centre(a), centre(b));
+    let leg = (a[1].x - a[0].x).hypot(a[1].y - a[0].y);
+    (ax - bx).hypot(ay - by) < leg / 4.0
+}
+
+/// What the reading of one picture has found so far.
+#[derive(Debug, Default)]
+struct Found {
+    frames: Vec<Vec<u8>>,
+    /// Some fit was a code in view.
+    seen: bool,
+    /// The search ran out of time or attempts with a fit whose format
+    /// field read still untried.
+    pending: bool,
+    /// Every code in view, where it is and at what grid size.
+    codes: Vec<([Finder; 3], CodeSpec)>,
+}
+
+impl Found {
+    /// A code in view at `finders`, read if it can be.
+    fn add(&mut self, grid: &Grid, finders: [Finder; 3]) {
+        self.seen = true;
+        self.codes.push((finders, grid.spec));
+        if let Some(bytes) = grid.decode() {
+            if !self.frames.contains(&bytes) {
+                self.frames.push(bytes);
+            }
+        }
     }
-    let pic = Picture::new(image);
-    // Marks that look like a code's corners first, the rest after.
-    let (mut finders, rest): (Vec<Finder>, Vec<Finder>) = find_finders(&pic)
+
+    fn outcome(self) -> ReadOutcome {
+        if !self.frames.is_empty() {
+            ReadOutcome::Frames(self.frames)
+        } else if self.seen || self.pending {
+            ReadOutcome::Unreadable
+        } else {
+            ReadOutcome::NoCode
+        }
+    }
+}
+
+/// Fit a followed code where it was last seen: its finders found again
+/// nearby where they can be, else where they were. The finders and grid,
+/// if that is a code in view.
+fn follow(pic: &Picture, track: &Track, deadline: Deadline) -> Option<([Finder; 3], Grid)> {
+    let n = track.spec.cells;
+    let near = track
+        .finders
+        .map(|f| nearest_mark(pic, &f, deadline).unwrap_or(f));
+    let tries = if near == track.finders {
+        vec![near]
+    } else {
+        vec![near, track.finders]
+    };
+    tries.into_iter().find_map(|finders| {
+        let h = locate(pic, finders, n)?;
+        let grid = Grid::new(track.spec, sample_cells(pic, &h, n));
+        grid.fixed_cells().in_view().then_some((finders, grid))
+    })
+}
+
+/// The finder mark of about the same size nearest to where `f` was, within
+/// four of its cells.
+fn nearest_mark(pic: &Picture, f: &Finder, deadline: Deadline) -> Option<Finder> {
+    let area = pic.around(f.x, f.y, 8.0 * f.module + 4.0);
+    find_finders(pic, area, deadline)
         .into_iter()
-        .partition(|f| code_corner(&pic, f));
+        .filter(|g| g.module < 1.5 * f.module && f.module < 1.5 * g.module)
+        .map(|g| ((g.x - f.x).hypot(g.y - f.y), g))
+        .filter(|&(dist, _)| dist < 4.0 * f.module)
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, g)| g)
+}
+
+/// Search the whole picture for codes, leaving out the finders of codes
+/// already found in it (`known`).
+fn search(pic: &Picture, deadline: Deadline, known: &[[Finder; 3]], found: &mut Found) {
+    if deadline.passed() {
+        return;
+    }
+    let near_known = |m: &Finder| {
+        known
+            .iter()
+            .flatten()
+            .any(|k| (k.x - m.x).hypot(k.y - m.y) < 2.0 * k.module)
+    };
+    // Marks that look like a code's corners first, the rest after.
+    let (mut finders, rest): (Vec<Finder>, Vec<Finder>) =
+        find_finders(pic, pic.area(), deadline.share(FINDERS_END))
+            .into_iter()
+            .filter(|m| !near_known(m))
+            .partition(|f| code_corner(pic, f));
     let corners = finders.len();
     finders.extend(rest);
     // Triples joined by timing lines, then the best marks' triples by
     // shape alone.
-    let mut candidates = linked_triples(&pic, &finders[..corners]);
-    for t in triples(&finders) {
-        if !candidates.iter().any(|c| c.finders == t.finders) {
-            candidates.push(t);
-        }
-    }
-    let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut seen_code = false;
+    let mut triples = linked_triples(pic, &finders, corners, deadline.of_rest(WALKS_SHARE));
+    let linked: HashSet<[usize; 3]> = triples.iter().map(|t| t.finders).collect();
+    triples.extend(
+        shape_triples(&finders)
+            .into_iter()
+            .filter(|t| !linked.contains(&t.finders)),
+    );
+
     let mut used = vec![false; finders.len()];
     let mut attempts = 0;
-
-    for triple in candidates {
-        if attempts >= MAX_ATTEMPTS {
+    let mut later = Vec::new();
+    // Every fit whose format field reads is tried as soon as it is found,
+    // in turns (see `in_turns`); the rest after, in the same order, while
+    // attempts and time remain.
+    let checks_end = deadline.of_rest(CHECKS_SHARE);
+    for t in in_turns(&finders, triples) {
+        if checks_end.passed() {
             break;
         }
-        if triple.finders.iter().any(|&i| used[i]) {
+        let three = t.finders.map(|i| finders[i]);
+        if !quiet_outside(pic, three) {
             continue;
         }
-        if !quiet_outside(&pic, triple.finders.map(|i| finders[i])) {
-            continue;
-        }
-        // Fit the grid sizes the spacing allows, closest first, until one
-        // is a code in view (a wrong size misses the timing lines).
-        let three = triple.finders.map(|i| finders[i]);
-        let mut found = None;
-        for spec in &triple.specs {
-            if attempts >= MAX_ATTEMPTS {
+        for &(_, spec) in &t.specs {
+            if t.finders.iter().any(|&i| used[i]) {
                 break;
+            }
+            let distance = rough(pic, three, spec.cells)
+                .map_or(u32::MAX, |h| format_field(pic, &h, three, &spec));
+            if distance > FORMAT_GATE {
+                later.push((!t.linked, later.len(), t.finders, spec));
+                continue;
+            }
+            if attempts >= MAX_ATTEMPTS || deadline.passed() {
+                found.pending = true;
+                return;
             }
             attempts += 1;
-            let Some(h) = locate(&pic, three, spec.cells) else {
-                continue;
-            };
-            let grid = Grid::new(*spec, sample_cells(&pic, &h, spec.cells));
-            if grid.fixed_cells().in_view() {
-                found = Some(grid);
-                break;
+            if let Some(grid) = fit(pic, three, spec) {
+                t.finders.iter().for_each(|&i| used[i] = true);
+                found.add(&grid, three);
             }
         }
-        let Some(grid) = found else {
+    }
+    // Fits joined by timing lines first, each group in turns as above.
+    later.sort_by_key(|&(unlinked, k, _, _)| (unlinked, k));
+    for (_, _, idx, spec) in later {
+        if attempts >= MAX_ATTEMPTS || deadline.passed() {
+            return;
+        }
+        if idx.iter().any(|&i| used[i]) {
             continue;
-        };
-        // A code is here: its finders belong to it, read or not, so they
-        // cannot spend more attempts.
-        seen_code = true;
-        for &i in &triple.finders {
-            used[i] = true;
         }
-        if let Some(bytes) = grid.decode() {
-            if !frames.contains(&bytes) {
-                frames.push(bytes);
-            }
+        attempts += 1;
+        let three = idx.map(|i| finders[i]);
+        if let Some(grid) = fit(pic, three, spec) {
+            idx.iter().for_each(|&i| used[i] = true);
+            found.add(&grid, three);
         }
     }
+}
 
-    if !frames.is_empty() {
-        ReadOutcome::Frames(frames)
-    } else if seen_code {
-        ReadOutcome::Unreadable
-    } else {
-        ReadOutcome::NoCode
+/// The grid at `spec`'s size on `three` finders, if it is a code in view.
+fn fit(pic: &Picture, three: [Finder; 3], spec: CodeSpec) -> Option<Grid> {
+    let h = locate(pic, three, spec.cells)?;
+    let grid = Grid::new(spec, sample_cells(pic, &h, spec.cells));
+    grid.fixed_cells().in_view().then_some(grid)
+}
+
+/// Whether the format field reads as one of `spec`'s, straight or
+/// transposed (a mirrored picture), sampled through `h`. A code's format
+/// field lies in its first two rows between the top finders, close to
+/// the finders, so even the rough homography (see [`rough`]) finds it.
+/// Its cells come in pairs, one dark and one light, so each pair is read
+/// by comparing its two cells, with no threshold to set: a pair whose two
+/// cells differ by less than a quarter of the finder's contrast is
+/// unknown. The field must then be within the Reed-Muller code's reach of
+/// one of the preset's sixteen fields; clutter, another kind of code, or
+/// a grid fitted at the wrong size, nearly never is.
+fn format_field(pic: &Picture, h: &Homography, three: [Finder; 3], spec: &CodeSpec) -> u32 {
+    let Some(preset) = spec.preset() else {
+        return u32::MAX;
+    };
+    let cells = &layout(spec).data_positions()[..FORMAT_CELLS];
+    let margin = 0.25 * contrast(pic, three, spec.cells);
+    [false, true]
+        .into_iter()
+        .map(|transposed| {
+            let value = |&(r, c): &(u16, u16)| {
+                let (r, c) = if transposed { (c, r) } else { (r, c) };
+                let (x, y) = h.map(c as f64 + 0.5, r as f64 + 0.5);
+                pic.at(x, y)
+            };
+            let mut field = [0u8; FORMAT_CELLS / 8];
+            for (i, pair) in cells.chunks_exact(2).enumerate() {
+                let (first, second) = (value(&pair[0]), value(&pair[1]));
+                let bits = if first + margin < second {
+                    0b10
+                } else if second + margin < first {
+                    0b01
+                } else {
+                    0
+                };
+                field[i / 4] |= bits << (6 - 2 * (i % 4));
+            }
+            format_distance(preset, &field).0
+        })
+        .min()
+        .unwrap_or(u32::MAX)
+}
+
+/// `triples` in the order they are tried: in turns, each top left mark
+/// giving its next triple (joined by timing lines first, then by shape)
+/// before any gives another. Within a turn the 64-pixel squares of the
+/// picture take turns, a mark each. So no number of marks elsewhere, nor
+/// how much crisper or squarer they are, can put a code's own triple far
+/// back: it comes in the first turn, after at most one triple from each
+/// other top left mark.
+fn in_turns(finders: &[Finder], mut triples: Vec<Triple>) -> Vec<Triple> {
+    triples.sort_by(|a, b| {
+        (a.finders[0], !a.linked)
+            .cmp(&(b.finders[0], !b.linked))
+            .then(a.cost.total_cmp(&b.cost))
+    });
+    // Each triple's turn: its place among its top left mark's.
+    let mut turn = vec![0usize; triples.len()];
+    for i in 1..triples.len() {
+        if triples[i].finders[0] == triples[i - 1].finders[0] {
+            turn[i] = turn[i - 1] + 1;
+        }
     }
+    let deal = dealing_order(finders);
+    let mut order: Vec<usize> = (0..triples.len()).collect();
+    order.sort_by_key(|&i| (turn[i], deal[triples[i].finders[0]]));
+    let mut slots: Vec<Option<Triple>> = triples.into_iter().map(Some).collect();
+    order.into_iter().filter_map(|i| slots[i].take()).collect()
+}
+
+/// Each mark's place in a fair turn over the picture: the [`TILE`]
+/// squares take turns, giving their marks in the order the marks come in.
+fn dealing_order(finders: &[Finder]) -> Vec<usize> {
+    let tile = |f: &Finder| {
+        (
+            (f.y.max(0.0) / TILE) as usize,
+            (f.x.max(0.0) / TILE) as usize,
+        )
+    };
+    let mut by_tile: Vec<usize> = (0..finders.len()).collect();
+    by_tile.sort_by_key(|&i| (tile(&finders[i]), i));
+    let mut place = vec![0usize; finders.len()];
+    for k in 1..by_tile.len() {
+        if tile(&finders[by_tile[k]]) == tile(&finders[by_tile[k - 1]]) {
+            place[by_tile[k]] = place[by_tile[k - 1]] + 1;
+        }
+    }
+    let mut dealt = by_tile.clone();
+    dealt.sort_by_key(|&i| place[i]);
+    let mut rank = vec![0usize; finders.len()];
+    for (k, &i) in dealt.iter().enumerate() {
+        rank[i] = k;
+    }
+    rank
 }
 
 /// Whether a mark has a code corner's surroundings. Just outside a code's
@@ -311,17 +739,30 @@ fn shrink(image: &GrayImage, factor: u32) -> GrayImage {
 /// bottom left, with the grid sizes their spacing allows.
 struct Triple {
     finders: [usize; 3],
-    specs: Vec<CodeSpec>,
-    /// Lower is more plausible.
+    /// Each grid size the spacing allows, with how far the spacing is from
+    /// it (as a log ratio), closest first.
+    specs: Vec<(f32, CodeSpec)>,
+    /// How far the three are from a code's geometry: a right angle, legs
+    /// of equal length, finders of equal size, a preset's spacing. Lower
+    /// is more plausible. How crisp the marks are plays no part.
     cost: f32,
+    /// Joined by timing lines.
+    linked: bool,
 }
 
 /// Every triple whose two legs each carry a timing line on the side
-/// facing the third finder, as a code's top left finder's legs do, most
-/// plausible first. Pairs of finders of nearly the same size whose
-/// distance apart suits a preset are walked, closest to a preset's
-/// spacing first, until [`MAX_WALK`] pixels have been walked.
-fn linked_triples(pic: &Picture, finders: &[Finder]) -> Vec<Triple> {
+/// facing the third finder, as a code's top left finder's legs do. Pairs
+/// of finders of nearly the same size whose distance apart suits a preset
+/// are walked in turns: each mark walks to its next partner (closest to a
+/// preset's spacing first) before any walks to another, the [`TILE`]
+/// squares of the picture taking turns within a turn, until [`MAX_WALK`]
+/// pixels have been walked or `deadline` passes.
+fn linked_triples(
+    pic: &Picture,
+    finders: &[Finder],
+    corners: usize,
+    deadline: Deadline,
+) -> Vec<Triple> {
     // How far a pair's spacing, in cells, is from the nearest preset's
     // (as a log ratio). A tilted code's legs differ by up to 1.8 times,
     // so the bound for walking a pair is loose.
@@ -331,21 +772,34 @@ fn linked_triples(pic: &Picture, finders: &[Finder]) -> Vec<Triple> {
             .map(|s| (spacing / (s.cells - 7) as f32).ln().abs())
             .fold(f32::MAX, f32::min)
     };
-    let mut pairs: Vec<(f32, usize, usize)> = Vec::new();
-    for a in 0..finders.len() {
-        for b in a + 1..finders.len() {
-            let (p, q) = (&finders[a], &finders[b]);
-            if p.module.max(q.module) > 1.8 * p.module.min(q.module) {
+    // Each mark that looks like a code's corner (the first `corners`)
+    // walks to its partners: marks of nearly its size whose distance
+    // suits a preset, those that look like corners too first, each group
+    // closest to a preset's spacing first. A code whose quiet zone is
+    // partly covered, or whose cells beside one finder happen to be
+    // light, has a finder that does not look like a corner, but the other
+    // two do and walk to it.
+    let mut partners: Vec<Vec<(bool, f32, usize)>> = vec![Vec::new(); corners];
+    for (a, mine) in partners.iter_mut().enumerate() {
+        if a.is_multiple_of(64) && deadline.passed() {
+            return Vec::new();
+        }
+        let p = &finders[a];
+        for (b, q) in finders.iter().enumerate() {
+            if b == a || p.module.max(q.module) > 1.8 * p.module.min(q.module) {
                 continue;
             }
             let spacing = (p.x - q.x).hypot(p.y - q.y) / ((p.module + q.module) / 2.0);
             let off = fit(spacing);
             if off < 0.6 {
-                pairs.push((off, a, b));
+                mine.push((b >= corners, off, b));
             }
         }
+        mine.sort_by(|x, y| x.0.cmp(&y.0).then(x.1.total_cmp(&y.1)).then(x.2.cmp(&y.2)));
     }
-    pairs.sort_by(|x, y| x.0.total_cmp(&y.0).then((x.1, x.2).cmp(&(y.1, y.2))));
+    let deal = dealing_order(&finders[..corners]);
+    let mut order: Vec<usize> = (0..corners).collect();
+    order.sort_by_key(|&i| deal[i]);
     let counts_fit = |cells: usize| {
         CodeSpec::presets()
             .iter()
@@ -353,15 +807,31 @@ fn linked_triples(pic: &Picture, finders: &[Finder]) -> Vec<Triple> {
     };
     // Each finder's legs: the other finder, and the side its line is on.
     let mut legs: Vec<Vec<(usize, f32)>> = vec![Vec::new(); finders.len()];
+    let mut walked = HashSet::new();
     let mut work = MAX_WALK;
-    for (_, a, b) in pairs {
-        for side in [1.0, -1.0] {
-            if timing_line(pic, &finders[a], &finders[b], side, &mut work).is_some_and(counts_fit) {
-                legs[a].push((b, side));
-                legs[b].push((a, -side));
+    'turns: for turn in 0.. {
+        let mut more = false;
+        for &a in &order {
+            let Some(&(_, _, b)) = partners[a].get(turn) else {
+                continue;
+            };
+            more = true;
+            let (p, q) = (a.min(b), a.max(b));
+            if !walked.insert((p, q)) {
+                continue;
+            }
+            if work == 0 || deadline.passed() {
+                break 'turns;
+            }
+            let lines = timing_lines(pic, &finders[p], &finders[q], &mut work);
+            for (line, side) in lines.into_iter().zip([1.0, -1.0]) {
+                if line.is_some_and(counts_fit) {
+                    legs[p].push((q, side));
+                    legs[q].push((p, -side));
+                }
             }
         }
-        if work == 0 {
+        if !more {
             break;
         }
     }
@@ -374,18 +844,19 @@ fn linked_triples(pic: &Picture, finders: &[Finder]) -> Vec<Triple> {
                 if side_b * cross <= 0.0 || side_c * -cross <= 0.0 {
                     continue;
                 }
-                if let Some(t) = triple([a, b, c], finders).filter(|t| t.finders[0] == a) {
+                if let Some(mut t) = triple([a, b, c], finders).filter(|t| t.finders[0] == a) {
+                    t.linked = true;
                     out.push(t);
                 }
             }
         }
     }
-    out.sort_by(|x, y| x.cost.total_cmp(&y.cost));
     out
 }
 
-/// Every plausible triple among the best finders, most plausible first.
-fn triples(finders: &[Finder]) -> Vec<Triple> {
+/// Every plausible triple among the first [`MAX_CANDIDATES`] finders, by
+/// shape alone.
+fn shape_triples(finders: &[Finder]) -> Vec<Triple> {
     let k = finders.len().min(MAX_CANDIDATES);
     let mut out = Vec::new();
     for a in 0..k {
@@ -395,7 +866,6 @@ fn triples(finders: &[Finder]) -> Vec<Triple> {
             }
         }
     }
-    out.sort_by(|x, y| x.cost.total_cmp(&y.cost));
     out
 }
 
@@ -441,11 +911,11 @@ fn triple(idx: [usize; 3], finders: &[Finder]) -> Option<Triple> {
     specs.sort_by(|a, b| a.0.total_cmp(&b.0));
     let off = specs.first()?.0;
     let shape = cos.abs() + (lu / lv).ln().abs() + (hi / lo).ln();
-    let quality: f32 = f.iter().map(|f| f.rank()).sum();
     Some(Triple {
         finders: [idx[corner], tr, bl],
-        specs: specs.into_iter().map(|(_, s)| s).collect(),
-        cost: shape + off + quality,
+        specs,
+        cost: shape + off,
+        linked: false,
     })
 }
 

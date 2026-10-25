@@ -322,3 +322,139 @@ pub fn box_blur(img: &GrayImage, r: i64) -> GrayImage {
         Luma([(sum / n) as u8])
     })
 }
+
+/// Where the marks of a field of fake code corners sit: one per square of
+/// `pitch` cells, each moved by up to `jitter` cells, as (left, top,
+/// which quarter its data is in), with the number of squares across.
+fn corner_places(
+    w: u32,
+    h: u32,
+    unit: u32,
+    pitch: u32,
+    jitter: u32,
+    seed: u64,
+) -> (u32, Vec<(u32, u32, u8)>) {
+    let p = pitch * unit;
+    let across = w / p + 2;
+    let mut rng = Noise::new(seed);
+    let spread = (jitter * unit + 1) as u64;
+    let places = (0..across * (h / p + 2))
+        .map(|k| {
+            let (i, j) = (k % across, k / across);
+            let dx = (rng.next() % spread) as u32;
+            let dy = (rng.next() % spread) as u32;
+            (i * p + dx, j * p + dy, (rng.next() % 4) as u8)
+        })
+        .collect();
+    (across, places)
+}
+
+/// Whether a pixel at `(lx, ly)` from the top left of a fake code corner
+/// of `unit` pixel cells is dark: a finder mark with a quarter ring of
+/// "data" five to six and two thirds cells from its centre, in quarter
+/// `quarter`. It has a code corner's surroundings, light round most of it
+/// and busy on one side. `None` outside the ring's reach.
+fn fake_corner_pixel(lx: f64, ly: f64, unit: u32, quarter: u8) -> Option<bool> {
+    let u = unit as f64;
+    let (dx, dy) = (lx - 3.5 * u, ly - 3.5 * u);
+    let r = dx.hypot(dy) / u;
+    if r >= 6.8 {
+        return None;
+    }
+    if (0.0..7.0 * u).contains(&lx) && (0.0..7.0 * u).contains(&ly) {
+        return finder_pixel(lx as u32, ly as u32, unit);
+    }
+    let (sx, sy) = [(1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0), (1.0, -1.0)][quarter as usize % 4];
+    Some((5.0..6.7).contains(&r) && dx * sx >= 0.0 && dy * sy >= 0.0)
+}
+
+/// Fake code corners (see [`fake_corner_pixel`]) of `unit` pixel cells on
+/// a light ground, one every `pitch` cells each way, each moved by up to
+/// `jitter` cells. On a pitch near a preset's finder spacing, many pairs
+/// of them are as far apart as a code's finders.
+pub fn fake_corners(w: u32, h: u32, unit: u32, pitch: u32, jitter: u32, seed: u64) -> GrayImage {
+    corner_field(w, h, unit, pitch, jitter, seed, false)
+}
+
+/// [`fake_corners`] on a checkerboard of one-cell squares instead of a
+/// light ground, so a timing-line walk between any two of them reads
+/// timing all the way: every pair at a preset's spacing becomes a linked
+/// pair, the most walking a picture can ask for.
+pub fn fake_corners_on_checks(
+    w: u32,
+    h: u32,
+    unit: u32,
+    pitch: u32,
+    jitter: u32,
+    seed: u64,
+) -> GrayImage {
+    corner_field(w, h, unit, pitch, jitter, seed, true)
+}
+
+fn corner_field(
+    w: u32,
+    h: u32,
+    unit: u32,
+    pitch: u32,
+    jitter: u32,
+    seed: u64,
+    checks: bool,
+) -> GrayImage {
+    let (across, places) = corner_places(w, h, unit, pitch, jitter, seed);
+    let p = (pitch * unit) as i64;
+    GrayImage::from_fn(w, h, |x, y| {
+        let (i, j) = (x as i64 / p, y as i64 / p);
+        // A mark's ring can reach into the tiles beside its own.
+        for (di, dj) in (-1..=1).flat_map(|dj| (-1..=1).map(move |di| (di, dj))) {
+            let (ii, jj) = (i + di, j + dj);
+            if ii < 0 || jj < 0 || ii >= across as i64 {
+                continue;
+            }
+            let Some(&(ox, oy, quarter)) = places.get((jj * across as i64 + ii) as usize) else {
+                continue;
+            };
+            let (lx, ly) = (x as f64 + 0.5 - ox as f64, y as f64 + 0.5 - oy as f64);
+            if let Some(dark) = fake_corner_pixel(lx, ly, unit, quarter) {
+                return Luma([if dark { 0 } else { 255 }]);
+            }
+        }
+        let dark = checks && (x / unit + y / unit).is_multiple_of(2);
+        Luma([if dark { 0 } else { 255 }])
+    })
+}
+
+/// Up to `count` printed QR-style codes (see [`qr_like`]) of `m` cells,
+/// `unit` pixels each, with four-cell quiet zones, packed from the top
+/// left of a light picture; and how many fitted.
+pub fn qr_wall(
+    w: u32,
+    h: u32,
+    unit: u32,
+    m: usize,
+    count: usize,
+    rng: &mut Noise,
+) -> (GrayImage, usize) {
+    let mut img = GrayImage::from_pixel(w, h, Luma([255]));
+    let side = (m as u32 + 8) * unit;
+    let mut placed = 0;
+    for by in 0..h / side {
+        for bx in 0..w / side {
+            if placed == count {
+                return (img, placed);
+            }
+            let grid = qr_like(m, rng);
+            for (k, _) in grid.iter().enumerate().filter(|(_, &dark)| dark) {
+                let (r, c) = ((k / m) as u32, (k % m) as u32);
+                for yy in 0..unit {
+                    for xx in 0..unit {
+                        let x = bx * side + (c + 4) * unit + xx;
+                        let y = by * side + (r + 4) * unit + yy;
+                        img.put_pixel(x, y, Luma([0]));
+                    }
+                }
+            }
+            placed += 1;
+        }
+    }
+    (img, placed)
+}

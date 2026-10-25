@@ -12,15 +12,29 @@
 mod camera;
 
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use bombechat_light::{encode, read, CodeSpec, Collector, Layout, LightEvent, ReadOutcome};
+use bombechat_light::{
+    encode, read_within, CodeSpec, Collector, Layout, LightEvent, ReadOutcome, Reader,
+};
 use camera::textures::{
-    blinds, box_blur, checkerboard, diagonal_stripes, dotted_lattice, finder_bars, finder_crosses,
-    finder_lattice, finder_stripes, irregular, keyboard, qr_like, scattered_finders, IRREGULAR,
+    blinds, box_blur, checkerboard, diagonal_stripes, dotted_lattice, fake_corners,
+    fake_corners_on_checks, finder_bars, finder_crosses, finder_lattice, finder_stripes, irregular,
+    keyboard, qr_like, qr_wall, scattered_finders, IRREGULAR,
 };
 use camera::{in_view, shoot, Camera, Code, Noise, Pose};
 use image::GrayImage;
+
+/// A budget no test picture comes near, so what these tests see does not
+/// depend on how busy the machine is (they run on every core at once, and
+/// on efficiency cores a picture takes about three times as long). The
+/// default budget is tested on its own, in `decode_time_per_frame`.
+const UNHURRIED: Duration = Duration::from_secs(10);
+
+/// [`bombechat_light::read`] without its time budget (see [`UNHURRIED`]).
+fn read(image: &GrayImage) -> ReadOutcome {
+    read_within(image, UNHURRIED)
+}
 
 fn presets() -> [(&'static str, CodeSpec); 3] {
     [
@@ -1173,6 +1187,360 @@ fn a_code_among_finder_clutter_reads() {
     assert!(wrong.is_empty(), "{wrong:#?}");
 }
 
+/// Clutter built to get ahead of a code in the search: fake code corners
+/// (finder marks with a code corner's surroundings, so they pass the
+/// corner test), dense or sparse, on a light ground or on a checkerboard
+/// (where every pair as far apart as a code's finders reads a timing line
+/// between them), and walls of printed QR codes, which have finders,
+/// corners and timing lines just as a light code does.
+fn corner_clutter() -> Vec<(String, GrayImage)> {
+    let mut out = Vec::new();
+    for u in [2, 3] {
+        for pitch in [14, 16, 20] {
+            out.push((
+                format!("fake corners {u}px, every {pitch} cells"),
+                fake_corners(1280, 720, u, pitch, 0, 1),
+            ));
+            out.push((
+                format!("fake corners {u}px, every {} cells, jittered", pitch + 3),
+                fake_corners(1280, 720, u, pitch + 3, 3, 2),
+            ));
+        }
+    }
+    out.push((
+        "fake corners 4px, every 19 cells, jittered".into(),
+        fake_corners(1280, 720, 4, 19, 3, 3),
+    ));
+    out.push((
+        "sparse fake corners 3px".into(),
+        fake_corners(1280, 720, 3, 40, 20, 4),
+    ));
+    out.push((
+        "sparse fake corners 4px".into(),
+        fake_corners(1280, 720, 4, 30, 12, 5),
+    ));
+    for (u, pitch, jitter) in [(2, 16, 2), (3, 16, 2), (2, 19, 3)] {
+        out.push((
+            format!("fake corners on checks {u}px, every {pitch} cells"),
+            fake_corners_on_checks(1280, 720, u, pitch, jitter, 7),
+        ));
+    }
+    let mut rng = Noise::new(9);
+    for (u, m) in [(2, 41), (2, 49), (3, 41), (2, 57)] {
+        for count in [4, 8, 16, 40] {
+            let (img, placed) = qr_wall(1280, 720, u, m, count, &mut rng);
+            out.push((format!("{placed} QR codes of {m} cells, {u}px"), img));
+        }
+    }
+    out
+}
+
+/// Codes to put beside [`corner_clutter`]: (name, camera, pose), the code
+/// on the right of the picture, plain, blurred, small, under moire, and
+/// tilted from 10 to 30 degrees about two axes.
+fn beside_clutter_shots() -> Vec<(String, Camera, Pose)> {
+    let at = |scale: f64, tilt: f64, tilt_axis: f64, roll: f64| Pose {
+        scale,
+        centre: (0.74, 0.5),
+        roll,
+        tilt,
+        tilt_axis,
+    };
+    let mut out = vec![
+        (
+            "plain".to_string(),
+            Camera::default(),
+            at(0.45, 0.0, 0.0, 0.0),
+        ),
+        (
+            "blur 1.5".into(),
+            Camera {
+                blur: 1.5,
+                ..Camera::default()
+            },
+            at(0.45, 0.0, 0.0, 0.0),
+        ),
+        (
+            "tilt 30, roll 15, blur 1.5, noise 6".into(),
+            Camera {
+                blur: 1.5,
+                noise: 6.0,
+                ..Camera::default()
+            },
+            at(0.42, 30.0, 70.0, 15.0),
+        ),
+        (
+            "small, blur 1.2".into(),
+            Camera {
+                blur: 1.2,
+                ..Camera::default()
+            },
+            Pose {
+                scale: 0.3,
+                centre: (0.8, 0.5),
+                ..Pose::default()
+            },
+        ),
+        (
+            "moire".into(),
+            Camera {
+                moire: 0.15,
+                moire_period: 3.0,
+                moire_angle: 20.0,
+                ..Camera::default()
+            },
+            at(0.45, 0.0, 0.0, -10.0),
+        ),
+    ];
+    for tilt in [10.0, 15.0, 20.0, 25.0, 30.0] {
+        for axis in [30.0, 70.0] {
+            out.push((
+                format!("tilt {tilt} about {axis}"),
+                Camera::default(),
+                at(0.45, tilt, axis, 0.0),
+            ));
+        }
+    }
+    out
+}
+
+/// Each preset's code shot every way [`beside_clutter_shots`] gives, three
+/// seeds each: (what, picture, frame, where the clutter may come up to).
+fn codes_for_clutter() -> Vec<(String, GrayImage, Vec<u8>, u32)> {
+    let mut out = Vec::new();
+    for (name, spec) in presets() {
+        let frame = some_frame(&spec, &mut Noise::new(105));
+        for (shot, cam, pose) in beside_clutter_shots() {
+            // Clear of the code's quiet zone however it is tilted.
+            let edge = (1280.0 * pose.centre.0 - 0.5 * pose.scale * 720.0 * 1.4) as u32;
+            for seed in 0..3 {
+                let img = shoot(&[code(&spec, &frame, pose.clone())], &cam, 50 + seed);
+                out.push((format!("{name} {shot} s{seed}"), img, frame.clone(), edge));
+            }
+        }
+    }
+    out
+}
+
+/// A code beside clutter case `i`: the clutter left of the code's edge.
+fn corner_clutter_case(
+    i: usize,
+    textures: &[(String, GrayImage)],
+    codes: &[(String, GrayImage, Vec<u8>, u32)],
+) -> (String, GrayImage, ReadOutcome) {
+    let (t, c) = (i % textures.len(), i / textures.len());
+    let (shot, base, frame, edge) = &codes[c];
+    let tex = &textures[t].1;
+    let img = GrayImage::from_fn(1280, 720, |x, y| {
+        if x < *edge {
+            *tex.get_pixel(x, y)
+        } else {
+            *base.get_pixel(x, y)
+        }
+    });
+    let what = format!("{shot}, {} (x < {edge})", textures[t].0);
+    (what, img, ReadOutcome::Frames(vec![frame.clone()]))
+}
+
+/// However many fake code corners or printed QR codes are beside a code,
+/// however much crisper and squarer they are, and however the code is
+/// tilted up to 30 degrees, the code reads on its own picture, with no
+/// help from earlier ones; the clutter alone reads as no code.
+#[test]
+fn a_code_among_fake_code_corners_reads() {
+    let textures = corner_clutter();
+    let codes = codes_for_clutter();
+    let wrong = read_all(codes.len(), |i| {
+        let (what, img, frame, _) = &codes[i];
+        (
+            what.clone(),
+            img.clone(),
+            ReadOutcome::Frames(vec![frame.clone()]),
+        )
+    });
+    assert!(wrong.is_empty(), "codes alone: {wrong:#?}");
+    let count = textures.len() * codes.len();
+    let wrong = read_all(count, |i| corner_clutter_case(i, &textures, &codes));
+    assert!(wrong.is_empty(), "{} of {count}: {wrong:#?}", wrong.len());
+    let wrong = read_all(textures.len(), |i| {
+        let (name, img) = &textures[i];
+        (format!("{name} alone"), img.clone(), ReadOutcome::NoCode)
+    });
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// `count` pictures of one code showing successive frames of an
+/// envelope, the camera's noise different in each; `beside(i)` is laid
+/// over picture `i` wherever it is not `None`.
+fn sequence(
+    count: usize,
+    spec: &CodeSpec,
+    pose: &Pose,
+    cam: &Camera,
+    beside: impl Fn(usize, u32, u32) -> Option<image::Luma<u8>>,
+) -> Vec<(GrayImage, Vec<u8>)> {
+    let mut enc = encode(spec, &[0x5a; 1500], 21);
+    (0..count)
+        .map(|i| {
+            let frame = enc.next_frame();
+            let mut img = shoot(&[code(spec, &frame, pose.clone())], cam, 700 + i as u64);
+            for (x, y, px) in img.enumerate_pixels_mut() {
+                if let Some(over) = beside(i, x, y) {
+                    *px = over;
+                }
+            }
+            (img, frame)
+        })
+        .collect()
+}
+
+/// A reader follows a code from picture to picture: once it has read one,
+/// it reads every later picture of it, tilted or not, among clutter that
+/// defeats the stateless search's first tries.
+#[test]
+fn a_reader_keeps_reading_a_code_it_has_found() {
+    let clutter = fake_corners_on_checks(1280, 720, 2, 16, 2, 7);
+    let (wall, _) = qr_wall(1280, 720, 2, 49, 16, &mut Noise::new(9));
+    for (_, spec) in presets() {
+        for tilt in [0.0, 25.0] {
+            let pose = Pose {
+                scale: 0.45,
+                centre: (0.74, 0.5),
+                tilt,
+                tilt_axis: 30.0,
+                ..Pose::default()
+            };
+            let pictures = sequence(10, &spec, &pose, &Camera::default(), |i, x, y| {
+                let tex = if i % 2 == 0 { &clutter } else { &wall };
+                (x < 720).then(|| *tex.get_pixel(x, y))
+            });
+            let mut reader = Reader::with_budget(UNHURRIED);
+            for (i, (img, frame)) in pictures.iter().enumerate() {
+                assert_eq!(
+                    reader.read(img),
+                    ReadOutcome::Frames(vec![frame.clone()]),
+                    "{} cells, tilt {tilt}, picture {i}",
+                    spec.cells
+                );
+            }
+        }
+    }
+}
+
+/// Texture right up to (and over) a code's quiet zone hides its finders'
+/// corners from the stateless search, which then often misses it; a
+/// reader that has seen the code once looks where it was and reads it
+/// anyway.
+#[test]
+fn a_reader_reads_a_found_code_whose_quiet_zone_is_covered() {
+    let textures = [
+        ("stripes 2px", finder_stripes(1280, 720, 2)),
+        ("stripes 3px", finder_stripes(1280, 720, 3)),
+        ("stripes 4px", finder_stripes(1280, 720, 4)),
+        ("stripes 5px", finder_stripes(1280, 720, 5)),
+        ("jitter", irregular("jitter", 1280, 720)),
+        ("alt 2/4", irregular("alt 2/4", 1280, 720)),
+    ];
+    let pose = Pose {
+        scale: 0.5,
+        centre: (0.6, 0.5),
+        ..Pose::default()
+    };
+    let (mut stateless, mut total) = (0, 0);
+    for (_, spec) in presets() {
+        let n = spec.cells as f64;
+        // The grid's own square, inside its three-cell quiet zone.
+        let half = 0.5 * 0.5 * 720.0 * n / (n + 6.0);
+        let (left, top, right) = (0.6 * 1280.0 - half, 360.0 - half, 0.6 * 1280.0 + half);
+        let clean = sequence(1, &spec, &pose, &Camera::default(), |_, _, _| None);
+        let mut locked = Reader::with_budget(UNHURRIED);
+        assert_eq!(
+            locked.read(&clean[0].0),
+            ReadOutcome::Frames(vec![clean[0].1.clone()])
+        );
+        for (name, tex) in &textures {
+            // Texture stops this far short of the grid: none, into the
+            // quiet zone, or up to it.
+            for short in [0.0, 3.0, 6.0, 10.0, 16.0, 30.0] {
+                for above in [false, true] {
+                    let covered = |x: f64, y: f64| {
+                        if above {
+                            y < top - short && x + 20.0 >= left && x <= right + 20.0
+                        } else {
+                            x < left - short
+                        }
+                    };
+                    let pictures = sequence(2, &spec, &pose, &Camera::default(), |_, x, y| {
+                        covered(x as f64, y as f64).then(|| *tex.get_pixel(x, y))
+                    });
+                    let (img, frame) = &pictures[1];
+                    let want = ReadOutcome::Frames(vec![frame.clone()]);
+                    total += 1;
+                    stateless += (read(img) == want) as u32;
+                    let mut reader = locked.clone();
+                    assert_eq!(
+                        reader.read(img),
+                        want,
+                        "{} cells, {name}, {short}px short, above {above}",
+                        spec.cells
+                    );
+                }
+            }
+        }
+    }
+    println!("stateless search read {stateless} of {total}; the reader all");
+}
+
+/// A code that drifts across the picture a few pixels at a time, as in a
+/// hand-held shot, stays followed; one that has gone is soon forgotten,
+/// and a change of picture size forgets everything at once.
+#[test]
+fn a_reader_follows_a_drifting_code_and_forgets_a_gone_one() {
+    let spec = CodeSpec::normal();
+    let mut enc = encode(&spec, &[0x33; 900], 5);
+    let mut reader = Reader::with_budget(UNHURRIED);
+    for i in 0..10 {
+        let frame = enc.next_frame();
+        let pose = Pose {
+            scale: 0.4,
+            centre: (0.4 + 0.004 * i as f64, 0.5 - 0.003 * i as f64),
+            roll: 0.3 * i as f64,
+            ..Pose::default()
+        };
+        let img = shoot(&[code(&spec, &frame, pose)], &Camera::default(), 800 + i);
+        assert_eq!(
+            reader.read(&img),
+            ReadOutcome::Frames(vec![frame]),
+            "picture {i}"
+        );
+    }
+    let blank = GrayImage::from_pixel(1280, 720, image::Luma([128]));
+    for _ in 0..20 {
+        assert_eq!(reader.read(&blank), ReadOutcome::NoCode);
+    }
+    let small = GrayImage::from_pixel(640, 360, image::Luma([128]));
+    assert_eq!(reader.read(&small), ReadOutcome::NoCode);
+}
+
+/// With no time at all, a picture is not searched: the reading stops at
+/// once with what it has, which is nothing.
+#[test]
+fn a_spent_budget_stops_the_search() {
+    let spec = CodeSpec::normal();
+    let frame = some_frame(&spec, &mut Noise::new(106));
+    let img = shoot(
+        &[code(&spec, &frame, Pose::default())],
+        &Camera::default(),
+        14,
+    );
+    assert_eq!(read(&img), ReadOutcome::Frames(vec![frame]));
+    assert_eq!(read_within(&img, Duration::ZERO), ReadOutcome::NoCode);
+    assert_eq!(
+        Reader::with_budget(Duration::ZERO).read(&img),
+        ReadOutcome::NoCode
+    );
+}
+
 /// Bars in the finder ratio over a growing share of the picture, sharp
 /// or blurred, beside a code: (what, picture, expected).
 fn blurred_bar_pictures() -> Vec<(String, GrayImage, ReadOutcome)> {
@@ -1639,10 +2007,13 @@ fn fixtures() -> Vec<(Fixture, ReadOutcome)> {
     out
 }
 
-/// Decoding time per 1280x720 picture, over pictures with a code, with
-/// nothing, with noise, and with a code that cannot be read. Only
-/// meaningful in release, run on its own (not alongside the sweep, which
-/// takes every core).
+/// Decoding time per 1280x720 picture with the default budget, over
+/// pictures with a code, with nothing, with noise, with a code that
+/// cannot be read, and with every kind of clutter the other tests build,
+/// and how many of them read as they do with no deadline; then a reader
+/// with the default budget through cluttered sequences. Only meaningful
+/// in release, run on its own (not alongside the sweep, which takes every
+/// core): the budget is wall-clock time.
 #[test]
 #[ignore = "timing; run alone in release with --ignored"]
 fn decode_time_per_frame() {
@@ -1777,26 +2148,41 @@ fn decode_time_per_frame() {
         shoot(&[code(&spec, &frame, Pose::default())], &cam4k, 401),
     ));
 
+    // Each picture is read once without a deadline, for what it holds,
+    // then four times as the camera would read it, with the default
+    // budget: the first for its outcome (and to warm up), the rest timed.
+    // The slowest single reading of any picture is what must stay under
+    // 15 ms.
     let mut worst = (0f64, String::new());
-    let mut by_kind: Vec<(&str, f64, u32)> = Vec::new();
+    // (kind, total of means, slowest single reading, pictures, read as
+    // with no deadline)
+    let mut by_kind: Vec<(&str, f64, f64, u32, u32)> = Vec::new();
     let mut time = |kind: &'static str, name: &str, img: &GrayImage| {
-        read(img); // warm up
-        let runs = 5;
-        let start = Instant::now();
-        for _ in 0..runs {
-            std::hint::black_box(read(img));
+        let unhurried = read(img);
+        let same = bombechat_light::read(img) == unhurried;
+        let (mut total, mut slowest) = (0.0, 0f64);
+        for _ in 0..3 {
+            let start = Instant::now();
+            std::hint::black_box(bombechat_light::read(img));
+            let ms = start.elapsed().as_secs_f64() * 1000.0;
+            total += ms;
+            slowest = slowest.max(ms);
         }
-        let ms = start.elapsed().as_secs_f64() * 1000.0 / runs as f64;
-        if ms > worst.0 {
-            worst = (ms, name.to_string());
+        if slowest > worst.0 {
+            worst = (slowest, name.to_string());
         }
-        match by_kind.iter_mut().find(|k| k.0 == kind) {
-            Some(k) => {
-                k.1 += ms;
-                k.2 += 1;
+        let i = match by_kind.iter().position(|k| k.0 == kind) {
+            Some(i) => i,
+            None => {
+                by_kind.push((kind, 0.0, 0.0, 0, 0));
+                by_kind.len() - 1
             }
-            None => by_kind.push((kind, ms, 1)),
-        }
+        };
+        let k = &mut by_kind[i];
+        k.1 += total / 3.0;
+        k.2 = k.2.max(slowest);
+        k.3 += 1;
+        k.4 += same as u32;
     };
     for (kind, name, img) in &pictures {
         time(kind, name, img);
@@ -1819,12 +2205,78 @@ fn decode_time_per_frame() {
     for (what, img, _) in quiet_zone_pictures() {
         time("texture up to the quiet zone", &what, &img);
     }
-    for (kind, total, count) in &by_kind {
+    // Fake code corners and QR walls beside codes, the first seed of each
+    // shot (a third of what `a_code_among_fake_code_corners_reads` reads).
+    let corners = corner_clutter();
+    let codes: Vec<_> = codes_for_clutter()
+        .into_iter()
+        .filter(|c| c.0.ends_with("s0"))
+        .collect();
+    for i in 0..corners.len() * codes.len() {
+        let (what, img, _) = corner_clutter_case(i, &corners, &codes);
+        time("code among fake code corners", &what, &img);
+    }
+    for (name, img) in &corners {
+        time("fake code corners alone", name, img);
+    }
+    for (kind, total, slowest, count, same) in &by_kind {
         println!(
-            "{kind}: mean {:.2} ms over {count} pictures",
+            "{kind}: mean {:.2} ms, slowest {slowest:.2} ms, over {count} pictures; \
+             {same} read as with no deadline",
             total / *count as f64
         );
     }
+
+    // A reader with the default budget through ten pictures of a code
+    // beside the worst clutter: it must read every picture after the
+    // first it reads, each within the budget.
+    let walky = fake_corners_on_checks(1280, 720, 2, 16, 2, 7);
+    let (wall, _) = qr_wall(1280, 720, 2, 49, 40, &mut Noise::new(9));
+    let (mut slowest, mut first_missed) = (0f64, 0);
+    for (_, spec) in presets() {
+        for tilt in [0.0, 30.0] {
+            for (name, tex) in [("fake corners on checks", &walky), ("40 QR codes", &wall)] {
+                let pose = Pose {
+                    scale: 0.45,
+                    centre: (0.74, 0.5),
+                    tilt,
+                    tilt_axis: 30.0,
+                    ..Pose::default()
+                };
+                let pictures = sequence(10, &spec, &pose, &Camera::default(), |_, x, y| {
+                    (x < 720).then(|| *tex.get_pixel(x, y))
+                });
+                let mut reader = Reader::new();
+                let mut locked = false;
+                for (i, (img, frame)) in pictures.iter().enumerate() {
+                    let start = Instant::now();
+                    let got = reader.read(img);
+                    let ms = start.elapsed().as_secs_f64() * 1000.0;
+                    slowest = slowest.max(ms);
+                    let what = format!(
+                        "reader, {} cells, tilt {tilt}, {name}, picture {i}",
+                        spec.cells
+                    );
+                    if ms > worst.0 {
+                        worst = (ms, what.clone());
+                    }
+                    let read = got == ReadOutcome::Frames(vec![frame.clone()]);
+                    assert!(read || !locked, "{what}: {got:?}");
+                    first_missed += (!locked && !read) as u32;
+                    locked |= read;
+                }
+                assert!(
+                    locked,
+                    "reader, {} cells, tilt {tilt}, {name}: never read",
+                    spec.cells
+                );
+            }
+        }
+    }
+    println!(
+        "reader through 12 cluttered sequences of 10: every picture after the first \
+         read, {first_missed} pictures before it; slowest {slowest:.2} ms"
+    );
     println!("worst: {:.2} ms ({})", worst.0, worst.1);
     if !cfg!(debug_assertions) {
         assert!(

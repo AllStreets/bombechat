@@ -805,6 +805,17 @@ fn format_field(preset: u8, mask: u8) -> [u8; FORMAT_BYTES] {
 /// The mask named by a format field, if it reads clearly as one of this
 /// preset's.
 fn read_format(preset: u8, field: &[u8]) -> Option<u8> {
+    let (cost, mask) = format_distance(preset, field);
+    (cost < 16).then_some(mask)
+}
+
+/// How far a format field is from the nearest of this preset's sixteen,
+/// and that one's mask. The distance counts each pair read the wrong way
+/// round as two and each pair that reads the same twice (unknown) as one,
+/// so a field that reads exactly is 0 and one that is no field at all
+/// (random cells) is nearly always 10 or more; under 16 it names one
+/// field unambiguously.
+pub(crate) fn format_distance(preset: u8, field: &[u8]) -> (u32, u8) {
     let mut bits = 0u32;
     let mut known = 0u32;
     for i in 0..32 {
@@ -825,8 +836,7 @@ fn read_format(preset: u8, field: &[u8]) -> Option<u8> {
             (2 * errors + erased, mask)
         })
         .min()
-        .filter(|&(cost, _)| cost < 16)
-        .map(|(_, mask)| mask)
+        .unwrap_or((u32::MAX, 0))
 }
 
 /// XOR `buf` with the keystream for a preset and mask.

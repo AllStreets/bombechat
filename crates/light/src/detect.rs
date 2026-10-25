@@ -36,8 +36,21 @@
 //! checks go in rounds, every cluster getting its next check before any
 //! gets another, so every cluster has had as many checks as any other,
 //! give or take one; within a round the 64-pixel squares of the picture
-//! take turns. Merging looks only at marks in nearby squares, so
-//! thousands of small marks cost little.
+//! take turns. The checks also stop when the search's [`Deadline`] passes
+//! (looked at every sixteen checks), which falls the same even way.
+//! Merging looks only at marks in nearby squares, so thousands of small
+//! marks cost little. The same search runs over a small [`Area`] to find
+//! a known finder again near where it was.
+//!
+//! # Timing lines
+//!
+//! Between two of a code's finders runs a timing line, three cells to one
+//! side of the line through their centres. [`timing_lines`] walks both
+//! sides of a pair and counts the alternating runs. Under perspective a
+//! finder is squashed along one axis and not the other, so each finder's
+//! own reach along and across the pair's line (its cell size each way)
+//! sets how far beside the centres' line the walk runs and how long a
+//! cell is there, blended from one finder to the other.
 //!
 //! # Perspective
 //!
@@ -63,9 +76,66 @@
 //! centre (the centre and four points a fifth of a cell away), which
 //! averages sensor noise without reaching into the neighbouring cells.
 
+use std::time::{Duration, Instant};
+
 use image::GrayImage;
 
 use crate::code::QUIET;
+
+/// When the reading of one picture must stop. Each stage of a reading
+/// stops at its own share of the budget, so a slow stage leaves the later
+/// ones their time.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Deadline {
+    start: Instant,
+    /// Time from `start` to stop at.
+    end: Duration,
+}
+
+impl Deadline {
+    /// A deadline `budget` from now.
+    pub fn new(budget: Duration) -> Self {
+        Deadline {
+            start: Instant::now(),
+            end: budget,
+        }
+    }
+
+    /// The earlier deadline at `permille` thousandths of this one's budget.
+    pub fn share(&self, permille: u32) -> Self {
+        Deadline {
+            start: self.start,
+            end: self
+                .end
+                .checked_mul(permille)
+                .map_or(self.end, |d| d / 1000),
+        }
+    }
+
+    /// An earlier deadline: `permille` thousandths of the time left now.
+    pub fn of_rest(&self, permille: u32) -> Self {
+        let now = self.start.elapsed();
+        let rest = self.end.saturating_sub(now);
+        Deadline {
+            start: self.start,
+            end: now + rest.checked_mul(permille).map_or(rest, |d| d / 1000),
+        }
+    }
+
+    /// Whether the deadline has passed.
+    pub fn passed(&self) -> bool {
+        self.start.elapsed() >= self.end
+    }
+}
+
+/// A rectangle of the picture: columns `x0..x1`, rows `y0..y1`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Area {
+    pub x0: usize,
+    pub y0: usize,
+    pub x1: usize,
+    pub y1: usize,
+}
 
 /// Rows the coarse finder pass steps by.
 const ROW_STEP: usize = 2;
@@ -149,6 +219,27 @@ impl<'a> Picture<'a> {
         pic
     }
 
+    /// The whole picture as an [`Area`].
+    pub fn area(&self) -> Area {
+        Area {
+            x0: 0,
+            y0: 0,
+            x1: self.w,
+            y1: self.h,
+        }
+    }
+
+    /// The part of the picture within `r` pixels of `x`, `y`.
+    pub fn around(&self, x: f32, y: f32, r: f32) -> Area {
+        let clamp = |v: f32, hi: usize| (v.max(0.0) as usize).min(hi);
+        Area {
+            x0: clamp(x - r, self.w),
+            y0: clamp(y - r, self.h),
+            x1: clamp(x + r + 1.0, self.w),
+            y1: clamp(y + r + 1.0, self.h),
+        }
+    }
+
     /// Mean of the window `x0..x1`, `y0..y1`, clamped to the picture.
     fn mean(&self, x0: usize, y0: usize, x1: usize, y1: usize) -> u32 {
         let (x1, y1) = (x1.min(self.w), y1.min(self.h));
@@ -222,10 +313,10 @@ impl Finder {
     }
 }
 
-/// Every finder-like mark in the picture, best first (see
-/// [`Finder::rank`]).
-pub(crate) fn find_finders(pic: &Picture) -> Vec<Finder> {
-    let hits = row_hits(pic);
+/// Every finder-like mark in `area` of the picture, best first (see
+/// [`Finder::rank`]), as far as the checks get before `deadline`.
+pub(crate) fn find_finders(pic: &Picture, area: Area, deadline: Deadline) -> Vec<Finder> {
+    let hits = row_hits(pic, area);
     let mut clusters = cluster(&hits);
 
     // A finder gives row hits over its centre's height and a little more,
@@ -242,10 +333,12 @@ pub(crate) fn find_finders(pic: &Picture) -> Vec<Finder> {
     let mut work = MAX_WORK;
     let mut sums: Vec<Option<Sum>> = vec![None; clusters.len()];
     let mut round = 0;
+    let mut checks = 0usize;
     'rounds: while !live.is_empty() {
         for &k in &live {
             let c = &clusters[k];
-            if work == 0 {
+            checks += 1;
+            if work == 0 || checks.is_multiple_of(16) && deadline.passed() {
                 break 'rounds;
             }
             let h = hits[c.members[middle_out(round, c.members.len())]];
@@ -364,22 +457,25 @@ struct Hit {
     error: f32,
 }
 
-/// Every row hit of the coarse pass, row by row, left to right within a
-/// row.
-fn row_hits(pic: &Picture) -> Vec<Hit> {
+/// Every row hit of the coarse pass over `area`, row by row, left to
+/// right within a row.
+fn row_hits(pic: &Picture, area: Area) -> Vec<Hit> {
     let mut hits = Vec::new();
+    if area.x1 <= area.x0 || area.y1 <= area.y0 {
+        return hits;
+    }
     let mut runs: Vec<(usize, usize, bool)> = Vec::with_capacity(pic.w / 2);
-    for y in (ROW_STEP / 2..pic.h).step_by(ROW_STEP) {
+    for y in (area.y0 + ROW_STEP / 2..area.y1).step_by(ROW_STEP) {
         runs.clear();
         let row = &pic.dark[y * pic.w..(y + 1) * pic.w];
-        let mut start = 0;
-        for x in 1..pic.w {
+        let mut start = area.x0;
+        for x in area.x0 + 1..area.x1 {
             if row[x] != row[x - 1] {
                 runs.push((start, x - start, row[start]));
                 start = x;
             }
         }
-        runs.push((start, pic.w - start, row[start]));
+        runs.push((start, area.x1 - start, row[start]));
         for i in 0..runs.len().saturating_sub(4) {
             if !runs[i].2 {
                 continue;
@@ -670,80 +766,168 @@ impl Marks {
     }
 }
 
-/// How many cells a timing line between finders `a` and `b` has, if one
-/// runs there. On a code, two finders' centres are on row (or column) 3
-/// and their outer rings and the timing line between them on row 6, so
-/// the line walked is the one three cells to one side of the centres'
-/// (`side` 1 or -1 picks the side). It must read as a dark run (the
-/// finder's own outer ring) of at most six and a half cells, then short
-/// alternating runs, then another such dark run. Any run of more than
-/// four cells (cells sized by the two finders, blended along the line)
-/// ends the walk, so another finder, a gap or a bar on the line costs
-/// only a few cells' walk. Counting runs rather than predicting where
-/// each cell falls makes this indifferent to perspective. The count is
-/// the number of short runs, given if seven in ten are each between 0.4
-/// and 1.8 cells long. Each pixel walked is taken from `work`.
-pub(crate) fn timing_line(
+/// How far a finder mark reaches through its centre along the unit
+/// direction `(ux, uy)`, edge to edge, in pixels: its dark core, light
+/// ring and dark ring each way. Divided by seven it is the mark's cell
+/// size along that line, whatever the perspective: a screen tilted away
+/// squashes a finder along one axis and not the other, and the lines a
+/// code's rows and columns run along are squashed with it. `None` if the
+/// crossing does not show those runs within a few cells. Each pixel
+/// stepped over is taken from `work`.
+fn extent(pic: &Picture, f: &Finder, (ux, uy): (f32, f32), work: &mut usize) -> Option<f32> {
+    let reach = (12.0 * f.module) as isize + 4;
+    let inside = |x: f32, y: f32| {
+        (x >= 0.0 && y >= 0.0 && x <= (pic.w - 1) as f32 && y <= (pic.h - 1) as f32)
+            .then(|| pic.dark(x.round() as usize, y.round() as usize))
+    };
+    if inside(f.x, f.y) != Some(true) {
+        return None;
+    }
+    let mut total = 0;
+    for sign in [1isize, -1] {
+        // Dark core, light ring, dark ring, then the light beyond.
+        let (mut want, mut changes, mut t) = (true, 0, 0);
+        while changes < 3 {
+            t += sign;
+            if t.abs() > reach || *work == 0 {
+                return None;
+            }
+            *work -= 1;
+            if inside(f.x + ux * t as f32, f.y + uy * t as f32)? != want {
+                want = !want;
+                changes += 1;
+            }
+        }
+        total += t.abs();
+    }
+    Some((total - 1) as f32)
+}
+
+/// A mark's cell size along and across the line to another mark: the
+/// first is how long one cell of a timing line beside it runs, the second
+/// how far apart the rows that line runs between are.
+fn cell_sizes(pic: &Picture, f: &Finder, along: (f32, f32), work: &mut usize) -> (f32, f32) {
+    let across = (-along.1, along.0);
+    let size = |dir, work: &mut usize| extent(pic, f, dir, work).map_or(f.module, |e| e / 7.0);
+    (size(along, work), size(across, work))
+}
+
+/// How many cells each of the two timing lines that could run beside the
+/// line between finders `a` and `b` has, one on each side, if it is there.
+///
+/// On a code, two finders' centres are on row (or column) 3 and their
+/// outer rings and the timing line between them on row 6, so the line
+/// walked is the one three cells to one side of the centres'. Under
+/// perspective a cell is not the same size along the line as across it,
+/// nor at one finder as at the other: each finder's own reach along and
+/// across the line (see [`extent`]) sets how far out the walk runs beside
+/// it and how long a cell is there, and both are blended between the two
+/// finders. Rows stay straight lines under perspective, so the walk is a
+/// straight line from three cells beside one finder to three cells beside
+/// the other.
+///
+/// A line must read as a dark run (the finder's own outer ring) of at
+/// most six and a half cells, then short alternating runs, then another
+/// such dark run. Any run of more than four cells ends the walk, so
+/// another finder, a gap or a bar on the line costs only a few cells'
+/// walk. Counting runs rather than predicting where each cell falls
+/// leaves room for the rest of the foreshortening. The count is the
+/// number of short runs, given if seven in ten are each between 0.4 and
+/// 1.8 cells long. Each pixel walked is taken from `work`.
+pub(crate) fn timing_lines(
     pic: &Picture,
     a: &Finder,
     b: &Finder,
-    side: f32,
     work: &mut usize,
-) -> Option<usize> {
+) -> [Option<usize>; 2] {
     let (dx, dy) = (b.x - a.x, b.y - a.y);
     let d = dx.hypot(dy);
     if d < 1.0 {
-        return None;
+        return [None, None];
     }
-    let (ex, ey) = (dx / d, dy / d);
-    let (nx, ny) = (-ey * side, ex * side);
-    let steps = d.round() as usize;
-    let module = |t: usize| a.module + (b.module - a.module) * t as f32 / d;
-    // (dark, length, cell size where it started) of each run so far.
-    let mut runs: Vec<(bool, usize, f32)> = Vec::new();
-    for t in 0..=steps {
-        if *work == 0 {
-            return None;
-        }
-        *work -= 1;
-        let m = module(t);
-        let off = 3.0 * m;
-        let (x, y) = (
-            a.x + ex * t as f32 + nx * off,
-            a.y + ey * t as f32 + ny * off,
-        );
-        if x < 0.0 || y < 0.0 || x > (pic.w - 1) as f32 || y > (pic.h - 1) as f32 {
-            return None;
-        }
-        let dark = pic.dark(x.round() as usize, y.round() as usize);
-        match runs.last_mut() {
-            Some(r) if r.0 == dark => r.1 += 1,
-            _ => {
-                if runs.is_empty() && !dark {
-                    return None;
+    let along = (dx / d, dy / d);
+    let (along_a, across_a) = cell_sizes(pic, a, along, work);
+    let (along_b, across_b) = cell_sizes(pic, b, along, work);
+    [1.0, -1.0].map(|side| {
+        let walk = Walk {
+            along,
+            side,
+            d,
+            cells: (along_a, along_b),
+            offsets: (3.0 * across_a, 3.0 * across_b),
+        };
+        walk.count(pic, a, work)
+    })
+}
+
+/// One walk along a possible timing line.
+struct Walk {
+    /// Unit direction from the first finder to the second.
+    along: (f32, f32),
+    /// Which side of the centres' line, 1 or -1.
+    side: f32,
+    /// Distance between the finder centres, pixels.
+    d: f32,
+    /// Cell size along the line at each finder.
+    cells: (f32, f32),
+    /// How far beside the centres' line the walk runs, at each finder.
+    offsets: (f32, f32),
+}
+
+impl Walk {
+    fn count(&self, pic: &Picture, a: &Finder, work: &mut usize) -> Option<usize> {
+        let (ex, ey) = self.along;
+        let (nx, ny) = (-ey * self.side, ex * self.side);
+        let d = self.d;
+        let steps = d.round() as usize;
+        let blend = |(p, q): (f32, f32), t: usize| p + (q - p) * t as f32 / d;
+        let (cell_a, cell_b) = self.cells;
+        // (dark, length, cell size where it started) of each run so far.
+        let mut runs: Vec<(bool, usize, f32)> = Vec::new();
+        for t in 0..=steps {
+            if *work == 0 {
+                return None;
+            }
+            *work -= 1;
+            let m = blend(self.cells, t);
+            let off = blend(self.offsets, t);
+            let (x, y) = (
+                a.x + ex * t as f32 + nx * off,
+                a.y + ey * t as f32 + ny * off,
+            );
+            if x < 0.0 || y < 0.0 || x > (pic.w - 1) as f32 || y > (pic.h - 1) as f32 {
+                return None;
+            }
+            let dark = pic.dark(x.round() as usize, y.round() as usize);
+            match runs.last_mut() {
+                Some(r) if r.0 == dark => r.1 += 1,
+                _ => {
+                    if runs.is_empty() && !dark {
+                        return None;
+                    }
+                    runs.push((dark, 1, m));
                 }
-                runs.push((dark, 1, m));
+            }
+            let last = runs.len() - 1;
+            let (_, len, at) = runs[last];
+            let limit = if last == 0 { 6.5 } else { 4.0 } * at;
+            // The far finder's ring may be as long as the first run; it is
+            // judged once the walk is over.
+            if len as f32 > limit && !(dark && t as f32 > d - 6.5 * cell_b) {
+                return None;
             }
         }
-        let last = runs.len() - 1;
-        let (_, len, at) = runs[last];
-        let limit = if last == 0 { 6.5 } else { 4.0 } * at;
-        // The far finder's ring may be as long as the first run; it is
-        // judged once the walk is over.
-        if len as f32 > limit && !(dark && t as f32 > d - 6.5 * b.module) {
+        let (first, rest) = runs.split_first()?;
+        let (last, middle) = rest.split_last()?;
+        if !last.0 || last.1 as f32 > 6.5 * cell_b || first.1 as f32 > 6.5 * cell_a {
             return None;
         }
+        let good = middle
+            .iter()
+            .filter(|r| (0.4 * r.2..=1.8 * r.2).contains(&(r.1 as f32)))
+            .count();
+        (good * 10 >= middle.len() * 7).then_some(middle.len())
     }
-    let (first, rest) = runs.split_first()?;
-    let (last, middle) = rest.split_last()?;
-    if !last.0 || last.1 as f32 > 6.5 * b.module || first.1 as f32 > 6.5 * a.module {
-        return None;
-    }
-    let good = middle
-        .iter()
-        .filter(|r| (0.4 * r.2..=1.8 * r.2).contains(&(r.1 as f32)))
-        .count();
-    (good * 10 >= middle.len() * 7).then_some(middle.len())
 }
 
 /// A plane-to-picture perspective map.
@@ -872,23 +1056,41 @@ impl Template {
     }
 }
 
-/// Where a code's grid sits in the picture: the homography from grid
-/// coordinates (columns across, rows down, a cell one unit) to pixels.
-pub(crate) fn locate(pic: &Picture, finders: [Finder; 3], n: u16) -> Option<Homography> {
+/// The first guess at where the orientation mark's centre falls, for an
+/// `n`-cell grid whose finders are `finders` (top left, top right, bottom
+/// left), and the size of one cell along the longer leg.
+///
+/// Under perspective the far side of the code looks smaller. Along a
+/// straight line a homography is a one-dimensional projective map, whose
+/// scale at each point goes as one over its denominator w squared; so the
+/// top left finder's cell size along the top leg against the top right
+/// finder's gives w at the top right (w = 1 at the top left), the same
+/// along the left leg gives it at the bottom left, and with the three
+/// centres those two fix the whole homography, and so the fourth corner.
+/// With `pic`, cell sizes along each leg come from each finder's own reach
+/// along it (see [`extent`]). Without it, or where that cannot be
+/// measured, the finders' overall sizes stand in: they mix the two axes,
+/// but blooming and blur, which thin or thicken a finder's rings, move
+/// them less. [`locate`] searches around the guess anyway and uses the
+/// overall sizes; [`rough`], which does not search, uses the reach.
+fn first_guess(pic: Option<&Picture>, finders: [Finder; 3], n: u16) -> Option<((f64, f64), f64)> {
     let nf = n as f64;
     let (a, b) = (3.5, nf - 3.5);
     let corner = nf - 2.5;
     let [tl, tr, bl] = finders.map(|f| (f.x as f64, f.y as f64));
     let span = b - a;
-    // The first guess for the orientation mark's centre. Under
-    // perspective the far side of the code looks smaller, and a finder's
-    // size shows how much: a homography scales lengths near a point by
-    // roughly its denominator w to the power -1.5, so each finder's size
-    // against the top left's gives w at the top right and bottom left
-    // (w = 1 at the top left), and w fixes where the fourth corner falls.
     let w = |f: &Finder| {
-        let ratio = (finders[0].module / f.module) as f64;
-        ratio.powf(1.0 / 1.5).clamp(0.6, 1.6)
+        let (dx, dy) = (f.x - finders[0].x, f.y - finders[0].y);
+        let d = dx.hypot(dy).max(1.0);
+        let along = (dx / d, dy / d);
+        // Each reach is bounded by the finder's own size.
+        let mut work = usize::MAX;
+        let mut reach = |g: &Finder| pic.and_then(|pic| extent(pic, g, along, &mut work));
+        let ratio = match (reach(&finders[0]), reach(f)) {
+            (Some(near), Some(far)) if far > 0.0 => (near / far) as f64,
+            _ => ((finders[0].module / f.module) as f64).powf(4.0 / 3.0),
+        };
+        ratio.sqrt().clamp(0.6, 1.6)
     };
     let (wu, wv) = (w(&finders[1]), w(&finders[2]));
     let t = (corner - a) / span;
@@ -903,9 +1105,32 @@ pub(crate) fn locate(pic: &Picture, finders: [Finder; 3], n: u16) -> Option<Homo
         .max((bl.0 - tl.0).hypot(bl.1 - tl.1));
     let cell = leg / span;
     // Also refuses a NaN from degenerate finder positions.
-    if cell.is_nan() || cell < 0.8 {
-        return None;
-    }
+    (cell >= 0.8 && guess.0.is_finite() && guess.1.is_finite()).then_some((guess, cell))
+}
+
+/// The grid points the finder centres and the orientation mark's centre
+/// sit at, for an `n`-cell grid.
+fn anchors(n: u16) -> [(f64, f64); 4] {
+    let nf = n as f64;
+    let (a, b, corner) = (3.5, nf - 3.5, nf - 2.5);
+    [(a, a), (b, a), (a, b), (corner, corner)]
+}
+
+/// The homography the first guess gives (see [`first_guess`]), with no
+/// search: close to the truth near the three finders, less so towards the
+/// far corner. Cheap enough to check every candidate with.
+pub(crate) fn rough(pic: &Picture, finders: [Finder; 3], n: u16) -> Option<Homography> {
+    let (guess, _) = first_guess(Some(pic), finders, n)?;
+    let [tl, tr, bl] = finders.map(|f| (f.x as f64, f.y as f64));
+    Homography::from_points(anchors(n), [tl, tr, bl, guess])
+}
+
+/// Where a code's grid sits in the picture: the homography from grid
+/// coordinates (columns across, rows down, a cell one unit) to pixels.
+pub(crate) fn locate(pic: &Picture, finders: [Finder; 3], n: u16) -> Option<Homography> {
+    let span = n as f64 - 7.0;
+    let [tl, tr, bl] = finders.map(|f| (f.x as f64, f.y as f64));
+    let (guess, cell) = first_guess(None, finders, n)?;
 
     // The wide search scores a sparser template; the refinement the full
     // one.
@@ -915,7 +1140,7 @@ pub(crate) fn locate(pic: &Picture, finders: [Finder; 3], n: u16) -> Option<Homo
         ((bl.0 - tl.0) / span, (bl.1 - tl.1) / span),
     ];
     let contrast = finder_contrast(pic, tl, axes);
-    let from = [(a, a), (b, a), (a, b), (corner, corner)];
+    let from = anchors(n);
     let score_at = |q: (f64, f64), template: &Template| -> f32 {
         Homography::from_points(from, [tl, tr, bl, q])
             .map_or(f32::MIN, |h| score(pic, &h, template, contrast))
@@ -953,6 +1178,18 @@ pub(crate) fn locate(pic: &Picture, finders: [Finder; 3], n: u16) -> Option<Homo
         wide
     };
     Homography::from_points(from, [tl, tr, bl, best])
+}
+
+/// Half the grey difference between light and dark at the top left finder
+/// of a code whose finders are `finders`, on an `n`-cell grid.
+pub(crate) fn contrast(pic: &Picture, finders: [Finder; 3], n: u16) -> f32 {
+    let span = n as f32 - 7.0;
+    let [tl, tr, bl] = finders;
+    let axes = [
+        (((tr.x - tl.x) / span) as f64, ((tr.y - tl.y) / span) as f64),
+        (((bl.x - tl.x) / span) as f64, ((bl.y - tl.y) / span) as f64),
+    ];
+    finder_contrast(pic, (tl.x as f64, tl.y as f64), axes)
 }
 
 /// Half the grey difference between light and dark at a finder: its dark
