@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img alt="channel" src="https://img.shields.io/badge/channel-sound_%C2%B7_light_coming-c29a5c?style=for-the-badge&labelColor=141311" />
+  <img alt="channel" src="https://img.shields.io/badge/channel-sound_%C2%B7_light-c29a5c?style=for-the-badge&labelColor=141311" />
   <img alt="build" src="https://img.shields.io/badge/build-airgapped-2c4a3a?style=for-the-badge&labelColor=141311" />
   <img alt="crypto" src="https://img.shields.io/badge/crypto-X25519_%C2%B7_XChaCha20_%C2%B7_Ed25519-33465b?style=for-the-badge&labelColor=141311" />
   <img alt="tests" src="https://img.shields.io/badge/tests-259_passing-a5822e?style=for-the-badge&labelColor=141311" />
@@ -18,6 +18,7 @@
 
 <p align="center">
   <a href="#how-a-message-travels">How it travels</a>&nbsp;&nbsp;&nbsp;
+  <a href="#by-light">By light</a>&nbsp;&nbsp;&nbsp;
   <a href="#the-machine">The machine</a>&nbsp;&nbsp;&nbsp;
   <a href="#pairing-and-safety-numbers">Pairing</a>&nbsp;&nbsp;&nbsp;
   <a href="#privacy-and-the-airgap">Privacy</a>&nbsp;&nbsp;&nbsp;
@@ -31,7 +32,7 @@
 
 When the network goes down, so does almost every way of sending a message. And when it's up, every message you send passes through someone else's servers.
 
-Bombechat sends encrypted messages between laptops in the same room by sound. The speaker plays the message on tones high enough that most adults barely hear them, the other laptop's microphone picks it up, and it decrypts on arrival. There is no account, no server and no network code in the build: two Macs with Wi-Fi switched off can pair and talk. It looks and sounds like the machine Alan Turing designed at Bletchley Park to break Enigma.
+Bombechat sends encrypted messages between laptops in the same room by sound or by light. The speaker plays the message on tones high enough that most adults barely hear them, or the screen shows it as a changing code for the other laptop's camera, and it decrypts on arrival. There is no account, no server and no network code in the build: two Macs with Wi-Fi switched off can pair and talk. It looks and sounds like the machine Alan Turing designed at Bletchley Park to break Enigma.
 
 <p align="center">
   <img src="docs/media/demo.gif" alt="A message arriving by sound: the drums turn to each new frame, the provisional tape on the message sheet fills in, and the finished message settles in type" width="900" />
@@ -49,7 +50,37 @@ You type a reply on the message sheet and press Send by sound. The message is se
 
 On the other laptop, the receiver finds the chirp, corrects for the two sound cards running at slightly different speeds, and reads the tones. Every chunk is authenticated the moment it arrives. What has been heard so far is typed onto the sheet as provisional tape, *arriving by sound, not yet checked*, and once the whole message has landed and its signature checks out, it is set in type.
 
-Sound is the first channel. Light, between a screen and a camera in line of sight, is being built on its own branch and is the hardest channel to overhear. Bluetooth is held back for the standard build.
+Light works the same way, between a screen and a camera, and is described below. Bluetooth is held back for the standard build.
+
+## By light
+
+<img src="docs/media/light.png" alt="The flashing view: the message sheet's place taken by a signal lamp in a brass bezel, showing a square code of black and white cells, with Frames shown at 13 and Bytes a second at 2290. The caption reads Hold this screen up to Marisol's camera." />
+
+Light carries the same sealed messages as sound, from one screen to another laptop's camera. It's much faster, and it's the hardest channel to overhear, since someone has to see the screen.
+
+Turn the Light switch to Read and flash, type a reply and press Flash. The message sheet gives way to a signal lamp: a square code of black and white cells in a brass bezel, with a caption saying whose camera to hold it up to. The message is cut into frames with a RaptorQ fountain code, so the camera doesn't need every frame, only enough of them, and it can start reading partway through. Each frame carries Reed-Solomon parity and a checksum, and three corner marks let the reader find the grid at any angle or distance. On the other laptop the camera reads the code, the drums turn, and the message is typed onto the sheet as provisional tape until its signature checks, exactly as it is for sound. A receipt flashes back the other way and the sender's line is stamped *seen by*.
+
+Flash speed on the back of the machine has three settings:
+
+| Speed | Code | Frames a second | About |
+|---|---|---|---|
+| Slow | 48 by 48 cells | 6 | 948 bytes a second |
+| Normal | 56 by 56 cells | 10 | 2290 bytes a second |
+| Fast | 64 by 64 cells | 15 | 4680 bytes a second |
+
+Bigger cells read from further away and in brighter rooms. Even Slow moves a full-length message in a few seconds, against minutes by sound.
+
+<p align="center">
+  <img src="docs/media/light.gif" alt="A message going out by light. The reply is typed, the cursor presses Flash, and a signal lamp opens in the message sheet's place: a plain grey square for a moment, then a code of black and white cells changing ten times a second while the Frames shown counter climbs. Then the lamp closes and the message sits on the sheet, stamped seen by Marisol." width="900" />
+</p>
+
+Pairing works by light too. Both of you press Pair by light and hold the screens face to face. Each screen shows its hello as a code while its camera reads the other's, and the key check card then shows the same 60-digit safety number to read out loud.
+
+The code is built to be gentle on the eyes. Nothing flashes across the whole screen: the code sits in a fixed square on a steady surround, and it opens on a plain grey field of its own average brightness for a moment before it starts to change. Every 8 by 8 block of every frame is kept between 40 and 60 percent dark, so the brightness of each part of the code stays nearly the same from frame to frame, whatever the message says. Escape always stops it. The lamp closes at once, the Light switch turns itself back to Read, and the message waits until you turn it to Read and flash again.
+
+While Light reads, a small brass eyepiece on its switch shows what the camera sees, small and grey, so you can aim one laptop at the other. Click it to shut it and nothing the camera sees is shown. Turn Light to Off and the camera is let go, so its green light goes out.
+
+[Part 3 of the two-laptop walkthrough](docs/testing/two-laptops.md#part-3-light) tests all of this on real Macs, with distances, speeds, and daylight against a dim room.
 
 ## The machine
 
@@ -101,7 +132,7 @@ cd bombechat/app/src-tauri
 cargo tauri build
 ```
 
-The app lands in `target/release/bundle/macos/Bombechat.app` at the top of the repository. The first time it opens, macOS asks for the microphone; without it nothing can be heard. Its store and settings live in `~/Library/Application Support/app.bombechat.airgapped/`. `docs/testing/two-laptops.md` walks through trying it on two Macs.
+The app lands in `target/release/bundle/macos/Bombechat.app` at the top of the repository. The first time it opens, macOS asks for the microphone; without it nothing can be heard. It asks for the camera the first time Light is turned on. Its store and settings live in `~/Library/Application Support/app.bombechat.airgapped/`. `docs/testing/two-laptops.md` walks through trying it on two Macs.
 
 ### Or look at it in a browser
 
@@ -128,7 +159,6 @@ CI runs the Rust tests and the airgapped check on Linux and on macOS, where the 
 
 ## Roadmap
 
-- **Light.** Messages flashed from one screen into another laptop's camera. In progress.
 - **Relay.** Laptops carry messages for others, so a message can hop across a building or a block to reach someone out of earshot.
 - **Bluetooth**, in a separate standard build. A stranger in range can send a request to connect, and nothing is exchanged unless you accept it. The airgapped build stays without it.
 - **Phones.** The same machine on iOS and Android.
