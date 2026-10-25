@@ -230,7 +230,7 @@ Success looks something like this (your numbers will differ), ending with `test 
 
 ```text
 started in 600 ms
-10 pictures, 1280x720, 30.0 a second
+10 pictures, 1280x720, 30.0 a second, mean grey 118
 after stop: session isRunning Some(false)
 after 40 ms: session freed true, delegate freed true, a camera running false
 ```
