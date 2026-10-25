@@ -874,7 +874,7 @@ for(const [id,k] of Object.entries(KNOBS)){const n=NOTES[k.setting];if(!n)contin
 // the machine won't take a turn (the setting could not be saved): the knob goes back and the top bar says why, as the
 // settings page does
 const saidEl=document.getElementById('said');let saidT;
-function say(text){saidEl.textContent=text;saidEl.title=text;saidEl.style.opacity=1;clearTimeout(saidT);saidT=setTimeout(()=>saidEl.style.opacity=0,text.length>40?5200:2600)}
+function say(text,full=text){saidEl.textContent=text;saidEl.title=full;saidEl.style.opacity=1;clearTimeout(saidT);saidT=setTimeout(()=>saidEl.style.opacity=0,text.length>40?5200:2600)}
 // resolves true once the machine has taken the turn, or to why it would not
 function turnKnob(id,pos,again){const k=KNOBS[id];if(k.held)return Promise.resolve(`${k.name}: ${k.held}`);pos=Math.max(0,Math.min(2,pos));if(pos===k.pos&&k.read&&!again)return Promise.resolve(true);const was={pos:k.pos,read:k.read};k.pos=pos;k.read=true;
   // turned back to Read and flash: what Escape stopped may show again
@@ -1385,6 +1385,8 @@ bridge.on('display',d=>{
 bridge.on('displayStopped',()=>{Lamp.stopped=false;Lamp.gone=null;if(Lamp.hello&&lightPairing==='finishing')lightPairing=null;lampClose()});
 // the lamp goes, and the page says so, only once the machine has taken the switch's turn to Read; refused, the lamp
 // stays up (the machine is still flashing) and says why on its card
+// short enough for the top bar at every width; the whole story is in its title
+const UNSAVED_STOP='Flashing stopped, but not saved.';
 async function stopFlashing(){if(Lamp.state==='closed'||Lamp.stopping)return;
   // your hello on the lamp: the pairing ends, not the switch; an offer already on the card stays for the person to
   // judge. A message on the lamp stops the Task 6 way, whatever pairing is doing
@@ -1396,7 +1398,7 @@ async function stopFlashing(){if(Lamp.state==='closed'||Lamp.stopping)return;
   const taken=await turnKnob('k2',1,true);Lamp.stopping=false;
   if(taken===true){if(Lamp.state!=='closed'){Lamp.stopped=true;lampClose()}say('Flashing stopped. Light is at Read, and the message waits.');return}
   // the machine stopped, but couldn't keep the setting on disk: stopped all the same, and the page says what wasn't kept
-  if(taken&&taken.unsaved){if(Lamp.state!=='closed'){Lamp.stopped=true;lampClose()}say('Flashing stopped. Light is at Read, but the setting could not be saved.');return}
+  if(taken&&taken.unsaved){if(Lamp.state!=='closed'){Lamp.stopped=true;lampClose()}say(UNSAVED_STOP,`Flashing stopped. Light is at Read for now. ${sentence(taken.unsaved)} So Light goes back to Read and flash next time.`);return}
   if(Lamp.state!=='closed'){Lamp.refused=`Not stopped. ${sentence(taken)}`;lampCaption()}}
 lampStop.addEventListener('click',stopFlashing);
 addEventListener('keydown',e=>{if(e.key==='Escape'&&Lamp.state!=='closed'){e.preventDefault();stopFlashing()}});

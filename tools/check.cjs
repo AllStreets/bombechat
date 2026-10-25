@@ -1006,7 +1006,8 @@ function measureText() {
         const mid = k.getImageData(c.width >> 1, c.height >> 1, 1, 1).data[0];
         return { shown: !l.hidden, sheet: getComputedStyle(document.querySelector('.sheet')).visibility, say: document.getElementById('lampsay').innerText.replace(/\s+/g, ' ').trim(),
           frames: document.getElementById('lampn').textContent, rate: document.getElementById('lamprate').textContent, mid,
-          light: document.getElementById('k2').getAttribute('aria-valuenow'), said: document.getElementById('said').textContent,
+          light: document.getElementById('k2').getAttribute('aria-valuenow'), said: document.getElementById('said').textContent, title: document.getElementById('said').title,
+          saidClip: { scroll: document.getElementById('said').scrollWidth, client: document.getElementById('said').clientWidth },
           sets: __calls.filter(c => c[0] === 'set_setting').map(c => c[1]), eyepiece: __calls.filter(c => c[0] === 'eyepiece').map(c => c[1].on),
           code: { css: parseFloat(c.style.width), px: c.width, vh: innerHeight, dpr: devicePixelRatio, cell: Math.floor(c.width / ([48, 56, 64][1] + 6)) },
           note: document.querySelector('#lightnote b').textContent, pubnote: document.getElementById('pubnote').textContent,
@@ -1081,8 +1082,7 @@ function measureText() {
         const refusedReply = await lp.evaluate(view);
         if (refusedNotice.pubnote !== 'Light is set to read only. Turn it to Read and flash to broadcast by light.' || refusedReply.pubnote !== 'Light is set to read only. Turn it to Read and flash to send by light.' || refusedReply.sends)
           problems.push(`${tag}: Flash at Read was not refused as it should be: ${JSON.stringify([refusedNotice.pubnote, refusedReply.pubnote, refusedReply.sends])}`);
-        // the eyepiece's shutter: shut, the machine is asked for no picture; open again, it is
-        if (w === 1440) {
+        {
           // Escape when the setting can't be saved: the machine stops flashing all the same (Light is at Read for this
           // session), so the lamp goes, the switch is at Read, and the page says the setting wasn't kept
           const rp = await browser.newPage({ viewport: { width: w, height: h }, deviceScaleFactor: 2 });
@@ -1097,11 +1097,17 @@ function measureText() {
           const held = await rp.evaluate(view);
           await emit(rp, 'display', frame(1, 1)); await paint(rp);
           const after = await rp.evaluate(view);
-          if (held.shown || after.light !== '1' || held.said !== 'Flashing stopped. Light is at Read, but the setting could not be saved.' || after.shown)
+          if (held.shown || after.light !== '1' || held.said !== 'Flashing stopped, but not saved.' || after.shown
+            || held.title !== 'Flashing stopped. Light is at Read for now. The setting was not saved: disk full. So Light goes back to Read and flash next time.')
             problems.push(`${tag}: Escape when the setting can't be saved: ${JSON.stringify({ held, after })}`);
+          // the top bar never cuts its sentence short
+          if (held.saidClip.scroll > held.saidClip.client) problems.push(`${tag}: the top bar clips the failed-save sentence: ${JSON.stringify(held.saidClip)}`);
           await rp.locator('.top').screenshot({ path: path.join(out, `light-${w}-stop-unsaved.png`) });
-          r.escapeUnsaved = held.said;
+          r.escapeUnsaved = { said: held.said, clip: held.saidClip };
           await rp.close();
+        }
+        // the eyepiece's shutter: shut, the machine is asked for no picture; open again, it is
+        if (w === 1440) {
           await lp.click('#eyepiece'); await paint(lp);
           const shut = await lp.evaluate(() => ({ on: __calls.filter(c => c[0] === 'eyepiece').map(c => c[1].on).pop(), shut: document.getElementById('eyepiece').getAttribute('aria-checked'), kept: localStorage.getItem('bombechat.eyepiece') }));
           await lp.locator('.mod:has(#k2)').screenshot({ path: path.join(out, `light-${w}-shut.png`) });
