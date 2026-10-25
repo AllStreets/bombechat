@@ -6,7 +6,7 @@
 //!
 //! The bytes were recorded from this implementation, so this is a guard
 //! against drift, not an independent check. The independent checks are the
-//! cacophony vectors in tests/session.rs, which run snow against the
+//! cacophony vectors in tests/vectors.rs, which run snow against the
 //! published vectors for all three patterns.
 
 use super::*;
@@ -22,6 +22,10 @@ fn identity(fill: u8) -> Identity {
     }
     Identity::from_secret_bytes(&secret)
 }
+
+/// The contact hello's fixed time and target token.
+const NOW_MS: u64 = 1_800_000_000_000;
+const TOKEN: [u8; TOKEN_LEN] = [0x7b; TOKEN_LEN];
 
 const INITIATOR_EPHEMERAL: [u8; 32] = [0x11; 32];
 const RESPONDER_EPHEMERAL: [u8; 32] = [0x22; 32];
@@ -41,6 +45,14 @@ fn transcript(kind: Kind) -> Vec<String> {
         Role::Initiator,
         Some(&alice),
         expected,
+        if kind == Kind::Contact {
+            Freshness::Send {
+                now_ms: NOW_MS,
+                token: TOKEN,
+            }
+        } else {
+            Freshness::None
+        },
         Some(&INITIATOR_EPHEMERAL),
     );
     let mut b = Handshake::new(
@@ -48,6 +60,14 @@ fn transcript(kind: Kind) -> Vec<String> {
         Role::Responder,
         responder_me,
         None,
+        if kind == Kind::Contact {
+            Freshness::Check {
+                now_ms: NOW_MS + 1_000,
+                tokens: vec![TOKEN],
+            }
+        } else {
+            Freshness::None
+        },
         Some(&RESPONDER_EPHEMERAL),
     );
 
@@ -115,13 +135,14 @@ const CONTACT: [&str; 5] = [
         "12406644f2ed9198f3ed2733ca739c09bf007707495feabe284d4d3cd10a51a5",
         "48294bf28f8b5cd0e59329d8f7cef8b0186269a4021887be03647d84d5350e0f",
         "d37e7980dd9499d3626f96ab02b0c453c83ba3fee3a1d4fbccf0ca7d5d6888ea",
-        "db86502da3ee52808431ea09763ef80e937dbeddb962577234bb6b35ae733e40",
+        "db86502da3ee52808431ea09763ef80e76e2e1c2a5e0e21f272770c2617d7ec5",
+        "6759f0f5c1785389d0f64e5d807f42439d2fe81967ea8881",
     ),
     concat!(
         "0faa684ed28867b97f4a6a2dee5df8ce974e76b7018e3f22a1c4cf2678570f20",
-        "217b97f6c69fe505ab54268135c0d5bb",
+        "55f72752313b77091cc0fab360c1f661",
     ),
-    "3c02d56f46469ff0bc24ffe49c947967f21a277bcfffdbc9ee5c208b32600cb5",
+    "004adff48b16bd9a2c12ae676127a3ef0628598f40205721a125dc6a2b5e7356",
     "1d5f4e25eb6fc02f43200b2fa39f5d5ec8d066acec",
     "6678233759750379819cdd737bb6eaa98945",
 ];

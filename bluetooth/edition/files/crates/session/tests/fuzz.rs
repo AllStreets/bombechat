@@ -7,7 +7,9 @@
 mod common;
 
 use bombechat_core::{Identity, PublicIdentity};
-use bombechat_session::{certificate, Handshake, SessionError, SessionKeys, CERTIFICATE_LEN};
+use bombechat_session::{
+    certificate, Handshake, SessionError, SessionKeys, CERTIFICATE_LEN, CONTACT_WINDOW_MS,
+};
 use common::*;
 
 const ROUNDS: usize = 10_000;
@@ -191,21 +193,21 @@ fn random_payloads_and_certificates_from_a_raw_peer_never_panic() {
         let mut duel = Duel::new(kind, raw_role, peer, Lie::None);
         let mine = duel.raw_certificate;
         let mut alternative: Option<PublicIdentity> = None;
-        let payload = match rng.below(5) {
+        let payload = match rng.below(6) {
             // Random bytes of any length a handshake payload might have.
             0 => {
                 let len = rng.below(300);
                 rng.bytes(len)
             }
             // The right certificate, bent.
-            1 => rng.input(&mine),
+            1 => duel.wrap(step, &rng.input(&mine)),
             // Someone else's certificate, whole or bent.
             2 => {
                 let other = others[rng.below(others.len())];
                 if rng.below(2) == 0 {
-                    other.to_vec()
+                    duel.wrap(step, &other)
                 } else {
-                    rng.input(&other)
+                    duel.wrap(step, &rng.input(&other))
                 }
             }
             // A certificate naming this static, signed by another key. If
@@ -226,7 +228,21 @@ fn random_payloads_and_certificates_from_a_raw_peer_never_panic() {
                 if own_key {
                     alternative = Some(claimed.clone());
                 }
-                forged_certificate(&signer, &claimed)
+                duel.wrap(step, &forged_certificate(&signer, &claimed))
+            }
+            // The genuine payload with its hello tail (if any) bent or
+            // replaced: other times, other tokens.
+            4 => {
+                let mut p = duel.honest_payload(step);
+                if p.len() > CERTIFICATE_LEN {
+                    let tail = p.split_off(CERTIFICATE_LEN);
+                    p.extend(if rng.below(2) == 0 {
+                        rng.input(&tail)
+                    } else {
+                        rng.bytes(tail.len())
+                    });
+                }
+                p
             }
             // The genuine payload, now and then, so the loop knows the
             // path to acceptance is still open.
@@ -243,12 +259,22 @@ fn random_payloads_and_certificates_from_a_raw_peer_never_panic() {
         match result {
             Ok(()) => {
                 let proved = duel.ours.remote_identity();
+                // A contact hello's tail is acceptable if it is the right
+                // length, inside the window and for one of the tokens.
+                let tail_ok = kind != Kind::Contact || {
+                    let tail = payload.get(CERTIFICATE_LEN..).unwrap_or(&[]);
+                    tail.len() == 24
+                        && u64::from_be_bytes(tail[..8].try_into().unwrap()).abs_diff(NOW_MS)
+                            <= CONTACT_WINDOW_MS
+                        && MY_TOKENS.iter().any(|t| t[..] == tail[8..])
+                };
+                let cert = payload.get(..CERTIFICATE_LEN).unwrap_or(&[]);
                 let fine = if !carries {
                     payload.is_empty()
-                } else if payload == mine.to_vec() {
-                    proved == Some(duel.raw_public.clone())
+                } else if cert == mine {
+                    tail_ok && proved == Some(duel.raw_public.clone())
                 } else {
-                    alternative.is_some() && proved == alternative
+                    tail_ok && alternative.is_some() && proved == alternative
                 };
                 assert!(
                     fine,
@@ -264,6 +290,8 @@ fn random_payloads_and_certificates_from_a_raw_peer_never_panic() {
                         SessionError::Malformed
                             | SessionError::KeyMismatch
                             | SessionError::BadSignature
+                            | SessionError::Stale
+                            | SessionError::WrongTarget
                     ),
                     "{kind:?} raw {raw_role:?}: {e:?}"
                 );

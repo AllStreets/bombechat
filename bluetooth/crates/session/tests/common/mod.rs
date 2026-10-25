@@ -9,8 +9,23 @@ use std::sync::OnceLock;
 
 use bombechat_session::{
     Handshake, Session, SessionError, SessionKeys, Transport, BRIDGE_PATTERN, CERTIFICATE_LEN,
-    CONTACT_PATTERN, MAX_MESSAGE, PROLOGUE, REQUEST_PATTERN,
+    CONTACT_PATTERN, MAX_MESSAGE, PROLOGUE, REQUEST_PATTERN, TOKEN_LEN,
 };
+
+/// The clock every contact handshake in the tests reads, Unix ms.
+pub const NOW_MS: u64 = 1_800_000_000_000;
+
+/// The responder's current and previous advertising tokens.
+pub const TOKEN: [u8; TOKEN_LEN] = [0xB0; TOKEN_LEN];
+pub const PREVIOUS_TOKEN: [u8; TOKEN_LEN] = [0xB1; TOKEN_LEN];
+pub const MY_TOKENS: [[u8; TOKEN_LEN]; 2] = [TOKEN, PREVIOUS_TOKEN];
+
+/// A contact hello's tail after the certificate: sent-at and target token.
+pub fn hello_tail(sent_at: u64, token: [u8; TOKEN_LEN]) -> Vec<u8> {
+    let mut out = sent_at.to_be_bytes().to_vec();
+    out.extend_from_slice(&token);
+    out
+}
 use ed25519_dalek::{Signer, SigningKey};
 use snow::params::{CipherChoice, DHChoice, HashChoice};
 use snow::resolvers::{CryptoResolver, DefaultResolver};
@@ -78,9 +93,10 @@ impl Role {
 pub fn ours(kind: Kind, role: Role, me: &SessionKeys, them: Option<&PublicIdentity>) -> Handshake {
     match (kind, role) {
         (Kind::Contact, Role::Initiator) => {
-            Session::contact_initiator(me, them.expect("a contact initiator dials someone"))
+            let them = them.expect("a contact initiator dials someone");
+            Session::contact_initiator(me, them, NOW_MS, TOKEN)
         }
-        (Kind::Contact, Role::Responder) => Session::contact_responder(me),
+        (Kind::Contact, Role::Responder) => Session::contact_responder(me, NOW_MS, &MY_TOKENS),
         (Kind::Request, Role::Initiator) => Session::request_initiator(me),
         (Kind::Request, Role::Responder) => Session::request_responder(),
         (Kind::Bridge, Role::Initiator) => Session::bridge_initiator(me, them),
@@ -372,10 +388,20 @@ impl Duel {
     /// The payload an honest raw peer sends at `step`.
     pub fn honest_payload(&self, step: u8) -> Vec<u8> {
         if self.kind.sends_static(step) {
-            self.raw_certificate.to_vec()
+            self.wrap(step, &self.raw_certificate)
         } else {
             Vec::new()
         }
+    }
+
+    /// `certificate` as the payload of message `step`: as it is, or for a
+    /// contact message 1, with an honest hello tail after it.
+    pub fn wrap(&self, step: u8, certificate: &[u8]) -> Vec<u8> {
+        let mut out = certificate.to_vec();
+        if self.kind == Kind::Contact && step == 0 {
+            out.extend(hello_tail(NOW_MS, TOKEN));
+        }
+        out
     }
 
     /// Play the handshake, the raw peer sending `payload(step)` in its

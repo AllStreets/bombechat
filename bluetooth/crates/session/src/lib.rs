@@ -13,7 +13,7 @@
 //!
 //! ```text
 //! contact (IK), the initiator already knows the responder's static key:
-//!   1. initiator -> responder   e, es, s, ss     payload: initiator's certificate
+//!   1. initiator -> responder   e, es, s, ss     payload: hello (below)
 //!   2. responder -> initiator   e, ee, se        payload: empty
 //!
 //! request (XN), the recipient never sends a static key:
@@ -41,6 +41,22 @@
 //! signed:      "bombechat static key v1" ‖ dh [32]
 //! ```
 //!
+//! The contact initiator's message 1 carries a hello, not just the
+//! certificate, so its responder can refuse replays and relays:
+//!
+//! ```text
+//! hello: certificate [128] ‖ sent_at u64 BE, Unix ms [8] ‖ target token [16]   (152 bytes)
+//! ```
+//!
+//! `sent_at` is the initiator's clock; the responder refuses it if it is
+//! more than [`CONTACT_WINDOW_MS`] (120 s) from its own clock either way
+//! ([`SessionError::Stale`]). The target token is the advertising token of
+//! the device the initiator meant to reach; the responder refuses it unless
+//! it is one of its own current or previous tokens
+//! ([`SessionError::WrongTarget`]), so a message 1 relayed to another device
+//! fails there. Both live inside the encrypted, authenticated payload, so a
+//! relay or replay can't rewrite them.
+//!
 //! A reader rejects a certificate whose `dh` is not the static key Noise
 //! presented, or whose signature doesn't verify. The certificate signs
 //! nothing about the session, so a session leaves its peer no transferable
@@ -51,12 +67,32 @@
 //! The contact responder learns the initiator's identity from message 1 and
 //! then decides: [`Handshake::remote_identity`] after
 //! [`Handshake::read_message`], then either [`Handshake::write_message`] or
-//! drop the handshake. Dropping it sends nothing. Noise can't tell a
-//! replayed message 1 at that point; the answer is useless to whoever
-//! replayed it, but answering shows this device is in range, so the link
-//! layer should refuse first messages it has already seen. The request recipient
-//! learns the requester at message 3 and never reveals itself in the
-//! handshake; after it accepts, its own hello travels inside the session.
+//! drop the handshake. Dropping it sends nothing; nor does any failure.
+//!
+//! Within the window, Noise can't tell a replayed message 1. The answer is
+//! useless to whoever replayed it, but answering shows this device is in
+//! range, so the link layer keeps a cache of message 1 ephemerals it has
+//! answered ([`Handshake::remote_ephemeral`]) for the window and refuses a
+//! repeat. It must add an ephemeral only after `read_message` succeeded and
+//! the initiator is one of its contacts; otherwise anyone who knows this
+//! device's public key could fill the cache with valid message 1s and push
+//! real entries out.
+//!
+//! The contact responder's view of its peer is unconfirmed until the first
+//! transport message from the initiator decrypts ([`Transport::confirmed`]):
+//! message 1 may be a replay inside the window, or a forgery by someone
+//! holding this device's static secret (IK's key-compromise impersonation).
+//! Neither can read or write the session, but neither proves the initiator
+//! is here now. The link layer must not show the contact as nearby before
+//! then.
+//!
+//! The request recipient learns the requester at message 3 and never
+//! reveals itself in the handshake. When it accepts, it proves who it is by
+//! running a contact (IK) handshake to the requester. A certificate sent
+//! inside the request session would prove nothing: certificates are public,
+//! the same bytes every time, and XN does no Diffie-Hellman with the
+//! recipient's static key, so anyone holding the recipient's certificate
+//! could send it.
 //!
 //! Remote X25519 keys, static and ephemeral, are refused if they are weak
 //! (low order, so a Diffie-Hellman with them is all zeros), the same rule as
@@ -81,8 +117,11 @@
 //! # Key material in memory
 //!
 //! This crate's own copies of secrets are zeroized: [`SessionKeys`] holds
-//! the X25519 static secret in `Zeroizing`, and the Ed25519 signing key
-//! exists only while the certificate is made. snow 0.10 does not zeroize: its
+//! the X25519 static secret boxed in `Zeroizing`, so moving the keys moves
+//! a pointer, and the Ed25519 signing key exists only, boxed, while the
+//! certificate is made. (The constructors of those types may pass their
+//! values through the stack on the way into the box; that is beyond this
+//! crate's reach, as it is for `Identity`.) snow 0.10 does not zeroize: its
 //! copies of the static secret, the ephemeral secret, the chaining key and
 //! the transport keys are freed without being wiped when a handshake or
 //! transport is dropped. Someone who can later read this process's memory
@@ -124,6 +163,17 @@ pub const MAX_PLAINTEXT: usize = MAX_MESSAGE - TAG;
 /// The length of a static key certificate.
 pub const CERTIFICATE_LEN: usize = 32 + 32 + 64;
 
+/// The length of an advertising token.
+pub const TOKEN_LEN: usize = 16;
+
+/// The length of the contact initiator's hello in message 1: certificate,
+/// sent-at time, target token.
+pub const CONTACT_HELLO_LEN: usize = CERTIFICATE_LEN + 8 + TOKEN_LEN;
+
+/// How far a contact message 1's sent-at time may be from the responder's
+/// clock, either way, in milliseconds.
+pub const CONTACT_WINDOW_MS: u64 = 120_000;
+
 /// Domain separation for the static key certificate.
 const CERTIFICATE_CONTEXT: &[u8] = b"bombechat static key v1";
 
@@ -156,6 +206,12 @@ pub enum SessionError {
     UnexpectedPeer,
     /// A key is low order, so a Diffie-Hellman with it gives nothing secret.
     WeakKey,
+    /// A contact message 1 was sent more than [`CONTACT_WINDOW_MS`] from
+    /// this device's clock: a replay, or a clock too far off.
+    Stale,
+    /// A contact message 1 was meant for a device advertising another
+    /// token: relayed here from elsewhere.
+    WrongTarget,
     /// The plaintext is longer than [`MAX_PLAINTEXT`].
     TooLarge,
     /// The session's message counter is used up.
@@ -198,6 +254,13 @@ impl fmt::Display for SessionError {
             SessionError::WeakKey => {
                 write!(f, "a key is weak and would leave the session readable")
             }
+            SessionError::Stale => write!(
+                f,
+                "the message was sent more than two minutes from this device's clock"
+            ),
+            SessionError::WrongTarget => {
+                write!(f, "the message was meant for another device")
+            }
             SessionError::TooLarge => write!(
                 f,
                 "the plaintext is longer than the {MAX_PLAINTEXT} bytes one session message carries"
@@ -238,7 +301,7 @@ impl From<NoiseError> for SessionError {
 pub fn certificate(me: &Identity) -> [u8; CERTIFICATE_LEN] {
     let public = me.public();
     let secret = me.secret_bytes();
-    let mut seed = Zeroizing::new([0u8; 32]);
+    let mut seed = Box::new(Zeroizing::new([0u8; 32]));
     seed.copy_from_slice(&secret[0..32]);
     // Lives only here, boxed so it isn't copied about, and is zeroized when
     // dropped at the end of this function.
@@ -262,7 +325,7 @@ fn certificate_message(dh: &[u8; 32]) -> Vec<u8> {
 /// every handshake: its X25519 static secret (zeroized on drop), its public
 /// identity and its certificate.
 pub struct SessionKeys {
-    static_secret: Zeroizing<[u8; 32]>,
+    static_secret: Box<Zeroizing<[u8; 32]>>,
     public: PublicIdentity,
     certificate: [u8; CERTIFICATE_LEN],
 }
@@ -271,7 +334,7 @@ impl SessionKeys {
     /// Make the keys for `me`, signing its certificate once.
     pub fn new(me: &Identity) -> SessionKeys {
         let secret = me.secret_bytes();
-        let mut static_secret = Zeroizing::new([0u8; 32]);
+        let mut static_secret = Box::new(Zeroizing::new([0u8; 32]));
         static_secret.copy_from_slice(&secret[32..64]);
         SessionKeys {
             static_secret,
@@ -336,38 +399,86 @@ pub struct Session;
 
 impl Session {
     /// A session with a contact whose identity this side already holds
-    /// (`Noise_IK`). The first message already carries this side's
-    /// certificate, encrypted to `them`; a device that isn't `them` can't
-    /// read it.
-    pub fn contact_initiator(me: &SessionKeys, them: &PublicIdentity) -> Handshake {
+    /// (`Noise_IK`). The first message carries this side's hello, encrypted
+    /// to `them`: a device that isn't `them` can't read it. `now_ms` is
+    /// this device's clock (Unix ms) and `their_token` the advertising
+    /// token of the device this message 1 is for.
+    pub fn contact_initiator(
+        me: &SessionKeys,
+        them: &PublicIdentity,
+        now_ms: u64,
+        their_token: [u8; TOKEN_LEN],
+    ) -> Handshake {
         Handshake::new(
             Kind::Contact,
             Role::Initiator,
             Some(me),
             Some(them.clone()),
+            Freshness::Send {
+                now_ms,
+                token: their_token,
+            },
             None,
         )
     }
 
-    /// Answer a contact session. After reading message 1, look at
-    /// [`Handshake::remote_identity`] and either write message 2 or drop
-    /// the handshake, which sends nothing.
-    pub fn contact_responder(me: &SessionKeys) -> Handshake {
-        Handshake::new(Kind::Contact, Role::Responder, Some(me), None, None)
+    /// Answer a contact session. `now_ms` is this device's clock (Unix ms)
+    /// and `my_tokens` its current and previous advertising tokens; a
+    /// message 1 sent at another time or to another token fails with
+    /// [`SessionError::Stale`] or [`SessionError::WrongTarget`]. After
+    /// reading message 1, look at [`Handshake::remote_identity`] and either
+    /// write message 2 or drop the handshake, which sends nothing.
+    ///
+    /// The initiator named there is unconfirmed: message 1 may be a replay
+    /// within the window, or forged by someone holding this device's static
+    /// secret. It is confirmed once the first transport message from it
+    /// decrypts ([`Transport::confirmed`]).
+    pub fn contact_responder(
+        me: &SessionKeys,
+        now_ms: u64,
+        my_tokens: &[[u8; TOKEN_LEN]],
+    ) -> Handshake {
+        Handshake::new(
+            Kind::Contact,
+            Role::Responder,
+            Some(me),
+            None,
+            Freshness::Check {
+                now_ms,
+                tokens: my_tokens.to_vec(),
+            },
+            None,
+        )
     }
 
     /// Send a request to connect to a device whose identity isn't known
     /// (`Noise_XN`). This side's identity reaches the recipient in message
-    /// 3; the recipient's never comes back in the handshake.
+    /// 3; the recipient's never comes back in the handshake. If the
+    /// recipient accepts, it proves who it is with a contact handshake to
+    /// this side; nothing said inside this session proves it.
     pub fn request_initiator(me: &SessionKeys) -> Handshake {
-        Handshake::new(Kind::Request, Role::Initiator, Some(me), None, None)
+        Handshake::new(
+            Kind::Request,
+            Role::Initiator,
+            Some(me),
+            None,
+            Freshness::None,
+            None,
+        )
     }
 
     /// Receive a request to connect. Uses no identity: this side stays
     /// anonymous throughout the handshake, and learns the requester's
     /// identity from message 3.
     pub fn request_responder() -> Handshake {
-        Handshake::new(Kind::Request, Role::Responder, None, None, None)
+        Handshake::new(
+            Kind::Request,
+            Role::Responder,
+            None,
+            None,
+            Freshness::None,
+            None,
+        )
     }
 
     /// A Bitchat-pattern session (`Noise_XX`), kept for a future bridge
@@ -380,6 +491,7 @@ impl Session {
             Role::Initiator,
             Some(me),
             expected.cloned(),
+            Freshness::None,
             None,
         )
     }
@@ -387,7 +499,14 @@ impl Session {
     /// Answer a Bitchat-pattern session. Reveals this side's identity to
     /// whoever sends message 1.
     pub fn bridge_responder(me: &SessionKeys) -> Handshake {
-        Handshake::new(Kind::Bridge, Role::Responder, Some(me), None, None)
+        Handshake::new(
+            Kind::Bridge,
+            Role::Responder,
+            Some(me),
+            None,
+            Freshness::None,
+            None,
+        )
     }
 }
 
@@ -425,6 +544,19 @@ impl Kind {
     }
 }
 
+/// The contact hello's time and target, on whichever side.
+enum Freshness {
+    /// Not a contact handshake.
+    None,
+    /// Contact initiator: what message 1 says.
+    Send { now_ms: u64, token: [u8; TOKEN_LEN] },
+    /// Contact responder: what message 1 must match.
+    Check {
+        now_ms: u64,
+        tokens: Vec<[u8; TOKEN_LEN]>,
+    },
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Role {
     Initiator,
@@ -449,7 +581,10 @@ pub struct Handshake {
     /// The contact a contact initiator dials, or the identity a bridge
     /// initiator insists on.
     expected: Option<PublicIdentity>,
+    freshness: Freshness,
     remote: Option<PublicIdentity>,
+    /// The peer's ephemeral key, once a message carrying it has been read.
+    remote_ephemeral: Option<[u8; KEY_LEN]>,
 }
 
 impl Handshake {
@@ -460,6 +595,7 @@ impl Handshake {
         role: Role,
         me: Option<&SessionKeys>,
         expected: Option<PublicIdentity>,
+        freshness: Freshness,
         ephemeral: Option<&[u8; 32]>,
     ) -> Handshake {
         let remote_static = match (kind, role, &expected) {
@@ -477,7 +613,9 @@ impl Handshake {
             step: 0,
             certificate: me.map(|me| me.certificate),
             expected,
+            freshness,
             remote: None,
+            remote_ephemeral: None,
         }
     }
 
@@ -523,8 +661,21 @@ impl Handshake {
     /// the requester. Bridge: after message 2 for the initiator, after
     /// message 3 for the responder. Always `None` once the handshake has
     /// failed.
+    ///
+    /// For the contact responder this identity is unconfirmed until the
+    /// first transport message from it decrypts: see
+    /// [`Transport::confirmed`].
     pub fn remote_identity(&self) -> Option<PublicIdentity> {
         self.remote.clone()
+    }
+
+    /// The peer's ephemeral key, once a message carrying it (message 1 or
+    /// 2) has been read successfully; `None` once the handshake has failed.
+    /// The contact responder's link layer keys its seen cache on it. Add it
+    /// to the cache only after `read_message` succeeded and the initiator
+    /// is a contact.
+    pub fn remote_ephemeral(&self) -> Option<[u8; KEY_LEN]> {
+        self.remote_ephemeral
     }
 
     /// The session's transport ciphers, once the handshake has finished.
@@ -538,9 +689,14 @@ impl Handshake {
         let Ok(noise) = self.noise else {
             return Err(SessionError::Dead);
         };
+        // Every side but the contact responder has already seen its peer
+        // use a fresh ephemeral key of this session; the contact responder
+        // waits for the first transport message.
+        let confirmed = !(self.kind == Kind::Contact && self.role == Role::Responder);
         Ok(Transport {
             noise: Box::new(noise.into_transport_mode()?),
             remote: self.remote,
+            confirmed,
         })
     }
 
@@ -549,6 +705,7 @@ impl Handshake {
         if let Err(e) = result {
             self.noise = Err(e);
             self.remote = None;
+            self.remote_ephemeral = None;
         }
         result
     }
@@ -557,14 +714,18 @@ impl Handshake {
         if self.step >= self.kind.messages() {
             return Err(SessionError::OutOfTurn);
         }
-        let payload: &[u8] = if self.kind.sends_static(self.step) {
-            self.certificate.as_ref().ok_or(SessionError::Noise)?
-        } else {
-            &[]
-        };
+        let mut payload = Vec::new();
+        if self.kind.sends_static(self.step) {
+            let certificate = self.certificate.as_ref().ok_or(SessionError::Noise)?;
+            payload.extend_from_slice(certificate);
+            if let Freshness::Send { now_ms, token } = &self.freshness {
+                payload.extend_from_slice(&now_ms.to_be_bytes());
+                payload.extend_from_slice(token);
+            }
+        }
         let noise = self.noise.as_mut().map_err(|_| SessionError::Dead)?;
         let mut out = vec![0u8; MAX_MESSAGE];
-        let len = noise.write_message(payload, &mut out)?;
+        let len = noise.write_message(&payload, &mut out)?;
         out.truncate(len);
         self.step += 1;
         Ok(out)
@@ -577,11 +738,13 @@ impl Handshake {
         // Messages 1 and 2 of every pattern open with the sender's
         // ephemeral key in the clear. Refuse a weak one before snow mixes
         // it into anything.
+        let mut ephemeral = None;
         if self.step < 2 {
-            let ephemeral = message.get(..KEY_LEN).ok_or(SessionError::Malformed)?;
-            if is_weak(ephemeral) {
+            let key = message.get(..KEY_LEN).ok_or(SessionError::Malformed)?;
+            if is_weak(key) {
                 return Err(SessionError::WeakKey);
             }
+            ephemeral = <[u8; KEY_LEN]>::try_from(key).ok();
         }
         let noise = self.noise.as_mut().map_err(|_| SessionError::Dead)?;
         let mut payload = vec![0u8; MAX_MESSAGE];
@@ -593,7 +756,26 @@ impl Handshake {
             if is_weak(remote_static) {
                 return Err(SessionError::WeakKey);
             }
-            let remote = check_certificate(payload, remote_static)?;
+            let remote = match &self.freshness {
+                Freshness::Check { now_ms, tokens } => {
+                    if payload.len() != CONTACT_HELLO_LEN {
+                        return Err(SessionError::Malformed);
+                    }
+                    let (certificate, rest) = payload.split_at(CERTIFICATE_LEN);
+                    let (sent_at, token) = rest.split_at(8);
+                    let sent_at: [u8; 8] =
+                        sent_at.try_into().map_err(|_| SessionError::Malformed)?;
+                    let remote = check_certificate(certificate, remote_static)?;
+                    if u64::from_be_bytes(sent_at).abs_diff(*now_ms) > CONTACT_WINDOW_MS {
+                        return Err(SessionError::Stale);
+                    }
+                    if !tokens.iter().any(|t| t.as_slice() == token) {
+                        return Err(SessionError::WrongTarget);
+                    }
+                    remote
+                }
+                _ => check_certificate(payload, remote_static)?,
+            };
             if let Some(expected) = &self.expected {
                 if *expected != remote {
                     return Err(SessionError::UnexpectedPeer);
@@ -610,6 +792,9 @@ impl Handshake {
             if self.kind == Kind::Contact && self.role == Role::Initiator {
                 self.remote = self.expected.clone();
             }
+        }
+        if ephemeral.is_some() {
+            self.remote_ephemeral = ephemeral;
         }
         self.step += 1;
         Ok(())
@@ -650,6 +835,7 @@ fn build(
 pub struct Transport {
     noise: Box<TransportState>,
     remote: Option<PublicIdentity>,
+    confirmed: bool,
 }
 
 impl Transport {
@@ -674,14 +860,28 @@ impl Transport {
         let mut out = vec![0u8; message.len() - TAG];
         let len = self.noise.read_message(message, &mut out)?;
         out.truncate(len);
+        self.confirmed = true;
         Ok(out)
     }
 
     /// Who is on the other end, as proved in the handshake. `None` only for
-    /// a requester, whose recipient stays anonymous until it says hello
-    /// inside the session.
+    /// a requester, whose recipient stays anonymous; if it accepts, it
+    /// proves who it is with a contact handshake, not inside this session.
+    /// For a contact responder, unconfirmed until [`Transport::confirmed`].
     pub fn remote_identity(&self) -> Option<&PublicIdentity> {
         self.remote.as_ref()
+    }
+
+    /// Whether the peer is known to be live in this session: true once a
+    /// transport message from it has decrypted. Every side but the contact
+    /// responder starts confirmed, having already decrypted a handshake
+    /// message keyed to this session's fresh ephemerals (the contact
+    /// initiator after message 2). The contact responder starts
+    /// unconfirmed, because its message 1 may be a replay or a
+    /// key-compromise forgery, and must not show the contact as nearby
+    /// until this is true.
+    pub fn confirmed(&self) -> bool {
+        self.confirmed
     }
 }
 
@@ -699,8 +899,8 @@ mod tests {
     fn a_failure_clears_the_remote_identity() {
         let alice = SessionKeys::new(&Identity::generate());
         let bob = SessionKeys::new(&Identity::generate());
-        let mut a = Session::contact_initiator(&alice, bob.public());
-        let mut b = Session::contact_responder(&bob);
+        let mut a = Session::contact_initiator(&alice, bob.public(), 0, [0; TOKEN_LEN]);
+        let mut b = Session::contact_responder(&bob, 0, &[[0; TOKEN_LEN]]);
         b.read_message(&a.write_message().unwrap()).unwrap();
         assert_eq!(b.remote_identity().as_ref(), Some(alice.public()));
 
@@ -709,6 +909,7 @@ mod tests {
             Err(SessionError::Noise)
         );
         assert_eq!(b.remote_identity(), None);
+        assert_eq!(b.remote_ephemeral(), None);
         assert_eq!(b.write_message(), Err(SessionError::Dead));
         assert!(!b.is_finished());
     }
