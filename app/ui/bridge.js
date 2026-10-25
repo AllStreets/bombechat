@@ -10,8 +10,15 @@
 //   confirmPair(peerHex, name)   [confirm_pair { peerHex, name }]   resolves to the new contact id
 //   setSetting(id, valueIndex)   [set_setting { id, valueIndex }]
 //   unlock(passphrase)           [unlock { passphrase }]            rejects with a sentence to show, e.g. 'wrong passphrase'
-//   contacts()                   [contacts]                         resolves to [{ id, name, short, checked }]; rejects
-//                                with 'locked' (ask for the passphrase) or 'no store yet' (the first passphrase sets it)
+//   contacts()                   [contacts]                         resolves to [{ id, name, short, checked, safety }]; rejects
+//                                with 'locked' (ask for the passphrase) or 'no store yet' (the first passphrase sets it).
+//                                safety: the 60-digit safety number shared with them, in 12 groups of five
+//   conversation(contactId)      [conversation { contactId }]       resolves to the stored messages, oldest first, each
+//                                shaped as the message event
+//   machine()                    [machine]                          resolves to { name, key, held, version }: key is
+//                                this machine's public identity as hex, held the messages it carries for others
+//   channels()                   [channels]                         resolves to [{ channel, state }]: the last state each
+//                                channel reported, for a page that opened after the event. None reported: listening
 //
 // Events (on(name, fn)), as the node's NodeEvent after normalising:
 //   chunk      { tag, index, of, view: { plain, heard, key }, text }
@@ -27,7 +34,7 @@
 //                                       stops arriving or fails its checks (the state it is then in follows);
 //                                       anything else (e.g. 'listening', 'unavailable: ...') otherwise
 //   outbox     { id, state, text?, public? }   a send's progress: 'waiting' (for the room to fall under Send under),
-//                                       'playing', 'sent'. text and public come with the first report of a send
+//                                       'playing', 'sent', or 'failed' (it will never go out). text and public come with the first report of a send
 //                                       this page didn't make (one queued before it opened); the simulator sends
 //                                       them, the node does not yet, so in the app such a send shows no slip.
 // Ids arrive as byte arrays or hex and leave as lowercase hex. Channels arrive as "Sound" or "sound" and leave lower case.
@@ -36,9 +43,11 @@
 // message event that follows it. The drums may show it, and the sheet may show
 // its text as provisional tape, but only `message` puts it on the sheet for good.
 //
-// Beyond the node's events, the bridge offers start() (begin delivering the
-// simulated conversation; nothing in the app) and now() (the clock the sheet
-// writes times with, in ms).
+// Events are held from the moment the bridge loads until the page calls ready()
+// (or start()), so nothing that arrives while the page is still setting up
+// (asking for the passphrase, say) is lost; then they are delivered in order.
+// start() is ready() plus, in a plain browser, beginning the simulated
+// conversation. now() is the clock the sheet writes times with, in ms.
 import { createSimulator } from './simulator.js';
 
 const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
@@ -50,7 +59,7 @@ const hex = v => typeof v === 'string' ? v.toLowerCase() : Array.from(v || [], b
 const lower = c => String(c || '').toLowerCase();
 const contactId = c => c && typeof c === 'object' && '0' in c ? +c[0] : +c;
 const identity = p => p && typeof p === 'object' && !Array.isArray(p) && 'sign' in p ? hex(p.sign) + hex(p.dh) : hex(p);
-const person = c => ({ id: contactId(c.id), name: String(c.name), short: String(c.name).split(' ')[0], checked: !!c.checked });
+const person = c => ({ id: contactId(c.id), name: String(c.name), short: String(c.name).split(' ')[0], checked: !!c.checked, safety: c.safety || '' });
 
 // The sealed inner plaintext is: sender sign [32], sender dh [32], sent_min [4],
 // the text in UTF-8, then the Ed25519 signature [64] (crates/core/src/seal.rs).
@@ -89,19 +98,27 @@ const normalise = {
 };
 
 const handlers = Object.fromEntries(EVENTS.map(e => [e, new Set()]));
+const HELD_MAX = 2000;
+let held = [];// events that arrived before ready(), in order
 function deliver(event, raw) {
   if (!handlers[event]) return;
+  if (held) { held.push([event, raw]); if (held.length > HELD_MAX) held.shift(); return; }
   const payload = normalise[event](raw);
   for (const fn of handlers[event]) fn(payload);
+}
+function ready() {
+  if (!held) return;
+  const early = held; held = null;
+  for (const [event, raw] of early) deliver(event, raw);
 }
 
 const tauri = typeof window !== 'undefined' && window.__TAURI__ && window.__TAURI__.core ? window.__TAURI__ : null;
 
 function tauriBackend() {
   const { invoke } = tauri.core;
-  const listening = new Set();
+  // every event from the start, so none is missed while the page sets up
+  for (const event of EVENTS) tauri.event.listen(event, e => deliver(event, e.payload));
   return {
-    listen(event) { if (listening.has(event)) return; listening.add(event); tauri.event.listen(event, e => deliver(event, e.payload)); },
     send: (contactIds, text, channel) => invoke('send', { contactIds, text, channel }).then(hex),
     broadcast: text => invoke('broadcast', { text }).then(hex),
     pair: () => invoke('pair'),
@@ -109,6 +126,9 @@ function tauriBackend() {
     setSetting: (id, valueIndex) => invoke('set_setting', { id, valueIndex }),
     unlock: passphrase => invoke('unlock', { passphrase }),
     contacts: () => invoke('contacts').then(list => list.map(person)),
+    conversation: contactId => invoke('conversation', { contactId }).then(list => list.map(normalise.message)),
+    machine: () => invoke('machine'),
+    channels: () => invoke('channels').then(list => list.map(normalise.channel)),
     start() {},
     now: () => Date.now(),
   };
@@ -118,7 +138,6 @@ function simulatedBackend() {
   const sim = createSimulator(deliver, { query: new URLSearchParams(location.search) });
   window.__sim = sim.test;
   return {
-    listen() {},
     send: (contactIds, text, channel) => sim.send(contactIds, text, channel).then(hex),
     broadcast: text => sim.broadcast(text).then(hex),
     pair: () => sim.pair(),
@@ -126,6 +145,9 @@ function simulatedBackend() {
     setSetting: (id, valueIndex) => sim.setSetting(id, valueIndex),
     unlock: passphrase => sim.unlock(passphrase),
     contacts: () => sim.contacts().then(list => list.map(person)),
+    conversation: contactId => sim.conversation(contactId).then(list => list.map(normalise.message)),
+    machine: () => sim.machine(),
+    channels: () => sim.channels().then(list => list.map(normalise.channel)),
     start: () => sim.start(),
     now: () => sim.now(),
   };
@@ -142,11 +164,15 @@ export const bridge = {
   setSetting: (id, valueIndex) => backend.setSetting(id, valueIndex),
   unlock: passphrase => backend.unlock(passphrase),
   contacts: () => backend.contacts(),
+  conversation: contactId => backend.conversation(contactId),
+  machine: () => backend.machine(),
+  channels: () => backend.channels(),
   on(event, fn) {
     if (!handlers[event]) throw new Error('unknown bridge event: ' + event);
-    handlers[event].add(fn); backend.listen(event);
+    handlers[event].add(fn);
     return () => handlers[event].delete(fn);
   },
-  start: () => backend.start(),
+  ready,
+  start: () => { ready(); backend.start(); },
   now: () => backend.now(),
 };

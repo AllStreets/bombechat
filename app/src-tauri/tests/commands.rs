@@ -1,10 +1,14 @@
 //! The Tauri commands and event payloads, against a fake machine: no
 //! audio, no window, no store on disk.
 
+use std::collections::VecDeque;
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 
-use bombechat_app::commands::{self, bridge_event, Lock, Machine, Shared};
-use bombechat_core::{ChunkView, PublicIdentity};
+use bombechat_app::commands::{self, bridge_event, Lock, Machine, Opened, Shared, Unlocking};
+use bombechat_core::{safety_number, ChunkView, PublicIdentity};
 use bombechat_node::{NodeEvent, OutboxState, NOT_SENT, NOT_STORED};
 use bombechat_store::{Channel, Contact, ContactId, StoredMessage};
 use serde_json::json;
@@ -17,17 +21,32 @@ struct Calls {
     pairings: Vec<String>,
     confirmed: Vec<(PublicIdentity, String)>,
     settings: Vec<(String, usize)>,
-    passphrases: Vec<String>,
+    passphrases: Arc<Mutex<Vec<String>>>,
 }
+
+/// What each tick returns, in turn: events, or `None` to panic.
+type Script = Arc<Mutex<VecDeque<Option<Vec<NodeEvent>>>>>;
 
 struct Fake {
     calls: Arc<Mutex<Calls>>,
     lock: Lock,
+    unlocking: bool,
+    script: Script,
+    /// When set, the next unlock's key derivation says it has started,
+    /// then waits to be let go.
+    slow: Option<(Sender<()>, Receiver<()>)>,
 }
 
 const ID: [u8; 16] = [
     0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10,
 ];
+
+fn me() -> PublicIdentity {
+    PublicIdentity {
+        sign: [1; 32],
+        dh: [2; 32],
+    }
+}
 
 fn marisol() -> Contact {
     Contact {
@@ -38,6 +57,18 @@ fn marisol() -> Contact {
             dh: [9; 32],
         },
         checked: true,
+    }
+}
+
+fn stored(text: &str) -> StoredMessage {
+    StoredMessage {
+        id: ID,
+        contact: ContactId(1),
+        outgoing: false,
+        text: text.to_string(),
+        channel: Channel::Sound,
+        at_min: 29_000_000,
+        heard: false,
     }
 }
 
@@ -80,6 +111,19 @@ impl Machine for Fake {
     fn contacts(&self) -> Vec<Contact> {
         vec![marisol()]
     }
+    fn conversation(&self, contact: ContactId) -> Vec<StoredMessage> {
+        if contact == ContactId(1) {
+            vec![stored("Bring the radio.")]
+        } else {
+            Vec::new()
+        }
+    }
+    fn me(&self) -> Option<PublicIdentity> {
+        (self.lock == Lock::Unlocked).then(me)
+    }
+    fn held_for_others(&self) -> usize {
+        3
+    }
     fn set_setting(&mut self, id: &str, value_index: usize) {
         self.calls
             .lock()
@@ -90,31 +134,67 @@ impl Machine for Fake {
     fn lock(&self) -> Lock {
         self.lock
     }
-    fn unlock(&mut self, passphrase: &str) -> Result<(), String> {
-        self.calls
-            .lock()
-            .unwrap()
-            .passphrases
-            .push(passphrase.to_string());
-        if passphrase == "correct horse" {
-            self.lock = Lock::Unlocked;
-            Ok(())
-        } else {
-            Err("wrong passphrase".to_string())
+    fn begin_unlock(&mut self) -> Result<Unlocking, String> {
+        if self.unlocking {
+            return Err("already unlocking".to_string());
         }
+        self.unlocking = true;
+        let slow = self.slow.take();
+        let passphrases = self.calls.lock().unwrap().passphrases.clone();
+        Ok(Box::new(move |passphrase: &str| {
+            if let Some((started, go)) = slow {
+                started.send(()).unwrap();
+                go.recv().unwrap();
+            }
+            passphrases.lock().unwrap().push(passphrase.to_string());
+            if passphrase == "correct horse" {
+                Ok(Box::new(()) as Opened)
+            } else {
+                Err("wrong passphrase".to_string())
+            }
+        }))
+    }
+    fn finish_unlock(&mut self, opened: Result<Opened, String>) -> Result<(), String> {
+        self.unlocking = false;
+        opened?;
+        self.lock = Lock::Unlocked;
+        Ok(())
     }
     fn tick(&mut self, _now_ms: u64) -> Vec<NodeEvent> {
-        Vec::new()
+        match self.script.lock().unwrap().pop_front() {
+            Some(Some(events)) => events,
+            Some(None) => panic!("scripted tick panic"),
+            None => Vec::new(),
+        }
     }
 }
 
-fn fake(lock: Lock) -> (Shared, Arc<Mutex<Calls>>) {
+struct Rig {
+    shared: Arc<Shared>,
+    calls: Arc<Mutex<Calls>>,
+    script: Script,
+}
+
+fn rig(lock: Lock, slow: Option<(Sender<()>, Receiver<()>)>) -> Rig {
     let calls = Arc::new(Mutex::new(Calls::default()));
+    let script = Script::default();
     let machine: Box<dyn Machine> = Box::new(Fake {
         calls: calls.clone(),
         lock,
+        unlocking: false,
+        script: script.clone(),
+        slow,
     });
-    (Mutex::new(machine), calls)
+    Rig {
+        shared: Arc::new(Shared::new(machine)),
+        calls,
+        script,
+    }
+}
+
+fn fake(lock: Lock) -> (Arc<Shared>, Arc<Mutex<Calls>>) {
+    let r = rig(lock, None);
+    (r.shared, r.calls)
 }
 
 #[test]
@@ -209,25 +289,142 @@ fn unlock_passes_the_passphrase_and_returns_the_error_the_page_shows() {
         Err("wrong passphrase".to_string())
     );
     assert_eq!(commands::unlock(&m, "correct horse".into()), Ok(()));
-    assert_eq!(
-        calls.lock().unwrap().passphrases,
-        vec!["wrong", "correct horse"]
-    );
+    let passphrases = calls.lock().unwrap().passphrases.lock().unwrap().clone();
+    assert_eq!(passphrases, vec!["wrong", "correct horse"]);
 }
 
 #[test]
-fn contacts_are_listed_once_unlocked() {
+fn unlock_derives_the_key_without_holding_the_machine() {
+    let (started_tx, started) = channel();
+    let (go, go_rx) = channel();
+    let r = rig(Lock::NoStore, Some((started_tx, go_rx)));
+    let shared = r.shared.clone();
+    let unlocking = thread::spawn(move || commands::unlock(&shared, "correct horse".into()));
+    started.recv().unwrap();
+
+    // Mid-derivation, the pump still ticks and commands still answer.
+    r.script
+        .lock()
+        .unwrap()
+        .push_back(Some(vec![NodeEvent::RoomDb(41.0)]));
+    let (done_tx, done) = channel();
+    let shared = r.shared.clone();
+    thread::spawn(move || {
+        let ticked = commands::tick(&shared, 20).len();
+        let second = commands::unlock(&shared, "correct horse".into());
+        done_tx.send((ticked, second)).unwrap();
+    });
+    let (ticked, second) = done
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the machine was held during key derivation");
+    assert_eq!(ticked, 1);
+    assert_eq!(second, Err("already unlocking".to_string()));
+
+    go.send(()).unwrap();
+    assert_eq!(unlocking.join().unwrap(), Ok(()));
+    assert!(commands::contacts(&r.shared).is_ok());
+}
+
+#[test]
+fn contacts_are_listed_once_unlocked_with_their_safety_numbers() {
     let (m, _) = fake(Lock::Unlocked);
     let listed = serde_json::to_value(commands::contacts(&m).unwrap()).unwrap();
+    let safety = safety_number(&me(), &marisol().who);
+    assert_eq!(safety.len(), 60 + 11);
     assert_eq!(
         listed,
-        json!([{ "id": 1, "name": "Marisol Ortega", "checked": true }])
+        json!([{ "id": 1, "name": "Marisol Ortega", "checked": true, "safety": safety }])
     );
 
     let (locked, _) = fake(Lock::Locked);
     assert_eq!(commands::contacts(&locked).unwrap_err(), "locked");
     let (fresh, _) = fake(Lock::NoStore);
     assert_eq!(commands::contacts(&fresh).unwrap_err(), "no store yet");
+}
+
+#[test]
+fn conversation_is_the_stored_messages_shaped_as_message_events() {
+    let (m, _) = fake(Lock::Unlocked);
+    let (_, event) = bridge_event(&NodeEvent::Message(stored("Bring the radio.")));
+    assert_eq!(commands::conversation(&m, 1), Ok(vec![event]));
+    assert_eq!(commands::conversation(&m, 5), Ok(vec![]));
+    let (locked, _) = fake(Lock::Locked);
+    assert_eq!(
+        commands::conversation(&locked, 1),
+        Err("locked".to_string())
+    );
+}
+
+#[test]
+fn machine_is_named_machine_no_1_with_its_public_key() {
+    let (m, _) = fake(Lock::Unlocked);
+    let view = serde_json::to_value(commands::machine(&m).unwrap()).unwrap();
+    assert_eq!(
+        view,
+        json!({ "name": "Machine No. 1", "key": "01".repeat(32) + &"02".repeat(32),
+                "held": 3, "version": env!("CARGO_PKG_VERSION") })
+    );
+    let (fresh, _) = fake(Lock::NoStore);
+    assert!(commands::machine(&fresh).is_err());
+}
+
+#[test]
+fn a_channel_state_reported_before_the_page_listens_is_kept_for_it() {
+    let r = rig(Lock::NoStore, None);
+    assert!(commands::channels(&r.shared).is_empty());
+    r.script.lock().unwrap().extend([
+        Some(vec![NodeEvent::ChannelState {
+            channel: Channel::Sound,
+            state: "unavailable: no audio device available".to_string(),
+        }]),
+        Some(vec![NodeEvent::RoomDb(40.0)]),
+        Some(vec![NodeEvent::ChannelState {
+            channel: Channel::Light,
+            state: "unavailable: not in this plan".to_string(),
+        }]),
+    ]);
+    for now in [20, 40, 60] {
+        commands::tick(&r.shared, now);
+    }
+    let kept = serde_json::to_value(commands::channels(&r.shared)).unwrap();
+    assert_eq!(
+        kept,
+        json!([
+            { "channel": "sound", "state": "unavailable: no audio device available" },
+            { "channel": "light", "state": "unavailable: not in this plan" }
+        ])
+    );
+
+    // A later state replaces the earlier one.
+    r.script
+        .lock()
+        .unwrap()
+        .push_back(Some(vec![NodeEvent::ChannelState {
+            channel: Channel::Sound,
+            state: "receiving".to_string(),
+        }]));
+    commands::tick(&r.shared, 80);
+    assert_eq!(commands::channels(&r.shared)[0].state, "receiving");
+}
+
+#[test]
+fn a_tick_that_panics_reports_sound_failed_and_the_pump_carries_on() {
+    let r = rig(Lock::Unlocked, None);
+    r.script
+        .lock()
+        .unwrap()
+        .extend([None, Some(vec![NodeEvent::RoomDb(39.0)])]);
+    let events = commands::tick(&r.shared, 20);
+    assert_eq!(
+        events.iter().map(bridge_event).collect::<Vec<_>>(),
+        vec![("channel", json!({ "channel": "sound", "state": "failed" }))]
+    );
+    assert_eq!(commands::channels(&r.shared)[0].state, "failed");
+    assert_eq!(commands::tick(&r.shared, 40).len(), 1);
+    assert!(
+        commands::contacts(&r.shared).is_ok(),
+        "the machine is still usable"
+    );
 }
 
 #[test]
@@ -319,6 +516,7 @@ fn node_events_become_the_bridge_events_with_the_payloads_bridge_js_expects() {
         (OutboxState::Waiting, "waiting"),
         (OutboxState::Playing, "playing"),
         (OutboxState::Sent, "sent"),
+        (OutboxState::Failed, "failed"),
     ] {
         assert_eq!(
             bridge_event(&NodeEvent::Outbox { id: ID, state }),

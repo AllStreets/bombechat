@@ -28,6 +28,10 @@ pub enum TransportEvent {
     /// Every frame of the envelope under this tag, repeats included, has
     /// finished going out. Reported once, after [`TransportEvent::Playing`].
     Sent(u16),
+    /// The envelope under this tag will not go out: the carrier refused
+    /// it (a full queue) or could not play it. Reported once, instead of
+    /// [`TransportEvent::Sent`].
+    Dropped(u16),
 }
 
 /// A carrier for on-air frames.

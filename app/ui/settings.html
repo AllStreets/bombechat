@@ -206,7 +206,9 @@ document.getElementById('fullview').addEventListener('click',fullView);
 document.getElementById('sched').addEventListener('click',e=>{if(!e.target.closest('.row'))fullView()});
 
 /* ---------- plug sounds (same rules as the drums: synthesised, low-passed under 7 kHz) ---------- */
-let receiving=false;bridge.on('channel',s=>{if(s.channel==='sound')receiving=s.state==='receiving'});
+// plug sounds are muted while a message arrives by sound, including one already arriving when this page opened
+let receiving=false;const onChannel=s=>{if(s.channel==='sound')receiving=s.state==='receiving'};
+bridge.on('channel',onChannel);bridge.ready();bridge.channels().then(list=>list.forEach(onChannel));
 const Snd=(()=>{let ctx,out,nb;function ensure(){if(!ctx){ctx=new (window.AudioContext||window.webkitAudioContext)();let node=ctx.createGain();out=node;
   for(let i=0;i<4;i++){const lp=ctx.createBiquadFilter();lp.type='lowpass';lp.frequency.value=7000;lp.Q.value=.6;node.connect(lp);node=lp}node.connect(ctx.destination);
   nb=ctx.createBuffer(1,ctx.sampleRate*.05,ctx.sampleRate);const d=nb.getChannelData(0);for(let i=0;i<d.length;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/d.length,2)}if(ctx.state==='suspended')ctx.resume()}

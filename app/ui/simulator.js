@@ -67,7 +67,8 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
   let room = 47, dipUntil = 0, nextDip = 0, sending = false, paused = false, done = false, started = false;
   const later = (fn, ms = 0) => setTimeout(fn, ms);
 
-  const sound = state => emit('channel', { channel: 'Sound', state });
+  let soundState = null;// the last state the sound channel reported, for channels()
+  const sound = state => { soundState = state; emit('channel', { channel: 'Sound', state }); };
   const outbox = (m, state, first) => emit('outbox', first ? { id: m.id, state, text: m.text, public: !!m.public } : { id: m.id, state });
   function land(n) {
     emit('chunk', { tag: TAG, index: n, of: NC, view: incoming[n] });
@@ -160,6 +161,10 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
     setSetting(id, valueIndex) { settings[id] = valueIndex; return Promise.resolve(); },
     unlock: () => Promise.resolve(),
     contacts: () => Promise.resolve([{ id: MARISOL, name: 'Marisol Ortega', checked: true }]),
+    // the sheet's history arrives as events when the conversation starts, as the mockups showed it
+    conversation: () => Promise.resolve([]),
+    machine: () => Promise.resolve({ name: 'Machine No. 1', key: '', held: 6, version: '0.4' }),
+    channels: () => Promise.resolve(soundState ? [{ channel: 'Sound', state: soundState }] : []),
     test,
   };
 }

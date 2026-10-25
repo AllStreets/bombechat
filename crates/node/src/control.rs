@@ -26,7 +26,8 @@
 //! broadcast is refused for the same reason.
 
 use bombechat_core::{
-    open_private, open_public, seal_private, seal_public, Envelope, Identity, Kind, PublicIdentity,
+    open_private, open_public, seal_private, seal_public, Envelope, Identity, Kind, OpenError,
+    PublicIdentity,
 };
 
 const VERSION: u8 = 1;
@@ -90,26 +91,40 @@ pub(crate) fn heard(
     wrap(TYPE_HEARD, &inner, id, now_min.saturating_add(ttl_min))
 }
 
-/// Open a control envelope's body. `None` for anything malformed,
-/// unverifiable, expired, or (for receipts) not addressed to `me`.
+/// Why a control envelope did not open.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Refused {
+    /// A receipt sealed to someone else: nothing wrong with it.
+    NotForMe,
+    /// Malformed, unverifiable or expired.
+    Bad,
+}
+
+/// Open a control envelope's body. [`Refused::NotForMe`] for a receipt
+/// addressed to someone else; [`Refused::Bad`] for anything malformed,
+/// unverifiable or expired.
 ///
 /// Also returns the inner envelope's id. Unlike the outer id, it is
 /// covered by the inner signature (and, for receipts, the seal), so it is
 /// the id to dedup control traffic on: an inner envelope re-wrapped under
 /// a fresh outer id is still recognised as the same message.
-pub(crate) fn open(me: &Identity, body: &[u8], now_min: u32) -> Option<(Control, [u8; 16])> {
+pub(crate) fn open(
+    me: &Identity,
+    body: &[u8],
+    now_min: u32,
+) -> Result<(Control, [u8; 16]), Refused> {
     let [version, kind, rest @ ..] = body else {
-        return None;
+        return Err(Refused::Bad);
     };
     if *version != VERSION {
-        return None;
+        return Err(Refused::Bad);
     }
-    let inner = Envelope::decode(rest).ok()?;
+    let inner = Envelope::decode(rest).map_err(|_| Refused::Bad)?;
     match *kind {
         TYPE_PAIR_HELLO => {
-            let (identity, text, _) = open_public(&inner, now_min).ok()?;
-            let name = text.strip_prefix(HELLO_PREFIX)?;
-            Some((
+            let (identity, text, _) = open_public(&inner, now_min).map_err(|_| Refused::Bad)?;
+            let name = text.strip_prefix(HELLO_PREFIX).ok_or(Refused::Bad)?;
+            Ok((
                 Control::PairHello {
                     identity,
                     name: truncate(name, MAX_NAME).to_string(),
@@ -118,17 +133,20 @@ pub(crate) fn open(me: &Identity, body: &[u8], now_min: u32) -> Option<(Control,
             ))
         }
         TYPE_HEARD => {
-            let opened = open_private(me, &inner, now_min).ok()?;
-            let digits = opened.text.strip_prefix(HEARD_PREFIX)?;
-            Some((
+            let opened = open_private(me, &inner, now_min).map_err(|e| match e {
+                OpenError::NotForMe => Refused::NotForMe,
+                _ => Refused::Bad,
+            })?;
+            let digits = opened.text.strip_prefix(HEARD_PREFIX).ok_or(Refused::Bad)?;
+            Ok((
                 Control::Heard {
-                    id: unhex(digits)?,
+                    id: unhex(digits).ok_or(Refused::Bad)?,
                     by: opened.sender,
                 },
                 inner.id,
             ))
         }
-        _ => None,
+        _ => Err(Refused::Bad),
     }
 }
 
@@ -172,7 +190,7 @@ mod tests {
         let env = pair_hello(&a, "Ana", [7; 16], 100, 60);
         assert_eq!(env.kind, Kind::Control);
         match open(&Identity::generate(), &env.body, 100) {
-            Some((Control::PairHello { identity, name }, _)) => {
+            Ok((Control::PairHello { identity, name }, _)) => {
                 assert_eq!(identity, a.public());
                 assert_eq!(name, "Ana");
             }
@@ -185,13 +203,13 @@ mod tests {
         let (a, b) = (Identity::generate(), Identity::generate());
         let env = heard(&b, &a.public(), &[0xab; 16], [1; 16], 100, 60);
         match open(&a, &env.body, 100) {
-            Some((Control::Heard { id, by }, _)) => {
+            Ok((Control::Heard { id, by }, _)) => {
                 assert_eq!(id, [0xab; 16]);
                 assert_eq!(by, b.public());
             }
             _ => panic!("receipt did not open"),
         }
-        assert!(open(&Identity::generate(), &env.body, 100).is_none());
+        assert!(open(&Identity::generate(), &env.body, 100).is_err());
     }
 
     #[test]
@@ -199,7 +217,7 @@ mod tests {
         let a = Identity::generate();
         let inner = seal_public(&a, "Ana", 100, 60);
         let env = wrap(TYPE_PAIR_HELLO, &inner, [2; 16], 160);
-        assert!(open(&a, &env.body, 100).is_none());
+        assert!(open(&a, &env.body, 100).is_err());
     }
 
     #[test]
@@ -220,7 +238,7 @@ mod tests {
             &[2, 1, 0][..],
             &[1, 9, 1, 2, 3][..],
         ] {
-            assert!(open(&me, body, 100).is_none());
+            assert!(open(&me, body, 100).is_err());
         }
     }
 }

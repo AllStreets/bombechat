@@ -52,7 +52,9 @@ enum Input {
 /// [`TransportEvent::Playing`] when its first frame goes to the speaker,
 /// and [`TransportEvent::Sent`] once its last frame's last repeat has
 /// finished playing (the speaker plays what it is handed in order, so
-/// that is when everything handed to it before has played too).
+/// that is when everything handed to it before has played too). An
+/// envelope refused for a full queue, or with a frame the speaker would
+/// not play, is reported [`TransportEvent::Dropped`] instead.
 pub struct SoundTransport {
     io: Box<dyn AudioIo>,
     cfg: ModemConfig,
@@ -75,6 +77,8 @@ pub struct SoundTransport {
     playing: HashMap<u16, u64>,
     /// When everything handed to the speaker so far finishes, in `now_ms`.
     speaker_free_ms: u64,
+    /// Envelopes with a frame the speaker refused to play, by tag.
+    unplayed: HashSet<u16>,
 }
 
 impl SoundTransport {
@@ -93,6 +97,7 @@ impl SoundTransport {
             play_failed: false,
             playing: HashMap::new(),
             speaker_free_ms: 0,
+            unplayed: HashSet::new(),
         }
     }
 
@@ -147,6 +152,9 @@ impl Transport for SoundTransport {
                 self.refused_tag = Some(tag);
                 self.pending
                     .push(TransportEvent::Notice(QUEUE_FULL.to_string()));
+                if let Some(tag) = tag {
+                    self.pending.push(TransportEvent::Dropped(tag));
+                }
             }
             return;
         }
@@ -199,6 +207,9 @@ impl Transport for SoundTransport {
             match self.io.play(samples) {
                 Ok(()) => self.play_failed = false,
                 Err(e) => {
+                    if let Some(tag) = tag {
+                        self.unplayed.insert(tag);
+                    }
                     if !self.play_failed {
                         events.push(TransportEvent::Unavailable(reason(&e)));
                     }
@@ -218,7 +229,11 @@ impl Transport for SoundTransport {
         done.sort_unstable();
         for tag in done {
             self.playing.remove(&tag);
-            events.push(TransportEvent::Sent(tag));
+            events.push(if self.unplayed.remove(&tag) {
+                TransportEvent::Dropped(tag)
+            } else {
+                TransportEvent::Sent(tag)
+            });
         }
 
         events
@@ -241,6 +256,7 @@ mod tests {
         sink: Arc<Mutex<Option<Sink>>>,
         error: Arc<Mutex<Option<AudioError>>>,
         played: Arc<Mutex<Vec<Vec<f32>>>>,
+        fail_play: Arc<Mutex<bool>>,
     }
 
     impl Scripted {
@@ -258,6 +274,9 @@ mod tests {
             Ok(())
         }
         fn play(&mut self, samples: Vec<f32>) -> Result<(), AudioError> {
+            if *self.fail_play.lock().unwrap() {
+                return Err(AudioError::NoDevice);
+            }
             self.played.lock().unwrap().push(samples);
             Ok(())
         }
@@ -320,7 +339,14 @@ mod tests {
     fn progress(events: Vec<TransportEvent>) -> Vec<TransportEvent> {
         events
             .into_iter()
-            .filter(|e| matches!(e, TransportEvent::Playing(_) | TransportEvent::Sent(_)))
+            .filter(|e| {
+                matches!(
+                    e,
+                    TransportEvent::Playing(_)
+                        | TransportEvent::Sent(_)
+                        | TransportEvent::Dropped(_)
+                )
+            })
             .collect()
     }
 
@@ -381,6 +407,39 @@ mod tests {
     }
 
     #[test]
+    fn an_envelope_the_speaker_never_played_is_dropped_not_sent() {
+        let io = Scripted::default();
+        *io.fail_play.lock().unwrap() = true;
+        let mut t = transport(&io);
+        t.poll(0);
+        for f in split(&[1; 100], 4) {
+            t.send(f);
+        }
+        io.quiet();
+        let events = t.poll(100);
+        assert!(events.contains(&TransportEvent::Unavailable("no audio device".to_string())));
+        assert!(progress(t.poll(100_000)).contains(&TransportEvent::Dropped(4)));
+    }
+
+    #[test]
+    fn a_send_the_queue_refuses_leaves_the_outbox_as_failed() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (me, them) = (Identity::generate(), Identity::generate());
+        let store = Store::create(&dir.path().join("m.db"), "pass", &me, "me").unwrap();
+        let contact = store.add_contact("them", &them.public(), true).unwrap();
+        let io = Scripted::default();
+        let mut node = Node::new(Some(store), vec![Box::new(transport(&io))]);
+        node.tick(0);
+        let ids: Vec<_> = (0..=MAX_QUEUED_ENVELOPES)
+            .map(|i| node.send(&[contact], &format!("m{i}"), Channel::Sound))
+            .collect();
+        let report = outbox(node.tick(10));
+        let last = *ids.last().unwrap();
+        assert!(report.contains(&(last, OutboxState::Failed)));
+        assert!(!report.contains(&(ids[0], OutboxState::Failed)));
+    }
+
+    #[test]
     fn a_full_queue_refuses_new_envelopes_once() {
         let io = Scripted::default();
         let mut t = transport(&io);
@@ -399,7 +458,10 @@ mod tests {
         assert_eq!(t.queued.len(), before, "the extra envelope is refused");
         assert_eq!(
             t.poll(20),
-            vec![TransportEvent::Notice(QUEUE_FULL.to_string())]
+            vec![
+                TransportEvent::Notice(QUEUE_FULL.to_string()),
+                TransportEvent::Dropped(999)
+            ]
         );
 
         // Frames of an envelope already queued are still accepted.

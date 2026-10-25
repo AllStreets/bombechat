@@ -27,8 +27,10 @@ body{min-height:100vh;background:var(--enamel);-webkit-font-smoothing:antialiase
 button{font:inherit;color:inherit}
 :focus-visible{outline:1.5px solid var(--amber);outline-offset:3px}
 
+/* the app: nothing shows until the real sheet is in place (realSheet) */
+.in-app:not(.real) .app{visibility:hidden}
 /* the passphrase, asked before the sheet opens (the app only) */
-.unlock{position:fixed;inset:0;z-index:20;display:grid;place-items:center;background:rgba(12,12,11,.94)}
+.unlock{position:fixed;inset:0;z-index:20;display:grid;place-items:center;background:#0c0c0b}
 .unlock .card{width:min(380px,calc(100vw - 32px));display:grid;gap:12px;padding:24px 26px 22px;background:#151614;border:1px solid rgba(236,230,214,.16);border-radius:6px;color:var(--plate-ink)}
 .unlock h2{font-family:var(--print);font-weight:400;font-size:21px;line-height:1.15}
 .unlock p{font-family:var(--print);font-size:14px;line-height:1.45;color:#c9c2b0}
@@ -103,6 +105,7 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
 .srmirror{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 .bankfoot{display:flex;flex-wrap:wrap;align-items:center;gap:10px 26px;margin:6px -4px 0 96px;padding:9px 0 10px;border-top:1px solid rgba(0,0,0,.6);box-shadow:inset 0 1px 0 rgba(255,255,255,.035)}
 .rd{display:flex;align-items:center;gap:8px}
+.rd[hidden]{display:none}
 .odo{display:flex;gap:2px;padding:3px;background:#050505;border-radius:2px;box-shadow:0 0 0 2px #3a3934,0 0 0 3px #000}
 .odo i{font-style:normal;font-family:var(--type);font-size:15px;color:#f4eedc;width:14px;height:20px;display:grid;place-items:center;background:linear-gradient(#000,#1d1d1b 30%,#2a2a27 50%,#1d1d1b 70%,#000)}
 .of{font-family:var(--type);font-size:13px;color:#bdb6a4}
@@ -266,6 +269,7 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
   .cur,.state.live::after{animation:none}
 }
 </style>
+<script>/* in the app, the panel stays hidden until it shows this machine rather than the mockups' story */if(window.__TAURI__)document.documentElement.classList.add('in-app')</script>
 <script type="importmap">
 { "imports": {
   "three": "./vendor/three/build/three.module.js",
@@ -385,10 +389,9 @@ function askPassphrase(first){return new Promise(done=>{
     btn.disabled=true;err.textContent=first?'Locking':'Opening';
     try{await bridge.unlock(pass.value);f.remove();done()}
     catch(why){err.textContent=sentence(why);btn.disabled=false;pass.select()}})})}
-async function sheetContact(){
-  for(;;){let list;
-    try{list=await bridge.contacts()}catch(why){if(why!=='locked'&&why!=='no store yet')throw why;await askPassphrase(why==='no store yet');continue}
-    return list[0]||{id:0,name:'No one yet',short:'no one yet',checked:false}}}
+async function openContacts(){
+  for(;;){
+    try{return await bridge.contacts()}catch(why){if(why!=='locked'&&why!=='no store yet')throw why;await askPassphrase(why==='no store yet')}}}
 // the sheet's printed name, aria labels and station plate follow the contact
 function nameTheSheet(c){const at=s=>document.querySelector(s);
   at('.sheet').setAttribute('aria-label',`Message sheet with ${c.name}`);
@@ -396,7 +399,7 @@ function nameTheSheet(c){const at=s=>document.querySelector(s);
   at('#reply').placeholder=`Reply to ${c.short}`;
   at('#reply').setAttribute('aria-label',`Reply to ${c.short}. Enter sends by sound, Shift and Enter starts a new line.`);
   at('.menu').setAttribute('aria-label',`Key check with ${c.short}`);
-  at('.menu h2 span').textContent=`menu 7, ${c.short}`;
+  at('.menu h2 span').textContent=bridge.simulated?`menu 7, ${c.short}`:c.short;
   at('.bankfoot .rd:last-child').title=`Each frame is checked against ${c.short}'s key as it lands`;
   at('.row3 .stn .holder > span').firstChild.nodeValue=c.name}
 const Q=new URLSearchParams(location.search);
@@ -407,8 +410,11 @@ const RIMS=['#7a2a22','#2c4a3a','#a5822e','#33465b','#b4a789','#5a3a24','#6e2a3c
 const NS='http://www.w3.org/2000/svg';let did=0;
 const ENGR="'Bombechat Engraving',serif";
 // the one person this sheet is with: the first contact. In the app the store opens first.
-const CONTACT=await sheetContact();
+const PEOPLE=await openContacts();
+const CONTACT=PEOPLE[0]||{id:0,name:'No one yet',short:'no one yet',checked:false,safety:''};
 nameTheSheet(CONTACT);
+// in the app, this machine: its key punches the tape, its name signs the sheet (realSheet, below)
+const ME=bridge.simulated?null:await bridge.machine();
 // true while the page replays what happened before it opened: nothing animates
 let booting=true;
 
@@ -494,17 +500,19 @@ function cut(t,max){const w=t.split(' ');const out=[];let cur='';w.forEach(x=>{i
 const TILT=[-.3,.4,-.15];
 function tape(what,text,cls='strip',before=null){const lines=text.split('\n').flatMap(l=>l.length>56?cut(l,40):[l]);
   return lines.map((l,i)=>{const s=el('div',cls,l);if(i){s.style.transform=`rotate(${TILT[(i-1)%3]}deg)`;s.style.marginLeft=`${i*2}px`}what.insertBefore(s,before);return s})}
-function stamp(what,how,ms){const s=el('div',booting?'stamp':'stamp new',`${how==='light'?'seen':'heard'} by ${CONTACT.short}, ${hhmm(ms)}`);what.appendChild(s)}
+// ms null: heard, but when is not known (the store keeps no time for it)
+function stamp(what,how,ms){const s=el('div',booting?'stamp':'stamp new',`${how==='light'?'seen':'heard'} by ${CONTACT.short}${ms==null?'':', '+hhmm(ms)}`);what.appendChild(s)}
 const sent=new Map();// message id -> {ent,how}
 const hopsWord=n=>['no hops','one hop','two hops','three hops','four hops','five hops','six hops','seven hops'][n]||`${n} hops`;
 
-bridge.on('message',m=>{
+function onMessage(m){
   if(!m.outgoing&&m.channel==='sound'&&!m.via&&arrival&&arrival.ent)return;// it finishes a provisional entry: see below
   if(m.contact!==CONTACT.id)return;// another person's sheet
   const how=m.via?'relay':m.channel;const ent=entry(m.at_min*60000,how);const what=ent.querySelector('.what');
-  if(m.outgoing){what.appendChild(el('div','typed',m.text));sent.set(m.id,{ent,how:m.channel});if(m.heard)stamp(what,m.channel,bridge.now())}
+  if(m.outgoing){what.appendChild(el('div','typed',m.text));sent.set(m.id,{ent,how:m.channel});if(m.heard)stamp(what,m.channel,bridge.simulated?bridge.now():null)}
   else{tape(what,m.text);if(m.via)what.appendChild(el('div','state',`passed on by the ${m.via}`))}
-  grow(()=>log.appendChild(ent))});
+  grow(()=>log.appendChild(ent))}
+bridge.on('message',onMessage);
 bridge.on('broadcast',b=>{const ent=entry(bridge.now(),'public');const what=ent.querySelector('.what');tape(what,b.text);
   what.appendChild(el('div','state',`${b.verified?'signed':'signed, not checked,'} ${b.signer.slice(0,4).toUpperCase()}${b.hops?', '+hopsWord(b.hops):''}`));
   grow(()=>log.appendChild(ent))});
@@ -541,7 +549,8 @@ bridge.on('message',m=>{
   const a=arrival,ent=a.ent;a.ent=null;clearTimeout(a.stallT);
   if(m.contact!==CONTACT.id){grow(()=>ent.remove());return}
   whenDrumsRest(()=>grow(()=>{ent.classList.remove('arriving');const what=ent.querySelector('.what');what.textContent='';tape(what,m.text)}))});
-bridge.on('channel',s=>{if(s.channel!=='sound')return;Drum.receiving=s.state==='receiving';if(s.state==='failed')failArrival(arrival)});
+function onChannel(s){if(s.channel!=='sound')return;Drum.receiving=s.state==='receiving';if(s.state==='failed')failArrival(arrival)}
+bridge.on('channel',onChannel);
 
 /* ---------- channels ---------- */
 // Sentence case, set in the engraving face's small capitals. Three detents 120 degrees
@@ -587,7 +596,8 @@ function applyChannels(){const s=KNOBS.k1.pos,l=KNOBS.k2.pos;
   flashBtn.title=l<2?'Light is not set to Read and flash. Turn the Light switch to Read and flash to send this way.':`Flashes the message on screen. Hold it up to ${CONTACT.short}'s camera.`}
 
 /* ---------- room meter and the quiet rule ---------- */
-let room=47;
+// in the app the room is unknown until the microphone measures it
+let room=bridge.simulated?47:null;
 const vuNeedle=(()=>{const g=document.getElementById('vusvg');const cx=100,cy=96,R=66;let h=`<defs><linearGradient id="vf" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f0e7cc"/><stop offset="1" stop-color="#d6c7a0"/></linearGradient></defs><rect x="0" y="0" width="200" height="92" rx="2" fill="url(#vf)"/>`;
   for(let d=30;d<=60;d+=2){const a=(-48+(d-30)/30*96)*Math.PI/180,big=d%10===0,r1=R-(big?9:5);const c=d>40?'#8a2a22':'#25211b';
     h+=`<line x1="${cx+Math.sin(a)*r1}" y1="${cy-Math.cos(a)*r1}" x2="${cx+Math.sin(a)*R}" y2="${cy-Math.cos(a)*R}" stroke="${c}" stroke-width="${big?1.3:.75}"/>`;
@@ -598,7 +608,7 @@ const vuNeedle=(()=>{const g=document.getElementById('vusvg');const cx=100,cy=96
   h+=`<line id="needle" x1="${cx}" y1="${cy}" x2="${cx}" y2="${cy-R+2}" stroke="#15130f" stroke-width="1.3"/><rect x="0" y="88" width="200" height="16" fill="#0d0d0c"/><circle cx="${cx}" cy="${cy}" r="6" fill="#2b2a26" stroke="#000"/>`;
   g.innerHTML=h;const n=document.getElementById('needle');
   return v=>n.setAttribute('transform',`rotate(${-48+(Math.max(28,Math.min(62,v))-30)/30*96} ${cx} ${cy})`)})();
-vuNeedle(room);
+vuNeedle(room??30);
 bridge.on('roomDb',db=>{room=db;vuNeedle(room)});
 
 /* ---------- outbox and replying ----------
@@ -607,7 +617,7 @@ bridge.on('roomDb',db=>{room=db;vuNeedle(room)});
    status line are drawn from those alone. */
 const outboxEl=document.getElementById('outbox');
 const outbox=new Map();// id -> {text,public,state,ent,how,leaving}
-const finished=new Set();// ids already sent, in case the send's own reply comes back later than the news
+const finished=new Map();// id -> 'sent' or 'failed', in case the send's own reply comes back later than the news
 const esc=s=>s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 function outItem(id){let it=outbox.get(id);if(!it){it={id,text:'',public:false,state:null,ent:null,how:'sound',leaving:false};outbox.set(id,it)}return it}
 function drawOutbox(){const q=[...outbox.values()].filter(m=>m.text&&(m.state==='waiting'||m.leaving));
@@ -615,12 +625,13 @@ function drawOutbox(){const q=[...outbox.values()].filter(m=>m.text&&(m.state===
   outboxEl.innerHTML=q.slice(0,2).map(m=>`<div class="slip${m.leaving?' gone':''}" data-id="${m.id}">${esc(m.text)}<small>${m.public?'public, ':''}sends once under 40 dB</small></div>`).join('')+(q.length>2?`<div class="slip empty">and ${q.length-2} more</div>`:'')}
 function status(it){const st=it.ent&&it.ent.querySelector('.state');if(!st)return;
   st.classList.toggle('live',it.state==='playing');
-  st.textContent=it.state==='waiting'?(room<40?'playing next':`waiting for quiet, the room is at ${Math.round(room)} dB`)
-    :it.state==='playing'?(it.how==='light'?'flashing on screen':'playing by sound'):it.state==='sent'?'sent, not heard yet':''}
+  if(it.ent)it.ent.classList.toggle('failed',it.state==='failed');
+  st.textContent=it.state==='waiting'?(room==null?'waiting for quiet':room<40?'playing next':`waiting for quiet, the room is at ${Math.round(room)} dB`)
+    :it.state==='playing'?(it.how==='light'?'flashing on screen':'playing by sound'):it.state==='sent'?'sent, not heard yet':it.state==='failed'?sentence('not sent'):''}
 function setOut(it,state){const was=it.state;it.state=state;status(it);
   if(state==='playing'&&was==='waiting'&&!RM.matches){it.leaving=true;const slip=outboxEl.querySelector(`[data-id="${it.id}"]`);if(slip)slip.classList.add('gone');setTimeout(()=>{it.leaving=false;drawOutbox()},460)}
   else drawOutbox();
-  if(state==='sent'){outbox.delete(it.id);finished.add(it.id);setTimeout(()=>finished.delete(it.id),60000)}}
+  if(state==='sent'||state==='failed'){outbox.delete(it.id);finished.set(it.id,state);setTimeout(()=>finished.delete(it.id),60000)}}
 bridge.on('outbox',o=>{const it=outItem(o.id);if(o.text&&!it.text){it.text=o.text;it.public=!!o.public}setOut(it,o.state)});
 const nowtime=document.getElementById('nowtime');
 const tick=()=>{nowtime.firstChild.nodeValue=hhmm(bridge.now())};
@@ -639,13 +650,14 @@ function send(how){const text=reply.value.trim();
   grow(()=>log.appendChild(ent),true);
   reply.value='';fit();
   bridge.send([CONTACT.id],text,how).then(id=>{sent.set(id,{ent,how});
-    if(finished.has(id)){status({state:'sent',ent,how});tick();return}
+    if(finished.has(id)){status({state:finished.get(id),ent,how});tick();return}
     const it=outItem(id);Object.assign(it,{text,ent,how});
     if(it.state)setOut(it,it.state);tick()},
-    why=>{ent.classList.add('failed');ent.querySelector('.state').textContent=String(why)})}
+    why=>{ent.classList.add('failed');ent.querySelector('.state').textContent=sentence(why)})}
 
 /* ---------- key check menu ---------- */
-(function(){const svg=document.getElementById('menusvg');
+// the pencil menu is the mockups' story; in the app the card shows the real safety number (keyCheck, below)
+if(bridge.simulated)(function(){const svg=document.getElementById('menusvg');
   const N=[['M',20,48],['O',82,18],['R',148,58],['T',212,24],['E',272,70],['G',46,140],['A',128,170],['S',202,132],['U',264,190]];
   const E=[[0,1,4],[1,2,8],[2,3,2],[3,4,1],[0,5,10],[5,6,9],[6,2,3],[6,7,7],[7,4,5],[7,8,11],[2,7,6]];
   let h=`<defs><filter id="pen" x="-5%" y="-5%" width="110%" height="110%"><feTurbulence baseFrequency=".04" numOctaves="2" seed="4" result="t"/><feDisplacementMap in="SourceGraphic" in2="t" scale="2.2"/></filter>
@@ -657,8 +669,10 @@ function send(how){const text=reply.value.trim();
   svg.innerHTML=h+'</g></g>'})();
 
 /* ---------- punched tape ---------- */
+// in the app the holes are this machine's public key, four bits a column, from its first hex digit on
 (function(){const t=document.getElementById('ptape');function draw(){const W=Math.round(t.clientWidth)||296,cols=Math.floor((W-8)/7.5);let q=0xb7e2;let h=`<svg width="${W}" height="30" viewBox="0 0 ${W} 30" aria-hidden="true">`;
-  for(let c=0;c<cols;c++){const x=6+c*7.5;h+=`<circle cx="${x}" cy="17" r="1" fill="#3b372d"/>`;[4,9.5,23,27.5].forEach(y=>{q=(q*75+74)%65537;if(q%5<2)h+=`<circle cx="${x}" cy="${y}" r="2.1" fill="#2a2721"/>`})}
+  const bit=(c,b)=>ME?(parseInt(ME.key[c%ME.key.length],16)>>(3-b))&1:(q=(q*75+74)%65537,q%5<2);
+  for(let c=0;c<cols;c++){const x=6+c*7.5;h+=`<circle cx="${x}" cy="17" r="1" fill="#3b372d"/>`;[4,9.5,23,27.5].forEach((y,b)=>{if(bit(c,b))h+=`<circle cx="${x}" cy="${y}" r="2.1" fill="#2a2721"/>`})}
   t.innerHTML=h+'</svg>'}draw();new ResizeObserver(draw).observe(t)})();
 
 /* ---------- drum sound ----------
@@ -745,10 +759,54 @@ window.__bank={rows:()=>({plain:rowText(0),heard:rowText(1),key:rowText(2)}),fra
 window.__drum={spin:(n,p)=>Drum.spin(n,p),get receiving(){return Drum.receiving},get running(){return Drum.running},get calls(){return Drum.calls},get sounds(){return Drum.sounds}};
 function syncMirror(){const r=window.__bank.rows();if(mirror.plain.textContent!==r.plain)mirror.plain.textContent=r.plain.replace(/X/g,' ');mirror.heard.textContent=r.heard;mirror.key.textContent=r.key}
 
+/* ---------- the app: this machine and its contacts, nothing from the mockups ----------
+   The sheet's history comes from the store; the stations are the contacts, each with when
+   it was last heard; the counter is what the machine holds for others; the key check card
+   shows the safety number once paired. Readouts the node does not measure yet are left off. */
+const MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const dated=ms=>{const d=new Date(ms);return `${hhmm(ms)}, ${d.getDate()} ${MONTHS[d.getMonth()]}`};
+async function realSheet(){
+  const talk=new Map();for(const p of PEOPLE.slice(0,3))talk.set(p.id,await bridge.conversation(p.id));
+  const mine=talk.get(CONTACT.id)||[];
+  for(const m of mine)onMessage(m);
+  const at=s=>document.querySelector(s);
+  const fields=document.querySelectorAll('.fields b');
+  fields[1].textContent=mine.length?dated(mine[0].at_min*60000):'not yet';
+  fields[2].textContent='you';
+  const foot=document.querySelectorAll('.sh-foot b');foot[0].textContent=ME.name;foot[1].textContent='the microphone';
+  at('.top .build').textContent=`Build ${ME.version}`;
+  document.getElementById('fno').textContent='0';document.getElementById('fnt').textContent='0';
+  document.querySelectorAll('.bankfoot .rd').forEach((r,i)=>{if(i===1||i===2)r.hidden=true});
+  // stations: the contacts, with when each was last heard
+  const row=at('.row3'),counter=row.querySelector('.counter');row.querySelectorAll('.stn').forEach(s=>s.remove());
+  for(const p of PEOPLE.length?PEOPLE.slice(0,3):[null]){
+    const last=p&&[...(talk.get(p.id)||[])].reverse().find(m=>!m.outgoing);
+    const stn=el('div','stn');stn.innerHTML='<span class="jewel off" aria-hidden="true"></span><span class="holder"><span></span></span>';
+    stn.querySelector('.holder span').append(p?p.name:'No contacts yet',el('small',null,!p?'pair in person to add one':last?`${last.channel}, ${hhmm(last.at_min*60000)}`:'not heard yet'));
+    row.insertBefore(stn,counter)}
+  counter.querySelector('.odo').innerHTML=String(Math.min(999,ME.held)).padStart(3,'0').split('').map((d,i)=>`<i${i===2?' id="held"':''}>${d}</i>`).join('');
+  keyCheck();
+  document.documentElement.classList.add('real')}
+function keyCheck(){const svg=document.getElementById('menusvg'),paired=!!(CONTACT.id&&CONTACT.checked&&CONTACT.safety);
+  const pencil='font-family="Cutive Mono,Courier New,monospace" text-anchor="middle"';
+  let body;
+  if(paired){const g=CONTACT.safety.trim().split(/\s+/);
+    body=[0,1,2].map(r=>`<text x="148" y="${70+r*40}" ${pencil} font-size="17" letter-spacing=".5" fill="#2e2d2a">${g.slice(r*4,r*4+4).join(' ')}</text>`).join('')}
+  else body=`<text x="148" y="112" ${pencil} font-size="22" fill="#55534e" transform="rotate(-3 148 112)">not yet paired</text>`;
+  svg.innerHTML=`<defs><filter id="pen" x="-5%" y="-5%" width="110%" height="110%"><feTurbulence baseFrequency=".04" numOctaves="2" seed="4" result="t"/><feDisplacementMap in="SourceGraphic" in2="t" scale="1.6"/></filter>
+   <filter id="gr"><feTurbulence baseFrequency="1.2" numOctaves="1" seed="2" result="n"/><feColorMatrix in="n" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 -1.6 1.5" result="m"/><feComposite in="SourceGraphic" in2="m" operator="in"/></filter></defs><g filter="url(#pen)"><g filter="url(#gr)">${body}</g></g>`;
+  svg.setAttribute('aria-label',paired?`Safety number shared with ${CONTACT.short}: ${CONTACT.safety}`:'Not yet paired');
+  document.querySelector('.menu .fp').hidden=true;
+  const note=document.querySelector('.menu .note');if(paired)note.textContent='Checked in person.';else note.hidden=true;
+  const stamp=document.querySelector('.menu .stmp');if(paired)stamp.querySelector('div').textContent='Matched';else stamp.hidden=true}
+
 /* ---------- open: replay what came before, then listen ---------- */
 drawOutbox();applyChannels();
 for(const k of Object.values(KNOBS))bridge.setSetting(k.setting,k.pos);
+if(!bridge.simulated)await realSheet();
 bridge.start();
+// a page opened (or reloaded) after the channel last changed still learns its state
+bridge.channels().then(list=>list.forEach(onChannel));
 booting=false;tick();setInterval(tick,20000);
 syncMirror();
 requestAnimationFrame(()=>toBottom(false));

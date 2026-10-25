@@ -37,8 +37,9 @@
 //! the channel is then in. Each message or broadcast this node sends is
 //! reported as [`OutboxState::Waiting`] when it is queued,
 //! [`OutboxState::Playing`] when its first frame goes out and
-//! [`OutboxState::Sent`] when its last repeat has finished. Receipts and
-//! pairing hellos are not reported.
+//! [`OutboxState::Sent`] when its last repeat has finished, or
+//! [`OutboxState::Failed`] if it will never go out. Receipts and pairing
+//! hellos are not reported.
 //!
 //! # Clocks
 //!
@@ -126,6 +127,9 @@ pub enum OutboxState {
     Playing,
     /// Every frame, repeats included, has finished going out.
     Sent,
+    /// It will not go out: no carrier took it, or the carrier refused or
+    /// could not play it.
+    Failed,
 }
 
 impl OutboxState {
@@ -135,6 +139,7 @@ impl OutboxState {
             OutboxState::Waiting => "waiting",
             OutboxState::Playing => "playing",
             OutboxState::Sent => "sent",
+            OutboxState::Failed => "failed",
         }
     }
 }
@@ -404,6 +409,20 @@ impl Node {
         self.receipts = on;
     }
 
+    /// This device's public identity, once unlocked.
+    pub fn me(&self) -> Option<PublicIdentity> {
+        self.me.as_ref().map(Identity::public)
+    }
+
+    /// The stored messages with `contact`, oldest first, or none while
+    /// locked.
+    pub fn conversation(&self, contact: ContactId) -> Vec<StoredMessage> {
+        self.store
+            .as_ref()
+            .map(|s| s.conversation(contact))
+            .unwrap_or_default()
+    }
+
     /// The contacts in the store, or none while locked.
     pub fn contacts(&self) -> Vec<Contact> {
         self.store.as_ref().map(Store::contacts).unwrap_or_default()
@@ -487,11 +506,13 @@ impl Node {
     /// Put a send in the outbox: reported waiting on the next tick, then
     /// as its transport reports its tag playing and sent.
     fn track(&mut self, tag: u16, id: [u8; 16]) {
-        self.outbox.insert(tag, id);
-        self.pending.push(NodeEvent::Outbox {
-            id,
-            state: OutboxState::Waiting,
-        });
+        let state = if self.transports.is_empty() {
+            OutboxState::Failed
+        } else {
+            self.outbox.insert(tag, id);
+            OutboxState::Waiting
+        };
+        self.pending.push(NodeEvent::Outbox { id, state });
     }
 
     /// Announce this device for pairing: a signed hello carrying its
@@ -573,6 +594,14 @@ impl Node {
                             events.push(NodeEvent::Outbox {
                                 id,
                                 state: OutboxState::Sent,
+                            });
+                        }
+                    }
+                    TransportEvent::Dropped(tag) => {
+                        if let Some(id) = self.outbox.remove(&tag) {
+                            events.push(NodeEvent::Outbox {
+                                id,
+                                state: OutboxState::Failed,
                             });
                         }
                     }
@@ -704,7 +733,7 @@ impl Node {
         match env.kind {
             Kind::Private => self.advance(ti, tag, &bytes, events),
             Kind::Public => self.on_public(ti, &env, events),
-            Kind::Control => self.on_control(&env, events),
+            Kind::Control => self.on_control(ti, &env, events),
         }
         self.progress.remove(&(ti, tag));
     }
@@ -890,15 +919,20 @@ impl Node {
         });
     }
 
-    fn on_control(&mut self, env: &Envelope, events: &mut Vec<NodeEvent>) {
+    fn on_control(&mut self, ti: usize, env: &Envelope, events: &mut Vec<NodeEvent>) {
         if self.already_have(&env.id) {
             return;
         }
         let me = self.me.as_ref().expect("unlocked");
         // The outer id is not signed; dedup on the inner envelope's id,
         // which is, and only once it has verified.
-        let Some((control, inner_id)) = control::open(me, &env.body, now_min()) else {
-            return;
+        let (control, inner_id) = match control::open(me, &env.body, now_min()) {
+            Ok(opened) => opened,
+            Err(control::Refused::NotForMe) => return,
+            Err(control::Refused::Bad) => {
+                self.failed.insert(ti);
+                return;
+            }
         };
         self.mark_seen(env.id);
         if self.seen.contains(&inner_id) {
@@ -1494,6 +1528,68 @@ mod tests {
         assert!(!wire.sent.lock().unwrap().is_empty(), "a receipt went out");
         assert!(outbox(events).is_empty());
         assert!(outbox(node.tick(3)).is_empty());
+    }
+
+    #[test]
+    fn a_send_with_no_transport_is_failed_at_once() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (a, b) = (Identity::generate(), Identity::generate());
+        let store = Store::create(&dir.path().join("a.db"), "pass", &a, "me").unwrap();
+        let c = store.add_contact("b", &b.public(), true).unwrap();
+        let mut node = Node::new(Some(store), vec![]);
+        let id = node.send(&[c], "hi", Channel::Sound);
+        assert_ne!(id, NOT_SENT);
+        let states: Vec<_> = node
+            .tick(1)
+            .into_iter()
+            .filter_map(|e| match e {
+                NodeEvent::Outbox { id, state } => Some((id, state)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(states, vec![(id, OutboxState::Failed)]);
+    }
+
+    #[test]
+    fn a_control_envelope_that_fails_verification_reports_failed() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (b, c) = (Identity::generate(), Identity::generate());
+        let (mut node, wire, _) = node(&dir, &b, &[]);
+        let mut hello = control::pair_hello(&c, "Cy", random_id(), now_min(), 60);
+        let last = hello.body.len() - 1;
+        hello.body[last] ^= 1;
+        wire.hear(&hello, 1);
+        assert_eq!(sound_states(&node.tick(1)), vec!["failed", "listening"]);
+
+        // A receipt sealed to someone else is not a failure, just not ours.
+        let other = Identity::generate();
+        let receipt = control::heard(&c, &other.public(), &[1; 16], random_id(), now_min(), 60);
+        wire.hear(&receipt, 2);
+        assert!(sound_states(&node.tick(2)).is_empty());
+    }
+
+    #[test]
+    fn conversation_lists_what_was_sent_and_nothing_while_locked() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (a, b) = (Identity::generate(), Identity::generate());
+        let (mut node, _, ids) = node(&dir, &a, &[&b]);
+        let id = node.send(&ids, "first", Channel::Sound);
+        let texts: Vec<_> = node
+            .conversation(ids[0])
+            .into_iter()
+            .map(|m| (m.id, m.text, m.outgoing))
+            .collect();
+        assert_eq!(texts, vec![(id, "first".to_string(), true)]);
+        assert!(Node::new(None, vec![]).conversation(ids[0]).is_empty());
+    }
+
+    #[test]
+    fn me_is_the_public_identity_once_unlocked() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let a = Identity::generate();
+        let (node, _, _) = node(&dir, &a, &[]);
+        assert_eq!(node.me(), Some(a.public()));
+        assert_eq!(Node::new(None, vec![]).me(), None);
     }
 
     #[test]
