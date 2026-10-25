@@ -1,10 +1,10 @@
 // Renders the README's pictures from the app itself, headless, on the GPU:
-//   node tools/media.cjs [icon] [logo] [banner] [shots] [demo] [settings]     (all of them when none is named)
+//   node tools/media.cjs [icon] [logo] [banner] [shots] [demo] [settings] [light]     (all of them when none is named)
 // Writes to docs/media/, and the app icon to app/src-tauri/icons/. Every picture is a page of this repository served by
 // tools/serve.cjs (the browser simulator for the front, a stand-in for the
 // Tauri shell for the first run); nothing on the screen is captured.
 // Needs Google Chrome (Playwright's channel 'chrome', for Metal) and ffmpeg for the GIFs, and gifsicle to make
-// the settings clip small enough. The icon needs python3 with Pillow, and macOS's iconutil for icon.icns.
+// the clips small enough. The icon needs python3 with Pillow, and macOS's iconutil for icon.icns.
 const path = require('path');
 const fs = require('fs');
 const { execFileSync } = require('child_process');
@@ -88,6 +88,7 @@ function virtualClock() {
     if (doing('shots')) await shots();
     if (doing('demo')) await demo();
     if (doing('settings')) await settingsClip();
+    if (doing('light')) await lightClip();
     shrink();
   } finally {
     await browser.close();
@@ -97,7 +98,7 @@ function virtualClock() {
   // Shrink the PNGs: full-window shots down to 1.5x, then everything but the logo to 256 colours (Pillow,
   // when python3 has it; the pictures are left as rendered otherwise).
   function shrink() {
-    const full = ['front.png'];
+    const full = ['front.png', 'light.png'];
     const py = `
 import sys
 from PIL import Image
@@ -407,12 +408,65 @@ for px, cut, out in json.loads(sys.argv[2]):
     console.log('focus by frame:', log.map((f, i) => i === 0 || f !== log[i - 1] ? `${i}:${f}` : null).filter(Boolean).join(' '));
     encode(tmp, n, FPS);
   }
+  // A message going out by light: the reply typed, the cursor to Flash, and the signal lamp opening in the message
+  // sheet's place, grey for its still moment, then the code at Normal (56 cells, 10 frames a second) until the message
+  // has shown its window, and the sheet again with the message sent. Stepped on the page's clock like the settings
+  // clip, at 20 frames a second, so each code frame is held for exactly two GIF frames: the code changes at its real
+  // rate. PLAY=<fps> plays the GIF back slower (the README says so if it is). Also the still of the flashing view.
+  async function lightClip() {
+    const FPS = 20, DT = 1000 / FPS, PLAY = +(process.env.PLAY || FPS);
+    const kept = { sound: 2, volume: 2, band: 0, light: 2, flash: 1, machine: 1, machvol: 2, carry: 1, hops: 3, hold: 2, quiet: 2, repeats: 2, lock: 1, expire: 0, inperson: 1 };
+    const setUp = kept => { try { localStorage.clear(); sessionStorage.clear(); sessionStorage.setItem('bombechat.simulated-machine', JSON.stringify(kept)); } catch (e) {} };
+    const TEXT = 'Water at the church on Fifth until dusk.';
+    // the still: the lamp mid-message, at 2x
+    {
+      const c = await ctx(1440, 900, 2);
+      await c.addInitScript(setUp, kept);
+      const p = await front(c, 'still');
+      await p.fill('#reply', TEXT);
+      await p.click('#flash');
+      await p.waitForFunction(() => +document.getElementById('lampn').textContent > 12, null, { timeout: 20000 });
+      await p.evaluate(() => { const a = document.activeElement; if (a && a.blur) a.blur(); });
+      await p.screenshot({ path: path.join(OUT, 'light.png') });
+      await c.close();
+      console.log('light.png');
+    }
+    const tmp = path.join(ROOT, 'checks', 'media', 'light'); fs.rmSync(tmp, { recursive: true, force: true }); fs.mkdirSync(tmp, { recursive: true });
+    const c = await ctx(1280, 800, 1.5);
+    await c.addInitScript(setUp, kept);
+    await c.addInitScript(virtualClock);
+    const p = await front(c, 'still');
+    await p.fill('#reply', TEXT);
+    const centre = async sel => { const b = await p.locator(sel).boundingBox(); return { x: b.x + b.width / 2, y: b.y + b.height / 2 }; };
+    const r = await p.locator('#reply').boundingBox();
+    let cur = { x: r.x + r.width * .62, y: r.y + r.height / 2 };
+    await p.mouse.move(cur.x, cur.y);
+    await p.waitForTimeout(800);
+    await p.evaluate(() => window.__clock.freeze());
+    let n = 0;
+    const frame = async () => { await p.evaluate(dt => window.__clock.step(dt), DT); await p.screenshot({ path: path.join(tmp, `f${String(n++).padStart(4, '0')}.jpg`), type: 'jpeg', quality: 94 }); };
+    const hold = async s => { for (let i = Math.round(s * FPS); i > 0; i--) await frame(); };
+    const ease = k => k < .5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2;
+    const glide = async (to, s) => { const from = { ...cur }, N = Math.round(s * FPS);
+      for (let i = 1; i <= N; i++) { const e = ease(i / N); cur = { x: from.x + (to.x - from.x) * e, y: from.y + (to.y - from.y) * e }; await p.mouse.move(cur.x, cur.y); await frame(); } };
+    await hold(.8);
+    await glide(await centre('#flash'), 1.0);
+    await hold(.3);
+    await p.mouse.down(); await p.mouse.up(); await p.evaluate(() => window.__press(true)); await frame(); await frame(); await p.evaluate(() => window.__press(false));
+    // the cursor off the code, onto the lamp's foot, while it shows
+    await glide({ x: cur.x + 40, y: cur.y + 60 }, .6);
+    // until the lamp has closed, then a moment on the sheet with the message sent
+    for (let i = 0; i < 20 * FPS && await p.evaluate(() => document.getElementById('lamp').hidden) === false; i++) await frame();
+    await hold(2.2);
+    await c.close();
+    encode(tmp, n, FPS, { W: 960, H: 600, name: 'light.gif', playFps: PLAY });
+  }
   // A GIF of a photoreal scene in motion: scaled down, softened a touch (the enamel's grain is what costs the most),
   // then held still wherever a pixel moved less than the eye can see, so the frames carry only what changed. One
   // palette for the whole clip, no dithering, then gifsicle's lossy pass when it is installed.
-  function encode(dir, n, FPS) {
-    const W = 800, H = 500, T = 8, size = W * H * 3;
-    const raw = path.join(dir, 'frames.rgb'), held = path.join(dir, 'held.rgb'), gif = path.join(dir, 'clip.gif'), out = path.join(OUT, 'settings.gif');
+  function encode(dir, n, FPS, { W = 800, H = 500, name = 'settings.gif', playFps = FPS } = {}) {
+    const T = 8, size = W * H * 3;
+    const raw = path.join(dir, 'frames.rgb'), held = path.join(dir, 'held.rgb'), gif = path.join(dir, 'clip.gif'), out = path.join(OUT, name);
     execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-framerate', String(FPS), '-i', path.join(dir, 'f%04d.jpg'), '-vf', `scale=${W}:${H}:flags=lanczos,gblur=sigma=.6`, '-f', 'rawvideo', '-pix_fmt', 'rgb24', raw]);
     // once a move has come to rest (a frame where nothing passes the threshold), the whole frame is brought up to
     // date, so what the threshold held back never lingers; the last frame is too, so the loop meets its first
@@ -429,10 +483,10 @@ for px, cut, out in json.loads(sys.argv[2]):
     }
     fs.closeSync(fin); fs.closeSync(fout);
     const vf = 'split[a][b];[a]palettegen=max_colors=128:stats_mode=full[p];[b][p]paletteuse=dither=none:diff_mode=rectangle';
-    execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', `${W}x${H}`, '-framerate', String(FPS), '-i', held, '-vf', vf, '-loop', '0', gif]);
+    execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', `${W}x${H}`, '-framerate', String(playFps), '-i', held, '-vf', vf, '-loop', '0', gif]);
     try { execFileSync('gifsicle', ['-O3', '--lossy=80', '-o', out, gif]); } catch (e) { console.warn('gifsicle not found, so the GIF is left unoptimised'); fs.copyFileSync(gif, out); }
     fs.rmSync(raw); fs.rmSync(held);
-    console.log('settings.gif', n, 'frames,', (n / FPS).toFixed(2), 's,', (fs.statSync(out).size / 1e6).toFixed(2), 'MB');
+    console.log(name, n, 'frames,', (n / playFps).toFixed(2), 's,', (fs.statSync(out).size / 1e6).toFixed(2), 'MB');
   }
   // a message arriving: the drums turn, the tape types in, the sheet stamps it.
   // Frames come from Chrome's screencast (what the page painted, with their times), then ffmpeg
