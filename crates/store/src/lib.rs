@@ -629,6 +629,21 @@ impl Store {
         .is_some()
     }
 
+    /// How many rows the store keeps of messages (sent, waiting in the
+    /// outbox or received; a receipt is kept on the message it is for)
+    /// and of broadcasts, in that order. For checks that something was
+    /// kept, or was not.
+    pub fn counts(&self) -> (usize, usize) {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let count = |table: &str| -> usize {
+            conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .expect("counting rows") as usize
+        };
+        (count("messages"), count("broadcasts"))
+    }
+
     /// Mark a stored message as heard (delivery receipt received).
     pub fn mark_heard(&self, id: &[u8; 16]) -> Result<(), StoreError> {
         let conn = self.conn.lock().expect("store mutex poisoned");

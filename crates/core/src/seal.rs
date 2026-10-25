@@ -308,6 +308,28 @@ pub fn seal_private(
     now_min: u32,
     ttl_min: u32,
 ) -> Envelope {
+    let mut id = [0u8; 16];
+    OsRng.fill_bytes(&mut id);
+    seal_private_under(from, to, text, id, now_min, ttl_min)
+}
+
+/// [`seal_private`] under the envelope id `id` instead of a random one.
+/// An id is chosen by whoever seals, so anyone can seal under any id; the
+/// seal and the signature bind it to the body, not to its first sealer.
+/// For tests that need two envelopes under one id; senders use
+/// [`seal_private`].
+///
+/// # Panics
+///
+/// As [`seal_private`].
+pub fn seal_private_under(
+    from: &Identity,
+    to: &[PublicIdentity],
+    text: &str,
+    id: [u8; 16],
+    now_min: u32,
+    ttl_min: u32,
+) -> Envelope {
     assert!(
         !to.is_empty() && to.len() <= u8::MAX as usize,
         "seal_private needs between 1 and 255 recipients"
@@ -319,8 +341,6 @@ pub fn seal_private(
         "sealed body of {body_len} bytes does not fit in an envelope"
     );
 
-    let mut id = [0u8; 16];
-    OsRng.fill_bytes(&mut id);
     let expires_min = now_min.saturating_add(ttl_min);
     let context = private_context(&id, expires_min, to.iter().map(|r| r.fingerprint()));
 
@@ -441,14 +461,26 @@ pub fn split_private_body(body: &[u8]) -> Result<(&[u8], Vec<&[u8]>), OpenError>
 ///
 /// Panics if the body would not fit in [`MAX_ENVELOPE`].
 pub fn seal_public(from: &Identity, text: &str, now_min: u32, ttl_min: u32) -> Envelope {
+    let mut id = [0u8; 16];
+    OsRng.fill_bytes(&mut id);
+    seal_public_under(from, text, id, now_min, ttl_min)
+}
+
+/// [`seal_public`] under the envelope id `id` instead of a random one. As
+/// with [`seal_private_under`], for tests; anyone may sign under any id.
+pub fn seal_public_under(
+    from: &Identity,
+    text: &str,
+    id: [u8; 16],
+    now_min: u32,
+    ttl_min: u32,
+) -> Envelope {
     let body_len = INNER_MIN + text.len();
     assert!(
         body_len <= MAX_BODY,
         "public body of {body_len} bytes does not fit in an envelope"
     );
 
-    let mut id = [0u8; 16];
-    OsRng.fill_bytes(&mut id);
     let expires_min = now_min.saturating_add(ttl_min);
     let context = public_context(&id, expires_min);
     let body = signed_inner(from, text, now_min, PUBLIC_SIG_DOMAIN, &context);

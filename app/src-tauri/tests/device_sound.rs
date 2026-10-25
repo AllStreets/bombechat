@@ -469,4 +469,12 @@ fn the_machine_tests_itself_through_the_commands_and_keeps_nothing() {
     assert!(states.iter().all(|s| s["tag"] == states[0]["tag"]));
     assert!(commands::contacts(&shared).unwrap().is_empty());
     assert!(commands::broadcasts(&shared).unwrap().is_empty());
+
+    // and in the store itself, opened again beside the machine: no message
+    // row of any kind (received, sent, waiting in the outbox, or one a
+    // receipt was kept on) and no broadcast row
+    let store =
+        bombechat_store::Store::open(&dir.path().join("bombechat.db"), "correct horse").unwrap();
+    assert_eq!(store.counts(), (0, 0));
+    assert!(store.waiting().is_empty() && store.waiting_broadcasts().is_empty());
 }

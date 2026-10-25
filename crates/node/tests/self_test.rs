@@ -169,12 +169,23 @@ fn a_laptop_hears_its_own_sealed_message_and_keeps_none_of_it() {
     );
     assert!(tests.iter().all(|(t, _)| *t == tag), "one tag throughout");
     let SelfTestState::Heard {
-        text, bytes, band, ..
+        text,
+        bytes,
+        band,
+        ms,
     } = &tests[2].1
     else {
         unreachable!("matched above");
     };
     assert_eq!(text, SELF_TEST_TEXT);
+    // heard no sooner than the envelope takes to play, and not much later:
+    // the rate made of it is at most the modem's
+    let on_air = (*bytes as f32 * 1000.0 / measured_rate(&ModemConfig::default())) as u64;
+    let ms = ms.expect("the time was measured");
+    assert!(
+        ms >= on_air && ms < on_air + 5_000,
+        "heard {ms} ms after it began to play; {on_air} ms on air"
+    );
     assert_eq!(*band, Some(Band::NearSilent));
     assert!(!l.node.self_testing());
 
@@ -224,6 +235,7 @@ fn a_laptop_hears_its_own_sealed_message_and_keeps_none_of_it() {
     let id = played[0].id;
     let store = Store::open(&l.dir.path().join("me.db"), PASS).unwrap();
     assert!(!store.has_message(&id) && store.message(&id).is_none());
+    assert_eq!(store.counts(), (0, 0), "no message or broadcast row");
     assert!(store.waiting().is_empty() && store.broadcasts().is_empty());
     assert!(store.contacts().is_empty());
 }

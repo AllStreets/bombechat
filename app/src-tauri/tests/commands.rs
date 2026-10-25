@@ -412,6 +412,7 @@ fn a_self_test_reaches_the_page_with_its_rate_and_band() {
         (SelfTestState::NotHeard, "unheard"),
         (SelfTestState::NotPlayed, "unplayed"),
         (SelfTestState::Stopped, "stopped"),
+        (SelfTestState::RoomNeverQuiet, "noquiet"),
     ] {
         assert_eq!(
             bridge_event(&event(state)),
@@ -425,7 +426,7 @@ fn a_self_test_reaches_the_page_with_its_rate_and_band() {
         bridge_event(&event(SelfTestState::Heard {
             text: "The machine hears itself.".into(),
             bytes: 379,
-            ms: 23_500,
+            ms: Some(23_500),
             band: Some(Band::NearSilent),
         })),
         (
@@ -435,20 +436,24 @@ fn a_self_test_reaches_the_page_with_its_rate_and_band() {
                     "rate": 16.1, "band": "near silent" })
         )
     );
-    // by light there is no band; a test heard at once is not a division by
-    // nothing
-    let (_, light) = bridge_event(&NodeEvent::SelfTest {
-        tag: 1,
-        channel: Channel::Light,
-        state: SelfTestState::Heard {
-            text: "x".into(),
-            bytes: 300,
-            ms: 0,
-            band: None,
-        },
-    });
-    assert_eq!(light["rate"], json!(300_000.0));
-    assert!(light.get("band").is_none());
+    // by light there is no band; a time not measured (or measured as
+    // nothing) makes no rate at all, rather than an enormous one
+    for ms in [None, Some(0)] {
+        let (_, light) = bridge_event(&NodeEvent::SelfTest {
+            tag: 1,
+            channel: Channel::Light,
+            state: SelfTestState::Heard {
+                text: "x".into(),
+                bytes: 300,
+                ms,
+                band: None,
+            },
+        });
+        assert_eq!(
+            light,
+            json!({ "tag": 1, "channel": "light", "state": "heard", "text": "x", "bytes": 300 })
+        );
+    }
 }
 
 #[test]

@@ -206,6 +206,53 @@ fn has_message_and_mark_heard() {
 }
 
 #[test]
+fn counts_say_how_many_messages_and_broadcasts_are_kept() {
+    let d = tempdir().unwrap();
+    let me = Identity::generate();
+    let store = Store::create(&d.path().join("c.db"), "correct horse", &me, "Ana").unwrap();
+    assert_eq!(store.counts(), (0, 0));
+    let contact = store
+        .add_contact("Marisol Ortega", &marisol(), false)
+        .unwrap();
+    let m = StoredMessage {
+        id: [6u8; 16],
+        contact,
+        outgoing: true,
+        text: "hi".to_string(),
+        channel: Channel::Sound,
+        at_min: 3,
+        heard: false,
+        delivery: Delivery::Waiting,
+    };
+    store.put_outgoing(&m, &[1, 2, 3]).unwrap();
+    store
+        .put_message(&StoredMessage {
+            id: [7u8; 16],
+            outgoing: false,
+            delivery: Delivery::Sent,
+            ..m.clone()
+        })
+        .unwrap();
+    store
+        .put_broadcast(
+            &StoredBroadcast {
+                id: [8u8; 16],
+                outgoing: false,
+                signer: [1u8; 32],
+                verified: false,
+                hops: 0,
+                text: "Road north is open.".to_string(),
+                at_min: 4,
+                delivery: Delivery::Sent,
+                channel: Channel::Sound,
+            },
+            None,
+        )
+        .unwrap();
+    assert_eq!(store.counts(), (2, 1));
+}
+
+#[test]
 fn put_message_with_existing_id_upserts() {
     let d = tempdir().unwrap();
     let path = d.path().join("b.db");

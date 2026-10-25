@@ -299,6 +299,10 @@ pub const SELF_TEST_TEXT: &str = "The machine hears itself.";
 /// envelope's length at the channel's rate, and then this.
 pub const SELF_TEST_MS: u64 = 30_000;
 
+/// A self-test by sound still waiting for a quiet room this long, in ms,
+/// is given up ([`SelfTestState::RoomNeverQuiet`]): two minutes.
+pub const SELF_TEST_QUIET_MS: u64 = 120_000;
+
 /// How a self-test is getting on ([`NodeEvent::SelfTest`]).
 #[derive(Clone, Debug, PartialEq)]
 pub enum SelfTestState {
@@ -310,14 +314,21 @@ pub enum SelfTestState {
     Playing,
     /// It came back and opened: `text` as sealed, `bytes` the whole
     /// envelope, heard `ms` after it began to play, on `band` (sound).
+    /// `ms` is never less than the envelope takes to go out at the
+    /// carrier's rate, and is `None` when the time was not measured (it
+    /// opened before its carrier said it was playing), so no rate made of
+    /// it is ever faster than the carrier.
     Heard {
         text: String,
         bytes: usize,
-        ms: u64,
+        ms: Option<u64>,
         band: Option<Band>,
     },
     /// It went out, and nothing came back in time ([`SELF_TEST_MS`]).
     NotHeard,
+    /// By sound: the room never went quieter than Send under in
+    /// [`SELF_TEST_QUIET_MS`], so it never played.
+    RoomNeverQuiet,
     /// The carrier would not take it (a full queue, a speaker that would
     /// not play).
     NotPlayed,
@@ -622,8 +633,12 @@ struct SelfTest {
     /// The tag it goes out under (by light, the latest showing).
     tag: u16,
     channel: Channel,
+    /// When it was started, by `now_ms` (the last tick's).
+    since_ms: u64,
     /// When it first went out, by `now_ms`.
     playing_ms: Option<u64>,
+    /// How long the envelope takes to go out at the carrier's rate.
+    airtime_ms: u64,
     /// How long after it first went out it is given up as not heard.
     limit_ms: u64,
 }
@@ -1360,7 +1375,9 @@ impl Node {
             envelope,
             tag,
             channel,
+            since_ms: self.now_ms,
             playing_ms: None,
+            airtime_ms,
             limit_ms: airtime_ms + SELF_TEST_MS,
         });
         self.pending.push(NodeEvent::SelfTest {
@@ -1587,6 +1604,13 @@ impl Node {
         }) {
             self.end_self_test(SelfTestState::NotHeard, Some(&mut events));
         }
+        if self.self_test.as_ref().is_some_and(|t| {
+            t.channel == Channel::Sound
+                && t.playing_ms.is_none()
+                && now_ms.saturating_sub(t.since_ms) >= SELF_TEST_QUIET_MS
+        }) {
+            self.end_self_test(SelfTestState::RoomNeverQuiet, Some(&mut events));
+        }
 
         let reassemblers = &self.reassemblers;
         self.progress
@@ -1669,7 +1693,9 @@ impl Node {
         // the transport and one outbox entry, so a refusal or a sent report would land on the wrong message
         let tag = loop {
             let tag = OsRng.next_u32() as u16;
-            if !self.outbox.contains_key(&tag) && self.self_test.as_ref().is_none_or(|t| t.tag != tag) {
+            if !self.outbox.contains_key(&tag)
+                && self.self_test.as_ref().is_none_or(|t| t.tag != tag)
+            {
                 break tag;
             }
         };
@@ -1685,7 +1711,15 @@ impl Node {
         tag
     }
 
+    /// Remember `id` as handled. Never the live self-test's id: anyone may
+    /// put a notice or a control envelope under it (the id is chosen by
+    /// whoever seals, and a control envelope's outer id is not even
+    /// signed), and that must not keep the test out. The test's own end
+    /// remembers it, once the test is over.
     fn mark_seen(&mut self, id: [u8; 16]) {
+        if self.self_test.as_ref().is_some_and(|t| t.id == id) {
+            return;
+        }
         if self.seen.insert(id) {
             self.seen_order.push_back(id);
             if self.seen_order.len() > SEEN_CAP {
@@ -1779,7 +1813,10 @@ impl Node {
                 }
                 Some(Ok(layout)) => layout,
             };
-            if self.already_have(&layout.id) {
+            // the live self-test's id is never taken as handled: only its
+            // own opening, from this machine, settles it (self_tested)
+            let testing = self.self_test.as_ref().is_some_and(|t| t.id == layout.id);
+            if !testing && self.already_have(&layout.id) {
                 self.resend_receipt(layout.id, self.channel(ti));
                 self.progress.insert(key, Progress::Settled);
                 return;
@@ -1919,9 +1956,13 @@ impl Node {
         let state = SelfTestState::Heard {
             text: opened.text,
             bytes: test.envelope.encode().len(),
+            // never sooner than it takes to go out at the carrier's rate:
+            // a carrier that reports playing late cannot make it look
+            // faster than the modem is
             ms: test
                 .playing_ms
-                .map_or(0, |at| self.now_ms.saturating_sub(at)),
+                .map(|at| self.now_ms.saturating_sub(at).max(test.airtime_ms))
+                .filter(|ms| *ms > 0),
             band: (test.channel == Channel::Sound)
                 .then(|| self.band())
                 .flatten(),
@@ -3789,36 +3830,144 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn an_envelope_under_the_tests_id_signed_by_anyone_else_is_dropped_and_the_real_one_still_lands(
-    ) {
-        let dir = tempfile::tempdir().unwrap();
-        let (me, them) = (Identity::generate(), Identity::generate());
-        let (mut node, wire, _) = node(&dir, &me, &[]);
+    /// A sound test started, with its tag and the envelope it sent.
+    fn testing(me: &Identity, dir: &tempfile::TempDir) -> (Node, Wire, u16, Envelope) {
+        let (mut node, wire, _) = node(dir, me, &[]);
         node.start_self_test(Channel::Sound).unwrap();
+        // its waiting is reported on the first tick
+        assert_eq!(self_tests(&node.tick(0)).len(), 1);
         let tag = wire.last_tag();
         let real = wire.envelopes().remove(0);
+        (node, wire, tag, real)
+    }
 
-        // someone who heard the id seals their own envelope to this machine
-        // and passes it off under that id
-        let forged = seal_private(&them, &[me.public()], SELF_TEST_TEXT, now_min(), TTL_MIN);
-        node.self_test.as_mut().unwrap().id = forged.id;
+    /// The real test's envelope arrives: it must be heard.
+    fn the_real_one_lands(node: &mut Node, wire: &Wire, real: &Envelope, tag: u16, now: u64) {
+        wire.hear(real, tag);
+        let ev = node.tick(now);
+        assert!(
+            matches!(
+                self_tests(&ev).last(),
+                Some((t, SelfTestState::Heard { text, .. })) if *t == tag && text == SELF_TEST_TEXT
+            ),
+            "the real test was kept out: {ev:?}"
+        );
+        assert!(messages(&ev).is_empty());
+        assert!(!node.self_testing());
+        assert!(node.seen.contains(&real.id), "used up once heard");
+    }
+
+    #[test]
+    fn a_private_envelope_another_identity_seals_under_the_tests_id_does_not_settle_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (me, them) = (Identity::generate(), Identity::generate());
+        let (mut node, wire, tag, real) = testing(&me, &dir);
+
+        // someone who heard the id seals their own message to this machine
+        // under it: it opens, but it is not this machine's
+        let forged = bombechat_core::seal_private_under(
+            &them,
+            &[me.public()],
+            SELF_TEST_TEXT,
+            real.id,
+            now_min(),
+            TTL_MIN,
+        );
+        assert_eq!(forged.id, real.id);
         wire.hear(&forged, 0x0f0f);
         let ev = node.tick(1);
-        assert!(!self_tests(&ev)
-            .iter()
-            .any(|(_, s)| matches!(s, SelfTestState::Heard { .. })));
+        assert!(self_tests(&ev).is_empty() && messages(&ev).is_empty());
         assert!(node.self_testing(), "still waiting for the real one");
-        assert!(!node.seen.contains(&forged.id), "the id is not used up");
+        assert!(!node.seen.contains(&real.id), "the id is not used up");
+        the_real_one_lands(&mut node, &wire, &real, tag, 2);
+    }
 
-        node.self_test.as_mut().unwrap().id = real.id;
+    #[test]
+    fn a_strangers_notice_under_the_tests_id_does_not_keep_the_test_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let (me, them) = (Identity::generate(), Identity::generate());
+        let (mut node, wire, tag, real) = testing(&me, &dir);
+
+        // a notice, validly signed by a stranger, under the test's id: it
+        // is kept as any notice is, and the test is untouched
+        let notice = bombechat_core::seal_public_under(
+            &them,
+            "Road north is open.",
+            real.id,
+            now_min(),
+            TTL_MIN,
+        );
+        wire.hear(&notice, 0x0a0a);
+        let ev = node.tick(1);
+        assert!(ev.iter().any(|e| matches!(e, NodeEvent::Broadcast { .. })));
+        assert!(self_tests(&ev).is_empty());
+        assert!(!node.seen.contains(&real.id), "the id is not used up");
+        the_real_one_lands(&mut node, &wire, &real, tag, 2);
+    }
+
+    #[test]
+    fn a_strangers_control_envelope_under_the_tests_id_does_not_keep_the_test_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let (me, them) = (Identity::generate(), Identity::generate());
+        let (mut node, wire, tag, real) = testing(&me, &dir);
+
+        // a hello whose outer id (not signed) is the test's
+        let hello = control::pair_hello(&them, "Ben", real.id, now_min(), TTL_MIN);
+        wire.hear(&hello, 0x0b0b);
+        let ev = node.tick(1);
+        assert!(ev.iter().any(|e| matches!(e, NodeEvent::PairOffer { .. })));
+        assert!(!node.seen.contains(&real.id), "the id is not used up");
+        the_real_one_lands(&mut node, &wire, &real, tag, 2);
+    }
+
+    #[test]
+    fn a_test_heard_with_no_time_measured_reports_no_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let me = Identity::generate();
+        // the carrier never says it is playing: no time to measure from
+        let (mut node, wire, tag, real) = testing(&me, &dir);
         wire.hear(&real, tag);
-        let ev = node.tick(2);
+        let ev = node.tick(1);
         assert!(matches!(
             self_tests(&ev).last(),
-            Some((t, SelfTestState::Heard { text, .. })) if *t == tag && text == SELF_TEST_TEXT
+            Some((_, SelfTestState::Heard { ms: None, .. }))
         ));
-        assert!(messages(&ev).is_empty());
+
+        // and one heard in the same tick it began to play, on a carrier that
+        // measures no rate to floor it at, has no time either
+        let (mut node, wire, tag, real) = testing(&me, &tempfile::tempdir().unwrap());
+        wire.news.lock().unwrap().push(TransportEvent::Playing(tag));
+        wire.hear(&real, tag);
+        let ev = node.tick(5);
+        assert!(matches!(
+            self_tests(&ev).last(),
+            Some((_, SelfTestState::Heard { ms: None, .. }))
+        ));
+    }
+
+    #[test]
+    fn a_test_that_never_plays_for_a_loud_room_is_given_up_after_two_minutes() {
+        let dir = tempfile::tempdir().unwrap();
+        let me = Identity::generate();
+        let (mut node, _wire, tag, _) = testing(&me, &dir);
+        let mut now = 0;
+        let mut ended = None;
+        // counted in ticks of 500 ms: nothing ever says it is playing
+        for round in 1..=1000u64 {
+            now = round * 500;
+            if let Some(s) = self_tests(&node.tick(now))
+                .into_iter()
+                .find(|(_, s)| *s != SelfTestState::Waiting)
+            {
+                ended = Some(s);
+                break;
+            }
+        }
+        assert_eq!(ended, Some((tag, SelfTestState::RoomNeverQuiet)));
+        assert_eq!(
+            now, SELF_TEST_QUIET_MS,
+            "given up at two minutes, not before"
+        );
         assert!(!node.self_testing());
     }
 

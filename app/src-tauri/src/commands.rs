@@ -716,10 +716,12 @@ fn message_json(m: &StoredMessage) -> Value {
 }
 
 /// A self-test's progress as the page sees it: `state` "waiting",
-/// "playing", "heard", "unheard", "unplayed" or "stopped". Heard, it
-/// carries the text that came back, the envelope's `bytes`, the `ms` from
-/// its first play to its last chunk opening, the `rate` that makes in
-/// bytes a second, and for sound the `band` it went on.
+/// "playing", "heard", "unheard", "unplayed", "noquiet" (the room never
+/// went quiet enough to play it) or "stopped". Heard, it carries the text
+/// that came back, the envelope's `bytes`, and for sound the `band` it
+/// went on; and, when the time was measured, the `ms` from its first play
+/// to its last chunk opening and the `rate` that makes in bytes a second.
+/// Unmeasured, it has neither: no rate is made up.
 fn self_test_json(tag: u16, channel: Channel, state: &SelfTestState) -> Value {
     let word = match state {
         SelfTestState::Waiting => "waiting",
@@ -727,6 +729,7 @@ fn self_test_json(tag: u16, channel: Channel, state: &SelfTestState) -> Value {
         SelfTestState::Heard { .. } => "heard",
         SelfTestState::NotHeard => "unheard",
         SelfTestState::NotPlayed => "unplayed",
+        SelfTestState::RoomNeverQuiet => "noquiet",
         SelfTestState::Stopped => "stopped",
     };
     let mut out = json!({ "tag": tag, "channel": channel_name(channel), "state": word });
@@ -737,11 +740,13 @@ fn self_test_json(tag: u16, channel: Channel, state: &SelfTestState) -> Value {
         band,
     } = state
     {
-        let rate = *bytes as f64 * 1000.0 / (*ms).max(1) as f64;
         out["text"] = json!(text);
         out["bytes"] = json!(bytes);
-        out["ms"] = json!(ms);
-        out["rate"] = json!((rate * 10.0).round() / 10.0);
+        if let Some(ms) = ms.filter(|ms| *ms > 0) {
+            let rate = *bytes as f64 * 1000.0 / ms as f64;
+            out["ms"] = json!(ms);
+            out["rate"] = json!((rate * 10.0).round() / 10.0);
+        }
         if let Some(b) = band {
             out["band"] = json!(band_name(*b));
         }
