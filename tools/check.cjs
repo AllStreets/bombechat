@@ -62,7 +62,7 @@ function tauriStub({ hello, safety, people, talk, afterUnlock, settings }) {
         case 'unlock': unlocked = true; for (const [name, payload] of afterUnlock || []) window.__emit(name, payload); return Promise.resolve(null);
         case 'machine': return Promise.resolve({ name: 'Machine No. 1', key: 'a3f09c1e'.repeat(16), you: 'Ana Lima', held: 0, version: '0.1.0' });
         case 'conversation': return Promise.resolve((talk || {})[args.contactId] || []);
-        case 'settings': return settings === 'unread' ? Promise.reject('the machine did not answer') : Promise.resolve(settings || { sound: 2, volume: 2, band: 0, light: 0, flash: 1, machine: 1, machvol: 2, carry: 1, hops: 3, hold: 2, quiet: 2, repeats: 2, lock: 1, expire: 2, inperson: 1 });
+        case 'settings': return settings === 'unread' ? Promise.reject('the machine did not answer') : Promise.resolve(settings || { sound: 2, volume: 2, band: 0, light: 0, flash: 1, machine: 1, machvol: 2, carry: 1, hops: 3, hold: 2, quiet: 2, repeats: 2, lock: 1, expire: 0, inperson: 1 });
         // as the device answers on this build: relay and light wait for their features, the key check is always on
         case 'setting_notes': return settings === 'unread' ? Promise.reject('the machine did not answer') : Promise.resolve({ carry: { note: 'comes with relay' }, hops: { note: 'comes with relay' }, hold: { note: 'comes with relay' },
           light: { note: 'comes with light' }, flash: { note: 'comes with light' }, inperson: { note: 'always, on this build', value: 1 } });
@@ -390,7 +390,7 @@ function measureText() {
       await sb.addInitScript(stale => { try { localStorage.clear(); if (stale) localStorage.setItem('bombechat.settings', JSON.stringify({ sound: 2, light: 2, quiet: 0 })); } catch (e) {} }, stale);
       if (where === 'app') {
         await sb.addInitScript(tauriStub, { hello: 'Marisol Ortega', safety: '', people: [{ id: 1, name: 'Marisol Ortega', checked: true, safety: '' }],
-          settings: { sound: 1, volume: 2, band: 0, light: 0, flash: 1, machine: 1, machvol: 2, carry: 1, hops: 3, hold: 2, quiet: 4, repeats: 2, lock: 1, expire: 2, inperson: 1 } });
+          settings: { sound: 1, volume: 2, band: 0, light: 0, flash: 1, machine: 1, machvol: 2, carry: 1, hops: 3, hold: 2, quiet: 4, repeats: 2, lock: 1, expire: 0, inperson: 1 } });
         await sb.goto(url('still'));
         await sb.waitForSelector('.unlock input[name=pass]');
         await sb.fill('.unlock input[name=pass]', 'correct horse');
@@ -448,7 +448,7 @@ function measureText() {
       watch(ms, `machine sound, ${where}`);
       if (where === 'app') {
         await ms.addInitScript(tauriStub, { hello: 'Marisol Ortega', safety: '', people: [{ id: 1, name: 'Marisol Ortega', checked: true, safety: '' }],
-          settings: { sound: 2, volume: 2, band: 0, light: 0, flash: 1, machine: 0, machvol: 4, carry: 1, hops: 3, hold: 2, quiet: 2, repeats: 2, lock: 1, expire: 2, inperson: 1 } });
+          settings: { sound: 2, volume: 2, band: 0, light: 0, flash: 1, machine: 0, machvol: 4, carry: 1, hops: 3, hold: 2, quiet: 2, repeats: 2, lock: 1, expire: 0, inperson: 1 } });
         await ms.goto(url('still'));
         await ms.waitForSelector('.unlock input[name=pass]');
         await ms.fill('.unlock input[name=pass]', 'correct horse');

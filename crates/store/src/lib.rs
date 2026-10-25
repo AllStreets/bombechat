@@ -266,8 +266,7 @@ impl Store {
         let conn = open_existing(path)?;
         key_connection(&conn, &key)?;
 
-        conn.execute_batch(SCHEMA)
-            .map_err(|_| StoreError::Corrupt)?;
+        conn.execute_batch(SCHEMA).map_err(|_| StoreError::Corrupt)?;
         store_identity(&conn, me, my_name)?;
 
         guard.disarm();
@@ -484,18 +483,16 @@ impl Store {
             .expect("querying conversation");
 
         rows.map(|r| r.expect("reading message row"))
-            .map(
-                |(id, contact, outgoing, text, channel, at_min, heard, delivery)| StoredMessage {
-                    id: id.try_into().expect("message id is 16 bytes"),
-                    contact: ContactId(contact),
-                    outgoing: outgoing != 0,
-                    text,
-                    channel: Channel::from_i64(channel).expect("valid channel"),
-                    at_min,
-                    heard: heard != 0,
-                    delivery: Delivery::from_i64(delivery),
-                },
-            )
+            .map(|(id, contact, outgoing, text, channel, at_min, heard, delivery)| StoredMessage {
+                id: id.try_into().expect("message id is 16 bytes"),
+                contact: ContactId(contact),
+                outgoing: outgoing != 0,
+                text,
+                channel: Channel::from_i64(channel).expect("valid channel"),
+                at_min,
+                heard: heard != 0,
+                delivery: Delivery::from_i64(delivery),
+            })
             .collect()
     }
 
@@ -579,10 +576,7 @@ impl Store {
 
 /// Derive the 32-byte SQLCipher key from `passphrase` and `salt` with
 /// Argon2id (`m = 64 MiB`, `t = 3`, `p = 1`).
-fn derive_key(
-    passphrase: &str,
-    salt: &[u8; SALT_LEN],
-) -> Result<Zeroizing<[u8; ARGON2_KEY_LEN]>, StoreError> {
+fn derive_key(passphrase: &str, salt: &[u8; SALT_LEN]) -> Result<Zeroizing<[u8; ARGON2_KEY_LEN]>, StoreError> {
     let params = Params::new(
         ARGON2_MEMORY_KIB,
         ARGON2_ITERATIONS,
@@ -603,10 +597,7 @@ fn derive_key(
 /// literal (`x'...'`) so SQLCipher does not re-derive a key from it. The hex
 /// string and the pragma statement that embeds it both live in `Zeroizing`
 /// buffers.
-fn key_connection(
-    conn: &Connection,
-    key: &Zeroizing<[u8; ARGON2_KEY_LEN]>,
-) -> Result<(), StoreError> {
+fn key_connection(conn: &Connection, key: &Zeroizing<[u8; ARGON2_KEY_LEN]>) -> Result<(), StoreError> {
     let mut hex = Zeroizing::new(String::with_capacity(ARGON2_KEY_LEN * 2));
     for byte in key.iter() {
         write!(hex, "{byte:02x}").expect("writing to a String cannot fail");
@@ -629,9 +620,7 @@ fn verify_key(conn: &Connection) -> Result<(), StoreError> {
         row.get::<_, i64>(0)
     }) {
         Ok(_) => Ok(()),
-        Err(rusqlite::Error::SqliteFailure(e, _))
-            if e.code == rusqlite::ErrorCode::NotADatabase =>
-        {
+        Err(rusqlite::Error::SqliteFailure(e, _)) if e.code == rusqlite::ErrorCode::NotADatabase => {
             Err(StoreError::WrongPassphrase)
         }
         Err(_) => Err(StoreError::Corrupt),
@@ -821,10 +810,7 @@ mod tests {
 
         let store = Store::open(&path, "pw").unwrap();
         let old = store.message(&[7u8; 16]).unwrap();
-        assert_eq!(
-            (old.text.as_str(), old.delivery),
-            ("Bring water.", Delivery::Sent)
-        );
+        assert_eq!((old.text.as_str(), old.delivery), ("Bring water.", Delivery::Sent));
         assert!(store.waiting().is_empty());
         let new = StoredMessage {
             id: [8u8; 16],

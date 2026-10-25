@@ -68,7 +68,7 @@ pub const SETTINGS: [(&str, usize, usize); 15] = [
     ("quiet", 5, 2),
     ("repeats", 4, 2),
     ("lock", 2, 1),
-    ("expire", 4, 2),
+    ("expire", 4, 0),
     ("inperson", 2, 1),
 ];
 

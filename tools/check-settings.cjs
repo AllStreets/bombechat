@@ -143,7 +143,7 @@ const url = q => 'http://127.0.0.1:4811/' + path.relative(ROOTDIR, page) + (q ? 
     await w.evaluate(() => document.querySelector('.grp:nth-of-type(1)') && document.querySelector('.row[data-id="hops"]').scrollIntoView({ block: 'center' }));
     await w.waitForTimeout(200);
     await w.screenshot({ path: path.join(out, `x2-${width}-card-relay.png`), clip: cardBox });
-    await w.evaluate(() => document.querySelector('.row[data-id="lock"]').scrollIntoView({ block: 'end' }));
+    await w.evaluate(() => { const c = document.getElementById('sched'); c.scrollTop = c.scrollHeight; });
     await w.waitForTimeout(200);
     await w.screenshot({ path: path.join(out, `x2-${width}-card-privacy.png`), clip: cardBox });
     await w.evaluate(() => document.querySelector('.row[data-id="light"]').scrollIntoView({ block: 'center' }));
@@ -171,14 +171,14 @@ const url = q => 'http://127.0.0.1:4811/' + path.relative(ROOTDIR, page) + (q ? 
     await ctx.addInitScript(stale => { try { localStorage.clear(); if (stale) localStorage.setItem('bombechat.settings', JSON.stringify({ sound: 2, hops: 0, quiet: 0 })); } catch (e) {} }, stale);
     // every setting as the machine keeps it; the ones it can't change (relay, light, the key check) come as the device
     // reports them, and the page shows those from setting_notes, not from these values
-    const all = { sound: 1, volume: 2, band: 0, light: 0, flash: 1, machine: 1, machvol: 2, carry: 1, hops: 6, hold: 2, quiet: 4, repeats: 2, lock: 1, expire: 0, inperson: 1 };
+    const all = { sound: 1, volume: 2, band: 0, light: 0, flash: 1, machine: 1, machvol: 2, carry: 1, hops: 6, hold: 2, quiet: 4, repeats: 2, lock: 1, expire: 3, inperson: 1 };
     const kept = Object.fromEntries(Object.entries(all).filter(([id]) => !(id in NOTES)));
     if (where === 'app') await ctx.addInitScript(({ kept, notes }) => {
       window.__calls = [];
       window.__TAURI__ = { event: { listen: () => Promise.resolve(() => {}) }, core: { invoke: (cmd, args) => { window.__calls.push([cmd, args]);
         return Promise.resolve(cmd === 'settings' ? kept : cmd === 'setting_notes' ? notes : cmd === 'channels' ? [{ channel: 'sound', state: 'listening', rate: 16.1, band: 'near silent' }] : null); } } };
     }, { kept: all, notes: NOTES });
-    else await ctx.addInitScript(kept => { try { sessionStorage.setItem('bombechat.simulated-machine', JSON.stringify(kept)); } catch (e) {} }, { sound: 1, hops: 6, quiet: 4, expire: 0 });
+    else await ctx.addInitScript(kept => { try { sessionStorage.setItem('bombechat.simulated-machine', JSON.stringify(kept)); } catch (e) {} }, { sound: 1, hops: 6, quiet: 4, expire: 3 });
     const sp = await ctx.newPage();
     sp.on('pageerror', e => problems.push(`${tag}: page error: ` + e.message));
     sp.on('console', m => m.type() === 'error' && problems.push(`${tag}: console: ` + m.text()));
@@ -271,7 +271,7 @@ const url = q => 'http://127.0.0.1:4811/' + path.relative(ROOTDIR, page) + (q ? 
       window.__calls = [];
       window.__TAURI__ = { event: { listen: () => Promise.resolve(() => {}) }, core: { invoke: (cmd, args) => { window.__calls.push([cmd, args]);
         if (cmd === 'set_setting' && args.id === 'lock') return Promise.reject('Unlock first, then the lock can come off');
-        return Promise.resolve(cmd === 'settings' ? { sound: 2, volume: 2, band: 0, light: 0, flash: 1, machine: 1, machvol: 2, carry: 1, hops: 3, hold: 2, quiet: 2, repeats: 2, lock: 1, expire: 2, inperson: 1 }
+        return Promise.resolve(cmd === 'settings' ? { sound: 2, volume: 2, band: 0, light: 0, flash: 1, machine: 1, machvol: 2, carry: 1, hops: 3, hold: 2, quiet: 2, repeats: 2, lock: 1, expire: 0, inperson: 1 }
           : cmd === 'setting_notes' ? notes : cmd === 'channels' ? [{ channel: 'sound', state: 'listening', rate: 12.4, band: 'audible' }] : null); } } };
     }, NOTES);
     const rp = await ctx.newPage();

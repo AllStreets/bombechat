@@ -410,9 +410,12 @@ pub struct Node {
     reception: Vec<&'static str>,
     /// Where the Sound switch is.
     sound: SoundSwitch,
-    /// The latest minute stamped on a stored message: stamps never go
-    /// back before it, whatever the wall clock does.
-    last_stamp: u32,
+    /// The machine's clock for stamping stored messages: the wall minute
+    /// read once, at the `now_ms` it was read, and moved on only by
+    /// `now_ms` after that. See [`Node::stamp`].
+    clock: Option<(u64, u32)>,
+    /// The wall clock, in minutes since the Unix epoch.
+    wall: fn() -> u32,
 }
 
 impl Node {
@@ -440,7 +443,8 @@ impl Node {
             failed: HashSet::new(),
             reception,
             sound: SoundSwitch::ListenAndSend,
-            last_stamp: 0,
+            clock: None,
+            wall: now_min,
         };
         if let Some(store) = store {
             node.unlock(store);
@@ -454,7 +458,6 @@ impl Node {
     /// under the same envelope, or marked failed if it has expired.
     pub fn unlock(&mut self, store: Store) {
         self.me = Some(store.me());
-        self.last_stamp = self.last_stamp.max(store.latest_at_min().unwrap_or(0));
         let waiting = store.waiting();
         self.store = Some(store);
         let now = now_min();
@@ -545,13 +548,24 @@ impl Node {
             .unwrap_or(0)
     }
 
-    /// The minute to stamp on a message stored now: the wall clock's,
-    /// but never earlier than the last stamp, so a clock set back cannot
-    /// make a new message look older than ones before it (and be erased
-    /// early by "Delete messages after").
+    /// The latest minute a stored message is stamped with, if any.
+    pub fn latest_stamp(&self) -> Option<u32> {
+        self.store.as_ref().and_then(Store::latest_at_min)
+    }
+
+    /// The minute to stamp on a message stored now, by the machine's own
+    /// clock: the wall clock as it read the first time this session
+    /// stamped anything, moved on since only by the monotonic `now_ms`.
+    /// A wall clock that jumps forward or back while the app runs moves
+    /// no stamp, so stamps keep the order messages came in, and none
+    /// is lifted by a jump into the next session (each session reads the
+    /// wall clock afresh). The minute shown on the sheet is this stamp.
     fn stamp(&mut self) -> u32 {
-        self.last_stamp = self.last_stamp.max(now_min());
-        self.last_stamp
+        let now_ms = self.now_ms;
+        let wall = self.wall;
+        let (at_ms, at_min) = *self.clock.get_or_insert_with(|| (now_ms, wall()));
+        let elapsed = (now_ms.saturating_sub(at_ms) / 60_000).min(u64::from(u32::MAX)) as u32;
+        at_min.saturating_add(elapsed)
     }
 
     /// Why nothing may be sent by sound right now, if so: the channel
@@ -1779,15 +1793,51 @@ mod tests {
         assert!(sound_states(&node.tick(2)).is_empty());
     }
 
+    /// The wall clock the stamp tests set, in minutes.
+    static WALL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    fn test_wall() -> u32 {
+        WALL.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn stamped(node: &Node, contact: ContactId) -> Vec<u32> {
+        node.conversation(contact)
+            .iter()
+            .map(|m| m.at_min)
+            .collect()
+    }
+
     #[test]
-    fn stamps_never_go_back_before_the_latest_stored_message() {
+    fn a_wall_clock_that_jumps_ahead_and_back_moves_no_stamp() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (a, b) = (Identity::generate(), Identity::generate());
+        let (mut node, _wire, ids) = node(&dir, &b, &[&a]);
+        node.wall = test_wall;
+        WALL.store(1_000_000, std::sync::atomic::Ordering::SeqCst);
+        node.tick(0);
+        node.send(&ids, "before", Channel::Sound);
+        // the clock jumps a month ahead
+        WALL.store(1_000_000 + 30 * 1440, std::sync::atomic::Ordering::SeqCst);
+        node.tick(60_000);
+        node.send(&ids, "during", Channel::Sound);
+        // and is put right
+        WALL.store(1_000_002, std::sync::atomic::Ordering::SeqCst);
+        node.tick(120_000);
+        node.send(&ids, "after", Channel::Sound);
+        assert_eq!(
+            stamped(&node, ids[0]),
+            vec![1_000_000, 1_000_001, 1_000_002]
+        );
+    }
+
+    #[test]
+    fn a_stamp_from_a_fast_clock_does_not_lift_the_next_session() {
         let dir = tempfile::TempDir::new().unwrap();
         let (a, b) = (Identity::generate(), Identity::generate());
         let path = dir.path().join("b.db");
         let store = Store::create(&path, "pass", &b, "me").unwrap();
         let contact = store.add_contact("a", &a.public(), true).unwrap();
-        // Stored while the clock ran an hour fast; it has since been set back.
-        let ahead = now_min() + 60;
+        // stored while the clock ran a month fast; it has since been put right
+        let ahead = now_min() + 30 * 1440;
         store
             .put_message(&StoredMessage {
                 id: [1; 16],
@@ -1800,24 +1850,20 @@ mod tests {
                 delivery: Delivery::Sent,
             })
             .unwrap();
-        let wire = Wire::default();
-        let mut node = Node::new(Some(store), vec![Box::new(wire.clone())]);
-
-        let sent = node.send(&[contact], "After the clock went back.", Channel::Sound);
-        let heard = seal_private(&a, &[b.public()], "Heard after.", now_min(), 60);
-        wire.hear(&heard, 5);
-        node.tick(1);
-        let sheet = node.conversation(contact);
-        let at = |id: [u8; 16]| sheet.iter().find(|m| m.id == id).unwrap().at_min;
+        let mut node = Node::new(Some(store), vec![Box::new(Wire::default())]);
+        assert_eq!(node.latest_stamp(), Some(ahead));
+        let before = now_min();
+        let sent = node.send(&[contact], "Now.", Channel::Sound);
+        let at = node
+            .conversation(contact)
+            .iter()
+            .find(|m| m.id == sent)
+            .unwrap()
+            .at_min;
         assert!(
-            at(sent) >= ahead,
-            "a message sent now is not older than one before it"
+            at >= before && at <= now_min(),
+            "the wall clock's minute, not {ahead}"
         );
-        assert!(at(heard.id) >= ahead);
-
-        // So erasing what is older than the stamp before cannot take them.
-        assert_eq!(node.forget_before(ahead), 0);
-        assert_eq!(node.conversation(contact).len(), 3);
     }
 
     #[test]
@@ -2054,10 +2100,7 @@ mod tests {
         let (a, b) = (Identity::generate(), Identity::generate());
         let (mut node, wire, ids) = node(&dir, &b, &[&a]);
         node.set_sound(SoundSwitch::Off);
-        wire.hear(
-            &seal_private(&a, &[b.public()], "unheard", now_min(), 60),
-            1,
-        );
+        wire.hear(&seal_private(&a, &[b.public()], "unheard", now_min(), 60), 1);
         let events = node.tick(1);
         assert!(messages(&events).is_empty());
         assert!(!events
@@ -2125,11 +2168,7 @@ mod tests {
             heard: false,
             delivery: Delivery::Waiting,
         };
-        node.store
-            .as_ref()
-            .unwrap()
-            .put_outgoing(&stale, &old.encode())
-            .unwrap();
+        node.store.as_ref().unwrap().put_outgoing(&stale, &old.encode()).unwrap();
         drop(node);
 
         let wire = Wire::default();

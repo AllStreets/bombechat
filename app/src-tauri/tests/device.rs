@@ -258,13 +258,20 @@ fn unknown_ids_and_values_out_of_range_in_the_file_are_ignored() {
 
 /// A keychain in memory, shared with the test.
 #[derive(Clone, Default)]
-struct Pocket(std::sync::Arc<std::sync::Mutex<Option<Vec<u8>>>>);
+struct Pocket(
+    std::sync::Arc<std::sync::Mutex<Option<Vec<u8>>>>,
+    /// When set, put refuses with this.
+    std::sync::Arc<std::sync::Mutex<Option<String>>>,
+);
 
 impl Keeper for Pocket {
     fn get(&self) -> Option<StoreKey> {
         StoreKey::from_bytes(self.0.lock().unwrap().as_deref()?)
     }
     fn put(&self, key: &StoreKey) -> Result<(), String> {
+        if let Some(why) = self.1.lock().unwrap().clone() {
+            return Err(why);
+        }
         *self.0.lock().unwrap() = Some(key.as_bytes().to_vec());
         Ok(())
     }
@@ -390,7 +397,7 @@ fn messages_older_than_delete_messages_after_go_at_unlock() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("bombechat.db");
     let day = 24 * 60;
-    let marisol = store_with_ages(&path, &[2 * day, day + 5, day - 5, 10]);
+    let marisol = store_with_ages(&path, &[2 * day, day + 30, day - 5, 10]);
     let s = Shared::new(Box::new(device(&path)));
     commands::set_setting(&s, "expire".into(), 1).unwrap(); // 1 day, while locked: nothing yet
     commands::unlock(&s, "correct horse".into(), None).unwrap();
@@ -399,6 +406,8 @@ fn messages_older_than_delete_messages_after_go_at_unlock() {
         .iter()
         .map(|m| m["text"].as_str().unwrap().to_string())
         .collect();
+    // counted back from the newest message, ten minutes ago: never further on
+    // than the machine can vouch for
     assert_eq!(left, vec!["1435 minutes old", "10 minutes old"]);
 
     commands::set_setting(&s, "expire".into(), 0).unwrap(); // Never
@@ -406,27 +415,35 @@ fn messages_older_than_delete_messages_after_go_at_unlock() {
 }
 
 #[test]
-fn at_its_default_delete_messages_after_keeps_a_week() {
+fn at_its_default_delete_messages_after_deletes_nothing() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("bombechat.db");
     let day = 24 * 60;
-    let marisol = store_with_ages(&path, &[8 * day, 6 * day]);
+    let marisol = store_with_ages(&path, &[400 * day, 8 * day, 6 * day]);
     let s = Shared::new(Box::new(device(&path)));
-    assert_eq!(commands::settings(&s)["expire"], 2);
+    assert_eq!(commands::settings(&s)["expire"], 0, "Never");
     commands::unlock(&s, "correct horse".into(), None).unwrap();
-    assert_eq!(commands::conversation(&s, marisol.0).unwrap().len(), 1);
+    for now in [0, 3_600_000, 7_200_000] {
+        commands::tick(&s, now);
+    }
+    assert_eq!(commands::conversation(&s, marisol.0).unwrap().len(), 3);
 }
 
 #[test]
-fn choosing_a_shorter_time_deletes_at_once() {
+fn choosing_a_shorter_time_deletes_within_the_hour_not_at_once() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("bombechat.db");
     let day = 24 * 60;
     let marisol = store_with_ages(&path, &[3 * day, 60]);
     let s = Shared::new(Box::new(device(&path)));
     commands::unlock(&s, "correct horse".into(), None).unwrap();
-    assert_eq!(commands::conversation(&s, marisol.0).unwrap().len(), 2);
     commands::set_setting(&s, "expire".into(), 1).unwrap();
+    assert_eq!(
+        commands::conversation(&s, marisol.0).unwrap().len(),
+        2,
+        "time to put it back"
+    );
+    commands::tick(&s, 3_600_000);
     assert_eq!(commands::conversation(&s, marisol.0).unwrap().len(), 1);
 }
 
@@ -442,4 +459,83 @@ fn machine_sound_and_its_volume_are_kept_for_the_page() {
     drop(s);
     let all = commands::settings(&Shared::new(Box::new(device(&path))));
     assert_eq!((all["machine"], all["machvol"]), (0, 4));
+}
+
+#[test]
+fn a_key_left_in_the_keychain_goes_when_the_store_opens_with_the_lock_on() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("bombechat.db");
+    let pocket = Pocket::default();
+    pocket
+        .put(&StoreKey::from_bytes(&[3; 32]).unwrap())
+        .unwrap();
+    let s = kept_device(&path, &pocket);
+    commands::unlock(&s, "correct horse".into(), Some("Ana".into())).unwrap();
+    assert!(!pocket.holds_a_key(), "the lock is on: nothing left behind");
+}
+
+#[test]
+fn a_keychain_that_will_not_keep_the_key_leaves_the_lock_on_and_says_why() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("bombechat.db");
+    let pocket = Pocket::default();
+    let s = kept_device(&path, &pocket);
+    commands::unlock(&s, "correct horse".into(), Some("Ana".into())).unwrap();
+    *pocket.1.lock().unwrap() = Some("The Keychain did not keep the key: locked".into());
+    assert_eq!(
+        commands::set_setting(&s, "lock".into(), 0),
+        Err("The Keychain did not keep the key: locked".to_string())
+    );
+    assert_eq!(commands::settings(&s)["lock"], 1, "still on");
+
+    // turned off while it worked, then the keychain refuses at the next launch
+    *pocket.1.lock().unwrap() = None;
+    commands::set_setting(&s, "lock".into(), 0).unwrap();
+    drop(s);
+    pocket.remove().unwrap();
+    *pocket.1.lock().unwrap() = Some("The Keychain did not keep the key: locked".into());
+    let later = kept_device(&path, &pocket);
+    commands::unlock(&later, "correct horse".into(), None).unwrap();
+    assert_eq!(
+        commands::settings(&later)["lock"],
+        1,
+        "back on, not shown off"
+    );
+}
+
+#[test]
+fn a_kept_key_survives_a_store_that_could_not_be_read_just_then() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("bombechat.db");
+    let pocket = Pocket::default();
+    let first = kept_device(&path, &pocket);
+    commands::unlock(&first, "correct horse".into(), Some("Ana".into())).unwrap();
+    commands::set_setting(&first, "lock".into(), 0).unwrap();
+    drop(first);
+    // the store reads back empty just then (corrupt, not the wrong key)
+    let db = fs::read(&path).unwrap();
+    fs::write(&path, b"").unwrap();
+    let later = kept_device(&path, &pocket);
+    assert_eq!(commands::contacts(&later).unwrap_err(), "locked");
+    assert!(pocket.holds_a_key(), "kept for next time");
+    drop(later);
+    fs::write(&path, db).unwrap();
+    let again = kept_device(&path, &pocket);
+    assert_eq!(
+        commands::contacts(&again),
+        Ok(vec![]),
+        "opens without asking again"
+    );
+}
+
+#[test]
+fn a_setting_that_cannot_be_saved_is_refused_and_left_as_it_was() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("bombechat.db");
+    let s = Shared::new(Box::new(device(&path)));
+    // a folder where the settings file would go: the save fails
+    fs::create_dir(dir.path().join("settings.json")).unwrap();
+    let why = commands::set_setting(&s, "volume".into(), 4).unwrap_err();
+    assert!(why.starts_with("The setting was not saved"), "{why}");
+    assert_eq!(commands::settings(&s)["volume"], 2);
 }

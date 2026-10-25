@@ -177,9 +177,7 @@ fn has_message_and_mark_heard() {
     let path = d.path().join("b.db");
     let me = Identity::generate();
     let store = Store::create(&path, "correct horse", &me, "Kitchen laptop").unwrap();
-    let contact = store
-        .add_contact("Marisol Ortega", &marisol(), false)
-        .unwrap();
+    let contact = store.add_contact("Marisol Ortega", &marisol(), false).unwrap();
 
     let id = [5u8; 16];
     assert!(!store.has_message(&id));
@@ -209,9 +207,7 @@ fn put_message_with_existing_id_upserts() {
     let path = d.path().join("b.db");
     let me = Identity::generate();
     let store = Store::create(&path, "correct horse", &me, "Kitchen laptop").unwrap();
-    let contact = store
-        .add_contact("Marisol Ortega", &marisol(), false)
-        .unwrap();
+    let contact = store.add_contact("Marisol Ortega", &marisol(), false).unwrap();
 
     let id = [7u8; 16];
     store
@@ -280,13 +276,7 @@ fn open_on_a_nonexistent_path_is_io_error() {
 fn open_with_a_missing_sidecar_is_io_error() {
     let d = tempdir().unwrap();
     let path = d.path().join("b.db");
-    Store::create(
-        &path,
-        "correct horse",
-        &Identity::generate(),
-        "Kitchen laptop",
-    )
-    .unwrap();
+    Store::create(&path, "correct horse", &Identity::generate(), "Kitchen laptop").unwrap();
 
     let mut sidecar = path.as_os_str().to_owned();
     sidecar.push(".salt");
@@ -302,13 +292,7 @@ fn open_with_a_missing_sidecar_is_io_error() {
 fn open_with_a_short_sidecar_is_corrupt() {
     let d = tempdir().unwrap();
     let path = d.path().join("b.db");
-    Store::create(
-        &path,
-        "correct horse",
-        &Identity::generate(),
-        "Kitchen laptop",
-    )
-    .unwrap();
+    Store::create(&path, "correct horse", &Identity::generate(), "Kitchen laptop").unwrap();
 
     let mut sidecar = path.as_os_str().to_owned();
     sidecar.push(".salt");
@@ -345,13 +329,7 @@ fn files_are_created_private_on_unix() {
         use std::os::unix::fs::PermissionsExt;
         let d = tempdir().unwrap();
         let path = d.path().join("b.db");
-        Store::create(
-            &path,
-            "correct horse",
-            &Identity::generate(),
-            "Kitchen laptop",
-        )
-        .unwrap();
+        Store::create(&path, "correct horse", &Identity::generate(), "Kitchen laptop").unwrap();
 
         let db_mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(db_mode, 0o600, "db file mode was {:o}", db_mode);
@@ -370,7 +348,8 @@ fn files_are_created_private_on_unix() {
 #[test]
 fn set_checked_updates_the_contact() {
     let d = tempdir().unwrap();
-    let store = Store::create(&d.path().join("b.db"), "pw", &Identity::generate(), "me").unwrap();
+    let store =
+        Store::create(&d.path().join("b.db"), "pw", &Identity::generate(), "me").unwrap();
     let c = store.add_contact("Marisol", &marisol(), false).unwrap();
     assert!(!store.contacts()[0].checked);
     store.set_checked(c, true).unwrap();
@@ -382,7 +361,8 @@ fn set_checked_updates_the_contact() {
 #[test]
 fn message_by_id() {
     let d = tempdir().unwrap();
-    let store = Store::create(&d.path().join("b.db"), "pw", &Identity::generate(), "me").unwrap();
+    let store =
+        Store::create(&d.path().join("b.db"), "pw", &Identity::generate(), "me").unwrap();
     let c = store.add_contact("Marisol", &marisol(), true).unwrap();
     let m = StoredMessage {
         id: [3u8; 16],
@@ -416,10 +396,7 @@ fn an_outgoing_message_keeps_where_its_delivery_got_to() {
         delivery: Delivery::Waiting,
     };
     store.put_outgoing(&m, b"sealed envelope").unwrap();
-    assert_eq!(
-        store.waiting(),
-        vec![(m.clone(), b"sealed envelope".to_vec())]
-    );
+    assert_eq!(store.waiting(), vec![(m.clone(), b"sealed envelope".to_vec())]);
     drop(store);
 
     let store = Store::open(&path, "pw").unwrap();
@@ -429,10 +406,7 @@ fn an_outgoing_message_keeps_where_its_delivery_got_to() {
     assert!(store.waiting().is_empty());
     assert_eq!(store.message(&[5u8; 16]).unwrap().delivery, Delivery::Sent);
     store.set_delivery(&[5u8; 16], Delivery::Failed).unwrap();
-    assert_eq!(
-        store.message(&[5u8; 16]).unwrap().delivery,
-        Delivery::Failed
-    );
+    assert_eq!(store.message(&[5u8; 16]).unwrap().delivery, Delivery::Failed);
     assert_eq!(Delivery::Failed.as_str(), "failed");
 }
 

@@ -618,18 +618,10 @@ fn a_tick_that_keeps_panicking_is_reported_once_in_a_while() {
         .lock()
         .unwrap()
         .extend([None, None, None, Some(vec![NodeEvent::RoomDb(39.0)])]);
-    assert_eq!(
-        commands::tick(&r.shared, 20).len(),
-        1,
-        "the first is reported"
-    );
+    assert_eq!(commands::tick(&r.shared, 20).len(), 1, "the first is reported");
     assert!(commands::tick(&r.shared, 40).is_empty(), "the next is not");
     assert!(commands::tick(&r.shared, 60).is_empty());
-    assert_eq!(
-        commands::tick(&r.shared, 80).len(),
-        1,
-        "and a good tick still is"
-    );
+    assert_eq!(commands::tick(&r.shared, 80).len(), 1, "and a good tick still is");
 }
 
 #[test]

@@ -54,7 +54,7 @@ a.pl svg{display:block}
 .card-h span b{font-family:var(--type);font-weight:400;font-size:14px;color:var(--type-ink);margin-left:4px}
 .sched{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:0 22px 24px;scrollbar-width:thin;scrollbar-color:rgba(75,74,71,.55) transparent}
 .sched::-webkit-scrollbar{width:8px}.sched::-webkit-scrollbar-thumb{background:rgba(75,74,71,.45);border-radius:4px;border:2px solid var(--buff)}
-.grp{position:sticky;top:0;z-index:2;background:var(--buff);font-family:var(--print);font-size:13px;color:var(--green-ink);padding:14px 0 5px;border-bottom:1px solid var(--green-ink);display:flex;justify-content:space-between}
+.grp{position:sticky;top:0;z-index:2;background:var(--buff);box-shadow:-8px 0 0 var(--buff),8px 0 0 var(--buff);font-family:var(--print);font-size:13px;color:var(--green-ink);padding:14px 0 5px;border-bottom:1px solid var(--green-ink);display:flex;justify-content:space-between}
 .grp small{font-family:var(--type);font-size:12px;color:var(--muted)}
 .row{position:relative;padding:10px 8px 11px;margin:0 -8px;border-bottom:1px solid rgba(47,90,75,.3);border-radius:1px;transition:background .2s}
 .row:hover,.row.focus{background:rgba(47,90,75,.06)}
@@ -168,7 +168,7 @@ const SETTINGS=[
  {id:'quiet',g:'Quiet sending',name:'Send under',values:['30','35','40','45','50'],unit:' dB',v:2,desc:'Wait until the room is quieter than this before playing a message.'},
  {id:'repeats',g:'Quiet sending',name:'Repeats',values:['0','1','2','3'],v:2,desc:'Play each message again, a minute and a half apart, in case the first was missed.'},
  {id:'lock',g:'Privacy',name:'Lock with passphrase',values:['Off','On'],v:1,desc:'Ask for your passphrase when Bombechat opens. Contacts and messages are encrypted either way.'},
- {id:'expire',g:'Privacy',name:'Delete messages after',values:['Never','1 day','7 days','30 days'],v:2,desc:'Older messages are erased from this laptop.'},
+ {id:'expire',g:'Privacy',name:'Delete messages after',values:['Never','1 day','7 days','30 days'],v:0,desc:'Older messages are erased from this laptop.'},
  {id:'inperson',g:'Privacy',name:'New contacts need a key check',values:['Off','On'],v:1,desc:'Only add someone once you have compared keys face to face.'},
 ];
 const byId=Object.fromEntries(SETTINGS.map(s=>[s.id,s]));
@@ -228,7 +228,7 @@ function say(text){savedEl.textContent=text;savedEl.style.opacity=1;clearTimeout
 function change(id,i){const s=byId[id],was={v:s.v,read:s.read};s.v=i;s.read=true;syncRow(id);say(`${s.name}: ${label(s)}`);
   Object.values(rows).forEach(r=>r.classList.remove('active'));rows[id].classList.add('active');
   Promise.resolve(bridge.setSetting(id,i)).then(()=>{if(id==='band')bridge.channels().then(list=>list.forEach(onChannel),()=>{})},why=>{if(s.v!==i)return;s.v=was.v;s.read=was.read;syncRow(id);say(String(why&&why.message||why));
-    machine&&(REDUCED?machine.seat(id,seatedAt(s)):machine.move(id,s.v,true))})}
+    machine&&machine.seat(id,seatedAt(s))})}
 function setValue(id,i,from){const s=byId[id];if(s.held){focusSetting(id,'pin');return}if(s.v===i&&s.read){focusSetting(id,'pin');return}change(id,i);
   if(from!=='card')rows[id].scrollIntoView({block:'nearest',behavior:REDUCED?'auto':'smooth'});
   machine&&machine.move(id,i);}
@@ -373,17 +373,17 @@ async function build(){
         const src=new THREE.Vector3(side.x+2.75,y,0);engrave('FROM',src.x,y+.225,.088,'#958f80');
         // waiting for a feature: a strip of tape pencilled with what it waits for across the jacks, and the plug parked
         // on a stud beside its FROM socket. Held at a value: the plug stays seated, the tape beside it says why.
-        let park=null;
+        let park=null,reach=null;
         if(s.parked){const a=jacks[0].x-.24,b=Math.max(jacks[jacks.length-1].x+.24,a+tapeWidth(s.held));tape(s.held,(a+b)/2,y-.005,b-a,s.id);
           park=new THREE.Vector3(src.x+.4,y-.02,0);const stud=new THREE.Mesh(studGeo,M.steel);stud.position.set(park.x,park.y,.03);stud.castShadow=true;scene.add(stud)}
-        else if(s.held){const x=jacks[jacks.length-1].x+.34;const w=tapeWidth(s.held);tape(s.held,x+w/2,y-.005,w,s.id)}
+        else if(s.held){const x=jacks[jacks.length-1].x+.34;const w=tapeWidth(s.held);tape(s.held,x+w/2,y-.005,w,s.id);reach=x+w}
         const sn=new THREE.Mesh(nutGeo,M.brassDull);sn.position.set(src.x,src.y,.02);scene.add(sn);const sr=new THREE.Mesh(jackGeo,M.brass);sr.position.set(src.x,src.y,.05);scene.add(sr);
         const color=CABLE_COLORS[(SETTINGS.indexOf(s)*3)%CABLE_COLORS.length];
         const mat=cableMat(color);mat.userData.base=new THREE.Color(color);
         const head=new THREE.Group();const body=new THREE.Mesh(plugGeo,M.bakelite);body.castShadow=true;const sl=new THREE.Mesh(sleeveGeo,M.brass);sl.position.z=.035;head.add(body,sl);
         const headSrc=head.clone();headSrc.position.copy(src);scene.add(headSrc);
         head.userData={id:s.id};body.userData={id:s.id,plug:true};scene.add(head);
-        const P={s,jacks,src,park,nameX:side.x,head,mat,mesh:null,end:(park||jacks[s.v]).clone(),lift:0,liftT:0,anim:null,dim:0,dimT:0,rest:s.parked?.45:0,seed:rnd()};
+        const P={s,jacks,src,park,reach,nameX:side.x,head,mat,mesh:null,end:(park||jacks[s.v]).clone(),lift:0,liftT:0,anim:null,dim:0,dimT:0,rest:s.parked?.45:0,seed:rnd()};
         plugs[s.id]=P;y-=ROWH}
       y-=.18}}
 
@@ -398,7 +398,8 @@ async function build(){
   const look=new THREE.Vector3(),lookT=new THREE.Vector3(0,0,0),pos=new THREE.Vector3(),posT=new THREE.Vector3();let par={x:0,y:0},parT={x:0,y:0};
   function fitDist(w,h){const fov=camera.fov*Math.PI/180;return Math.max(h/2/Math.tan(fov/2),w/2/Math.tan(fov/2)/camera.aspect)}
   function overview(){const d=fitDist(PW-.3,12.5);lookT.set(0,-.4,0);posT.set(.7,-1.0,d)}
-  function frameRow(id){const P=plugs[id];const a=P.src,b=P.jacks[P.jacks.length-1];const cx=(P.nameX+b.x)/2,w=Math.abs(b.x-P.nameX)+1.4;
+  // the row from its name to its last jack, or to the end of the tape beside it
+  function frameRow(id){const P=plugs[id];const a=P.src,right=Math.max(P.jacks[P.jacks.length-1].x,P.reach||-Infinity);const cx=(P.nameX+right)/2,w=Math.abs(right-P.nameX)+1.4;
     lookT.set(cx,a.y-.15,0);posT.set(cx+.3,a.y+.55,fitDist(w,3.8))}
   function resize(){const w=view.clientWidth,h=view.clientHeight;renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix();composer.setSize(w,h);if(!focusId)overview()}
   const composer=K.makeComposer({ao:!Q.has('noao')});
@@ -408,10 +409,13 @@ async function build(){
   /* ---------- focus, dim, tag ---------- */
   const tag=document.getElementById('tag');
   function focus(id){Object.values(plugs).forEach(P=>{P.dimT=id&&P.s.id!==id?1:0;P.liftT=id===P.s.id?.12:0});decorDim=id?1:0;
-    if(id){frameRow(id);tag.textContent=`${byId[id].name}: ${label(byId[id])}`;tag.classList.add('on');lamp.intensity=0}else{overview();tag.classList.remove('on')}}
+    if(id){frameRow(id);tag.textContent=tagText(id);tag.classList.toggle('on',!byId[id].held);lamp.intensity=0}else{overview();tag.classList.remove('on')}}
   let decorDim=0,decorDimNow=0;
   function updateTag(){if(!focusId){return}const P=plugs[focusId];const v=P.head.position.clone();v.z+=.6;v.y+=.42;v.project(camera);
-    const tw=tag.offsetWidth/2+10;tag.style.left=Math.max(tw,Math.min(view.clientWidth-tw,(v.x*.5+.5)*view.clientWidth))+'px';tag.style.top=(-v.y*.5+.5)*view.clientHeight-14+'px';tag.textContent=`${byId[focusId].name}: ${label(byId[focusId])}`}
+    const tw=tag.offsetWidth/2+10;tag.style.left=Math.max(tw,Math.min(view.clientWidth-tw,(v.x*.5+.5)*view.clientWidth))+'px';tag.style.top=(-v.y*.5+.5)*view.clientHeight-14+'px';tag.textContent=tagText(focusId)}
+  // a held row needs no tag: its name is engraved beside it and its tape says why, and a tag would only cover the
+  // row above
+  const tagText=id=>`${byId[id].name}: ${label(byId[id])}`;
 
   /* ---------- moving a plug: pull, carry, seat ---------- */
   function move(id,i){const P=plugs[id];if(P.s.held)return;focusSetting(id,'pin');const from=P.end.clone(),to=P.jacks[i].clone();
