@@ -24,6 +24,7 @@ use raptorq::{
 };
 
 use crate::code::{code_region, finish_frame, read_frame, CodeSpec, Layout, MASKS};
+use crate::decode::ReadOutcome;
 
 /// A partial or completed envelope is forgotten this many milliseconds
 /// after its last frame.
@@ -34,6 +35,11 @@ pub const MAX_PARTIALS: usize = 16;
 
 /// RaptorQ encoding symbol ids are 24 bits.
 const SYMBOL_ID_LIMIT: u32 = 1 << 24;
+
+/// Symbols in a row the encoder may skip for want of a balanced mask
+/// before it gives up and draws the best mask it has (see
+/// [`Encoder::next_frame`]).
+const MASK_SEARCH_CAP: u32 = 1024;
 
 /// The RaptorQ parameters for one envelope: one source block, no
 /// sub-blocks, byte alignment.
@@ -81,6 +87,7 @@ pub fn encode(spec: &CodeSpec, envelope: &[u8], tag: u16) -> Encoder {
         block,
         source,
         next_id: 0,
+        skipped: 0,
     }
 }
 
@@ -94,12 +101,18 @@ pub struct Encoder {
     block: Option<SourceBlockEncoder>,
     source: Vec<Vec<u8>>,
     next_id: u32,
+    /// Symbols skipped in a row because no mask balanced their frame.
+    skipped: u32,
 }
 
 impl Encoder {
-    /// The next frame's bytes, ready for [`crate::render`]. Every frame
+    /// The next frame's bytes, ready for [`crate::render()`]. Every frame
     /// returned keeps each 8 by 8 block of the drawn code between 40 and
-    /// 60 percent dark. Symbol ids wrap after 2^24.
+    /// 60 percent dark, with one defensive exception: should 1024 symbols
+    /// in a row find no balancing mask (each fails all 16 masks only
+    /// rarely, so in practice this never happens), the 1024th is drawn
+    /// with the mask leaving the fewest blocks out of range rather than
+    /// searching forever. Symbol ids wrap after 2^24.
     pub fn next_frame(&mut self) -> Vec<u8> {
         let count = self.spec.packets_per_frame() as u32;
         loop {
@@ -109,11 +122,17 @@ impl Encoder {
                 .map(|i| self.symbol((first + i) % SYMBOL_ID_LIMIT))
                 .collect();
             let region = code_region(&self.spec, self.tag, self.len, first, &symbols);
-            for mask in 0..MASKS {
+            let give_up = self.skipped + 1 >= MASK_SEARCH_CAP;
+            let candidates = (0..MASKS).map(|mask| {
                 let frame = finish_frame(&self.spec, &region, mask);
-                if self.layout.is_balanced(&frame) {
+                (self.layout.unbalanced_blocks(&frame), frame)
+            });
+            match pick_mask(candidates, give_up) {
+                Some(frame) => {
+                    self.skipped = 0;
                     return frame;
                 }
+                None => self.skipped += 1,
             }
         }
     }
@@ -136,7 +155,24 @@ impl Encoder {
     }
 }
 
-/// What [`Collector::push`] saw.
+/// The frame to draw from one symbol's candidates, each `(blocks out of
+/// range, frame bytes)` in mask order: the first balanced one, or if
+/// `give_up`, the one with the fewest blocks out of range. `None` means
+/// skip this symbol.
+fn pick_mask(candidates: impl Iterator<Item = (usize, Vec<u8>)>, give_up: bool) -> Option<Vec<u8>> {
+    let mut best: Option<(usize, Vec<u8>)> = None;
+    for (off, frame) in candidates {
+        if off == 0 {
+            return Some(frame);
+        }
+        if best.as_ref().is_none_or(|(b, _)| off < *b) {
+            best = Some((off, frame));
+        }
+    }
+    best.filter(|_| give_up).map(|(_, frame)| frame)
+}
+
+/// What [`Collector::push`] and [`Collector::push_read`] saw.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LightEvent {
     /// A frame passed its CRC. `got` distinct symbols of `tag` are in
@@ -145,6 +181,9 @@ pub enum LightEvent {
     FrameOk { tag: u16, got: u32, need: u32 },
     /// Every byte of `tag` is recovered.
     Complete { tag: u16, bytes: Vec<u8> },
+    /// A code was in view but could not be read: too small, blurred,
+    /// moving or partly hidden. Only [`Collector::push_read`] says this.
+    FrameBad,
 }
 
 struct Partial {
@@ -269,6 +308,27 @@ impl Collector {
         events
     }
 
+    /// Feed in what [`crate::read`] made of one camera picture. No code
+    /// gives nothing; a code that could not be read gives
+    /// [`LightEvent::FrameBad`]; each frame read is pushed as by
+    /// [`Collector::push`], in order, and their events returned together.
+    pub fn push_read(&mut self, outcome: &ReadOutcome, now_ms: u64) -> Vec<LightEvent> {
+        match outcome {
+            ReadOutcome::NoCode => {
+                self.expire(now_ms);
+                Vec::new()
+            }
+            ReadOutcome::Unreadable => {
+                self.expire(now_ms);
+                vec![LightEvent::FrameBad]
+            }
+            ReadOutcome::Frames(frames) => frames
+                .iter()
+                .flat_map(|frame| self.push(frame, now_ms))
+                .collect(),
+        }
+    }
+
     /// Forget that `tag` completed, and any partial for it, so its frames
     /// are collected afresh: for an envelope that arrived but would not
     /// open.
@@ -330,6 +390,49 @@ mod tests {
             let mut c = Collector::new();
             c.push(&noise[..spec.frame_bytes()], 0);
         }
+    }
+
+    #[test]
+    fn a_symbol_no_mask_balances_is_skipped_until_the_cap() {
+        let unbalanced = || [(3usize, vec![1u8]), (1, vec![2]), (2, vec![3])].into_iter();
+        assert_eq!(pick_mask(unbalanced(), false), None);
+        // At the cap, the mask with the fewest blocks out of range is drawn.
+        assert_eq!(pick_mask(unbalanced(), true), Some(vec![2]));
+        // A balanced mask is always taken first, cap or not.
+        let mixed = || [(2usize, vec![1u8]), (0, vec![2]), (0, vec![3])].into_iter();
+        assert_eq!(pick_mask(mixed(), false), Some(vec![2]));
+        assert_eq!(pick_mask(mixed(), true), Some(vec![2]));
+    }
+
+    #[test]
+    fn the_encoder_gives_up_searching_at_the_cap() {
+        let spec = CodeSpec::normal();
+        let mut enc = encode(&spec, &[9u8; 500], 1);
+        enc.skipped = MASK_SEARCH_CAP - 1;
+        let frame = enc.next_frame();
+        assert_eq!(frame.len(), spec.frame_bytes());
+        assert_eq!(enc.skipped, 0);
+    }
+
+    #[test]
+    fn push_read_reports_unreadable_codes() {
+        let spec = CodeSpec::normal();
+        let mut c = Collector::new();
+        assert!(c.push_read(&ReadOutcome::NoCode, 0).is_empty());
+        assert_eq!(
+            c.push_read(&ReadOutcome::Unreadable, 0),
+            vec![LightEvent::FrameBad]
+        );
+        let mut enc = encode(&spec, &[5u8; 100], 4);
+        let events = c.push_read(&ReadOutcome::Frames(vec![enc.next_frame()]), 1);
+        assert!(matches!(
+            events.first(),
+            Some(LightEvent::FrameOk { tag: 4, .. })
+        ));
+        assert!(matches!(
+            events.last(),
+            Some(LightEvent::Complete { tag: 4, .. })
+        ));
     }
 
     #[test]

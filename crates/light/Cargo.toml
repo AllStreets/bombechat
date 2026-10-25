@@ -12,5 +12,7 @@ raptorq = "2"
 reed-solomon = "0.2"
 
 [dev-dependencies]
+# PNG only for the checked-in test pictures.
+image = { version = "0.25", default-features = false, features = ["png"] }
 proptest = "1"
 rand = "0.8"

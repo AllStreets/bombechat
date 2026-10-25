@@ -371,7 +371,11 @@ fn orient_mark(r: u16, c: u16) -> bool {
 /// Which way round a grid was read, judged from its orientation mark.
 /// `dark(row, col)` gives the cell as read. `None` if the mark matches
 /// neither way round closely enough (more than one cell off).
+/// Also `None` for a spec that is not a preset.
 pub fn orientation(spec: &CodeSpec, dark: impl Fn(u16, u16) -> bool) -> Option<Orientation> {
+    if !spec.is_valid() {
+        return None;
+    }
     let o = spec.cells - 5;
     let (mut normal, mut mirrored) = (0, 0);
     for r in 0..5 {
@@ -535,19 +539,23 @@ impl Layout {
         out
     }
 
-    /// Whether every block of `frame`, once balanced, lands between
-    /// [`BLOCK_DARK_MIN`] and [`BLOCK_DARK_MAX`] dark cells.
-    pub(crate) fn is_balanced(&self, frame: &[u8]) -> bool {
-        self.blocks.iter().all(|block| {
-            let dark = block.fixed_dark
-                + block
-                    .data
-                    .iter()
-                    .filter(|&&i| data_bit(frame, self.data_index[i].unwrap_or(0)))
-                    .count() as u32;
-            let total = dark + balance_needed(dark, block) as u32;
-            (BLOCK_DARK_MIN..=BLOCK_DARK_MAX).contains(&total)
-        })
+    /// How many blocks of `frame`, once balanced, land outside
+    /// [`BLOCK_DARK_MIN`] to [`BLOCK_DARK_MAX`] dark cells; 0 means the
+    /// frame may be drawn.
+    pub(crate) fn unbalanced_blocks(&self, frame: &[u8]) -> usize {
+        self.blocks
+            .iter()
+            .filter(|block| {
+                let dark = block.fixed_dark
+                    + block
+                        .data
+                        .iter()
+                        .filter(|&&i| data_bit(frame, self.data_index[i].unwrap_or(0)))
+                        .count() as u32;
+                let total = dark + balance_needed(dark, block) as u32;
+                !(BLOCK_DARK_MIN..=BLOCK_DARK_MAX).contains(&total)
+            })
+            .count()
     }
 }
 
@@ -643,24 +651,89 @@ pub(crate) fn finish_frame(spec: &CodeSpec, region: &[u8], mask: u8) -> Vec<u8> 
 /// version understands, Reed-Solomon cannot repair them, or the CRC
 /// fails. Never panics.
 pub(crate) fn read_frame(bytes: &[u8]) -> Option<Frame> {
+    decode_frame(bytes, &[], 0, false).map(|(frame, _)| frame)
+}
+
+/// Repair one frame's bytes as read from a picture, for the detector:
+/// the corrected frame bytes, ready for [`read_frame`], or `None` if they
+/// cannot be repaired into a frame that passes its CRC. Never panics.
+///
+/// `doubtful` lists frame byte indices from least to most trusted; up to
+/// `per_word` of the first ones falling in each Reed-Solomon codeword are
+/// treated as erasures (known-bad positions), which repairs twice as many
+/// bytes as errors at unknown positions would. If the format field cannot
+/// be read, every mask is tried; the CRC decides.
+pub(crate) fn repair_frame(bytes: &[u8], doubtful: &[usize], per_word: usize) -> Option<Vec<u8>> {
+    decode_frame(bytes, doubtful, per_word, true).map(|(_, repaired)| repaired)
+}
+
+/// The work behind [`read_frame`] and [`repair_frame`]: the frame, and
+/// its bytes with every repair applied.
+fn decode_frame(
+    bytes: &[u8],
+    doubtful: &[usize],
+    per_word: usize,
+    any_mask: bool,
+) -> Option<(Frame, Vec<u8>)> {
     let spec = CodeSpec::presets()
         .into_iter()
         .find(|s| s.frame_bytes() == bytes.len())?;
     let preset = spec.preset()?;
-    let mask = read_format(preset, &bytes[..FORMAT_BYTES])?;
+    let lengths = codeword_lengths(&spec);
+    let count = lengths.len();
+    let parity = spec.parity_bytes();
 
+    // Erasure positions within each codeword, most doubtful first.
+    let mut erasures: Vec<Vec<u8>> = vec![Vec::new(); count];
+    for &i in doubtful {
+        let Some(j) = i.checked_sub(FORMAT_BYTES) else {
+            continue;
+        };
+        if j >= spec.region_bytes() {
+            continue;
+        }
+        let word = &mut erasures[j % count];
+        if word.len() < per_word.min(parity) {
+            word.push((j / count) as u8);
+        }
+    }
+
+    let masks: Vec<u8> = match read_format(preset, &bytes[..FORMAT_BYTES]) {
+        Some(mask) => vec![mask],
+        None if any_mask => (0..MASKS).collect(),
+        None => Vec::new(),
+    };
+    masks
+        .into_iter()
+        .find_map(|mask| decode_region(&spec, bytes, mask, &lengths, &erasures))
+}
+
+/// Decode the coded region under one mask: the frame and its repaired
+/// bytes, if Reed-Solomon and the CRC accept it.
+fn decode_region(
+    spec: &CodeSpec,
+    bytes: &[u8],
+    mask: u8,
+    lengths: &[usize],
+    erasures: &[Vec<u8>],
+) -> Option<(Frame, Vec<u8>)> {
+    let preset = spec.preset()?;
     let mut region = bytes[FORMAT_BYTES..].to_vec();
     whiten(&mut region, preset, mask);
 
-    let lengths = codeword_lengths(&spec);
     let parity = spec.parity_bytes();
     let decoder = RsDecoder::new(parity);
     let count = lengths.len();
     let mut data = Vec::with_capacity(spec.data_bytes());
+    let mut repaired = vec![0u8; region.len()];
     for (w, &len) in lengths.iter().enumerate() {
         let word: Vec<u8> = (0..len).map(|k| region[k * count + w]).collect();
-        let fixed = decoder.correct(&word, None).ok()?;
+        let erased = Some(erasures[w].as_slice()).filter(|e| !e.is_empty());
+        let fixed = decoder.correct(&word, erased).ok()?;
         data.extend_from_slice(fixed.data());
+        for (k, &b) in fixed.iter().enumerate() {
+            repaired[k * count + w] = b;
+        }
     }
 
     if data[0] != VERSION || data[1] != preset {
@@ -677,13 +750,14 @@ pub(crate) fn read_frame(bytes: &[u8]) -> Option<Frame> {
     let symbols = (0..spec.packets_per_frame())
         .map(|i| data[HEADER_WITH_CRC + i * size..HEADER_WITH_CRC + (i + 1) * size].to_vec())
         .collect();
-    Some(Frame {
-        spec,
+    let frame = Frame {
+        spec: *spec,
         tag,
         transfer_length,
         symbol_id,
         symbols,
-    })
+    };
+    Some((frame, finish_frame(spec, &repaired, mask)))
 }
 
 /// Lengths of the Reed-Solomon codewords, parity included, in order.
@@ -898,6 +972,57 @@ mod tests {
         data[HEADER_WITH_CRC + 5] ^= 1;
         let bad = encode_region(&spec, &data);
         assert!(read_frame(&finish_frame(&spec, &bad, 0)).is_none());
+    }
+
+    #[test]
+    fn orientation_of_a_spec_that_is_not_a_preset_is_none() {
+        for cells in [0, 3, 4, 5, 40] {
+            let spec = CodeSpec {
+                cells,
+                cell_bits: 1,
+                symbol_size: 100,
+            };
+            assert_eq!(orientation(&spec, |_, _| true), None);
+        }
+    }
+
+    /// A frame with more damaged bytes than Reed-Solomon can find on its
+    /// own repairs when the damaged bytes are named as doubtful, and the
+    /// repaired bytes are exactly the frame drawn.
+    #[test]
+    fn erasures_repair_what_errors_alone_cannot() {
+        let spec = CodeSpec::normal();
+        let sym = vec![(0..spec.symbol_size)
+            .map(|i| (i * 7) as u8)
+            .collect::<Vec<u8>>()];
+        let good = finish_frame(&spec, &code_region(&spec, 3, 900, 5, &sym), 11);
+        let count = spec.codewords();
+        let parity = spec.parity_bytes();
+        // Damage 3/4 of the parity's worth of bytes in every codeword:
+        // over the parity / 2 that errors alone can fix. Consecutive
+        // region bytes fall in successive codewords.
+        let per_word = 3 * parity / 4;
+        let damaged_at: Vec<usize> = (0..per_word * count).map(|k| FORMAT_BYTES + k).collect();
+        let mut bad = good.clone();
+        for &i in &damaged_at {
+            bad[i] ^= 0x5a;
+        }
+        assert!(read_frame(&bad).is_none());
+        assert_eq!(repair_frame(&bad, &[], 0), None);
+        let repaired = repair_frame(&bad, &damaged_at, per_word).unwrap();
+        assert_eq!(repaired, good);
+        assert!(read_frame(&repaired).is_some());
+    }
+
+    #[test]
+    fn repair_tries_every_mask_when_the_format_field_is_lost() {
+        let spec = CodeSpec::slow();
+        let sym = vec![vec![42u8; spec.symbol_size as usize]];
+        let good = finish_frame(&spec, &code_region(&spec, 8, 300, 0, &sym), 13);
+        let mut bad = good.clone();
+        bad[..FORMAT_BYTES].fill(0);
+        assert!(read_frame(&bad).is_none());
+        assert_eq!(repair_frame(&bad, &[], 0), Some(good));
     }
 
     #[test]
