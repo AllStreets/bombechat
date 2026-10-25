@@ -44,6 +44,40 @@ jobs:
             exit 1
           fi
 
+  # The same on a Mac, where the lock can come off and the store key is kept
+  # in the Keychain: the Keychain paths in app/src-tauri/tests/device.rs only
+  # run here. CoreAudio and the system frameworks come with the runner.
+  rust-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: cargo test --workspace
+        run: cargo test --workspace
+
+      - name: Airgapped check (positive, must pass)
+        run: bash tools/check-airgapped.sh
+
+      - name: Airgapped check (negative, must fail)
+        run: |
+          if CHECK_FEATURES=bluetooth bash tools/check-airgapped.sh; then
+            echo "expected the bluetooth-featured check to fail, but it passed" >&2
+            exit 1
+          fi
+
   # Note: `npm run check:front` and `npm run check:settings` need a GPU-backed
   # Chrome to render the WebGL/Metal interface and are not run here; see the
   # README "Checks" section. They stay a local gate.
