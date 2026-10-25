@@ -28,6 +28,10 @@ struct Calls {
     stopped: usize,
     /// How many times pairing was finished (their hello in).
     finished: usize,
+    /// Each self-test started, by channel.
+    self_tests: Vec<Channel>,
+    /// How many times a self-test was stopped.
+    self_tests_stopped: usize,
     /// What the page asked of the eyepiece, in turn.
     eyepiece: Vec<bool>,
     confirmed: Vec<(PublicIdentity, String)>,
@@ -126,6 +130,17 @@ impl Machine for Fake {
     }
     fn finish_pairing(&mut self) {
         self.calls.lock().unwrap().finished += 1;
+    }
+    fn start_self_test(&mut self, channel: Channel) -> Result<(), String> {
+        self.calls.lock().unwrap().self_tests.push(channel);
+        if channel == Channel::Light {
+            Err("not sent: light is off".to_string())
+        } else {
+            Ok(())
+        }
+    }
+    fn stop_self_test(&mut self) {
+        self.calls.lock().unwrap().self_tests_stopped += 1;
     }
     fn set_eyepiece(&mut self, on: bool) {
         self.calls.lock().unwrap().eyepiece.push(on);
@@ -348,6 +363,119 @@ fn stop_and_finish_pairing_reach_the_machine() {
     commands::finish_pairing(&m);
     let calls = calls.lock().unwrap();
     assert_eq!((calls.stopped, calls.finished), (1, 1));
+}
+
+#[test]
+fn a_self_test_reaches_the_machine_and_is_refused_as_pairing_is() {
+    let (m, calls) = fake(Lock::Unlocked);
+    commands::self_test(&m, "sound".into()).unwrap();
+    assert_eq!(
+        commands::self_test(&m, "light".into()),
+        Err("not sent: light is off".to_string()),
+        "the machine's refusal, as it gives it"
+    );
+    assert_eq!(
+        commands::self_test(&m, "bluetooth".into()),
+        Err(bombechat_node::NOT_IN_THIS_PLAN.to_string())
+    );
+    assert_eq!(
+        commands::self_test(&m, "radio".into()),
+        Err("no such channel: radio".to_string())
+    );
+    commands::stop_self_test(&m);
+    {
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.self_tests, vec![Channel::Sound, Channel::Light]);
+        assert_eq!(calls.self_tests_stopped, 1);
+    }
+
+    let (locked, calls) = fake(Lock::Locked);
+    assert_eq!(
+        commands::self_test(&locked, "sound".into()),
+        Err("locked".to_string())
+    );
+    assert!(calls.lock().unwrap().self_tests.is_empty());
+}
+
+#[test]
+fn a_self_test_reaches_the_page_with_its_rate_and_band() {
+    use bombechat_modem::Band;
+    use bombechat_node::SelfTestState;
+    let event = |state| NodeEvent::SelfTest {
+        tag: 0x0abc,
+        channel: Channel::Sound,
+        state,
+    };
+    for (state, word) in [
+        (SelfTestState::Waiting, "waiting"),
+        (SelfTestState::Playing, "playing"),
+        (SelfTestState::NotHeard, "unheard"),
+        (SelfTestState::NotPlayed, "unplayed"),
+        (SelfTestState::Stopped, "stopped"),
+    ] {
+        assert_eq!(
+            bridge_event(&event(state)),
+            (
+                "selfTest",
+                json!({ "tag": 0x0abc, "channel": "sound", "state": word })
+            )
+        );
+    }
+    assert_eq!(
+        bridge_event(&event(SelfTestState::Heard {
+            text: "The machine hears itself.".into(),
+            bytes: 379,
+            ms: 23_500,
+            band: Some(Band::NearSilent),
+        })),
+        (
+            "selfTest",
+            json!({ "tag": 0x0abc, "channel": "sound", "state": "heard",
+                    "text": "The machine hears itself.", "bytes": 379, "ms": 23_500,
+                    "rate": 16.1, "band": "near silent" })
+        )
+    );
+    // by light there is no band; a test heard at once is not a division by
+    // nothing
+    let (_, light) = bridge_event(&NodeEvent::SelfTest {
+        tag: 1,
+        channel: Channel::Light,
+        state: SelfTestState::Heard {
+            text: "x".into(),
+            bytes: 300,
+            ms: 0,
+            band: None,
+        },
+    });
+    assert_eq!(light["rate"], json!(300_000.0));
+    assert!(light.get("band").is_none());
+}
+
+#[test]
+fn the_page_and_the_simulator_give_a_self_test_the_nodes_time_and_text() {
+    let sim = include_str!("../../ui/simulator.js");
+    assert!(
+        sim.contains(&format!(
+            "const SELF_TEST_MS = {};",
+            bombechat_node::SELF_TEST_MS
+        )),
+        "simulator.js's SELF_TEST_MS is not the node's"
+    );
+    assert!(
+        sim.contains(&format!(
+            "const SELF_TEST_TEXT = '{}';",
+            bombechat_node::SELF_TEST_TEXT
+        )),
+        "simulator.js's SELF_TEST_TEXT is not the node's"
+    );
+    let page = include_str!("../../ui/bombechat.html");
+    assert!(
+        page.contains(&format!(
+            "const SELF_TEST_TEXT='{}';",
+            bombechat_node::SELF_TEST_TEXT
+        )),
+        "bombechat.html's SELF_TEST_TEXT is not the node's"
+    );
 }
 
 #[test]
@@ -922,10 +1050,11 @@ fn node_events_become_the_bridge_events_with_the_payloads_bridge_js_expects() {
             spec_id: 2,
             index: 7,
             hello: true,
+            test: false,
         }),
         (
             "display",
-            json!({ "tag": 0x0d0e, "bits": [0xa5, 0x0f], "spec": 2, "index": 7, "hello": true })
+            json!({ "tag": 0x0d0e, "bits": [0xa5, 0x0f], "spec": 2, "index": 7, "hello": true, "test": false })
         )
     );
     assert_eq!(
@@ -981,6 +1110,7 @@ fn every_event_name_is_one_bridge_js_listens_for() {
         "display",
         "displayStopped",
         "eyepiece",
+        "selfTest",
     ];
     let list = bridge
         .lines()

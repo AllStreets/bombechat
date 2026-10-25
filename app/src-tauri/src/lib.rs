@@ -59,6 +59,16 @@ fn finish_pairing(state: State<'_, Shared>) {
 }
 
 #[tauri::command]
+fn self_test(state: State<'_, Shared>, channel: String) -> Result<(), String> {
+    commands::self_test(&state, channel)
+}
+
+#[tauri::command]
+fn stop_self_test(state: State<'_, Shared>) {
+    commands::stop_self_test(&state)
+}
+
+#[tauri::command]
 fn eyepiece(state: State<'_, Shared>, on: bool) {
     commands::eyepiece(&state, on)
 }
@@ -160,6 +170,8 @@ pub fn run() {
             pair,
             stop_pairing,
             finish_pairing,
+            self_test,
+            stop_self_test,
             confirm_pair,
             set_setting,
             settings,
