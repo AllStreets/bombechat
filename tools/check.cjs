@@ -63,7 +63,7 @@ const PARTS = { top: '.top', bank: '.bank', sheet: '.sheet', compose: '.compose'
 // would; `refuseBroadcast` is a reason the machine gives for refusing every broadcast.
 // Unlocking: `keychain` opens the store before the page asks (the Lock Off launch); `unlockMs` is how long
 // working out the key takes (0 if not given); the first `wrong` unlocks are refused as 'wrong passphrase'.
-function tauriStub({ hello, safety, pairOfferMs = 1200, people, talk, afterUnlock, settings, broadcastMax = 3939, kept = [], refuseBroadcast, keychain, unlockMs = 0, wrong = 0, wrongWhy = 'wrong passphrase', refuseSetting }) {
+function tauriStub({ hello, safety, pairOfferMs = 1200, people, talk, afterUnlock, settings, broadcastMax = 3939, kept = [], refuseBroadcast, keychain, unlockMs = 0, wrong = 0, wrongWhy = 'wrong passphrase', refuseSetting, sendId }) {
   let unlocked = !!keychain, refusals = wrong;
   const KEPT = 'stub.notices';
   const notices = () => JSON.parse(sessionStorage.getItem(KEPT) || 'null') || kept;
@@ -104,7 +104,7 @@ function tauriStub({ hello, safety, pairOfferMs = 1200, people, talk, afterUnloc
         case 'set_setting': if (!refuseSetting) return Promise.resolve(null);
           if (args.id === 'light' && settings && typeof settings === 'object' && args.valueIndex < settings.light) settings.light = args.valueIndex;
           return Promise.reject(refuseSetting);
-        case 'send': return Promise.reject('not sent');
+        case 'send': return sendId ? Promise.resolve(sendId) : Promise.reject('not sent');
         // as the broadcast command answers; an accepted one waits, plays and is sent, as the node reports it
         case 'broadcast': {
           if (refuseBroadcast) return Promise.reject(refuseBroadcast);
@@ -1297,6 +1297,24 @@ function measureText() {
         if (!up.lamp || esc.lamp || esc.state !== '' || esc.note !== 'Pairing by light stopped. Nothing was kept.' || esc.light !== '2') problems.push(`light pairing browser: Escape: ${JSON.stringify({ up: up.lamp, esc })}`);
         await bp.close();
         report.lightPairing.cap = capped.note; report.lightPairing.refused = refused.note;
+      }
+
+      // the lamp names whose camera only for the message it belongs to: a receipt that goes on screen before a sent
+      // message is for any camera, and the message, once the machine says it is playing, is for Marisol's
+      {
+        const np = await openLight(1440, 900, 2, { stub: { sendId: 'c0ffee'.repeat(5) + 'ab' } });
+        await np.fill('#reply', 'On my way.'); await np.click('#flash'); await np.waitForTimeout(100);
+        await emit(np, 'display', frame(1, 0, 21)); await paint(np);
+        const receipt = (await np.evaluate(view)).say;
+        await emit(np, 'displayStopped', { tag: 21 }); await paint(np);
+        await emit(np, 'outbox', { id: 'c0ffee'.repeat(5) + 'ab', state: 'playing' });
+        await emit(np, 'display', frame(1, 0, 22)); await paint(np);
+        const message = (await np.evaluate(view)).say;
+        await emit(np, 'displayStopped', { tag: 22 }); await paint(np);
+        if (!/^Hold this screen up to their camera\./.test(receipt) || !/^Hold this screen up to Marisol's camera\./.test(message))
+          problems.push(`the lamp's caption went to the wrong message: ${JSON.stringify({ receipt, message })}`);
+        report.lampCaption = { receipt, message };
+        await np.close();
       }
 
       // Photosensitivity. WCAG 2.3.1, general flash: a flash is a pair of opposing changes in relative luminance of 10% or
