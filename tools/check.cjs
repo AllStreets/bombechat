@@ -989,6 +989,7 @@ function measureText() {
           frames: document.getElementById('lampn').textContent, rate: document.getElementById('lamprate').textContent, mid,
           light: document.getElementById('k2').getAttribute('aria-valuenow'), said: document.getElementById('said').textContent,
           sets: __calls.filter(c => c[0] === 'set_setting').map(c => c[1]), eyepiece: __calls.filter(c => c[0] === 'eyepiece').map(c => c[1].on),
+          code: { css: parseFloat(c.style.width), px: c.width, vh: innerHeight, dpr: devicePixelRatio, cell: Math.floor(c.width / ([48, 56, 64][1] + 6)) },
           note: document.querySelector('#lightnote b').textContent, pubnote: document.getElementById('pubnote').textContent,
           sends: __calls.filter(c => c[0] === 'send' || c[0] === 'broadcast').length };
       };
@@ -1012,10 +1013,14 @@ function measureText() {
         const flashing = await lp.evaluate(view);
         if (flashing.frames !== '006' || flashing.rate !== '2290' || flashing.say !== 'Hold this screen up to their camera. flashing, Escape stops it') problems.push(`${tag}: the flashing view reads ${JSON.stringify(flashing)}`);
         await shot('flashing', '.lamp');
+        // a code legible at arm's length: at least 60% of the window's height, and 12 cm on a 13-inch 1440x900 screen
+        // (about 50 points a centimetre), in whole device pixels
+        r.code = flashing.code;
+        if (flashing.code.css < 0.6 * h || (w === 1440 && flashing.code.css < 604) || flashing.code.px !== Math.round(flashing.code.css * 2)) problems.push(`${tag}: the code is ${JSON.stringify(flashing.code)}, wanted at least ${Math.ceil(0.6 * h)} px${w === 1440 ? ' and 604 px (12 cm)' : ''} in whole device pixels`);
         // what is drawn is what the core means: the camera's decoder reads the frame's bytes back off a screenshot, for
-        // each preset (at 1440 all three; elsewhere Normal)
+        // each preset (every preset, at every width)
         const files = [], want = [];
-        for (const spec of w === 1440 ? [0, 1, 2] : [1]) {
+        for (const spec of [0, 1, 2]) {
           await emit(lp, 'display', frame(spec, 7)); await paint(lp);
           const f = path.join(out, `light-${w}-decode-${spec}.png`);
           await lp.locator('.lamp').screenshot({ path: f }); files.push(f); want.push(CODE[spec].frames[7].frame);
@@ -1087,10 +1092,11 @@ function measureText() {
       for (const spec of [1, 2]) {
         const fps = [6, 10, 15][spec];
         const lp = await openLight(1440, 900, 2, { dpr: 1, q: 'still&ready=300' });
-        const box = await lp.locator('.sheet').boundingBox();
         const caps = [];
+        let box = null;
         const cap = async () => caps.push((await lp.screenshot({ clip: box })).toString('base64'));
-        await emit(lp, 'display', frame(spec, 0)); await paint(lp); await cap();
+        await emit(lp, 'display', frame(spec, 0)); await paint(lp);
+        box = await lp.locator('.lamp').boundingBox(); await cap();
         await lp.waitForTimeout(350);
         for (let i = 1; i <= 118; i++) { await emit(lp, 'display', frame(spec, i)); await paint(lp); await cap(); }
         await emit(lp, 'displayStopped', { tag: 4660 }); await paint(lp); await cap();

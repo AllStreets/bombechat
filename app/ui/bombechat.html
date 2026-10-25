@@ -381,7 +381,11 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
 /* the flashing view: while the machine flashes by light, the message sheet's place holds a signal lamp. The code
    sits in a brass bezel on mid-grey enamel, so it never fills the screen and its surround never changes. The
    canvas is drawn pixel for pixel as the light crate's renderer draws a frame, and is never turned or scaled. */
-.lamp{grid-area:sheet;position:relative;z-index:2;display:grid;grid-template-rows:auto minmax(0,1fr) auto;gap:12px;min-height:0;padding:12px 16px 14px;border-radius:3px;
+/* it is a temporary mode, so it takes the sheet's column (and the key check card's, when that stands beside it) from
+   just under the title bar to the foot of the window, over the drums, which recede under it: the code is then a good
+   size for a camera at arm's length. Fixed to the window, so it never scrolls or moves while it shows */
+body:has(.lamp:not([hidden])){perspective:none}
+.lamp{position:fixed;left:16px;top:58px;bottom:16px;width:min(980px,calc(100vw - 32px));z-index:4;display:grid;grid-template-rows:auto minmax(0,1fr) auto;gap:12px;min-height:0;padding:12px 16px 14px;border-radius:3px;
   background:linear-gradient(#8f8b80,#8d887a);box-shadow:inset 0 0 0 1px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.16),0 10px 24px rgba(0,0,0,.55),0 2px 3px rgba(0,0,0,.5)}
 .lamp[hidden]{display:none}
 .lamp::before{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;opacity:.3;mix-blend-mode:overlay;
@@ -1235,7 +1239,12 @@ const READY_MS=Q.has('ready')?+Q.get('ready'):1200,LAMP_GREY='#bcbcbc';
 const Lamp={state:'closed',tag:null,spec:1,bits:null,index:-1,shown:0,readyT:null,stopped:false,for:null,refocus:false};
 const odoDigits=(el,n,w)=>{el.innerHTML=String(Math.max(0,Math.min(10**w-1,Math.round(n)))).padStart(w,'0').split('').map(d=>`<i>${d}</i>`).join('')};
 // the canvas, sized to the bezel's opening in whole device pixels and placed on whole device pixels
+// the lamp's span: the sheet's column, and the card's when it stands beside the sheet (the wide layout)
+function lampPlace(){const a=sheetEl.getBoundingClientRect(),m=document.querySelector('.menu').getBoundingClientRect(),beside=Math.abs(m.top-a.top)<40&&m.left>a.left;
+  const left=Math.max(16,Math.round(a.left)),right=Math.min(innerWidth-16,Math.round(beside?m.right:a.right));
+  lampEl.style.left=left+'px';lampEl.style.width=Math.max(320,right-left)+'px'}
 function lampFit(){if(lampEl.hidden)return;
+  lampPlace();
   const mid=lampEl.querySelector('.lamp-mid').getBoundingClientRect(),dpr=devicePixelRatio||1;
   const css=Math.max(96,Math.floor(Math.min(mid.width,mid.height)-28)),px=Math.round(css*dpr);
   if(lampCv.width!==px){lampCv.width=lampCv.height=px}
