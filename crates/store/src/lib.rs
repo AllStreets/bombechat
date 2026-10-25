@@ -135,6 +135,11 @@ VACUUM;
 PRAGMA user_version = 4;
 ";
 
+/// How many heard broadcasts (not this device's own) are kept: the newest
+/// this many. Anyone in range can broadcast, so without a cap strangers
+/// could grow the store without bound.
+pub const HEARD_BROADCASTS_KEPT: usize = 500;
+
 /// The transport a message traveled over.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Channel {
@@ -693,7 +698,9 @@ impl Store {
     /// that carries it while it is [`Delivery::Waiting`] (so it can be
     /// queued again after a restart, [`Store::waiting_broadcasts`]), or
     /// one it heard (no envelope). Stored again under the same id, it
-    /// updates the row but keeps the age it was first stored at.
+    /// updates the row but keeps the age it was first stored at. Only the
+    /// newest [`HEARD_BROADCASTS_KEPT`] heard ones are kept; this device's
+    /// own are never let go here.
     pub fn put_broadcast(
         &self,
         b: &StoredBroadcast,
@@ -728,6 +735,14 @@ impl Store {
             ],
         )
         .map_err(|_| StoreError::Corrupt)?;
+        if !b.outgoing {
+            conn.execute(
+                "DELETE FROM broadcasts WHERE outgoing = 0 AND rowid NOT IN
+                     (SELECT rowid FROM broadcasts WHERE outgoing = 0 ORDER BY rowid DESC LIMIT ?1)",
+                params![HEARD_BROADCASTS_KEPT as i64],
+            )
+            .map_err(|_| StoreError::Corrupt)?;
+        }
         Ok(())
     }
 
@@ -1301,5 +1316,45 @@ mod tests {
         assert_eq!(pragma(&store, "auto_vacuum"), 2);
         assert_eq!(pragma(&store, "user_version"), 4);
         assert_eq!(store.my_name(), "me");
+    }
+
+    fn heard(n: u16) -> StoredBroadcast {
+        let mut id = [0u8; 16];
+        id[..2].copy_from_slice(&n.to_be_bytes());
+        StoredBroadcast {
+            id,
+            outgoing: false,
+            signer: [9; 32],
+            verified: false,
+            hops: 1,
+            text: format!("heard {n}"),
+            at_min: 1,
+            delivery: Delivery::Sent,
+        }
+    }
+
+    #[test]
+    fn only_the_newest_heard_broadcasts_are_kept_and_never_at_the_cost_of_our_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("b.db");
+        let store = Store::create(&path, "pw", &Identity::generate(), "me").unwrap();
+        let own = StoredBroadcast {
+            id: [0xff; 16],
+            outgoing: true,
+            text: "Ours, the oldest.".into(),
+            verified: true,
+            hops: 0,
+            ..heard(0)
+        };
+        store.put_broadcast(&own, None).unwrap();
+        let extra = 3;
+        for n in 0..(HEARD_BROADCASTS_KEPT as u16 + extra) {
+            store.put_broadcast(&heard(n), None).unwrap();
+        }
+        let kept = store.broadcasts();
+        assert_eq!(kept.len(), HEARD_BROADCASTS_KEPT + 1);
+        assert_eq!(kept[0], own, "our own stays");
+        assert_eq!(kept[1].text, format!("heard {extra}"), "the oldest heard went");
+        assert_eq!(kept.last().unwrap().text, format!("heard {}", HEARD_BROADCASTS_KEPT as u16 + extra - 1));
     }
 }
