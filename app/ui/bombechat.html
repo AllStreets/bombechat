@@ -8,6 +8,7 @@
 <link rel="preload" href="fonts/cutive-mono.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="fonts/libre-caslon-text-400.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="fonts/fonts.css">
+<link rel="stylesheet" href="edition.css">
 <style>
 /* Fallback faces sized to the web fonts, so nothing moves when they arrive. */
 @font-face{font-family:'Cutive fallback';src:local('Courier New'),local('Courier');size-adjust:100%;ascent-override:88%;descent-override:26%}
@@ -135,6 +136,7 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
 .pl,.maker,.colno,.key,.blank b{-webkit-text-stroke:.25px currentColor}
 .maker{font-family:var(--engr);font-size:16px;letter-spacing:.12em;color:#ddd6c3;white-space:nowrap}
 .maker small{font-size:12px;letter-spacing:.07em;color:var(--lab);margin-left:10px}
+.maker small::after{content:var(--build)}
 .top .rt{margin-left:auto;display:flex;gap:10px;align-items:center}
 .top .said{font-family:var(--type);font-size:12.5px;color:#9d978a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:34vw;opacity:0;transition:opacity .4s}
 .top .sep{width:1px;height:22px;background:#0b0b0a;box-shadow:1px 0 0 rgba(255,255,255,.05);margin:0 4px}
@@ -481,7 +483,7 @@ body:has(.lamp:not([hidden])){perspective:none}
 <div id="back" aria-hidden="true"><span class="pl screw">Rear panel</span></div>
 <div class="app" id="app">
   <header class="top">
-    <span class="maker">Bombechat<small>airgapped build</small></span>
+    <span class="maker">Bombechat<small></small></span>
     <div class="rt">
       <span class="said" id="said" role="status" aria-live="polite"></span>
       <button class="bat" id="snd" aria-pressed="true" aria-label="Machine sound" title="The click of the drums as they turn and the plugs on the back panel. Click anywhere first to allow sound."><span class="lever"></span></button>
@@ -602,7 +604,7 @@ function askPassphrase(first){return new Promise(done=>{
     <div class="f"><span class="ln"><input id="unlock-${name}" name="${name}" type="${type}" autocomplete="${auto}" spellcheck="false"${name==='who'?' maxlength="40"':''} required></span></div></div>`;
   const wheels=Array.from({length:5},()=>`<i><span>${'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map(c=>`<b>${c}</b>`).join('')}</span></i>`).join('');
   f.innerHTML=`<div class="stand">
-    <span class="maker" aria-hidden="true">Bombechat<small>airgapped build</small></span>
+    <span class="maker" aria-hidden="true">Bombechat<small></small></span>
     <div class="card" role="dialog" aria-modal="true" aria-labelledby="unlock-h">
       <div class="rh"><h2 id="unlock-h">${first?'Registration':'Unlock'}</h2><span>For this laptop</span></div>
       ${first?row('who','Your name','as people you pair with see it','text','name'):''}

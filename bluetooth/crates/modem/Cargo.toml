@@ -1,0 +1,25 @@
+[package]
+name = "bombechat-modem"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cpal = "0.18"
+reed-solomon = "0.2"
+rustfft = "6"
+
+[dev-dependencies]
+hound = "3"
+proptest = "1"
+rand = "0.8"
+# Self dev-dependency so integration tests get `fake-audio` without it
+# ever being on by default (and so it is absent from the airgapped
+# dependency tree, which only follows normal edges; see
+# tools/check-airgapped.sh).
+bombechat-modem = { path = ".", features = ["fake-audio"] }
+
+[features]
+default = []
+# FakeAudio / LoopbackAudio test doubles (crates/modem/src/fake.rs), used
+# by this crate's own tests and by bombechat-node's two-node tests.
+fake-audio = []

@@ -1,0 +1,4 @@
+# Shared files this edition patches, one per line. Each has its change in
+# patches/; tools/sync-bluetooth.sh fails if this list and the patches disagree.
+app/src-tauri/Info.plist
+app/src-tauri/tauri.conf.json

@@ -1,0 +1,5 @@
+/* Which build this machine is, as its plates name it: the top plate, the
+   passphrase stand and the maker's plate on the back all read it from here.
+   This is the standard build, the Bluetooth edition: this file is laid over
+   the root's app/ui/edition.css when bluetooth/ is synced. */
+:root{--build:'standard build'}

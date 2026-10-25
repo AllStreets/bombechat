@@ -1,0 +1,36 @@
+# The Bluetooth edition
+
+`bluetooth/` is the standard build of Bombechat: the airgapped project at the
+root of this repository, plus Bluetooth. It is a whole project of its own,
+with its own Cargo workspace, Tauri app and interface, built and tested from
+inside `bluetooth/`.
+
+Most of it is generated. Don't edit files in `bluetooth/` outside this
+folder: make the change at the root, or here, then run
+
+    bash tools/sync-bluetooth.sh
+
+from the root. The script copies the root's shared tree (every tracked file
+except `bluetooth/`, `.github/`, `docs/`, `mockups/`, the root README and
+the sync script and its test),
+applies `patches/*.patch` in order, and lays `files/` over the result. CI runs
+it with `--check` and fails if the committed `bluetooth/` differs.
+
+What lives here:
+
+- `PATCHED`: the shared files this edition changes, each with a patch.
+- `patches/`: those changes, kept small. The identifier
+  (`app.bombechat.standard`, so the store and Keychain item are its own) and
+  the Bluetooth usage line in `Info.plist`.
+- `files/`: files the edition adds or replaces. `app/ui/edition.css` names
+  this build "standard build" on the machine's plates.
+
+Prefer adding a file here over patching a shared one.
+
+Building and checking:
+
+    cd bluetooth
+    cargo test --workspace
+    npm run check
+
+Builds land in `bluetooth/target`, apart from the root's.

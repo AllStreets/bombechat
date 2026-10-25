@@ -6,6 +6,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="preload" href="fonts/marcellus-sc.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="fonts/fonts.css">
+<link rel="stylesheet" href="edition.css">
 <script type="importmap">
 { "imports": {
   "three": "./vendor/three/build/three.module.js",
@@ -29,6 +30,7 @@ body{-webkit-font-smoothing:antialiased;display:grid;grid-template-rows:46px min
 .top{display:flex;align-items:center;gap:14px;padding:0 16px;background:linear-gradient(#20211f,#181917);box-shadow:inset 0 -1px 0 #000,0 1px 0 rgba(255,255,255,.04);position:relative;z-index:5}
 .maker{font-family:var(--engr);font-size:15px;letter-spacing:.12em;color:#d9d2bf}
 .maker small{font-size:12px;letter-spacing:.08em;color:#8d887a;margin-left:10px}
+.maker small::after{content:var(--build)}
 .pl{display:inline-flex;align-items:center;gap:8px;background:linear-gradient(#141413,#0b0b0a);color:var(--plate-ink);font-family:var(--engr);font-size:12px;letter-spacing:.06em;
   padding:4px 12px 3px;border-radius:1.5px;box-shadow:inset 0 0 0 1px rgba(255,255,255,.06),0 1px 0 rgba(255,255,255,.05),0 -1px 0 rgba(0,0,0,.6);white-space:nowrap}
 a.pl,button.pl{all:unset;display:inline-flex;align-items:center;gap:9px;background:linear-gradient(#171716,#0b0b0a);color:var(--plate-ink);font-family:var(--engr);font-size:12px;letter-spacing:.06em;
@@ -124,7 +126,7 @@ a.pl svg{display:block}
 <body>
 <div class="top">
   <a class="pl" href="bombechat.html" id="back" aria-label="Back to the front of the machine"><svg width="11" height="9" viewBox="0 0 11 9" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M4.5 1 1 4.5 4.5 8M1 4.5h9.5"/></svg>Front of the machine</a>
-  <span class="maker">Bombechat<small>airgapped build</small></span>
+  <span class="maker">Bombechat<small></small></span>
   <div class="rt"><span class="saved" id="saved" aria-live="polite"></span><span class="pl">Build 0.4</span></div>
 </div>
 

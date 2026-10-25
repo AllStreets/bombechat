@@ -1,0 +1,47 @@
+[package]
+name = "bombechat-app"
+version = "0.1.0"
+edition = "2021"
+description = "Bombechat, airgapped build: the desktop shell around the node."
+
+[lib]
+name = "bombechat_app"
+path = "src/lib.rs"
+
+[[bin]]
+name = "bombechat-app"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+bombechat-core = { path = "../../crates/core" }
+# The light code presets and, on macOS, the AVFoundation camera.
+bombechat-light = { path = "../../crates/light" }
+bombechat-modem = { path = "../../crates/modem" }
+bombechat-node = { path = "../../crates/node" }
+bombechat-store = { path = "../../crates/store" }
+# No plugins: no updater, no shell, no http. The page reaches the node only
+# through the commands in src/commands.rs.
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+zeroize = "1"
+
+# Lock with passphrase Off keeps the store key in the macOS Keychain,
+# through Security.framework only: no default features, so no Secret
+# Service, D-Bus or networking.
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3.6", default-features = false, features = ["apple-native"] }
+
+[dev-dependencies]
+# FakeAudio / LoopbackAudio for the sound tests. A dev-dependency only, so
+# `fake-audio` never reaches the app (tools/check-airgapped.sh follows
+# normal edges only).
+bombechat-modem = { path = "../../crates/modem", features = ["fake-audio"] }
+# FakeCamera for the light tests, likewise a dev-dependency only.
+bombechat-light = { path = "../../crates/light", features = ["fake-camera"] }
+# Camera pictures for the light tests: no codecs, no I/O.
+image = { version = "0.25", default-features = false }
+tempfile = "3"

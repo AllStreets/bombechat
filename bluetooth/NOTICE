@@ -1,0 +1,29 @@
+Bombechat
+Copyright (c) 2026 AllStreets
+Licensed under the MIT License (see LICENSE).
+
+This repository ships third-party files under their own licenses. Each
+license text sits beside the files it covers.
+
+Fonts, in app/ui/fonts, under the SIL Open Font License 1.1
+
+  Marcellus SC          marcellus-sc.woff2            OFL-marcellus-sc.txt
+    Copyright (c) 2012, Brian J. Bonislawsky DBA Astigmatic (AOETI),
+    with Reserved Font Name "Marcellus"
+  Libre Caslon Text     libre-caslon-text-400.woff2   OFL-libre-caslon-text.txt
+                        libre-caslon-text-700.woff2
+    Copyright 2018 The Libre Caslon Text Project Authors
+  Cutive Mono           cutive-mono.woff2             OFL-cutive-mono.txt
+    Copyright 2012 The Cutive Project Authors
+
+  docs/media/logo.svg embeds Marcellus SC, unmodified, under the same license.
+
+three.js r170, in app/ui/vendor/three, under the MIT License
+
+  Copyright (c) 2010-2024 three.js authors        app/ui/vendor/three/LICENSE
+
+Compiled into the app
+
+  SQLCipher, built from source by the rusqlite crate (bundled-sqlcipher),
+  under its BSD-style license, Copyright (c) Zetetic LLC. The Rust crates the
+  app depends on are listed in Cargo.lock, each under its own license.

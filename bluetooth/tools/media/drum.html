@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>One drum</title>
+<!-- One drum off the bank, face on, for the logo and the app icon. Built from the app's own
+     machine-kit and the same parts as the drum bank in app/ui/bombechat.html, steel hub and all.
+     Driven by tools/media.cjs:
+       ?rim=<hex>&letter=B&turn=<letters>     the logo: the drum alone
+       &icon&simple=<0..3>                     the icon: the drum seated on an enamel plate, 1024 px, with
+                                               simple=1 (no ticks, a heavier ring) for 64 px, simple=2 (no ring, a
+                                               bigger window, a plain hub) for 32 px and simple=3 (no hub, the letter in a lighter ink so it
+                                               stays a letter and not a hole in the window) for 16 -->
+<link rel="stylesheet" href="/app/ui/fonts/fonts.css">
+<style>html,body{margin:0;background:#141311}#v{width:512px;height:512px}.icon #v{width:1024px;height:1024px}</style>
+<script type="importmap">
+{ "imports": {
+  "three": "/app/ui/vendor/three/build/three.module.js",
+  "three/addons/": "/app/ui/vendor/three/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="v"></div>
+<script type="module">
+import { createMachine, engravingFace, engravingFont, engraveText } from '/app/ui/machine-kit.js';
+const Q = new URLSearchParams(location.search);
+const RIM = '#' + (Q.get('rim') || '7a2a22'), LETTER = Q.get('letter') || 'B', TURN = +(Q.get('turn') || 1);
+const BG = '#' + (Q.get('bg') || '141311');
+const ICON = Q.has('icon'), SIMPLE = +(Q.get('simple') || 0), SIZE = ICON ? 1024 : 512;
+if (ICON) document.body.classList.add('icon');
+// The window letter in the engraving face with the ring's own hairline. The bank paints its windows
+// at .085 on a 128 px texture that shows about 40 px tall, where that reads as this; drawn as large
+// as the logo draws it, .085 swells Marcellus's flared strokes into a slab. At 16 and 32 px the icon
+// wants the slab back, and more.
+const WEIGHT = +(Q.get('weight') || [.035, .05, .07, .07][ICON ? SIMPLE : 0]);
+await engravingFace();
+const host = document.getElementById('v');
+const K = createMachine(host, { still: true, background: BG });
+const { THREE, renderer, scene, camera, M, tex, key, rim } = K;
+renderer.setSize(SIZE, SIZE, false);
+camera.fov = 9; camera.aspect = 1;
+// the logo frames the drum's rim; the icon frames the 1024 px canvas, the drum about 610 px across in it
+const SPAN = ICON ? .94 * 1024 / (SIMPLE >= 2 ? 700 : 610) : 1.02;
+const D = (SPAN / 2 / Math.tan(camera.fov * Math.PI / 360));
+camera.position.set(0, 0, D); camera.lookAt(0, 0, 0); camera.near = D - 2; camera.far = D + 2; camera.updateProjectionMatrix();
+key.position.set(-6, 9, 22); key.intensity = 2.7;
+Object.assign(key.shadow.camera, { left: -1.2, right: 1.2, top: 1.2, bottom: -1.2, near: 1, far: 60 }); key.shadow.camera.updateProjectionMatrix();
+// one drum this close up shows the bank's variance shadows banding where the window sits just above the face: soft
+// percentage-closer shadows from a finer map instead
+renderer.shadowMap.type = THREE.PCFShadowMap; key.shadow.mapSize.set(4096, 4096); key.shadow.radius = 4; key.shadow.bias = -.0002; key.shadow.normalBias = .002;
+rim.intensity = .45;
+
+// the parts, as the drum bank cuts them
+const R = .46;
+const ringTex = K.canvasTex(2048, 2048, (k, w) => { const c = w / 2, s = w / 1024;
+  const g = k.createRadialGradient(c * .8, c * .6, c * .1, c, c, c); g.addColorStop(0, '#2e2a26'); g.addColorStop(.65, '#161412'); g.addColorStop(1, '#0a0908'); k.fillStyle = g; k.fillRect(0, 0, w, w);
+  k.translate(c, c); k.fillStyle = '#d8d0ba'; k.font = engravingFont(90 * s); k.textAlign = 'center'; k.textBaseline = 'middle';
+  if (SIMPLE < 2) for (let i = 0; i < 26; i++) { k.save(); k.rotate(i * 2 * Math.PI / 26); engraveText(k, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'[i], 0, -c * .735, 90 * s, SIMPLE ? .1 : .06); k.restore(); }
+  if (!SIMPLE) { k.strokeStyle = 'rgba(220,214,200,.28)'; k.lineWidth = 3 * s; for (let i = 0; i < 26; i++) { k.save(); k.rotate((i + .5) * 2 * Math.PI / 26); k.beginPath(); k.moveTo(0, -c * .97); k.lineTo(0, -c * .88); k.stroke(); k.restore(); } }
+  if (SIMPLE < 2) { k.strokeStyle = 'rgba(220,214,200,.1)'; k.lineWidth = 2 * s; k.beginPath(); k.arc(0, 0, c * .5, 0, 7); k.stroke();
+    for (let i = 0; i < 4; i++) { k.save(); k.rotate(Math.PI / 4 + i * Math.PI / 2); k.fillStyle = '#070605'; k.beginPath(); k.arc(0, -c * .37, c * .045, 0, 7); k.fill(); k.strokeStyle = 'rgba(220,214,200,.2)'; k.stroke(); k.restore(); } }
+});
+ringTex.wrapS = ringTex.wrapT = THREE.ClampToEdgeWrapping; ringTex.colorSpace = THREE.SRGBColorSpace; ringTex.anisotropy = 16;
+const faceMat = new THREE.MeshStandardMaterial({ map: ringTex, roughness: .55, metalness: .05 });
+const rimGeo = (() => { const p = [[.395, 0], [.445, 0], [.462, .012], [.47, .04], [.47, .17], [.462, .2], [.445, .212], [.395, .212]].map(([r, y]) => new THREE.Vector2(r, y)); const g = new THREE.LatheGeometry(p, 192); g.rotateX(Math.PI / 2); return g; })();
+const faceGeo = new THREE.CircleGeometry(.402, 192);
+const hubGeo = (() => { const p = [[0, 0], [.075, 0], [.08, .01], [.074, .034], [.05, .052], [0, .058]].map(([r, y]) => new THREE.Vector2(r, y)); const g = new THREE.LatheGeometry(p, 96); g.rotateX(Math.PI / 2); return g; })();
+const slotGeo = new THREE.BoxGeometry(.1, .012, .02);
+const rimMat = new THREE.MeshPhysicalMaterial({ color: new THREE.Color(RIM).multiplyScalar(.82), roughness: .46, metalness: .05, clearcoat: .45, clearcoatRoughness: .4, bumpMap: tex.wrinkle, bumpScale: .15 });
+
+// the panel behind: for the icon, the plate the drum is seated on, close under the rim so its shadow touches.
+// The wrinkle is cut finer than the front page's, where the panel is many drums wide, so the grain keeps its
+// scale against the drum
+let panel;
+if (ICON) {
+  const wr = tex.wrinkle.clone(); wr.repeat.set(2.2, 2.2); wr.needsUpdate = true;
+  const rough = tex.panelRough.clone(); rough.repeat.set(1.4, 1.4); rough.needsUpdate = true;
+  const mat = M.panel.clone(); mat.bumpMap = wr; mat.roughnessMap = rough; mat.bumpScale = 1.1;
+  panel = new THREE.Mesh(new THREE.BoxGeometry(2.4, 2.4, .3), mat); panel.position.z = -.155;
+} else { panel = new THREE.Mesh(new THREE.BoxGeometry(3, 3, .3), M.panel); panel.position.z = -.36; }
+panel.receiveShadow = !ICON;
+if (ICON || Q.has('panel')) scene.add(panel);
+// On the icon the drum's shadow on the plate is laid on as two soft discs rather than taken from the shadow map,
+// which is cut fine for the window's shadow on the face: a wide one thrown down and right, away from the key light,
+// and a tight dark one where the rim meets the enamel
+if (ICON) for (const [dx, dy, r, soft, a] of [[.06, -.09, .46, .1, .85], [.008, -.012, .465, .028, .9]]) {
+  const t = K.canvasTex(512, 512, (k, w) => { const c = w / 2, u = c / (r + soft * 1.6);
+    const gr = k.createRadialGradient(c, c, r * u, c, c, (r + soft * 1.6) * u);
+    for (let i = 0; i <= 10; i++) { const x = i / 10; gr.addColorStop(x, `rgba(0,0,0,${(a * Math.pow(1 - x, 1.8)).toFixed(3)})`); }
+    k.fillStyle = gr; k.fillRect(0, 0, w, w); });
+  t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(2 * (r + soft * 1.6), 2 * (r + soft * 1.6)), new THREE.MeshBasicMaterial({ map: t, transparent: true, depthWrite: false }));
+  m.position.set(dx, dy, -.004); scene.add(m);
+}
+const g = new THREE.Group(); scene.add(g);
+const rot = new THREE.Group();
+const rimM = new THREE.Mesh(rimGeo, rimMat); rimM.castShadow = rimM.receiveShadow = true;
+const face = new THREE.Mesh(faceGeo, faceMat); face.position.z = .19; face.receiveShadow = true;
+// steel, as the bank's hubs are; at 32 px without its slot, a single point of light clear of the window, and at
+// 16 px gone, since there it only runs into the window
+const HUB = ICON && SIMPLE >= 2 ? .85 : 1;
+const hub = new THREE.Mesh(hubGeo, M.steel); hub.position.z = .192; hub.scale.set(HUB, HUB, 1); hub.castShadow = true;
+const slot = new THREE.Mesh(slotGeo, M.hole); slot.position.z = .247; slot.rotation.z = -1.0;
+rot.add(rimM, face); if (!(ICON && SIMPLE >= 3)) rot.add(hub); if (!(ICON && SIMPLE >= 2)) rot.add(slot); g.add(rot);
+// the letter ring turned so the window letter's own engraving sits under it
+rot.rotation.z = TURN * 2 * Math.PI / 26;
+const cv = document.createElement('canvas'); cv.width = cv.height = 512; const wt = new THREE.CanvasTexture(cv); wt.colorSpace = THREE.SRGBColorSpace; wt.anisotropy = 16;
+// at 16 and 32 px the window is cut larger and the letter fills more of it
+const TAB = ICON && SIMPLE >= 2 ? 1.45 : 1, LPX = ICON && SIMPLE >= 2 ? 120 : 98;
+{ const k = cv.getContext('2d'); k.scale(4, 4); k.fillStyle = '#ece4cd'; k.fillRect(0, 0, 128, 128);
+  const sh = k.createLinearGradient(0, 0, 0, 128); sh.addColorStop(0, 'rgba(0,0,0,.09)'); sh.addColorStop(.25, 'rgba(0,0,0,0)'); k.fillStyle = sh; k.fillRect(0, 0, 128, 128);
+  k.fillStyle = ICON && SIMPLE >= 3 ? '#625c51' : '#15130f'; k.font = engravingFont(LPX); k.textAlign = 'center'; k.textBaseline = 'middle'; engraveText(k, LETTER, 64, 64 + LPX * .05, LPX, WEIGHT);
+  k.strokeStyle = 'rgba(0,0,0,.35)'; k.lineWidth = 4; k.strokeRect(2, 2, 124, 124); }
+const tabMat = { roughness: .45, metalness: 0 };
+const cream = () => new THREE.MeshStandardMaterial({ color: '#e9e1cb', ...tabMat });
+const tab = new THREE.Mesh(new THREE.BoxGeometry(.26 * TAB, .25 * TAB, .03), [cream(), cream(), cream(), cream(), new THREE.MeshStandardMaterial({ map: wt, ...tabMat }), cream()]);
+tab.position.set(0, Math.min(R * .645, .455 - .125 * TAB), .225); tab.castShadow = true; g.add(tab);
+
+const composer = K.makeComposer({ ao: true });
+composer.setSize(SIZE, SIZE);
+// the bank's ambient occlusion reaches across a drum's gap to the panel; one drum this close up wants it tighter
+// and more finely sampled, or it lays a hard, banded shade under the window
+const ao = composer.passes.find(p => p.gtaoMaterial);
+ao.updateGtaoMaterial({ radius: .12, distanceExponent: 1.4, thickness: .6, scale: 1, samples: 32 });
+ao.updatePdMaterial({ lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 6, rings: 4, samples: 16 });
+renderer.shadowMap.needsUpdate = true;
+composer.render(); composer.render();
+// the rim's outer edge, in pixels from the centre of the view, for the mask
+const edge = new THREE.Vector3(.47, 0, .17).project(camera);
+window.__drum = { ready: true, edge: edge.x * SIZE / 2 };
+
+// The icon: the render cut to the macOS plate, an 824 px squircle in the 1024 px canvas (Apple's grid), with the
+// plate's turned edge caught by the light along its top and a shadow under it. Returns a PNG data URL.
+window.__icon = () => {
+  const gl = renderer.domElement, out = document.createElement('canvas'); out.width = out.height = 1024; const k = out.getContext('2d');
+  const S = 824, O = 100, n = 5;
+  const plate = (inset = 0) => { const p = new Path2D(), a = S / 2 - inset, cx = 512, cy = O + S / 2;
+    for (let i = 0; i <= 720; i++) { const t = i / 720 * 2 * Math.PI, c = Math.cos(t), s = Math.sin(t);
+      const x = cx + a * Math.sign(c) * Math.pow(Math.abs(c), 2 / n), y = cy + a * Math.sign(s) * Math.pow(Math.abs(s), 2 / n);
+      i ? p.lineTo(x, y) : p.moveTo(x, y); }
+    p.closePath(); return p; };
+  // the shadow the plate throws on whatever it sits on: a wide soft one and a tight one at the edge
+  k.save(); k.shadowColor = 'rgba(0,0,0,.34)'; k.shadowBlur = 26; k.shadowOffsetY = 12; k.fillStyle = '#000'; k.fill(plate(2)); k.restore();
+  k.save(); k.shadowColor = 'rgba(0,0,0,.3)'; k.shadowBlur = 4; k.shadowOffsetY = 2; k.fillStyle = '#000'; k.fill(plate(1)); k.restore();
+  k.save(); k.clip(plate());
+  k.drawImage(gl, 0, 0, 1024, 1024);
+  // the key light falls across the enamel from the top left, as it does across the front panel
+  const lit = k.createRadialGradient(330, 230, 40, 420, 360, 760); lit.addColorStop(0, 'rgba(255,240,215,.04)'); lit.addColorStop(1, 'rgba(0,0,0,.22)');
+  k.fillStyle = lit; k.fillRect(0, 0, 1024, 1024);
+  // the turned edge: a hairline of light on its upper side, shade on its lower
+  const edgeG = k.createLinearGradient(0, O, 0, O + S); edgeG.addColorStop(0, 'rgba(255,244,225,.28)'); edgeG.addColorStop(.3, 'rgba(255,244,225,.05)'); edgeG.addColorStop(.7, 'rgba(0,0,0,0)'); edgeG.addColorStop(1, 'rgba(0,0,0,.5)');
+  k.strokeStyle = edgeG; k.lineWidth = 5; k.stroke(plate(1.5));
+  k.restore();
+  k.strokeStyle = 'rgba(0,0,0,.55)'; k.lineWidth = 1.2; k.stroke(plate(.3));
+  return out.toDataURL('image/png');
+};
+</script>
+</body>
+</html>

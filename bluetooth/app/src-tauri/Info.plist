@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Bombechat listens for messages sent nearby by sound.</string>
+  <key>NSCameraUsageDescription</key>
+  <string>Bombechat reads messages shown to it on another screen.</string>
+  <key>NSBluetoothAlwaysUsageDescription</key>
+  <string>Bombechat uses Bluetooth to reach people near you. Nothing is sent to a stranger until you accept them.</string>
+</dict>
+</plist>

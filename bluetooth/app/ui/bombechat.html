@@ -1,0 +1,1700 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Bombechat</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preload" href="fonts/marcellus-sc.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/cutive-mono.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/libre-caslon-text-400.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="fonts/fonts.css">
+<link rel="stylesheet" href="edition.css">
+<style>
+/* Fallback faces sized to the web fonts, so nothing moves when they arrive. */
+@font-face{font-family:'Cutive fallback';src:local('Courier New'),local('Courier');size-adjust:100%;ascent-override:88%;descent-override:26%}
+@font-face{font-family:'Caslon fallback';src:local('Georgia');size-adjust:104%;ascent-override:90%;descent-override:28%}
+:root{
+  --enamel:#1b1c1a;
+  --buff:#eadfc4; --green-ink:#2f5a4b; --violet:#5b3f86; --type-ink:#25211b; --graphite:#4b4a47;
+  --tape:#f1e9d4; --amber:#e7a63c;
+  --plate-ink:#ece6d6; --lab:#a39d8e;
+  --engr:'Bombechat Engraving','Caslon fallback',serif;
+  --print:'Libre Caslon Text','Caslon fallback',Georgia,serif;
+  --type:'Cutive Mono','Cutive fallback','Courier New',monospace;
+  /* the wrinkle finish of the enamel, laid over it */
+  --noise:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .5  0 0 0 0 .5  0 0 0 0 .5  0 0 0 .55 0'/></filter><rect width='240' height='240' filter='url(%23n)'/></svg>");
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{background:#121311;color-scheme:dark}
+body{min-height:100vh;background:var(--enamel);-webkit-font-smoothing:antialiased;perspective:2400px;overflow-x:hidden}
+button{font:inherit;color:inherit}
+:focus-visible{outline:1.5px solid var(--amber);outline-offset:3px}
+
+/* the app: nothing shows until the real sheet is in place (realSheet) */
+.in-app:not(.real) .app{visibility:hidden}
+/* the passphrase, asked before the sheet opens (the app only): a registration form, printed like
+   the message sheet and typed in, laid on the machine's enamel and stamped to open. Below it the
+   key's counter, whose wheels turn while the key is worked out (Argon2id, most of a second). */
+/* body's perspective (for the turn to the back panel) would make it the box the form is fixed to:
+   while the form is up, the window is */
+body:has(>.unlock){perspective:none;overflow:hidden;height:100vh}
+.unlock{position:fixed;inset:0;z-index:20;display:grid;place-items:center;overflow:auto;padding:24px 16px;background:var(--enamel)}
+.unlock::before{content:"";position:fixed;inset:0;pointer-events:none;opacity:.55;mix-blend-mode:overlay;
+  background-image:var(--noise)}
+.unlock .stand{position:relative;display:grid;justify-items:center;gap:22px;padding:14px 18px 6px}
+.unlock .maker{font-size:15px}
+.unlock .card{width:min(452px,calc(100vw - 32px));background:var(--buff);color:var(--type-ink);border-radius:1px;padding:17px 0 14px;transform:rotate(-.25deg);
+  box-shadow:0 1px 0 rgba(255,255,255,.2) inset,0 14px 34px rgba(0,0,0,.6),0 2px 3px rgba(0,0,0,.5);
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='300' height='300'><filter id='p'><feTurbulence type='fractalNoise' baseFrequency='.55' numOctaves='4' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .45  0 0 0 0 .38  0 0 0 0 .25  0 0 0 .09 0'/></filter><rect width='300' height='300' filter='url(%23p)'/></svg>")}
+.unlock .card>*{margin-left:24px;margin-right:24px}
+.unlock .rh{display:flex;align-items:flex-end;justify-content:space-between;border-bottom:1.5px solid var(--green-ink);padding-bottom:6px;color:var(--green-ink)}
+.unlock h2{font-family:var(--print);font-weight:400;font-size:21px;line-height:1.1;letter-spacing:.01em}
+.unlock .rh span{font-family:var(--print);font-size:13px}
+/* each field a row of the form: printed label left of a green rule, the typing on the right */
+.unlock .row{position:relative;display:grid;grid-template-columns:118px minmax(0,1fr);border-bottom:1px solid var(--green-ink);min-height:50px}
+.unlock .row label{font-family:var(--print);font-size:13px;line-height:1.25;color:var(--green-ink);padding:8px 10px 8px 0;border-right:1px solid rgba(47,90,75,.5);cursor:text}
+.unlock .row label small{display:block;font-size:12px;color:#3f5f53;margin-top:2px}
+.unlock .row .f{display:flex;flex-direction:column;justify-content:flex-end;padding-left:12px;min-width:0}
+.unlock .ln{position:relative;display:block}
+.unlock input{all:unset;box-sizing:border-box;display:block;width:100%;font-family:var(--type);font-size:15px;line-height:20px;color:#2a2620;text-shadow:0 0 .7px rgba(42,38,32,.6);caret-color:#1c1a16;padding:14px 0 6px;letter-spacing:.02em}
+.unlock input[type=password]{letter-spacing:.16em}
+.unlock input:disabled{color:#5c5446}
+/* the row being typed in: the drum's index mark points at its line, and its rule is inked twice as heavy */
+.unlock .ln::before{content:"";position:absolute;left:-12px;bottom:10px;width:0;height:0;border-top:4.5px solid transparent;border-bottom:4.5px solid transparent;border-left:7px solid var(--green-ink);opacity:0}
+.unlock .row:focus-within .ln::before{opacity:1}
+.unlock .row:focus-within::after{content:"";position:absolute;left:0;right:0;bottom:-2px;height:1px;background:var(--green-ink)}
+.unlock .row.bad:focus-within{border-bottom-color:#8a2a22}
+.unlock .row.bad:focus-within::after{background:#8a2a22}
+.unlock input::selection{background:rgba(47,90,75,.16);color:#1c1a16}
+/* a field the machine refused: its label in red ink, the reason typed under it in red */
+.unlock .row.bad label,.unlock .row.bad label small{color:#8a2a22}
+.unlock .row.bad .ln::before{border-left-color:#8a2a22}
+/* the reason is printed, not typed: set in the form's face under a dotted red line that marks where the typing ends */
+.unlock .row.bad .ln{border-bottom:1px dotted rgba(138,42,34,.75)}
+.unlock .err{font-family:var(--print);font-size:12.5px;line-height:1.3;color:#8a2a22}
+.unlock .err:not(:empty){padding:5px 0 7px}
+.unlock .ins{font-family:var(--print);font-size:12.5px;line-height:1.45;color:var(--green-ink)}
+.unlock .ft{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:16px;align-items:end;padding-top:11px}
+.unlock ol{list-style:none;font-family:var(--print);font-size:12.5px;line-height:1.45;color:var(--green-ink)}
+.unlock ol li{display:grid;grid-template-columns:17px 1fr}
+/* the rubber stamp that opens it, inked harder as it is pressed */
+.unlock .rs{font-size:15px;padding:5px 11px 4px;margin:0 2px 1px 0;--ink:var(--violet);--tilt:-2.5deg;border-style:double;border-width:3px;opacity:.86}
+.unlock .rs:focus-visible{outline:1.5px dotted var(--graphite);outline-offset:4px}
+.unlock .rs[aria-disabled="true"]{cursor:default;opacity:1;background:rgba(91,63,134,.1);transform:rotate(var(--tilt)) scale(.97);animation:press .22s cubic-bezier(.3,1.4,.5,1)}
+@keyframes press{0%{transform:rotate(var(--tilt)) scale(1.08);opacity:.6}100%{transform:rotate(var(--tilt)) scale(.97);opacity:1}}
+/* the key's counter, on the enamel under the form: still until the stamp goes down, then its wheels
+   run through the alphabet like the drums, stopping one after another when the store is open */
+.unlock .turn{display:flex;align-items:center;gap:10px;opacity:.55;transition:opacity .2s}
+.unlock .turn .jewel{width:10px;height:10px}
+/* the plate is cut wide enough for its longest words, so nothing beside it moves when they change */
+.unlock .turn .pl{width:172px;justify-content:center}
+.unlock.working .turn{opacity:1}
+.unlock .turn .odo i{overflow:hidden;position:relative}
+.unlock .turn .odo i span{position:absolute;left:0;right:0;top:0;display:flex;flex-direction:column;align-items:center}
+.unlock .turn .odo i span b{font-weight:400;height:20px;line-height:20px}
+.unlock.working .turn .odo i span{animation:wheel 1.3s steps(26) infinite}
+.unlock.working .turn .odo i:nth-child(2) span{animation-duration:.9s;animation-delay:-.3s}
+.unlock.working .turn .odo i:nth-child(3) span{animation-duration:1.1s;animation-delay:-.7s}
+.unlock.working .turn .odo i:nth-child(4) span{animation-duration:.7s;animation-delay:-.2s}
+.unlock.working .turn .odo i:nth-child(5) span{animation-duration:1.5s;animation-delay:-1s}
+@keyframes wheel{to{transform:translateY(-520px)}}
+.unlock .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+
+/* the whole app is one wrinkle-finish enamel panel */
+.app{position:relative;min-height:100vh;min-width:980px;display:grid;grid-template-rows:auto auto minmax(410px,1fr);background:var(--enamel);
+  transform-origin:50% 50vh;backface-visibility:hidden;transition:transform .65s cubic-bezier(.55,.05,.35,1),filter .65s}
+.app::before{content:"";position:absolute;inset:0;pointer-events:none;opacity:.55;mix-blend-mode:overlay;z-index:0;
+  background-image:var(--noise)}
+.app.turning{transform:rotateY(180deg);filter:brightness(.5)}
+body.turning{background:#0c0c0b}
+/* the machine's back, seen for the second half of the turn */
+#back{position:fixed;inset:0;z-index:5;pointer-events:none;visibility:hidden;transform:rotateY(-180deg);backface-visibility:hidden;transition:transform .65s cubic-bezier(.55,.05,.35,1),visibility 0s .65s;
+  display:grid;place-items:center;background:
+   radial-gradient(circle at 22px 22px,#c9c4b6 0 3px,#4c4a44 3.5px,transparent 4.5px),radial-gradient(circle at calc(100% - 22px) 22px,#c9c4b6 0 3px,#4c4a44 3.5px,transparent 4.5px),
+   radial-gradient(circle at 22px calc(100% - 22px),#c9c4b6 0 3px,#4c4a44 3.5px,transparent 4.5px),radial-gradient(circle at calc(100% - 22px) calc(100% - 22px),#c9c4b6 0 3px,#4c4a44 3.5px,transparent 4.5px),
+   linear-gradient(90deg,transparent 15%,rgba(0,0,0,.35) 15%,rgba(0,0,0,.35) calc(15% + 6px),transparent calc(15% + 6px),transparent 85%,rgba(0,0,0,.35) 85%,rgba(0,0,0,.35) calc(85% + 6px),transparent calc(85% + 6px)),#171816}
+body.turning #back{visibility:visible;transform:rotateY(0);transition:transform .65s cubic-bezier(.55,.05,.35,1),visibility 0s}
+
+/* engraved traffolyte plate */
+.pl{display:inline-flex;align-items:center;gap:8px;background:linear-gradient(#141413,#0b0b0a);color:var(--plate-ink);font-family:var(--engr);font-size:12px;letter-spacing:.08em;line-height:1;
+  padding:5px 12px 4px;border-radius:1.5px;box-shadow:inset 0 0 0 1px rgba(255,255,255,.06),0 1px 0 rgba(255,255,255,.05),0 -1px 0 rgba(0,0,0,.6);white-space:nowrap}
+.pl.red{background:linear-gradient(#8a2a22,#6d1e18);color:#f4ebdf}
+.pl.screw::before,.pl.screw::after{content:"";width:6px;height:6px;border-radius:50%;flex:none;
+  background:linear-gradient(135deg,transparent 44%,#2a2925 44%,#2a2925 58%,transparent 58%),radial-gradient(circle at 35% 30%,#d9d5ca,#8f8b80 60%,#4c4a44);box-shadow:0 .5px 0 #000,0 0 0 .5px rgba(0,0,0,.6)}
+.pl.screw{padding:5px 6px 4px;gap:9px}
+/* a plate you can press */
+.pb{appearance:none;border:0;text-decoration:none;cursor:pointer;transition:box-shadow .12s,transform .08s,color .12s}
+.pb:hover{box-shadow:inset 0 0 0 1px rgba(231,166,60,.45),0 1px 0 rgba(255,255,255,.07),0 -1px 0 rgba(0,0,0,.6);color:#fff7e4}
+.pb:active{transform:translateY(1px);box-shadow:inset 0 1px 3px rgba(0,0,0,.8),inset 0 0 0 1px rgba(231,166,60,.4)}
+.pb:focus-visible{outline:1.5px solid var(--amber);outline-offset:3px}
+.pb[aria-disabled="true"]{cursor:not-allowed;color:#6f6a5e}
+.pb[aria-disabled="true"]:hover{box-shadow:inset 0 0 0 1px rgba(255,255,255,.06);color:#6f6a5e}
+
+/* top */
+.top{position:relative;z-index:3;display:flex;align-items:center;gap:16px;height:46px;padding:0 18px;background:linear-gradient(#20211f,#181917);box-shadow:inset 0 -1px 0 #000,0 1px 0 rgba(255,255,255,.04)}
+/* Marcellus SC drawn a hair heavier, to the weight the plates were engraved at */
+.pl,.maker,.colno,.key,.blank b{-webkit-text-stroke:.25px currentColor}
+.maker{font-family:var(--engr);font-size:16px;letter-spacing:.12em;color:#ddd6c3;white-space:nowrap}
+.maker small{font-size:12px;letter-spacing:.07em;color:var(--lab);margin-left:10px}
+.maker small::after{content:var(--build)}
+.top .rt{margin-left:auto;display:flex;gap:10px;align-items:center}
+.top .said{font-family:var(--type);font-size:12.5px;color:#9d978a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:34vw;opacity:0;transition:opacity .4s}
+.top .sep{width:1px;height:22px;background:#0b0b0a;box-shadow:1px 0 0 rgba(255,255,255,.05);margin:0 4px}
+.jewel{display:inline-block;width:11px;height:11px;border-radius:50%;flex:none;background:radial-gradient(circle at 38% 32%,#fff3c9 0,#f0b64c 32%,#a8661b 70%,#5d360d);box-shadow:0 0 0 2px #2b2a26,0 0 0 3px #000;transition:background .25s}
+.jewel.off{background:radial-gradient(circle at 38% 32%,#8c7a5a 0,#4c3d25 40%,#241b0e)}
+.bat{all:unset;cursor:pointer;width:26px;height:26px;border-radius:50%;position:relative;flex:none;background:radial-gradient(circle at 40% 35%,#d9d5ca,#8f8b80 55%,#3e3c37);box-shadow:0 0 0 2px #2b2a26,0 0 0 3px #000,0 2px 3px rgba(0,0,0,.6)}
+.bat .lever{position:absolute;left:50%;top:50%;width:6px;height:15px;margin:-15px 0 0 -3px;border-radius:3px;transform-origin:50% 15px;transform:rotate(30deg);transition:transform .14s cubic-bezier(.3,1.6,.5,1);
+  background:linear-gradient(90deg,#8d8a80,#f1eee6 45%,#8d8a80);box-shadow:0 2px 2px rgba(0,0,0,.55)}
+.bat[aria-pressed="false"] .lever{transform:rotate(-30deg)}
+.bat:focus-visible{outline:1.5px solid var(--amber);outline-offset:4px}
+.sndlab{cursor:pointer}
+/* a switch whose feature isn't fitted yet is taped down at Off, the tape pencilled with what it waits for */
+.mod{position:relative}
+.taped .knob{cursor:default}
+.taped .knob .cap{opacity:.92}
+.tapedown{position:absolute;left:50%;top:41%;z-index:2;transform:translate(-22%,-50%) rotate(-7deg);pointer-events:none;filter:drop-shadow(0 1px 1.5px rgba(0,0,0,.7))}
+.tapedown b,.lightnote b{display:block;width:7.2em;text-align:center;font-weight:400;font-family:var(--type);font-size:12.5px;line-height:1.2;color:#2b2926;text-shadow:0 0 .6px rgba(43,41,38,.55);padding:5px 6px 4px;
+  background:linear-gradient(#cbbc94,#d8cba6 45%,#c4b48b);clip-path:polygon(0 8%,3% 0,97% 4%,100% 0,98% 50%,100% 100%,96% 94%,4% 100%,0 92%,2% 50%)}
+
+/* drum bank */
+.bank{--dr:clamp(66px,min((100vw - 160px) / 12 - 8px,(100vh - 616px) / 3.24),128px);position:relative;z-index:1;margin:12px 16px 0;border-radius:3px;background:linear-gradient(#171816,#111210);box-shadow:inset 0 0 0 1px #000,inset 0 1px 0 rgba(255,255,255,.04),inset 0 10px 30px rgba(0,0,0,.4);padding:8px 18px 0 14px}
+.grid{display:grid;grid-template-columns:96px repeat(12,minmax(0,1fr));align-items:center;min-height:calc(var(--dr) * 3.24 + 37px)}
+.colno{font-family:var(--engr);font-size:12px;color:#9a9483;letter-spacing:.06em;text-align:center;padding-bottom:1px}
+.rowlab{align-self:center;padding-top:6px}
+.bar{grid-column:2/-1;height:6px;margin:2px -8px;border-radius:3px;background:linear-gradient(#5f5d57,#2b2a27 45%,#1a1a18);box-shadow:0 1px 0 rgba(255,255,255,.05),0 2px 4px rgba(0,0,0,.6)}
+.drum{position:relative;width:var(--dr);height:calc(var(--dr) * 1.08);justify-self:center}
+.drum svg{position:absolute;left:0;top:calc(var(--dr) * .08);width:var(--dr);height:var(--dr);overflow:visible}
+.drum .idx{position:absolute;left:50%;top:0;width:0;height:0;border-left:4.5px solid transparent;border-right:4.5px solid transparent;border-top:7px solid #d8d3c6;transform:translateX(-50%);filter:drop-shadow(0 1px 0 #000)}
+.rotor{transform-box:view-box;transform-origin:0 0;transition:transform .95s cubic-bezier(.2,.85,.25,1.04)}
+.wl{transition:opacity .18s}
+.bank3d{position:absolute;inset:0;border-radius:3px;overflow:hidden;z-index:0}
+.bank3d canvas{display:block;width:100%;height:100%}
+.bank.gl{background:#151614}
+.bank.gl .grid{position:relative;z-index:1;opacity:0}
+.bank.gl .bankfoot{position:relative;z-index:2;border-top-color:transparent;box-shadow:none}
+.srmirror{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.bankfoot{display:flex;flex-wrap:wrap;align-items:center;gap:10px 26px;margin:6px -4px 0 96px;padding:9px 0 10px;border-top:1px solid rgba(0,0,0,.6);box-shadow:inset 0 1px 0 rgba(255,255,255,.035)}
+.rd{display:flex;align-items:center;gap:8px}
+.rd[hidden]{display:none}
+.odo{display:flex;gap:2px;padding:3px;background:#050505;border-radius:2px;box-shadow:0 0 0 2px #3a3934,0 0 0 3px #000}
+.odo i{font-style:normal;font-family:var(--type);font-size:15px;color:#f4eedc;width:14px;height:20px;display:grid;place-items:center;background:linear-gradient(#000,#1d1d1b 30%,#2a2a27 50%,#1d1d1b 70%,#000)}
+.of{font-family:var(--type);font-size:13px;color:#bdb6a4}
+.lampset{display:flex;gap:6px}
+.lampset i{width:10px;height:10px;border-radius:50%;background:radial-gradient(circle at 38% 32%,#8c7a5a,#4c3d25 40%,#241b0e);box-shadow:0 0 0 1.5px #2b2a26,0 0 0 2.5px #000}
+.lampset i.d{background:radial-gradient(circle at 38% 32%,#f4f0e2,#cfc8b2 35%,#7d776a)}
+.lampset i.n{background:radial-gradient(circle at 38% 32%,#fff3c9,#f0b64c 32%,#a8661b 70%,#5d360d)}
+
+/* lower deck */
+.deck{position:relative;z-index:1;display:grid;grid-template-columns:minmax(470px,1.55fr) minmax(286px,322px) minmax(380px,1fr);grid-template-areas:"sheet menu panel";gap:18px;padding:14px 16px 16px;min-height:0}
+
+
+/* message sheet */
+.sheet{grid-area:sheet;position:relative;display:flex;flex-direction:column;min-height:0;background:var(--buff);color:var(--type-ink);border-radius:1px;padding:16px 0 0;
+  box-shadow:0 1px 0 rgba(255,255,255,.2) inset,0 10px 24px rgba(0,0,0,.55),0 2px 3px rgba(0,0,0,.5);
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='300' height='300'><filter id='p'><feTurbulence type='fractalNoise' baseFrequency='.55' numOctaves='4' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .45  0 0 0 0 .38  0 0 0 0 .25  0 0 0 .09 0'/></filter><rect width='300' height='300' filter='url(%23p)'/></svg>");
+  transform:rotate(-.2deg)}
+.sheet > *{margin-left:22px;margin-right:22px}
+.sh-head{display:flex;align-items:flex-end;justify-content:space-between;border-bottom:1.5px solid var(--green-ink);padding-bottom:6px;color:var(--green-ink)}
+.sh-head h1{font-family:var(--print);font-weight:400;font-size:21px;letter-spacing:.01em;line-height:1.1}
+.sh-head .no{font-family:var(--print);font-size:13px}
+.sh-head .no b{font-family:var(--type);font-weight:400;color:var(--type-ink);font-size:14px;margin-left:4px;position:relative;top:1px}
+.fields{display:grid;grid-template-columns:1.2fr 1fr 1fr;border-bottom:1px solid var(--green-ink)}
+.fields div{padding:5px 8px 5px 0;border-right:1px solid rgba(47,90,75,.5);font-family:var(--print);font-size:12px;color:var(--green-ink)}
+.fields div+div{padding-left:8px}
+.fields div:last-child{border-right:0}
+.fields b{display:block;font-family:var(--type);font-size:14px;font-weight:400;color:var(--type-ink);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+.logwrap{position:relative;flex:1 1 auto;min-height:0;margin-left:0!important;margin-right:0!important}
+.log{position:absolute;inset:0;overflow-y:auto;-webkit-mask-image:linear-gradient(transparent 0,#000 16px);mask-image:linear-gradient(transparent 0,#000 16px);overscroll-behavior:contain;padding:8px 14px 10px 22px;margin-right:8px;
+  scrollbar-width:thin;scrollbar-color:rgba(75,74,71,.55) transparent;
+  background:linear-gradient(90deg,transparent 99.5px,rgba(47,90,75,.45) 99.5px,rgba(47,90,75,.45) 100.5px,transparent 100.5px) no-repeat;background-attachment:local}
+.log::-webkit-scrollbar{width:6px}
+.log::-webkit-scrollbar-thumb{background:rgba(75,74,71,.5);border-radius:3px}
+.log::-webkit-scrollbar-thumb:hover{background:rgba(75,74,71,.8)}
+.log::-webkit-scrollbar-track{background:transparent}
+.log:focus-visible{outline:1.5px dotted var(--graphite);outline-offset:-4px}
+.ent{display:grid;grid-template-columns:78px 1fr;align-items:start;padding:4px 0}
+.ent .when{font-family:var(--type);font-size:12.5px;color:#5c5446;line-height:1.25;padding-top:3px}
+.ent .when span{display:block;font-size:12px;color:#6e6553;text-transform:uppercase;letter-spacing:.03em;margin-top:1px}
+.ent .what{padding-left:12px;display:flex;flex-direction:column;gap:3px;align-items:flex-start;min-width:0}
+.strip{max-width:100%;background:var(--tape);font-family:var(--type);font-size:13.5px;text-transform:uppercase;letter-spacing:.02em;color:#1c1a16;padding:2px 10px 1px;line-height:18px;
+  box-shadow:0 1px 1.5px rgba(60,40,10,.28),0 0 0 .5px rgba(120,100,60,.15);text-shadow:0 0 .6px rgba(28,26,22,.55);
+  clip-path:polygon(0 8%,1.5% 0,30% 4%,62% 0,99% 3%,100% 40%,99.4% 100%,70% 96%,35% 100%,0.5% 97%)}
+.typed{font-family:var(--type);font-size:14.5px;color:#2a2620;line-height:1.38;text-shadow:0 0 .7px rgba(42,38,32,.6);max-width:520px;white-space:pre-wrap;overflow-wrap:anywhere}
+.state{font-family:var(--type);font-size:12px;color:#6e6553;margin-top:1px}
+.state.live::after{content:"";display:inline-block;width:6px;height:6px;margin-left:7px;border-radius:50%;background:#a8661b;vertical-align:1px;animation:b 1s steps(2) infinite}
+.stamp{font-family:var(--print);font-size:12px;color:var(--violet);border:1.4px solid var(--violet);border-radius:2px;padding:0 5px;margin-top:2px;transform:rotate(-2.5deg);opacity:.85;
+  -webkit-mask:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='90' height='40'><filter id='s'><feTurbulence baseFrequency='1.4' numOctaves='2'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 -2.2 1.7'/></filter><rect width='90' height='40' filter='url(%23s)'/></svg>")}
+.stamp.new{animation:stampin .32s cubic-bezier(.3,1.4,.5,1)}
+@keyframes stampin{0%{transform:rotate(-2.5deg) scale(1.35);opacity:0}100%{transform:rotate(-2.5deg) scale(1);opacity:.85}}
+.strip.feed{min-width:40px}
+/* provisional tape: text that has decrypted but is not yet checked against the sender's signature */
+.strip.provisional{background:#d9d5cb;color:#5b5850;text-shadow:none;box-shadow:0 1px 1px rgba(60,40,10,.16),0 0 0 .5px rgba(90,85,75,.18)}
+.ent.failed .strip{text-decoration:line-through;text-decoration-thickness:1px;text-decoration-color:rgba(60,52,40,.8);opacity:.75}
+.ent.failed .state{color:#7a3a30}
+.cur{display:inline-block;width:8px;height:14px;background:#1c1a16;vertical-align:-2px;animation:b 1s steps(2) infinite}
+@keyframes b{50%{opacity:0}}
+.ent.fresh{animation:feed .35s ease-out}
+@keyframes feed{from{transform:translateY(8px);opacity:0}to{transform:none;opacity:1}}
+
+/* the "new below" index tab on the sheet's edge */
+.newtab{all:unset;position:absolute;right:26px;bottom:-15px;z-index:3;cursor:pointer;font-family:var(--type);font-size:12.5px;color:#1c1a16;background:var(--tape);padding:5px 12px 5px 10px;
+  box-shadow:0 2px 4px rgba(0,0,0,.35),0 0 0 .5px rgba(120,100,60,.25);transform:rotate(-1deg);transition:transform .15s,opacity .2s;display:flex;align-items:center;gap:7px}
+.newtab[hidden]{display:none}
+.newtab:hover{transform:rotate(-1deg) translateY(-1px)}
+.newtab svg{display:block}
+.newtab:focus-visible{outline:1.5px dotted var(--graphite);outline-offset:2px}
+
+/* reply line */
+.compose{display:grid;grid-template-columns:78px minmax(0,1fr) auto;grid-template-areas:"when line keys" ". note note";align-items:end;gap:0 0;border-top:1px solid rgba(47,90,75,.55);padding:8px 0 10px}
+.compose .when{grid-area:when;align-self:end;font-family:var(--type);font-size:12.5px;color:#5c5446;line-height:1.25}
+/* Reply or Public: a small bat-handle toggle on an engraved bakelite plate, thrown up to reply, down for a public notice */
+.mode{all:unset;box-sizing:border-box;position:relative;display:flex;align-items:center;gap:5px;margin:4px 0 0;padding:3px 6px 3px 4px;cursor:pointer;border-radius:3px;
+  background:linear-gradient(#2b2b28,#121210);box-shadow:inset 0 1px 0 rgba(255,255,255,.12),0 1.5px 0 #000,0 2px 4px rgba(0,0,0,.35)}
+.mode:hover{box-shadow:inset 0 1px 0 rgba(255,255,255,.16),inset 0 0 0 1px rgba(231,166,60,.5),0 1.5px 0 #000,0 2px 4px rgba(0,0,0,.35)}
+.mode:focus-visible{outline:1.5px dotted var(--graphite);outline-offset:3px}
+.mode .nut{position:relative;flex:none;width:12px;height:12px;border-radius:50%;background:radial-gradient(circle at 40% 35%,#d9d5ca,#8f8b80 55%,#3e3c37);box-shadow:0 0 0 1.5px #2b2a26,0 0 0 2px #000}
+.mode .nut i{position:absolute;left:50%;top:50%;width:4px;height:10px;margin:-10px 0 0 -2px;border-radius:2px;transform-origin:50% 10px;transition:transform .14s cubic-bezier(.3,1.6,.5,1);
+  background:linear-gradient(90deg,#8d8a80,#f1eee6 45%,#8d8a80);box-shadow:0 1.5px 1.5px rgba(0,0,0,.6)}
+.mode[aria-checked="true"] .nut i{transform:rotate(180deg)}
+.mode .lg{display:flex;flex-direction:column;gap:2px;font-family:var(--engr);font-size:12px;line-height:13px;letter-spacing:.06em;color:#77715f;-webkit-text-stroke:.25px currentColor}
+.mode .lg b{font-weight:400;transition:color .14s}
+.mode[aria-checked="false"] .lg b:first-child,.mode[aria-checked="true"] .lg b:last-child{color:#efe8d6}
+.compose .line{grid-area:line}
+.compose .keys{grid-area:keys}
+.pubnote{grid-area:note;display:none;padding:5px 0 0 12px;font-family:var(--type);font-size:12px;line-height:1.35;color:#6e6553}
+.compose.public .pubnote,.pubnote.refused{display:block}
+.pubnote.refused{color:#7a3a30}
+.line{position:relative;padding-left:12px;margin-right:14px}
+.line textarea{display:block;width:100%;resize:none;border:0;outline:0;background:transparent;font-family:var(--type);font-size:14.5px;line-height:21px;color:#2a2620;text-shadow:0 0 .7px rgba(42,38,32,.6);
+  caret-color:#1c1a16;padding:0 0 3px;min-height:24px;max-height:87px;overflow-y:auto;scrollbar-width:none;
+  background-image:linear-gradient(transparent 20px,rgba(47,90,75,.42) 20px,rgba(47,90,75,.42) 21px,transparent 21px);background-size:100% 21px;background-position:0 0;background-attachment:local}
+.line textarea::placeholder{color:#8f8573;opacity:1}
+.line textarea:focus{background-image:linear-gradient(transparent 20px,rgba(47,90,75,.85) 20px,rgba(47,90,75,.85) 21px,transparent 21px)}
+.keys{display:flex;gap:8px;align-items:center;padding-bottom:2px}
+.key{font-family:var(--engr);font-size:12px;letter-spacing:.08em;color:#efe8d6;background:linear-gradient(#2b2b28,#121210);padding:6px 11px 5px;border-radius:12px;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.12),0 2px 0 #000,0 3px 5px rgba(0,0,0,.4);display:inline-flex;align-items:center;gap:7px}
+.key:hover{color:#fff;box-shadow:inset 0 1px 0 rgba(255,255,255,.16),inset 0 0 0 1px rgba(231,166,60,.55),0 2px 0 #000,0 3px 5px rgba(0,0,0,.4)}
+.key:active{transform:translateY(2px);box-shadow:inset 0 1px 0 rgba(255,255,255,.08),0 0 0 #000,0 1px 2px rgba(0,0,0,.4)}
+.key:focus-visible{outline:1.5px dotted var(--graphite);outline-offset:3px}
+.key .jewel{width:8px;height:8px;box-shadow:0 0 0 1.5px #000}
+.key[aria-disabled="true"]{color:#8a8476;background:linear-gradient(#262624,#151513)}
+.key[aria-disabled="true"]:hover{box-shadow:inset 0 1px 0 rgba(255,255,255,.12),0 2px 0 #000,0 3px 5px rgba(0,0,0,.4);color:#8a8476}
+
+.sh-foot{display:grid;grid-template-columns:150px 150px 1fr;align-items:end;border-top:1.5px solid var(--green-ink);padding:5px 0 12px}
+.sh-foot div{font-family:var(--print);font-size:12px;color:var(--green-ink)}
+.sh-foot b{display:block;font-family:var(--type);font-weight:400;font-size:13.5px;color:var(--type-ink)}
+.sh-foot p{font-family:var(--print);font-size:12.5px;color:var(--green-ink);text-align:right}
+/* testing the machine: rubber stamps along the foot of the sheet, in the sheet's own green ink, with a typed line
+   beside them for what the machine says about a test it won't run */
+.sh-head .nonet{margin:0 18px 1px auto;font-family:var(--print);font-size:12.5px;text-align:right}
+.sh-foot .fld{grid-row:1;grid-column:1}
+.sh-foot .fld+.fld{grid-column:2}
+.sh-foot .teststamps{grid-row:1;grid-column:3;display:flex;justify-content:flex-end;align-items:flex-end;gap:12px;margin-bottom:-3px}
+.teststamps .rs{flex:none;box-sizing:border-box;min-height:28px}
+/* what the machine says of a test it won't run, typed in place of the two fields beside the stamps while it stands */
+.sh-foot .testnote{grid-row:1;grid-column:1/3;align-self:center;font-family:var(--type);font-size:12.5px;line-height:15px;color:#7a3a30;text-align:left;padding-right:12px}
+.sh-foot .testnote:empty{display:none}
+.sh-foot:has(.testnote:not(:empty)) .fld{visibility:hidden}
+.rs.test{--ink:var(--green-ink);--tilt:-1.6deg}
+.rs.test.light{--tilt:1.2deg}
+
+/* key check card */
+.menu{grid-area:menu;position:relative;background:#f1eee5;border-radius:1px;padding:14px 16px 12px;color:var(--graphite);transform:rotate(.6deg);min-height:0;
+  background-image:linear-gradient(rgba(96,132,160,.22) 1px,transparent 1px),linear-gradient(90deg,rgba(96,132,160,.22) 1px,transparent 1px);background-size:12px 12px;background-position:-1px -1px;
+  box-shadow:0 10px 22px rgba(0,0,0,.55),0 2px 3px rgba(0,0,0,.4);display:flex;flex-direction:column}
+.menu .pin{position:absolute;top:-6px;left:50%;width:14px;height:14px;border-radius:50%;transform:translateX(-50%);background:radial-gradient(circle at 35% 30%,#f2eee4,#a19c90 55%,#55524b);box-shadow:0 2px 3px rgba(0,0,0,.6)}
+.menu h2{font-family:var(--print);font-weight:400;font-size:18px;color:#2b3a47;display:flex;justify-content:space-between;align-items:baseline;background:#f1eee5;margin:-2px -4px 0;padding:0 4px 4px}
+.menu h2 span{font-family:var(--type);font-size:13px;color:var(--graphite)}
+.menu .graph{flex:1 1 auto;min-height:130px;position:relative}
+.menu .graph svg{position:absolute;inset:0;width:100%;height:100%;display:block}
+.fpwrap{position:relative}
+.fp{width:100%;border-collapse:collapse;margin-top:6px;font-family:var(--type);font-size:14px;color:#2e2d2a;background:rgba(241,238,229,.85)}
+.fp th{font-family:var(--print);font-weight:400;font-size:12.5px;color:#2b3a47;text-align:left;padding:3px 8px 3px 0;border-bottom:1px solid rgba(43,58,71,.5)}
+.fp td{padding:3px 6px 3px 0;border-bottom:1px solid rgba(43,58,71,.5);letter-spacing:.04em}
+.fp td.tk{width:22px;background:no-repeat center/14px url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'><path d='M1.5 7.5 L5 11.5 L12.5 2' fill='none' stroke='%234b4a47' stroke-width='1.6' stroke-linecap='round'/></svg>")}
+.menu .note{font-family:var(--type);font-size:12.5px;color:#3d3d3b;margin-top:6px;background:rgba(241,238,229,.85);align-self:flex-start;padding-right:4px;position:relative;z-index:1}
+.menu .stmp{position:absolute;left:2px;bottom:-6px;transform:rotate(-11deg);pointer-events:none;z-index:2}
+.menu .stmp div{font-family:var(--print);font-size:13px;color:var(--violet);border:1.8px double var(--violet);border-radius:50%;width:86px;height:86px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;line-height:1.2;opacity:.8;
+  -webkit-mask:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='90' height='90'><filter id='s'><feTurbulence baseFrequency='1.1' numOctaves='2'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 -2 1.6'/></filter><rect width='90' height='90' filter='url(%23s)'/></svg>")}
+.menu .stmp small{font-size:12px}
+.ptlab{font-family:var(--type);font-size:12.5px;color:#3d3d3b;margin-bottom:4px;background:rgba(241,238,229,.85);align-self:flex-start;padding-right:4px}
+/* pairing: rubber stamps pressed on the card, and the safety number pencilled in a ruled grid.
+   The grid sits in the same place from the offer to the stamped card; only the stamps change. */
+.rs{appearance:none;background:transparent;cursor:pointer;font-family:var(--print);font-size:14px;line-height:1.15;color:var(--ink);border:1.6px solid currentColor;border-radius:3px;padding:4px 9px 3px;
+  --ink:#2b3a47;--tilt:-2deg;transform:rotate(var(--tilt));opacity:.84;white-space:nowrap;transition:opacity .12s,transform .08s;
+  -webkit-mask:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='90' height='40'><filter id='s'><feTurbulence baseFrequency='1.4' numOctaves='2'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 -2.2 1.7'/></filter><rect width='90' height='40' filter='url(%23s)'/></svg>");mask:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='90' height='40'><filter id='s'><feTurbulence baseFrequency='1.4' numOctaves='2'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 -2.2 1.7'/></filter><rect width='90' height='40' filter='url(%23s)'/></svg>")}
+.rs:hover{opacity:1}
+.rs:active{transform:rotate(var(--tilt)) translateY(1px) scale(.97)}
+.rs:focus-visible{outline:1.5px dotted var(--graphite);outline-offset:3px}
+.rs[disabled]{cursor:default;opacity:.4}
+.rs.ok{--ink:var(--violet);border-style:double;border-width:3px;padding:3px 9px 2px}
+.rs.no{--ink:#8a2a22;--tilt:1.5deg}
+.rs.light{--tilt:1.2deg}
+.pairact{display:flex;gap:10px 16px;align-items:flex-end;min-height:33px;margin-top:10px;margin-bottom:6px;padding-left:2px;position:relative;z-index:1}
+/* two stamps leave no room beside them: the tape's label goes under them, just over the tape it names */
+.pairact{flex-wrap:wrap;justify-content:flex-end}
+.pairact .ptlab{order:9;flex:1 0 100%;margin:2px 0 0}
+/* every stamp the same height, so the row (and the number above it) stays put as the stamps change */
+.pairact .rs{box-sizing:border-box;min-height:28px}
+/* hidden on an offer, its line kept, so the number sits in the same place from the offer to the stamped card */
+.menu[data-pair=offer] .pairact .ptlab{visibility:hidden}
+.rs[hidden]{display:none}
+/* two lines kept for the note under the number, so offer and match share one layout */
+.menu.gridded .fpwrap{min-height:38px}
+.pencil{position:absolute;inset:0;z-index:2;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:6px 0;font-family:var(--type);color:#353431;text-shadow:0 0 .6px rgba(53,52,49,.55)}
+.pencil[hidden]{display:none}
+.pencil p{background:rgba(241,238,229,.85);padding:0 4px;text-align:center}
+.pencil .pfrom{font-size:15px;transform:rotate(-1deg);min-height:26px;display:flex;align-items:center;justify-content:center}
+/* their name as the hello gave it, pencilled on a dotted rule: correct it before adding them */
+.pname{font:inherit;color:inherit;text-shadow:inherit;background:transparent;border:0;border-bottom:1.2px dotted rgba(75,74,71,.8);padding:1px 2px 2px;text-align:center;max-width:220px;border-radius:0}
+.pname:hover{border-bottom-style:solid}
+.pname:focus{outline:0;border-bottom:1.4px solid #2e2d2a;background:rgba(255,253,246,.7)}
+.snwrap{position:relative;width:100%;max-width:300px}
+/* the Matched stamp, pressed half off the corner of the number it checks */
+.gstmp{position:absolute;right:-10px;bottom:-78px;transform:rotate(-11deg);pointer-events:none;font-family:var(--print);font-size:13px;color:var(--violet);border:1.8px double var(--violet);border-radius:50%;
+  width:80px;height:80px;display:flex;flex-direction:column;align-items:center;justify-content:center;line-height:1.2;opacity:.8;text-shadow:none;
+  -webkit-mask:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='90' height='90'><filter id='s'><feTurbulence baseFrequency='1.1' numOctaves='2'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 -2 1.6'/></filter><rect width='90' height='90' filter='url(%23s)'/></svg>")}
+.gstmp small{font-size:12px}
+.gstmp.new{animation:gstmpin .34s cubic-bezier(.3,1.4,.5,1)}
+@keyframes gstmpin{0%{transform:rotate(-11deg) scale(1.35);opacity:0}100%{transform:rotate(-11deg) scale(1);opacity:.8}}
+.pencil .ph{font-size:16px;transform:rotate(-2deg)}
+.pencil .psub{font-size:12.5px;color:#4b4a47;max-width:230px;line-height:1.4}
+.sn{list-style:none;width:100%;max-width:300px;display:grid;grid-template-columns:repeat(4,1fr);
+  background:no-repeat 0 0/100% 100% url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 120' preserveAspectRatio='none'><filter id='p' x='-2%' y='-5%' width='104%' height='110%'><feTurbulence baseFrequency='.045' numOctaves='2' seed='7' result='t'/><feDisplacementMap in='SourceGraphic' in2='t' scale='1.4'/></filter><g filter='url(%23p)' fill='none' stroke='%234b4a47' stroke-opacity='.62' stroke-linecap='round'><path vector-effect='non-scaling-stroke' stroke-width='1' d='M3 2.5 L397 3.5 L398 118 L2.5 117.5 Z M2 40.5 L398 39 M3 79.5 L397 81 M100.5 3 L99.5 117 M200 2 L201 118 M300 3.5 L299.5 117'/></g></svg>")}
+.sn li{font-size:15px;letter-spacing:.07em;text-align:center;padding:7px 2px 6px;color:#2e2d2a;transform:rotate(var(--t,0deg))}
+.menu .graph .pencil svg.ears{position:static;flex:none;width:64px;height:40px;overflow:visible}
+.ears path{animation:ear 2.4s steps(1) infinite}
+.ears path:nth-of-type(2){animation-delay:.4s}.ears path:nth-of-type(3){animation-delay:.8s}
+@keyframes ear{0%{opacity:.15}20%{opacity:1}80%{opacity:.15}}
+.menu .stmp.new div{animation:stmpin .34s cubic-bezier(.3,1.4,.5,1)}
+@keyframes stmpin{0%{transform:scale(1.35);opacity:0}100%{transform:scale(1);opacity:.8}}
+.ptape{height:30px;flex:none;background:#e8dcbc;position:relative;box-shadow:0 1px 2px rgba(0,0,0,.3);transform:rotate(-.8deg);clip-path:polygon(0 0,100% 4%,99% 100%,1% 96%)}
+
+/* control panel */
+.panel{grid-area:panel;position:relative;display:grid;grid-template-rows:auto auto auto;align-content:space-between;gap:14px;min-height:0}
+.mods{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(100px,.66fr);gap:10px}
+.mod{display:flex;flex-direction:column;align-items:center;gap:6px;padding:10px 4px 12px;border-radius:2px;background:linear-gradient(#1f201d,#181917);box-shadow:inset 0 0 0 1px #000,inset 0 1px 0 rgba(255,255,255,.04)}
+.knob{all:unset;box-sizing:border-box;position:relative;display:block;width:100%;cursor:pointer;border-radius:6px}
+.knob svg{display:block;width:100%;height:auto;overflow:visible}
+.knob{aspect-ratio:138/96}
+.knob .cap{transition:transform .32s cubic-bezier(.3,1.5,.5,1)}
+.knob:hover .grip{fill:rgba(255,255,255,.08)}
+.knob:focus-visible{outline:1.5px solid var(--amber);outline-offset:2px}
+.blank{width:92px;height:92px;margin:8px 0 10px;border-radius:3px;background:linear-gradient(135deg,#2a2b28,#191a18);box-shadow:inset 0 0 0 1px #000,0 1px 0 rgba(255,255,255,.04);position:relative}
+.blank i{position:absolute;width:7px;height:7px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#e9e5da,#8f8b80 60%,#4c4a44)}
+.blank i::after{content:"";position:absolute;left:1px;right:1px;top:3px;height:1px;background:#3b3934}
+.blank b{position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);text-align:center;font-family:var(--engr);font-weight:400;font-size:12px;letter-spacing:.05em;color:#5a5750;text-shadow:0 1px 0 rgba(255,255,255,.07),0 -1px 0 rgba(0,0,0,.75)}
+.row2{display:grid;grid-template-columns:minmax(0,190px) minmax(0,1fr);gap:12px;align-items:start}
+.vu{border-radius:3px;background:#0d0d0c;padding:6px;box-shadow:inset 0 0 0 1px #000,0 1px 0 rgba(255,255,255,.04)}
+.vu svg{display:block;width:100%;height:auto}
+.outbox{display:flex;flex-direction:column;gap:8px;min-width:0}
+.slip{background:var(--tape);font-family:var(--type);font-size:13.5px;color:#1c1a16;padding:7px 10px;box-shadow:0 2px 5px rgba(0,0,0,.5);transform:rotate(-.8deg);line-height:1.3;transition:transform .45s cubic-bezier(.5,0,.75,0),opacity .45s;overflow-wrap:anywhere}
+.slip:nth-child(2){transform:rotate(.6deg)}
+.slip small{display:block;font-size:12px;color:#6b6150;margin-top:3px}
+.slip.gone{transform:translate(30px,-26px) rotate(6deg);opacity:0}
+.slip.empty{background:#2a2a27;color:#8a8476;box-shadow:inset 0 1px 3px rgba(0,0,0,.6);transform:none}
+.row3{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 12px;align-content:start}
+.stn{display:grid;grid-template-columns:auto minmax(0,1fr);gap:9px;align-items:center}
+.holder{position:relative;padding:4px 8px 3px;background:linear-gradient(#cfc9b9,#b3ad9d);border-radius:2px;box-shadow:inset 0 0 0 1px rgba(0,0,0,.4),0 1px 2px rgba(0,0,0,.6);min-width:0}
+.holder span{display:block;background:#efe8d4;font-family:var(--type);font-size:13px;color:#1f1c17;padding:2px 6px;box-shadow:inset 0 1px 2px rgba(0,0,0,.25);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.holder span small{display:block;font-size:12px;color:#625a49;margin-top:1px}
+.counter{display:flex;align-items:center;gap:10px}
+
+/* the flashing view: while the machine flashes by light, the message sheet's place holds a signal lamp. The code
+   sits in a brass bezel on mid-grey enamel, so it never fills the screen and its surround never changes. The
+   canvas is drawn pixel for pixel as the light crate's renderer draws a frame, and is never turned or scaled. */
+/* it is a temporary mode, so it takes the sheet's column (and the key check card's, when that stands beside it) from
+   just under the title bar to the foot of the window, over the drums, which recede under it: the code is then a good
+   size for a camera at arm's length. Fixed to the window, so it never scrolls or moves while it shows */
+body:has(.lamp:not([hidden])){perspective:none}
+.lamp{position:fixed;left:16px;top:58px;bottom:16px;width:min(980px,calc(100vw - 32px));z-index:4;display:grid;grid-template-rows:auto minmax(0,1fr) auto;gap:12px;min-height:0;padding:12px 16px 14px;border-radius:3px;
+  background:linear-gradient(#8f8b80,#8d887a);box-shadow:inset 0 0 0 1px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.16),0 10px 24px rgba(0,0,0,.55),0 2px 3px rgba(0,0,0,.5)}
+.lamp[hidden]{display:none}
+.lamp::before{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;opacity:.3;mix-blend-mode:overlay;
+  background-image:var(--noise)}
+.lamp>*{position:relative}
+.deck.flashing .sheet{visibility:hidden}
+.lamp-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px}
+#lampnrd{margin-left:auto}
+.lamp-mid{display:grid;place-items:center;min-height:0}
+/* the bezel: turned brass, screwed to the enamel at its corners, with a dark lip round the glass */
+.bezel{position:relative;padding:14px;border-radius:2px;background:linear-gradient(145deg,#f0dcae,#b8955c 38%,#6e5631);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.35),inset 0 -1px 0 rgba(0,0,0,.35),0 0 0 1px rgba(0,0,0,.55),0 3px 6px rgba(0,0,0,.45)}
+.bezel::before{content:"";position:absolute;inset:11px;border-radius:1px;box-shadow:0 0 0 1px rgba(0,0,0,.5),inset 0 0 0 3px #2b2a26}
+.bezel>i{position:absolute;width:6px;height:6px;border-radius:50%;
+  background:linear-gradient(135deg,transparent 44%,#2a2925 44%,#2a2925 58%,transparent 58%),radial-gradient(circle at 35% 30%,#d9d5ca,#8f8b80 60%,#4c4a44);box-shadow:0 .5px 0 #000,0 0 0 .5px rgba(0,0,0,.6)}
+.bezel>i:nth-of-type(1){left:4px;top:4px}.bezel>i:nth-of-type(2){right:4px;top:4px;transform:rotate(70deg)}
+.bezel>i:nth-of-type(3){left:4px;bottom:4px;transform:rotate(-40deg)}.bezel>i:nth-of-type(4){right:4px;bottom:4px;transform:rotate(25deg)}
+.bezel canvas{display:block;position:relative;background:#fff}
+.lamp-foot{display:flex;align-items:center;gap:14px}
+.lamp-foot .holder{flex:1 1 auto}
+.lamp-foot .holder span{white-space:normal}
+
+/* the Light switch's eyepiece: a brass ring round a small lens showing what the camera sees, in grey, while Light
+   reads. Pressed, a brass shutter closes over it and the machine sends no picture at all */
+.eyepiece{all:unset;box-sizing:border-box;position:absolute;right:8px;top:8px;z-index:1;width:34px;height:34px;border-radius:50%;padding:4px;cursor:pointer;
+  background:radial-gradient(circle at 38% 32%,#f0dcae,#b8955c 55%,#6e5631);box-shadow:0 0 0 1px #000,0 2px 3px rgba(0,0,0,.6)}
+.eyepiece canvas{display:block;width:26px;height:26px;border-radius:50%;object-fit:cover;background:#0d0d0c}
+.eyepiece::after{content:"";position:absolute;inset:4px;border-radius:50%;box-shadow:inset 0 1px 3px rgba(0,0,0,.85),inset 0 0 0 1px rgba(0,0,0,.6);pointer-events:none}
+.eyepiece .shutter{position:absolute;inset:4px;border-radius:50%;opacity:0;transition:opacity .2s;
+  background:linear-gradient(135deg,transparent 46%,#2a2925 46%,#2a2925 54%,transparent 54%),radial-gradient(circle at 38% 32%,#d9d5ca,#8f8b80 60%,#4c4a44)}
+.eyepiece.shut .shutter{opacity:1}
+.eyepiece.dark canvas{visibility:hidden}
+.eyepiece:hover{filter:brightness(1.08)}
+.eyepiece:focus-visible{outline:1.5px solid var(--amber);outline-offset:2px}
+/* what the camera has to say (it sees a code it can't read; it is unavailable), typed on a strip of tape stuck under
+   the Light switch's tile, in the gap above the meter, so it covers none of the switch */
+.lightnote{position:absolute;left:50%;top:calc(100% + 2px);z-index:2;transform:translateX(-50%) rotate(-.8deg);pointer-events:none;filter:drop-shadow(0 1px 1.5px rgba(0,0,0,.7))}
+.lightnote:has(b:empty){display:none}
+.lightnote b{width:auto;white-space:nowrap;padding:4px 10px 3px}
+/* room under the switches for that tape */
+.mods{margin-bottom:16px}
+
+/* short laptop screens: tighten the panel, not the type */
+@media (max-height:880px){
+  .mod{padding:8px 4px 10px;gap:4px}
+  .blank{width:80px;height:80px;margin:6px 0 8px}
+}
+
+@media (max-width:1239px){
+  .deck{grid-template-columns:minmax(0,1fr) 384px;grid-template-areas:"sheet panel" "sheet menu"}
+  .menu{min-height:540px}
+  .bank{--dr:clamp(66px,(100vw - 160px) / 12 - 8px,112px)}
+}
+@media (prefers-reduced-motion:reduce){
+  .rotor,.knob .cap,.slip,.app{transition:none!important}
+  .ent.fresh,.stamp.new{animation:none}
+  .cur,.state.live::after,.ears path{animation:none}
+  .menu .stmp.new div,.gstmp.new{animation:none}
+  .eyepiece .shutter{transition:none}
+  .unlock.working .turn .odo i span,.unlock .rs[aria-disabled="true"]{animation:none}
+}
+</style>
+<script>/* in the app, the panel stays hidden until it shows this machine rather than the mockups' story */if(window.__TAURI__)document.documentElement.classList.add('in-app')</script>
+<script type="importmap">
+{ "imports": {
+  "three": "./vendor/three/build/three.module.js",
+  "three/addons/": "./vendor/three/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="back" aria-hidden="true"><span class="pl screw">Rear panel</span></div>
+<div class="app" id="app">
+  <header class="top">
+    <span class="maker">Bombechat<small></small></span>
+    <div class="rt">
+      <span class="said" id="said" role="status" aria-live="polite"></span>
+      <button class="bat" id="snd" aria-pressed="true" aria-label="Machine sound" title="The click of the drums as they turn and the plugs on the back panel. Click anywhere first to allow sound."><span class="lever"></span></button>
+      <label class="pl sndlab" for="snd">Machine sound</label>
+      <span class="sep"></span>
+      <span class="jewel" id="topjewel" aria-hidden="true"></span><span class="pl" id="toplisten">Listening by sound</span>
+      <span class="pl" title="This build has no Bluetooth code in it, so there is no radio to switch on.">No radio fitted</span>
+      <span class="pl build">Build 0.4</span>
+      <span class="sep"></span>
+      <a class="pl screw pb" id="settings" href="settings.html" title="Turn the machine round to its back panel">Settings</a>
+    </div>
+  </header>
+
+  <section class="bank" id="bank" aria-label="Drum bank: the current frame of the message, as plain text, as heard, and the key">
+    <div class="grid" id="drums"></div>
+    <div class="srmirror" id="mirror"><p aria-live="polite" id="mirror-plain"></p><p id="mirror-heard"></p><p id="mirror-key"></p></div>
+    <div class="bankfoot">
+      <span class="rd" title="Messages arrive in frames of twelve letters"><span class="pl">Frame</span><span class="odo"><i id="fno">4</i></span><span class="of">of <span id="fnt">6</span></span></span>
+      <span class="rd" id="raterd" style="visibility:hidden" title="Bytes of message a second over sound, as the modem measures it, counting the preamble, framing and error correction around them"><span class="pl">Bytes a second</span><span class="odo" id="rate"><i>0</i><i>0</i><i>0</i></span></span>
+      <span class="rd" title="How far the signal stands above the noise in the room"><span class="pl">Over the room, dB</span><span class="odo"><i>1</i><i>4</i></span></span>
+      <span class="rd" title="Each frame is checked against Marisol's key as it lands"><span class="pl">Frames checked</span><span class="lampset" id="chk"></span></span>
+    </div>
+  </section>
+
+  <main class="deck">
+    <article class="sheet" aria-label="Message sheet with Marisol Ortega">
+      <div class="sh-head"><h1>Message sheet</h1><p class="nonet">Nothing on this sheet has crossed a network.</p><span class="no">No.<b>1</b></span></div>
+      <div class="fields">
+        <div>With<b>Marisol Ortega</b></div>
+        <div>Opened<b>06.52, 24 Oct</b></div>
+        <div>Sealed to<b>you, Teodor</b></div>
+      </div>
+      <div class="logwrap">
+        <div class="log" id="log" tabindex="0" role="log" aria-label="Messages, oldest first">
+        </div>
+        <button class="newtab" id="newtab" hidden><svg width="9" height="10" viewBox="0 0 9 10" aria-hidden="true"><path d="M4.5 1v7M1.2 5l3.3 3.3L7.8 5" fill="none" stroke="#1c1a16" stroke-width="1.3"/></svg>new below</button>
+      </div>
+      <form class="compose" id="compose" autocomplete="off">
+        <div class="when" id="nowtime">09.15<button type="button" class="mode" id="mode" role="switch" aria-checked="false" aria-label="Public notice" title="Up to reply to Marisol. Down to write a public notice, which anyone in range can read."><span class="nut" aria-hidden="true"><i></i></span><span class="lg" aria-hidden="true"><b>Reply</b><b>Public</b></span></button></div>
+        <div class="line"><textarea id="reply" rows="1" placeholder="Reply to Marisol" aria-label="Reply to Marisol. Enter sends by sound, Shift and Enter starts a new line." aria-describedby="pubnote" spellcheck="true"></textarea></div>
+        <div class="keys">
+          <button type="button" class="key pb" id="flash" aria-disabled="true" title="Light is switched off. Turn the Light switch to Read and flash to send this way.">Flash</button>
+          <button type="submit" class="key pb" id="sendsound" title="Plays the message through the speaker. Enter does the same."><span class="jewel" id="sendlamp" aria-hidden="true"></span>Send by sound</button>
+        </div>
+        <p class="pubnote" id="pubnote" aria-live="polite"></p>
+      </form>
+      <div class="sh-foot">
+        <div class="fld">Received on<b>kitchen laptop</b></div>
+        <div class="fld">Heard through<b>built-in mic</b></div>
+        <p class="testnote" id="testnote" role="status" aria-live="polite"></p>
+        <div class="teststamps"><button type="button" class="rs test" id="testbtn" title="Seals a short message to this machine's own key and plays it once the room is quiet. The microphone hears it back and it lands on this sheet. Nothing of it is kept. Sound must be at Listen and send.">Test the machine</button><button type="button" class="rs test light" id="testlight" title="Shows a short message sealed to this machine's own key as a light code. Hold a mirror up to the screen and the camera reads it back. Nothing of it is kept. Light must be at Read and flash.">Test by light</button></div>
+      </div>
+    </article>
+
+    <section class="lamp" id="lamp" aria-label="Flashing by light" hidden>
+      <div class="lamp-head">
+        <span class="pl screw">Flashing by light</span>
+        <span class="rd" id="lampnrd" title="Frames of this message shown so far"><span class="pl">Frames shown</span><span class="odo" id="lampn"><i>0</i><i>0</i><i>0</i></span></span>
+        <span class="rd" id="lamprd" title="Bytes of message a second at this Flash speed"><span class="pl">Bytes a second</span><span class="odo" id="lamprate"><i>0</i><i>0</i><i>0</i><i>0</i></span></span>
+      </div>
+      <div class="lamp-mid"><div class="bezel"><i></i><i></i><i></i><i></i><canvas id="lampcode" width="300" height="300" role="img" aria-label="The message as a light code"></canvas></div></div>
+      <div class="lamp-foot">
+        <span class="holder"><span id="lampsay" role="status" aria-live="polite">Hold this screen up to their camera.<small>ready, Escape stops it</small></span></span>
+        <button type="button" class="key pb" id="lampstop" title="Stops flashing. Escape does the same. Light turns to Read, and the message waits until it is back at Read and flash."><span class="jewel off" id="lampjewel" aria-hidden="true"></span>Stop</button>
+      </div>
+    </section>
+
+    <aside class="menu" aria-label="Key check with Marisol">
+      <span class="pin" aria-hidden="true"></span>
+      <h2>Key check <span>menu 7, Marisol</span></h2>
+      <div class="graph"><div class="stmp" aria-hidden="true"><div>Matched<small>2 Oct</small></div></div><svg id="menusvg" viewBox="0 0 296 214" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Pencil menu linking letters of the shared key"></svg><div class="pencil" id="pencil" hidden></div></div>
+      <div class="fpwrap">
+        <table class="fp">
+          <tr><th scope="row">Her key</th><td>4821</td><td>0937</td><td>7710</td><td class="tk" aria-label="matches"></td></tr>
+          <tr><th scope="row">Mine</th><td>4821</td><td>0937</td><td>7710</td><td class="tk" aria-label="matches"></td></tr>
+        </table>
+        <div class="note" aria-live="polite">Checked in person, by light.</div>
+      </div>
+      <div class="pairact" id="pairact"><div class="ptlab">Your key, punched</div><button type="button" class="rs pair" id="pairbtn" title="Plays a hello with your name and key once the room is quiet, and listens for theirs">Pair by sound</button><button type="button" class="rs pair light" id="pairlight" title="Shows a hello with your name and key as a light code, and reads theirs with the camera. Light must be at Read and flash.">Pair by light</button><button type="button" class="rs ok" id="pairyes" hidden>Matched, add</button><button type="button" class="rs no" id="pairno" hidden>Doesn't match</button></div>
+      <div class="ptape" id="ptape" role="img" aria-label="Your key as punched tape, for pairing in person by camera"></div>
+    </aside>
+
+    <section class="panel" aria-label="Channels and stations">
+      <div class="mods">
+        <div class="mod"><span class="jewel" id="j1" aria-hidden="true"></span><button class="knob" id="k1" role="slider" aria-label="Sound" aria-valuemin="0" aria-valuemax="2"></button><span class="pl screw">Sound</span></div>
+        <div class="mod"><span class="jewel off" id="j2" aria-hidden="true"></span><button class="knob" id="k2" role="slider" aria-label="Light" aria-valuemin="0" aria-valuemax="2"></button><span class="pl screw">Light</span>
+          <button type="button" class="eyepiece dark" id="eyepiece" role="switch" aria-checked="true" aria-label="Camera eyepiece"><canvas width="64" height="48"></canvas><span class="shutter" aria-hidden="true"></span></button>
+          <span class="lightnote" id="lightnote" role="status" aria-live="polite"><b></b></span></div>
+        <div class="mod" title="The airgapped build ships without Bluetooth. Nothing here can be switched on."><span class="jewel off" style="opacity:.25" aria-hidden="true"></span><div class="blank"><b>Bluetooth</b><i style="left:6px;top:6px"></i><i style="right:6px;top:6px"></i><i style="left:6px;bottom:6px"></i><i style="right:6px;bottom:6px"></i></div><span class="pl red">Not fitted</span></div>
+      </div>
+      <div class="row2">
+        <div class="vu" title="Loudness of the room. Messages wait to play until it drops under 40 dB."><svg id="vusvg" viewBox="0 0 200 104" role="img" aria-label="Room loudness meter"></svg></div>
+        <div class="outbox" id="outbox" aria-live="polite"></div>
+      </div>
+      <div class="row3">
+        <div class="stn"><span class="jewel" aria-hidden="true"></span><span class="holder"><span>Marisol Ortega<small>sound, now</small></span></span></div>
+        <div class="stn"><span class="jewel off" aria-hidden="true"></span><span class="holder"><span>Teodor Vance<small>relay, 62 min</small></span></span></div>
+        <div class="stn"><span class="jewel off" aria-hidden="true"></span><span class="holder"><span>Stairwell relay<small>sound, 18 min</small></span></span></div>
+        <div class="counter" title="Sealed messages for other people, waiting to be passed on"><div class="odo"><i>0</i><i>0</i><i id="held">6</i></div><span class="pl">Passing on</span></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script type="module">
+import { bridge } from './bridge.js';
+/* ---------- passphrase and contact ----------
+   contacts() refuses until the store is open, saying whether one exists yet; then the
+   page asks for the passphrase (the first time, chooses one) and asks again. */
+const sentence=s=>{s=String(s);return s.charAt(0).toUpperCase()+s.slice(1)+(/[.!?]$/.test(s)?'':'.')};
+// The registration form (first run: your name, then the passphrase twice) or, on later runs, the
+// passphrase once. Your name is kept inside the locked store, so the later form can't greet you by
+// it. A refusal is typed in red under the field it is about and said aloud; the stamp stays down
+// and the key's wheels turn while the machine works the key out.
+function askPassphrase(first){return new Promise(done=>{
+  const f=document.createElement('form');f.className='unlock';f.autocomplete='off';f.noValidate=true;
+  const row=(name,label,note,type,auto)=>`<div class="row"><label for="unlock-${name}">${label}${note?`<small>${note}</small>`:''}</label>
+    <div class="f"><span class="ln"><input id="unlock-${name}" name="${name}" type="${type}" autocomplete="${auto}" spellcheck="false"${name==='who'?' maxlength="40"':''} required></span></div></div>`;
+  const wheels=Array.from({length:5},()=>`<i><span>${'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map(c=>`<b>${c}</b>`).join('')}</span></i>`).join('');
+  f.innerHTML=`<div class="stand">
+    <span class="maker" aria-hidden="true">Bombechat<small></small></span>
+    <div class="card" role="dialog" aria-modal="true" aria-labelledby="unlock-h">
+      <div class="rh"><h2 id="unlock-h">${first?'Registration':'Unlock'}</h2><span>For this laptop</span></div>
+      ${first?row('who','Your name','as people you pair with see it','text','name'):''}
+      ${row('pass','Passphrase','','password',first?'new-password':'current-password')}
+      ${first?row('again','Again','to check it','password','new-password'):''}
+      <div class="ft">${first?'<ol><li><span>1.</span>The passphrase locks the contacts and messages on this laptop.</li><li><span>2.</span>Nobody can recover it for you.</li></ol>':'<p class="ins">Write the passphrase chosen at registration.</p>'}
+        <button class="rs" type="submit">${first?'Lock and open':'Open'}</button></div>
+      <p class="err" id="unlock-err" role="alert"></p>
+      <p class="sr" role="status" aria-live="polite"></p>
+    </div>
+    <div class="turn" aria-hidden="true"><span class="jewel off"></span><span class="pl">Key</span><span class="odo">${wheels}</span></div></div>`;
+  document.body.appendChild(f);
+  const pass=f.elements.pass,who=f.elements.who,again=f.elements.again,err=f.querySelector('.err'),btn=f.querySelector('.rs'),
+    said=f.querySelector('.sr'),jewel=f.querySelector('.turn .jewel'),plate=f.querySelector('.turn .pl');
+  // the refusal goes under the field it is about, which takes the red ink and the focus
+  const clear=()=>{err.textContent='';
+    for(const r of f.querySelectorAll('.row.bad'))r.classList.remove('bad');
+    for(const i of f.querySelectorAll('input'))i.removeAttribute('aria-invalid'),i.removeAttribute('aria-describedby')};
+  const refuse=(field,why)=>{clear();
+    const r=field.closest('.row');r.classList.add('bad');r.querySelector('.f').appendChild(err);
+    field.setAttribute('aria-invalid','true');field.setAttribute('aria-describedby','unlock-err');
+    // cleared, then written after: the same reason a second time is still a change, and is said again
+    queueMicrotask(()=>{err.textContent=why});field.focus();if(field.type==='password')field.select()};
+  const working=on=>{f.classList.toggle('working',on);jewel.classList.toggle('off',!on);
+    plate.textContent=on?'Working out the key':'Key';
+    if(!first)f.querySelector('h2').textContent=on?'Unlocking':'Unlock';
+    if(on)btn.setAttribute('aria-disabled','true');else btn.removeAttribute('aria-disabled');
+    for(const i of f.querySelectorAll('input'))i.readOnly=on;
+    said.textContent=on?(first?'Locking':'Opening'):''};
+  (who||pass).focus();
+  f.addEventListener('submit',async e=>{e.preventDefault();
+    if(f.classList.contains('working'))return;
+    if(first&&!who.value.trim())return refuse(who,'Write your name.');
+    if(!pass.value)return refuse(pass,first?'Choose a passphrase.':'Write your passphrase.');
+    if(first&&pass.value!==again.value)return refuse(again,'The two passphrases do not match.');
+    clear();working(true);
+    try{await bridge.unlock(pass.value,first?who.value.trim():undefined);f.remove();done()}
+    catch(why){working(false);refuse(pass,sentence(why))}})})}
+// the registration card was filled in on this page: the machine is new
+let FIRST_RUN=false;
+async function openContacts(){
+  for(;;){
+    try{return await bridge.contacts()}catch(why){if(why!=='locked'&&why!=='no store yet')throw why;await askPassphrase(why==='no store yet');if(why==='no store yet')FIRST_RUN=true}}}
+// the reply line writes to the sheet's contact, or (the toggle thrown down) a public notice
+let PUBLIC=false;
+function replyLabels(){const r=document.getElementById('reply');
+  r.placeholder=PUBLIC?'Public notice':`Reply to ${CONTACT.short}`;
+  r.setAttribute('aria-label',PUBLIC?'Public notice. Enter broadcasts it by sound, Shift and Enter starts a new line.':`Reply to ${CONTACT.short}. Enter sends by sound, Shift and Enter starts a new line.`)}
+// the sheet's printed name, aria labels and station plate follow the contact
+function nameTheSheet(c){const at=s=>document.querySelector(s);
+  at('.sheet').setAttribute('aria-label',`Message sheet with ${c.name}`);
+  at('.fields div:first-child b').textContent=c.name;
+  at('#mode').title=`Up to reply to ${c.short}. Down to write a public notice, which anyone in range can read.`;
+  replyLabels();
+  at('.menu').setAttribute('aria-label',`Key check with ${c.short}`);
+  at('.menu h2 span').textContent=bridge.simulated?`menu 7, ${c.short}`:c.short;
+  at('.bankfoot .rd:last-child').title=`Each frame is checked against ${c.short}'s key as it lands`;
+  at('.row3 .stn .holder > span').firstChild.nodeValue=c.name}
+const Q=new URLSearchParams(location.search);
+const STILL=Q.has('still');
+const RM=matchMedia('(prefers-reduced-motion: reduce)');
+const A='ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+const RIMS=['#7a2a22','#2c4a3a','#a5822e','#33465b','#b4a789','#5a3a24','#6e2a3c','#2c4a3a','#a5822e','#7a2a22','#33465b','#5a3a24'];
+const NS='http://www.w3.org/2000/svg';let did=0;
+const ENGR="'Bombechat Engraving',serif";
+// the one person this sheet is with: the first contact. In the app the store opens first.
+const PEOPLE=await openContacts();
+// let: in the app, the first person paired becomes the sheet's contact
+let CONTACT=PEOPLE[0]||{id:0,name:'No one yet',short:'no one yet',checked:false,safety:''};
+nameTheSheet(CONTACT);
+// in the app, this machine: its key punches the tape, its name signs the sheet (realSheet, below)
+const ME=bridge.simulated?null:await bridge.machine();
+// what signs a public notice and how long one may be, as the machine says (the simulated machine has its own)
+const SELF=ME||await bridge.machine().catch(()=>null);
+const MY_FP=SELF&&/^[0-9a-f]{4}/i.test(SELF.key||'')?SELF.key.slice(0,4).toUpperCase():'';
+const MAX_BROADCAST=SELF&&Number.isInteger(SELF.broadcast_max)?SELF.broadcast_max:null;
+const MAX_REPLY=SELF&&Number.isInteger(SELF.reply_max)?SELF.reply_max:null;
+// the settings as the machine keeps them: its record is the only one, and this page never sends them back
+// if it cannot answer, the switches show Off and say they were not read: never the most permissive position
+let KEPT_READ=true;
+const KEPT=await bridge.settings().catch(()=>{KEPT_READ=false;return {sound:0,light:0,machine:0}});
+// the settings this machine can't change: a switch held by one is taped down, the tape saying why
+const NOTES=await bridge.settingNotes().catch(()=>({}));
+try{localStorage.removeItem('bombechat.settings')}catch(e){}
+// true while the page replays what happened before it opened: nothing animates
+let booting=true;
+
+/* ---------- drums ---------- */
+function drum(rim){
+  const id='d'+(did++);const s=document.createElementNS(NS,'svg');s.setAttribute('viewBox','-44 -44 88 88');s.setAttribute('aria-hidden','true');
+  let ring='',ticks='';for(let i=0;i<26;i++){ring+=`<g transform="rotate(${i*360/26})"><text y="-25.2" text-anchor="middle" font-family="${ENGR}" font-size="8.2" fill="#b9b2a0">${A[i]}</text></g>`;ticks+=`<line transform="rotate(${i*360/26+360/52})" y1="-35" y2="-31.5" stroke="rgba(220,214,200,.22)" stroke-width=".6"/>`}
+  s.innerHTML=`<defs>
+   <radialGradient id="${id}f" cx="40%" cy="30%" r="80%"><stop offset="0" stop-color="#2d2a26"/><stop offset=".65" stop-color="#151311"/><stop offset="1" stop-color="#0a0908"/></radialGradient>
+   <linearGradient id="${id}r" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".28"/><stop offset=".45" stop-color="#fff" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".45"/></linearGradient>
+   <radialGradient id="${id}h" cx="35%" cy="30%" r="85%"><stop offset="0" stop-color="#f1eee6"/><stop offset=".45" stop-color="#a7a398"/><stop offset="1" stop-color="#46443e"/></radialGradient></defs>
+  <circle r="43" cy="3" fill="#000" opacity=".6"/>
+  <circle r="41.5" fill="${rim}"/><circle r="41.5" fill="url(#${id}r)"/>
+  <circle r="41.5" fill="none" stroke="rgba(0,0,0,.55)"/><circle r="38.6" fill="none" stroke="rgba(0,0,0,.35)" stroke-width=".8"/>
+  <circle r="36" fill="url(#${id}f)" stroke="rgba(0,0,0,.8)"/>
+  <g class="rotor" data-decor>${ticks}${ring}<circle r="18" fill="none" stroke="rgba(220,214,200,.09)"/>
+    ${[0,90,180,270].map(a=>`<circle transform="rotate(${a+45})" cy="-13.5" r="1.6" fill="#0a0908" stroke="rgba(220,214,200,.18)" stroke-width=".5"/>`).join('')}</g>
+  <rect x="-10" y="-39" width="20" height="20" rx="1.3" fill="#ece5d2"/>
+  <rect x="-10" y="-39" width="20" height="5" rx="1.3" fill="rgba(0,0,0,.07)"/>
+  <text class="wl" y="-23.4" text-anchor="middle" font-family="${ENGR}" font-size="16.5" fill="#15130f" stroke="#15130f" stroke-width=".5">A</text>
+  <rect x="-10" y="-39" width="20" height="20" rx="1.3" fill="none" stroke="#000" stroke-opacity=".6" stroke-width=".9"/>
+  <circle r="9" fill="url(#${id}h)"/><circle r="9" fill="none" stroke="rgba(0,0,0,.55)" stroke-width=".7"/>
+  <circle r="2.2" fill="#2b2a26"/>`;
+  return s;
+}
+const G=document.getElementById('drums');const cells=[];
+G.insertAdjacentHTML('beforeend','<span></span>'+[...Array(12)].map((_,i)=>`<span class="colno">${i+1}</span>`).join(''));
+['Plain','Heard','Key'].forEach((lab,r)=>{
+  G.insertAdjacentHTML('beforeend',`<div class="rowlab"><span class="pl screw" title="${[`What ${CONTACT.short} wrote`,'What the microphone caught',`The key you and ${CONTACT.short} share`][r]}">${lab}</span></div>`);
+  for(let c=0;c<12;c++){const d=document.createElement('div');d.className='drum';d.innerHTML='<span class="idx"></span>';const s=drum(RIMS[(c*5+r*3)%12]);d.appendChild(s);G.appendChild(d);
+    cells.push({rot:[...s.querySelectorAll('.rotor')],wl:s.querySelector('.wl'),el:d,angle:0,from:0,t0:0,snap:true,t:null,pitch:0.86+((c*7+r*3)%9)*0.035})}
+  if(r<2)G.insertAdjacentHTML('beforeend','<div class="bar"></div>');
+});
+
+function setLetter(cell,ch,turns){const i=A.indexOf(ch);let base=cell.angle-(cell.angle%360);const a=base-(i*360/26)-360*(turns||0);const prev=cell.angle;cell.angle=a;cell.from=prev;cell.t0=performance.now();cell.snap=!turns||RM.matches;
+  clearInterval(cell.t);
+  if(turns&&RM.matches){ // reduced motion: no spin, no flicker, just a short fade to the new letter
+    cell.rot.forEach(g=>g.style.transform=`rotate(${a}deg)`);cell.wl.style.opacity=0;setTimeout(()=>{cell.wl.textContent=ch;cell.wl.style.opacity=1},180);Drum.spin(1,cell.pitch);return}
+  if(turns)Drum.spin(Math.round(Math.abs(a-prev)/(360/26)),cell.pitch);
+  cell.rot.forEach(g=>g.style.transform=`rotate(${a}deg)`);
+  if(!turns){cell.wl.textContent=ch;return}
+  let n=0;cell.wl.setAttribute('opacity','.5');cell.t=setInterval(()=>{cell.wl.textContent=A[(Math.random()*26)|0];if(++n>12){clearInterval(cell.t);cell.wl.textContent=ch;cell.wl.setAttribute('opacity','1')}},62)}
+
+/* ---------- frames: each landed chunk, twelve letters at a time, in order ---------- */
+const W=12,DWELL=3400;
+const frames=[];let current=null,shownAt=-1e9,pumpT=null,arrival=null;
+const pad=s=>s.padEnd(W,'X');
+function lamps(index,of){const n=Math.min(of,24),first=Math.max(0,Math.min(index-n+2,of-n));
+  return [...Array(n)].map((_,k)=>{const i=first+k;return `<i class="${i<index?'d':i===index?'n':''}"></i>`}).join('')}
+// X is the spacer: anything in the message that isn't a letter. It is cut lighter on the drum.
+function showFrame(fr,anim){const p=fr.plain;for(let c=0;c<W;c++){
+  cells[c].wl.setAttribute('fill',p[c]==='X'?'#9a9282':'#15130f');cells[c].wl.setAttribute('stroke',p[c]==='X'?'#9a9282':'#15130f');
+  if(!anim){setLetter(cells[24+c],fr.key[c]);setLetter(cells[12+c],fr.heard[c]);setLetter(cells[c],p[c]);continue}
+  const d=c*110;setTimeout(()=>setLetter(cells[24+c],fr.key[c],1),d);setTimeout(()=>setLetter(cells[12+c],fr.heard[c],2),d+150);setTimeout(()=>setLetter(cells[c],p[c],3),d+320)}
+  current=fr;
+  document.getElementById('fno').textContent=fr.no+1;document.getElementById('fnt').textContent=fr.total;
+  document.getElementById('chk').innerHTML=lamps(fr.index,fr.of)}
+// a long message lands faster than the drums can turn: they keep their order and shorten the pause
+function pump(){clearTimeout(pumpT);if(!frames.length)return;
+  const wait=shownAt+(frames.length>4?1300:DWELL)-performance.now();
+  if(wait>0&&!booting){pumpT=setTimeout(pump,wait);return}
+  // what landed before the page opened goes straight to the last of it
+  if(booting)while(frames.length>1)showFrame(frames.shift(),false);
+  showFrame(frames.shift(),!booting&&!STILL);shownAt=performance.now();
+  if(frames.length)pumpT=setTimeout(pump,DWELL)}
+// let the drums finish before the sheet moves on
+// (a long message can leave the drums far behind: the sheet waits for them 2.7 s at most)
+function whenDrumsRest(fn,t0=performance.now()){if(booting||STILL||RM.matches||(!frames.length&&performance.now()-shownAt>2700)||performance.now()-t0>2700)fn();else setTimeout(()=>whenDrumsRest(fn,t0),100)}
+
+/* ---------- the sheet ---------- */
+const log=document.getElementById('log'),newtab=document.getElementById('newtab');
+const atBottom=()=>log.scrollHeight-log.scrollTop-log.clientHeight<28;
+function toBottom(smooth){log.scrollTo({top:log.scrollHeight,behavior:smooth&&!RM.matches?'smooth':'auto'});newtab.hidden=true}
+// anything that adds to the sheet goes through here: follow along if the reader is at the bottom, otherwise leave them where they are
+function grow(fn,own){if(booting){fn();return}const follow=own||atBottom();fn();if(follow)toBottom(!own);else newtab.hidden=false}
+// onto the sheet: while the page replays what came before (the store's messages and broadcasts, then what
+// arrived while it opened) each entry goes in its time's place; after that, at the bottom as it happens
+function put(ent){if(!booting){log.appendChild(ent);return}const at=+ent.dataset.at;log.insertBefore(ent,[...log.children].find(e=>+e.dataset.at>at)||null)}
+// the compose block changes height (a notice's line, a longer reply): a reader at the bottom stays there
+function pinned(fn){const was=atBottom();fn();if(was)log.scrollTop=log.scrollHeight}
+log.addEventListener('scroll',()=>{if(atBottom())newtab.hidden=true});
+newtab.addEventListener('click',()=>{toBottom(true);log.focus({preventScroll:true})});
+const hhmm=ms=>{const d=new Date(ms);return String(d.getHours()).padStart(2,'0')+'.'+String(d.getMinutes()).padStart(2,'0')};
+const el=(tag,cls,text)=>{const e=document.createElement(tag);if(cls)e.className=cls;if(text!=null)e.textContent=text;return e};
+function entry(ms,how){const ent=el('div',booting?'ent':'ent fresh');ent.dataset.at=ms;const when=el('div','when',hhmm(ms));when.appendChild(el('span',null,how));ent.append(when,el('div','what'));return ent}
+// tape: a strip per line; a line longer than a strip of tape is cut at the word nearest 40 letters
+function cut(t,max){const w=t.split(' ');const out=[];let cur='';w.forEach(x=>{if((cur+' '+x).trim().length>max){out.push(cur.trim());cur=x}else cur+=' '+x});if(cur.trim())out.push(cur.trim());return out}
+const TILT=[-.3,.4,-.15];
+function tape(what,text,cls='strip',before=null){const lines=text.split('\n').flatMap(l=>l.length>56?cut(l,40):[l]);
+  return lines.map((l,i)=>{const s=el('div',cls,l);if(i){s.style.transform=`rotate(${TILT[(i-1)%3]}deg)`;s.style.marginLeft=`${i*2}px`}what.insertBefore(s,before);return s})}
+// ms null: heard, but when is not known (the store keeps no time for it). by: the contact who heard it
+const shortName=id=>{const p=PEOPLE.find(x=>x.id===id);return p?p.short:CONTACT.short};
+function stamp(what,how,ms,by){const s=el('div',booting?'stamp':'stamp new',`${how==='light'?'seen':'heard'} by ${shortName(by)}${ms==null?'':', '+hhmm(ms)}`);what.appendChild(s)}
+const sent=new Map();// message id -> {ent,how}
+const lightTo=new Map();// message id -> the name of whose camera it flashes for, for a message sent by light from this page
+// every message on the sheet, by id: one the store already showed (say, heard while locked
+// and loaded on unlock) is not drawn again when its events arrive after
+const onSheet=new Set();
+const hopsWord=n=>['no hops','one hop','two hops','three hops','four hops','five hops','six hops','seven hops'][n]||`${n} hops`;
+
+function onMessage(m){
+  if(onSheet.has(m.id))return;
+  if(!m.outgoing&&!m.via&&arrival&&arrival.ent&&m.channel===arrival.how)return;// it finishes a provisional entry: see below
+  if(m.contact!==CONTACT.id)return;// another person's sheet
+  onSheet.add(m.id);
+  const how=m.via?'relay':m.channel;const ent=entry(m.at_min*60000,how);const what=ent.querySelector('.what');
+  if(m.outgoing){what.appendChild(el('div','typed',m.text));sent.set(m.id,{ent,how:m.channel});
+    if(m.heard)stamp(what,m.channel,bridge.simulated?bridge.now():null,m.contact);
+    // what the store says of its delivery: still waiting (queued again on unlock), or never sent
+    else if(m.state==='failed'){ent.classList.add('failed');what.appendChild(el('div','state',sentence('not sent')))}
+    else if(m.state==='waiting'){what.appendChild(el('div','state'));const it=outItem(m.id);Object.assign(it,{text:m.text,ent,how:m.channel});setOut(it,it.state||'waiting')}}
+  else{tape(what,m.text);if(m.via)what.appendChild(el('div','state',`passed on by the ${m.via}`))}
+  grow(()=>put(ent))}
+bridge.on('message',onMessage);
+// a public broadcast, heard (tape, with the key that signed it) or this machine's own (typed, with how far it got),
+// as it happens or replayed from the store; each once, by id
+function drawNotice(b){if(b.id){if(onSheet.has(b.id))return;onSheet.add(b.id)}
+  const ent=entry(b.at_min!=null?b.at_min*60000:bridge.now(),'public');const what=ent.querySelector('.what');
+  if(b.outgoing){const how=b.channel==='light'?'light':'sound';ent.classList.add('mine','public');what.append(el('div','typed',b.text),el('div','state'));sent.set(b.id,{ent,how});
+    const it=outItem(b.id);Object.assign(it,{text:b.text,ent,how,public:true});
+    if(b.state==='waiting')setOut(it,it.state||'waiting');else{outbox.delete(b.id);status({state:b.state||'sent',ent,how,public:true})}}
+  else{tape(what,b.text);
+    // from someone not checked in person: unverified, with the key that signed it
+    what.appendChild(el('div','state',`signed ${b.signer.slice(0,4).toUpperCase()}${b.verified?'':', unverified'}${b.hops?', '+hopsWord(b.hops):''}`))}
+  grow(()=>put(ent))}
+bridge.on('broadcast',drawNotice);
+bridge.on('heard',h=>{const s=sent.get(h.id);if(!s||s.ent.querySelector('.stamp'))return;
+  grow(()=>{const st=s.ent.querySelector('.state');if(st)st.remove();stamp(s.ent.querySelector('.what'),s.how,bridge.now(),h.by)})});
+
+/* ---------- a message arriving: provisional tape ----------
+   As chunks decrypt, their text types onto the sheet in pencil-grey tape. Until
+   the message event it is only known to come from someone holding the key, so it
+   is marked as not yet checked. The message event (from this sheet's contact)
+   replaces it with the real entry; a failure, or no chunk for 30 s, strikes it through. */
+const STALL=Q.has('stall')?+Q.get('stall'):30000;
+function arrivingEntry(how){const ent=entry(bridge.now(),how);ent.classList.add('arriving');
+  ent.querySelector('.what').append(el('div','strip provisional feed'),el('div','state live',`arriving by ${how}, not yet checked`));
+  grow(()=>put(ent));return ent}
+function provisionalTape(a,text){const what=a.ent.querySelector('.what'),note=what.querySelector('.state');
+  what.querySelectorAll('.strip').forEach(s=>s.remove());
+  const strips=text?tape(what,text,'strip provisional',note):[];
+  const last=strips.length?strips[strips.length-1]:what.insertBefore(el('div','strip provisional feed'),note);
+  last.appendChild(el('span','cur'))}
+function failArrival(a){if(!a||!a.ent)return;clearTimeout(a.stallT);const ent=a.ent;a.ent=null;
+  grow(()=>{ent.classList.remove('arriving');ent.classList.add('failed');ent.querySelectorAll('.cur').forEach(c=>c.remove());
+    const note=ent.querySelector('.state');note.classList.remove('live');note.textContent='did not check'})}
+// each landed chunk onto the drums, twelve letters a frame, after what is already waiting to show
+function toDrums(c,a){const v=c.view,fpc=Math.max(1,Math.ceil(v.plain.length/W));if(!a.fpc||c.index===0)a.fpc=fpc;
+  const base=c.index*a.fpc,total=c.index===c.of-1?base+fpc:c.of*a.fpc;
+  for(let i=0;i<fpc;i++){const s=i*W;frames.push({plain:pad(v.plain.slice(s,s+W)),heard:pad(v.heard.slice(s,s+W)),key:pad(v.key.slice(s,s+W)),no:base+i,total,index:c.index,of:c.of})}
+  pump()}
+bridge.on('chunk',c=>{
+  // the self-test's own chunks type into its entry, and leave any message arriving meanwhile as it was
+  if(Test&&Test.ent&&Test.tags.has(c.tag)){testChunk(c);return}
+  if(!arrival||arrival.tag!==c.tag||c.index===0){failArrival(arrival);arrival={tag:c.tag,how:c.channel,ent:arrivingEntry(c.channel),text:''}}
+  const a=arrival;toDrums(c,a);
+  if(a.ent){a.text=c.text;grow(()=>provisionalTape(a,c.text));clearTimeout(a.stallT);a.stallT=setTimeout(()=>failArrival(a),STALL)}});
+// the message the chunks were spelling: the provisional tape gives way to the real entry
+bridge.on('message',m=>{
+  if(m.outgoing||m.via||!arrival||!arrival.ent||m.channel!==arrival.how)return;
+  const a=arrival,ent=a.ent;a.ent=null;clearTimeout(a.stallT);
+  // another person's, or already on the sheet: the provisional tape goes
+  if(m.contact!==CONTACT.id||onSheet.has(m.id)){grow(()=>ent.remove());return}
+  onSheet.add(m.id);
+  whenDrumsRest(()=>grow(()=>{ent.classList.remove('arriving');const what=ent.querySelector('.what');what.textContent='';tape(what,m.text)}))});
+// a send the Sound switch refused says why: 'not sent: sound is set to listen only'
+let refusedWhy=null;
+// a switch's refusal, on either channel, goes with the outbox failure that follows it
+// a message arriving on either channel quiets the drums, as one arriving by sound always has
+const receivingOn={sound:false,light:false};
+function onChannel(s){if(/^not sent: /.test(s.state))refusedWhy=s.state;
+  if(s.state==='failed'&&arrival&&arrival.how===s.channel)failArrival(arrival);
+  if(!(s.channel in receivingOn))return;
+  receivingOn[s.channel]=s.state==='receiving';Drum.receiving=receivingOn.sound||receivingOn.light;
+  if(s.channel==='light')lightSays(s.state)}
+bridge.on('channel',onChannel);
+
+/* ---------- channels ---------- */
+// Sentence case, set in the engraving face's small capitals. Three detents 120 degrees
+// apart, turning clockwise: Off at eight o'clock, Listen at twelve, Listen and send at
+// four. The longest is engraved on two lines, set right, its second line running in
+// under the knob's shadow. Ticks sit inside the words.
+const KNOBS={k1:{setting:'sound',labels:['Off','Listen','Listen and send'],pos:2,name:'Sound',say:['off','listening only, never makes a sound','listening and sending']},
+             k2:{setting:'light',labels:['Off','Read','Read and flash'],pos:0,name:'Light',say:['off','reading the camera','reading the camera and flashing replies']}};
+const ANG=[-120,0,120];
+// where each position's words sit, in the knob's own units: centre x, first baseline y, whether to break after the first word
+const PLACE=[{x:-44,y:29.5},{x:0,y:-36},{x:68,y:29.5,two:true,anchor:'end'}];
+const LINE=12.6;
+function engraving(t,i,fill){const P=PLACE[i],w=t.split(' ');const lines=P.two&&w.length>1?[w[0],w.slice(1).join(' ')]:[t];
+  return lines.map((l,j)=>`<text x="${P.x}" y="${P.y+j*LINE}" font-family="${ENGR}" font-size="13.6" letter-spacing=".2" fill="${fill}" stroke="${fill}" stroke-width=".28" text-anchor="${P.anchor||'middle'}">${l}</text>`).join('')}
+function drawKnob(id){const el=document.getElementById(id),k=KNOBS[id];let fl='';
+  for(let i=0;i<24;i++)fl+=`<path class="grip" transform="rotate(${i*15})" d="M-2 -24.5 Q0 -26.8 2 -24.5 L1.4 -18.5 L-1.4 -18.5Z" fill="rgba(255,255,255,.055)"/>`;
+  let marks='';k.labels.forEach((t,i)=>{const r=ANG[i]*Math.PI/180,on=i===k.pos;
+    const lx=Math.sin(r)*28.5,ly=-Math.cos(r)*28.5,mx=Math.sin(r)*32.5,my=-Math.cos(r)*32.5;
+    marks+=`<line class="tick" x1="${lx}" y1="${ly}" x2="${mx}" y2="${my}" stroke="${on?'#e8e1cf':'#6d685c'}" stroke-width="1.2"/>`+engraving(t,i,on?'#f1ebd9':'#8a8476')});
+  el.innerHTML=`<svg viewBox="-69 -51 138 96" aria-hidden="true"><defs><radialGradient id="kb${id}" cx="40%" cy="30%" r="80%"><stop offset="0" stop-color="#3b3935"/><stop offset=".6" stop-color="#1a1917"/><stop offset="1" stop-color="#0a0a09"/></radialGradient></defs>
+  ${marks}<circle class="body" r="26" cy="3" fill="#000" opacity=".6"/><circle r="25.5" fill="url(#kb${id})"/>
+  <g class="cap" style="transform:rotate(${ANG[k.pos]}deg)">${fl}<circle r="17" fill="#1d1c1a" stroke="rgba(0,0,0,.75)"/><circle r="17" fill="none" stroke="rgba(255,255,255,.07)" transform="translate(0,-.7)"/><rect x="-1.5" y="-24" width="3" height="12.5" rx="1.1" fill="#e9e3d2"/></g></svg>`;
+  el.setAttribute('aria-valuenow',k.pos);el.setAttribute('aria-valuetext',k.labels[k.pos].toLowerCase());el.title=k.held?`${k.name}: ${k.held}. Taped at ${k.labels[k.pos].toLowerCase()} until then.`:k.read?`${k.name}: ${k.say[k.pos]}. Click or use the arrow keys to turn.`:`${k.name}: not read from the machine, shown at off. Click or use the arrow keys to turn.`}
+// the switches and the back panel's Sound and Light rows are the same two settings, kept by the machine
+for(const k of Object.values(KNOBS)){const v=KEPT[k.setting];if(v>=0&&v<=2)k.pos=v;k.read=KEPT_READ}
+for(const [id,k] of Object.entries(KNOBS)){const n=NOTES[k.setting];if(!n)continue;k.held=n.note;k.pos=Number.isInteger(n.value)?n.value:0;k.read=true;
+  const el=document.getElementById(id),mod=el.closest('.mod');mod.classList.add('taped');el.setAttribute('aria-disabled','true');
+  const t=document.createElement('span');t.className='tapedown';t.id=id+'-tape';t.appendChild(document.createElement('b')).textContent=n.note;mod.appendChild(t);el.setAttribute('aria-describedby',t.id)}
+// the machine won't take a turn (the setting could not be saved): the knob goes back and the top bar says why, as the
+// settings page does
+const saidEl=document.getElementById('said');let saidT;
+function say(text,full=text){saidEl.textContent=text;saidEl.title=full;saidEl.style.opacity=1;clearTimeout(saidT);saidT=setTimeout(()=>saidEl.style.opacity=0,text.length>40?5200:2600)}
+// resolves true once the machine has taken the turn, or to why it would not
+function turnKnob(id,pos,again){const k=KNOBS[id];if(k.held)return Promise.resolve(`${k.name}: ${k.held}`);pos=Math.max(0,Math.min(2,pos));if(pos===k.pos&&k.read&&!again)return Promise.resolve(true);const was={pos:k.pos,read:k.read};k.pos=pos;k.read=true;
+  // a switch turned: the test's refusal has had its answer
+  testSays('');
+  // turned back to Read and flash: what Escape stopped may show again
+  if(id==='k2'&&pos===2)Lamp.stopped=false;
+  const cap=document.querySelector(`#${id} .cap`);cap.style.transform=`rotate(${ANG[pos]}deg)`;setTimeout(()=>drawKnob(id),RM.matches?0:330);
+  Drum.spin(2,0.7);
+  // Light taken off Read and flash: the machine ends a pairing by light, and so does the card
+  // refused: back to where the machine keeps it. Light turned down is the exception the machine makes: it stays down
+  // for this session even when it can't be saved (so Escape always stops), and the machine's settings say so
+  const back=t=>{if(k.pos!==pos)return t;k.pos=was.pos;k.read=was.read;drawKnob(id);applyChannels();say(t.charAt(0).toUpperCase()+t.slice(1));return t};
+  const taken=Promise.resolve(bridge.setSetting(k.setting,pos)).then(()=>{if(id==='k2'&&pos<2)lightLeftFlash();return true},why=>{const t=String(why&&why.message||why);
+    if(!(id==='k2'&&pos<was.pos))return back(t);
+    return Promise.resolve(bridge.settings()).then(m=>{if(!m||m.light!==pos)return back(t);if(k.pos!==pos)return t;
+      lightLeftFlash();say(`Light at ${k.labels[pos]}, not saved.`,`Light is at ${k.labels[pos]} for now. ${sentence(t)} So it goes back to ${k.labels[was.pos]} next time.`);return {unsaved:t}},()=>back(t))});
+  applyChannels();return taken}
+['k1','k2'].forEach(id=>{drawKnob(id);const el=document.getElementById(id);
+  el.addEventListener('click',()=>turnKnob(id,(KNOBS[id].pos+1)%3));
+  el.addEventListener('keydown',e=>{const d={ArrowRight:1,ArrowUp:1,ArrowLeft:-1,ArrowDown:-1}[e.key];if(e.key==='Home')turnKnob(id,0);else if(e.key==='End')turnKnob(id,2);else if(d)turnKnob(id,KNOBS[id].pos+d);else return;e.preventDefault()})});
+const sendBtn=document.getElementById('sendsound'),flashBtn=document.getElementById('flash');
+function applyChannels(){const s=KNOBS.k1.pos,l=KNOBS.k2.pos;
+  document.getElementById('j1').classList.toggle('off',s===0);document.getElementById('j2').classList.toggle('off',l===0);
+  document.getElementById('topjewel').classList.toggle('off',s===0&&l===0);
+  document.getElementById('toplisten').textContent=!(KNOBS.k1.read&&KNOBS.k2.read)?'Switches not read':s>0?'Listening by sound':l>0?'Reading by light':'Not listening';
+  sendBtn.setAttribute('aria-disabled',s<2);document.getElementById('sendlamp').classList.toggle('off',s<2);
+  sendBtn.title=s<2?`Sound is set to ${KNOBS.k1.labels[s].toLowerCase()}. Turn it to Listen and send to play replies.`:'Plays the message through the speaker. Enter does the same.';
+  flashBtn.setAttribute('aria-disabled',l<2);
+  flashBtn.title=l<2?'Light is not set to Read and flash. Turn the Light switch to Read and flash to send this way.':PUBLIC?'Flashes the notice on screen, for any camera held up to it.':`Flashes the message on screen. Hold it up to ${CONTACT.short}'s camera.`;
+  showEyepiece();outbox.forEach(status);drawOutbox()}
+
+/* ---------- room meter and the quiet rule ---------- */
+// in the app the room is unknown until the microphone measures it
+let room=bridge.simulated?47:null;
+const vuNeedle=(()=>{const g=document.getElementById('vusvg');const cx=100,cy=96,R=66;let h=`<defs><linearGradient id="vf" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f0e7cc"/><stop offset="1" stop-color="#d6c7a0"/></linearGradient></defs><rect x="0" y="0" width="200" height="92" rx="2" fill="url(#vf)"/>`;
+  for(let d=30;d<=60;d+=2){const a=(-48+(d-30)/30*96)*Math.PI/180,big=d%10===0,r1=R-(big?9:5);const c=d>40?'#8a2a22':'#25211b';
+    h+=`<line x1="${cx+Math.sin(a)*r1}" y1="${cy-Math.cos(a)*r1}" x2="${cx+Math.sin(a)*R}" y2="${cy-Math.cos(a)*R}" stroke="${c}" stroke-width="${big?1.3:.75}"/>`;
+    if(big)h+=`<text x="${cx+Math.sin(a)*(R-20)}" y="${cy-Math.cos(a)*(R-20)+4.5}" font-family="${ENGR}" font-size="14.5" text-anchor="middle" fill="${c}" stroke="${c}" stroke-width=".3">${d}</text>`}
+  const a1=(-48+10/30*96)*Math.PI/180,a2=48*Math.PI/180;
+  h+=`<path d="M${cx+Math.sin(a1)*(R+3)} ${cy-Math.cos(a1)*(R+3)} A${R+3} ${R+3} 0 0 1 ${cx+Math.sin(a2)*(R+3)} ${cy-Math.cos(a2)*(R+3)}" fill="none" stroke="#8a2a22" stroke-width="3"/>`;
+  h+=`<text x="10" y="84" font-family="${ENGR}" font-size="14.5" fill="#5b5141" stroke="#5b5141" stroke-width=".3">dB</text>`;
+  h+=`<line id="needle" x1="${cx}" y1="${cy}" x2="${cx}" y2="${cy-R+2}" stroke="#15130f" stroke-width="1.3"/><rect x="0" y="88" width="200" height="16" fill="#0d0d0c"/><circle cx="${cx}" cy="${cy}" r="6" fill="#2b2a26" stroke="#000"/>`;
+  g.innerHTML=h;const n=document.getElementById('needle');
+  return v=>n.setAttribute('transform',`rotate(${-48+(Math.max(28,Math.min(62,v))-30)/30*96} ${cx} ${cy})`)})();
+vuNeedle(room??30);
+bridge.on('roomDb',db=>{room=db;vuNeedle(room);testWaiting()});
+
+/* ---------- outbox and replying ----------
+   The node holds each send until the room is quieter than Send under, and says
+   so through outbox events: waiting, playing, sent. The slips and each reply's
+   status line are drawn from those alone. */
+const outboxEl=document.getElementById('outbox');
+const outbox=new Map();// id -> {text,public,state,ent,how,leaving}
+const finished=new Map();// id -> 'sent' or 'failed', in case the send's own reply comes back later than the news
+const finishedWhy=new Map();// id -> why it failed, if the node said
+// Send under, from the settings page: 30 to 50 dB in fives, 40 unless changed
+const sendUnder=()=>{const v=KEPT.quiet;return v>=0&&v<=4?30+5*v:40};
+const esc=s=>s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function outItem(id){let it=outbox.get(id);if(!it){it={id,text:'',public:false,state:null,ent:null,how:'sound',leaving:false};outbox.set(id,it)}return it}
+function drawOutbox(){const q=[...outbox.values()].filter(m=>m.text&&(m.state==='waiting'||m.leaving));
+  if(!q.length){outboxEl.innerHTML='<div class="slip empty">Nothing waiting to send.</div>';return}
+  outboxEl.innerHTML=q.slice(0,2).map(m=>`<div class="slip${m.leaving?' gone':''}" data-id="${m.id}">${esc(m.text)}<small>${m.public?'public, ':''}${m.how==='light'?(KNOBS.k2.pos<2?'flashes at Read and flash':'flashes next'):`sends once under ${sendUnder()} dB`}</small></div>`).join('')+(q.length>2?`<div class="slip empty">and ${q.length-2} more</div>`:'')}
+function status(it){const st=it.ent&&it.ent.querySelector('.state');if(!st)return;
+  st.classList.toggle('live',it.state==='playing');
+  if(it.ent)it.ent.classList.toggle('failed',it.state==='failed');
+  const said=it.state==='waiting'?(it.how==='light'?(KNOBS.k2.pos<2?'waiting for Read and flash':'flashing next'):room==null?'waiting for quiet':room<sendUnder()?'playing next':`waiting for quiet, the room is at ${Math.round(room)} dB`)
+    :it.state==='playing'?(it.how==='light'?'flashing on screen':'playing by sound'):it.state==='sent'?(it.public?'sent to anyone in range':'sent, not heard yet'):it.state==='failed'?sentence(it.why||'not sent'):'';
+  // a public notice carries the key it is signed with, as the public entries heard on the sheet do
+  st.textContent=it.public&&it.state!=='failed'?[signedBy(),said].filter(Boolean).join(', '):said}
+const signedBy=()=>MY_FP?`signed ${MY_FP}`:'signed';
+function setOut(it,state){const was=it.state;it.state=state;status(it);
+  if(state==='playing'&&was==='waiting'&&!RM.matches){it.leaving=true;const slip=outboxEl.querySelector(`[data-id="${it.id}"]`);if(slip)slip.classList.add('gone');setTimeout(()=>{it.leaving=false;drawOutbox()},460)}
+  else drawOutbox();
+  if(state==='sent'||state==='failed'){outbox.delete(it.id);finished.set(it.id,state);if(it.why)finishedWhy.set(it.id,it.why);setTimeout(()=>{finished.delete(it.id);finishedWhy.delete(it.id)},60000)}}
+// the reason the switch gave goes with the failure it caused (the channel event comes first);
+// cleared on every outbox event, failed or not, so a stale reason never attaches to a later,
+// unrelated failure
+bridge.on('outbox',o=>{const it=outItem(o.id);
+  // a message going on screen by light names whose camera to hold it up to: the node reports it playing just before
+  // its first frame. Anything else that goes on screen (a receipt, a notice) is for any camera
+  if(o.state==='playing')Lamp.next=lightTo.has(o.id)?lightTo.get(o.id):null;
+  if(o.state==='sent'||o.state==='failed')lightTo.delete(o.id);if(o.text&&!it.text){it.text=o.text;it.public=!!o.public}
+  if(o.state==='failed'&&refusedWhy)it.why=refusedWhy;
+  refusedWhy=null;setOut(it,o.state)});
+const nowtime=document.getElementById('nowtime');
+const tick=()=>{nowtime.firstChild.nodeValue=hhmm(bridge.now())};
+const reply=document.getElementById('reply'),form=document.getElementById('compose');
+function fit(){pinned(()=>{reply.style.height='auto';reply.style.height=Math.min(88,reply.scrollHeight)+'px'})}
+reply.addEventListener('input',()=>{fit();if(pubnote.classList.contains('refused'))explain()});
+reply.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();send('sound')}});
+form.addEventListener('submit',e=>{e.preventDefault();send('sound')});
+flashBtn.addEventListener('click',()=>send('light'));
+function nudge(btn){btn.animate([{transform:'translateX(0)'},{transform:'translateX(-3px)'},{transform:'translateX(3px)'},{transform:'translateX(0)'}],{duration:220});}
+function send(how){const text=reply.value.trim();
+  if(PUBLIC){broadcast(text,how);return}
+  const btn=how==='sound'?sendBtn:flashBtn;
+  // the Light switch won't flash it: say why under the line, as a notice's refusal is said, and keep what was written
+  if(how==='light'&&btn.getAttribute('aria-disabled')==='true'){refuse(`${lightRefusal()}. Turn it to Read and flash to send by light`,flashBtn);flashBtn.focus();return}
+  if(btn.getAttribute('aria-disabled')==='true'){nudge(btn);btn.focus();return}
+  if(!text){reply.focus();return}
+  const n=new TextEncoder().encode(text).length;
+  if(MAX_REPLY!=null&&n>MAX_REPLY){refuse(`Too long to send: ${n} bytes, at most ${MAX_REPLY}`,btn);return}
+  if(how==='light')Lamp.stopped=false;
+  const ent=entry(bridge.now(),how);ent.classList.add('mine');const what=ent.querySelector('.what');what.append(el('div','typed',text),el('div','state'));
+  grow(()=>put(ent),true);
+  reply.value='';fit();if(pubnote.classList.contains('refused'))pinned(()=>pubnote.classList.remove('refused'));
+  bridge.send([CONTACT.id],text,how).then(id=>{sent.set(id,{ent,how});if(how==='light'&&CONTACT.id)lightTo.set(id,CONTACT.short);
+    if(finished.has(id)){status({state:finished.get(id),why:finishedWhy.get(id),ent,how});tick();return}
+    const it=outItem(id);Object.assign(it,{text,ent,how});
+    if(it.state)setOut(it,it.state);tick()},
+    why=>{ent.classList.add('failed');ent.querySelector('.state').textContent=sentence(why)})}
+
+/* ---------- a public notice ----------
+   The toggle in the reply line's margin, thrown down, makes the line a public notice: plain
+   text, signed with this machine's key, that anyone in range can read. The line says so
+   underneath; a notice the machine won't send says why there, and keeps what was written.
+   Once one goes, the toggle springs back to Reply, so the next reply is never public by mistake. */
+const modeSw=document.getElementById('mode'),pubnote=document.getElementById('pubnote');
+function explain(){pinned(()=>{pubnote.classList.remove('refused');pubnote.textContent=`Anyone in range can read it. Signed with your key${MY_FP?', '+MY_FP:''}.`})}
+function refuse(why,btn=sendBtn){pinned(()=>{pubnote.classList.add('refused');pubnote.textContent=sentence(why)});nudge(btn)}
+function setPublic(on){if(on===PUBLIC)return;pinned(()=>{PUBLIC=on;modeSw.setAttribute('aria-checked',on);form.classList.toggle('public',on);replyLabels();fit();explain();applyChannels();
+  if(!on)pubnote.classList.remove('refused')});Drum.spin(1,1.3)}
+modeSw.addEventListener('click',()=>{setPublic(!PUBLIC);reply.focus()});
+let broadcasting=false;
+// why the Light switch won't flash: it is off, at Read, or was not read from the machine
+const lightRefusal=()=>!KNOBS.k2.read?'The Light switch was not read from the machine':KNOBS.k2.pos===0?'Light is off':'Light is set to read only';
+function broadcast(text,how='sound'){if(broadcasting)return;
+  const s=KNOBS.k1.pos,btn=how==='light'?flashBtn:sendBtn;
+  if(how==='light'&&flashBtn.getAttribute('aria-disabled')==='true'){refuse(`${lightRefusal()}. Turn it to Read and flash to broadcast by light`,flashBtn);return}
+  if(how==='sound'&&sendBtn.getAttribute('aria-disabled')==='true'){refuse(`${!KNOBS.k1.read?'The Sound switch was not read from the machine':s===0?'Sound is off':'Sound is set to listen only'}. Turn it to Listen and send to broadcast`);return}
+  if(!text){refuse('Write the notice first',btn);reply.focus();return}
+  const n=new TextEncoder().encode(text).length;
+  if(MAX_BROADCAST!=null&&n>MAX_BROADCAST){refuse(`Too long to broadcast: ${n} bytes, at most ${MAX_BROADCAST}`,btn);return}
+  if(how==='light')Lamp.stopped=false;
+  // the line clears and the toggle springs back at once; a notice the machine refuses comes back to the line
+  broadcasting=true;const was=reply.value;reply.value='';setPublic(false);
+  bridge.broadcast(text,how).then(id=>{broadcasting=false;onSheet.add(id);
+    const ent=entry(bridge.now(),'public');ent.classList.add('mine','public');const what=ent.querySelector('.what');what.append(el('div','typed',text),el('div','state'));
+    grow(()=>put(ent),true);
+    sent.set(id,{ent,how});
+    if(finished.has(id)){status({state:finished.get(id),why:finishedWhy.get(id),ent,how,public:true});tick();return}
+    const it=outItem(id);Object.assign(it,{text,ent,how,public:true});
+    if(it.state)setOut(it,it.state);else status(it);tick()},
+    why=>{broadcasting=false;if(!reply.value){reply.value=was;setPublic(true);fit()}refuse(why,btn)})}
+
+/* ---------- key check menu ---------- */
+// the pencil menu is the mockups' story; in the app the card shows the real safety number (cardRest, below)
+if(bridge.simulated)(function(){const svg=document.getElementById('menusvg');
+  const N=[['M',20,48],['O',82,18],['R',148,58],['T',212,24],['E',272,70],['G',46,140],['A',128,170],['S',202,132],['U',264,190]];
+  const E=[[0,1,4],[1,2,8],[2,3,2],[3,4,1],[0,5,10],[5,6,9],[6,2,3],[6,7,7],[7,4,5],[7,8,11],[2,7,6]];
+  let h=`<defs><filter id="pen" x="-5%" y="-5%" width="110%" height="110%"><feTurbulence baseFrequency=".04" numOctaves="2" seed="4" result="t"/><feDisplacementMap in="SourceGraphic" in2="t" scale="2.2"/></filter>
+   <filter id="gr"><feTurbulence baseFrequency="1.2" numOctaves="1" seed="2" result="n"/><feColorMatrix in="n" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 -1.6 1.5" result="m"/><feComposite in="SourceGraphic" in2="m" operator="in"/></filter></defs><g filter="url(#pen)"><g filter="url(#gr)">`;
+  E.forEach(([a,b,l])=>{const[,x1,y1]=N[a],[,x2,y2]=N[b];const L=Math.hypot(x2-x1,y2-y1),nx=-(y2-y1)/L,ny=(x2-x1)/L,sg=ny>0?-1:1;const mx=(x1+x2)/2+nx*10*sg,my=(y1+y2)/2+ny*10*sg;
+    h+=`<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#4b4a47" stroke-width="1.15" stroke-linecap="round"/>`;
+    h+=`<text x="${mx}" y="${my+4}" text-anchor="middle" font-family="Cutive Mono,Courier New,monospace" font-size="14" fill="#55534e">${l}</text>`});
+  N.forEach(([t,x,y])=>{h+=`<circle cx="${x}" cy="${y}" r="11" fill="#f1eee5" stroke="#3f3e3b" stroke-width="1.2"/><text x="${x}" y="${y+4.6}" text-anchor="middle" font-family="Cutive Mono,Courier New,monospace" font-size="14" fill="#2e2d2a">${t}</text>`});
+  svg.innerHTML=h+'</g></g>'})();
+
+/* ---------- punched tape ---------- */
+// in the app the holes are this machine's public key, four bits a column, from its first hex digit on
+(function(){const t=document.getElementById('ptape');function draw(){const W=Math.round(t.clientWidth)||296,cols=Math.floor((W-8)/7.5);let q=0xb7e2;let h=`<svg width="${W}" height="30" viewBox="0 0 ${W} 30" aria-hidden="true">`;
+  const bit=(c,b)=>ME?(parseInt(ME.key[c%ME.key.length],16)>>(3-b))&1:(q=(q*75+74)%65537,q%5<2);
+  for(let c=0;c<cols;c++){const x=6+c*7.5;h+=`<circle cx="${x}" cy="17" r="1" fill="#3b372d"/>`;[4,9.5,23,27.5].forEach((y,b)=>{if(bit(c,b))h+=`<circle cx="${x}" cy="${y}" r="2.1" fill="#2a2721"/>`})}
+  t.innerHTML=h+'</svg>'}draw();new ResizeObserver(draw).observe(t)})();
+
+/* ---------- drum sound ----------
+   Synthesised, no samples. One ratchet click per letter passing the index, spaced
+   on the same ease-out curve as the turn, then a detent clunk when the drum settles.
+   Everything runs through four 7 kHz low-passes so the machine never sounds inside
+   the 17.6 to 19.8 kHz band Bombechat listens on, and it is silent while a message
+   is arriving by sound: the drums still turn, but the microphone hears nothing of them. */
+const Drum=(()=>{
+  const DUR=0.95;let ctx=null,out=null,noise=null,on=true,level=null,gain=0.9;
+  function build(c){
+    const comp=c.createDynamicsCompressor();comp.threshold.value=-20;comp.ratio.value=6;comp.attack.value=0.002;comp.release.value=0.12;
+    let node=comp;for(let i=0;i<4;i++){const lp=c.createBiquadFilter();lp.type='lowpass';lp.frequency.value=7000;lp.Q.value=0.6;node.connect(lp);node=lp}
+    const g=c.createGain();g.gain.value=0.9;node.connect(g);g.connect(c.destination);
+    const b=c.createBuffer(1,Math.floor(c.sampleRate*0.04),c.sampleRate);const d=b.getChannelData(0);
+    for(let i=0;i<d.length;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/d.length,2);
+    return {out:comp,noise:b,level:g};
+  }
+  function click(c,o,nb,t,pitch,gain){
+    const src=c.createBufferSource();src.buffer=nb;src.playbackRate.value=pitch;
+    const bp=c.createBiquadFilter();bp.type='bandpass';bp.frequency.value=2300*pitch;bp.Q.value=3.5;
+    const g=c.createGain();g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(gain,t+0.0008);g.gain.exponentialRampToValueAtTime(0.0008,t+0.014);
+    src.connect(bp);bp.connect(g);g.connect(o);src.start(t);src.stop(t+0.04);
+  }
+  function clunk(c,o,nb,t,pitch){
+    const os=c.createOscillator();os.type='sine';os.frequency.setValueAtTime(190*pitch,t);os.frequency.exponentialRampToValueAtTime(80,t+0.07);
+    const g=c.createGain();g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(0.32,t+0.002);g.gain.exponentialRampToValueAtTime(0.001,t+0.09);
+    os.connect(g);g.connect(o);os.start(t);os.stop(t+0.1);
+    const src=c.createBufferSource();src.buffer=nb;const lp=c.createBiquadFilter();lp.type='lowpass';lp.frequency.value=1400;
+    const g2=c.createGain();g2.gain.setValueAtTime(0.22,t);g2.gain.exponentialRampToValueAtTime(0.001,t+0.05);
+    src.connect(lp);lp.connect(g2);g2.connect(o);src.start(t);src.stop(t+0.06);
+  }
+  // times for n letters on an ease-out curve; caps density so 36 drums stay a clatter, not a buzz. Returns the clicks scheduled.
+  function schedule(c,o,nb,t0,n,pitch){
+    const step=n>40?2:1;let clicks=0;
+    for(let k=step;k<=n;k+=step){const p=k/n;const t=t0+DUR*(1-Math.cbrt(1-p))*0.92;click(c,o,nb,t+(Math.random()-.5)*0.002,pitch*(0.97+Math.random()*0.06),0.05+0.05*p);clicks++}
+    clunk(c,o,nb,t0+DUR*(n>2?0.9:0.15),pitch);
+    return clicks+1;
+  }
+  function ensure(){if(!ctx){ctx=new (window.AudioContext||window.webkitAudioContext)();const b=build(ctx);out=b.out;noise=b.noise;level=b.level;level.gain.value=gain}if(ctx.state==='suspended')ctx.resume();}
+  return {
+    receiving:false,calls:0,sounds:0,
+    // returns how many sounds it scheduled: none while receiving, switched off, or not yet allowed to play
+    spin(n,pitch){if(n)this.calls++;if(this.receiving||!on||!ctx||ctx.state!=='running'||!n)return 0;const k=schedule(ctx,out,noise,ctx.currentTime+0.01,n,pitch);this.sounds+=k;return k},
+    arm(){if(on)ensure()},
+    set(v){on=v;if(v)ensure()},
+    get on(){return on},
+    // Machine volume: the gain after the low-pass filters, 1 to 5 as the plugs on the back panel use it, 5 as loud as ever
+    volume(v){gain=0.9*(.35+.16*v)/.99;if(ctx&&level)level.gain.value=gain},
+    get gain(){return gain},
+    get running(){return !!ctx&&ctx.state==='running'},
+    async render(n,pitch){const c=new OfflineAudioContext(1,48000*1.4,48000);const b=build(c);schedule(c,b.out,b.noise,0.05,n,pitch);return {buf:await c.startRendering(),n}}
+  };
+})();
+addEventListener('pointerdown',()=>Drum.arm(),{once:true});
+addEventListener('keydown',()=>Drum.arm(),{once:true});
+// Machine sound and Machine volume are the machine's settings, the same two the back panel's Machine rows patch: the
+// lever shows what the machine keeps (off if it could not say), and moving it is a change the person made, so it is sent
+const sndLever=document.getElementById('snd');
+function machineSound(){const on=KEPT_READ&&KEPT.machine===1;sndLever.setAttribute('aria-pressed',on);Drum.set(on);
+  const v=KEPT.machvol;Drum.volume(Number.isInteger(v)&&v>=0&&v<=4?v:2)}
+machineSound();
+sndLever.addEventListener('click',()=>{const v=sndLever.getAttribute('aria-pressed')!=='true';sndLever.setAttribute('aria-pressed',v);Drum.set(v);
+  const was=KEPT.machine;KEPT.machine=v?1:0;Promise.resolve(bridge.setSetting('machine',KEPT.machine)).catch(()=>{KEPT.machine=was;machineSound()})});
+
+/* ---------- settings: turn the machine round ---------- */
+document.getElementById('settings').addEventListener('click',e=>{
+  if(e.metaKey||e.ctrlKey||e.shiftKey||e.button!==0)return;e.preventDefault();const href=e.currentTarget.href;
+  try{sessionStorage.setItem('bombechat-turn','front-to-back')}catch(_){}
+  if(RM.matches){location.href=href;return}
+  scrollTo({top:0});document.body.classList.add('turning');document.getElementById('app').classList.add('turning');Drum.spin(3,0.6);
+  setTimeout(()=>{location.href=href},650)});
+// back from the settings page by history: the switches may have moved there, so read them again from the machine
+addEventListener('pageshow',e=>{if(e.persisted){document.body.classList.remove('turning');document.getElementById('app').classList.remove('turning');
+  bridge.settings().then(k=>{Object.assign(KEPT,k);KEPT_READ=true;machineSound();for(const [id,kn] of Object.entries(KNOBS)){if(kn.held)continue;const v=k[kn.setting];if(v>=0&&v<=2&&(v!==kn.pos||!kn.read)){kn.pos=v;kn.read=true;drawKnob(id);if(id==='k2'&&v<2)lightLeftFlash()}}
+    applyChannels();drawOutbox();vuTitle();outbox.forEach(status)},()=>{})}});
+
+/* ---------- ?audiotest: render one drum turn offline and report what it contains ---------- */
+if(Q.has('audiotest'))(async()=>{
+  const {buf,n}=await Drum.render(26*3+5,1);const d=buf.getChannelData(0),sr=buf.sampleRate;
+  let peak=0,rms=0;for(const v of d){peak=Math.max(peak,Math.abs(v));rms+=v*v}rms=Math.sqrt(rms/d.length);
+  // onsets: 1 ms envelope frames; a frame counts when it jumps 2.5x over the previous 4 ms
+  const F=Math.round(sr/1000),env=[];for(let i=0;i+F<=d.length;i+=F){let m=0;for(let j=i;j<i+F;j++)m=Math.max(m,Math.abs(d[j]));env.push(m)}
+  let on=0,last=-99;for(let i=4;i<env.length;i++){const base=Math.max(env[i-1],env[i-2],env[i-3],env[i-4]);if(env[i]>0.004&&env[i]>base*2.5&&i-last>=4){on++;last=i}}
+  // energy share in the 17.6 to 19.8 kHz listening band: exact DFT bins in band, total by Parseval
+  const N=2048,k0=Math.ceil(17600*N/sr),k1=Math.floor(19800*N/sr);let band=0,tot=0;
+  for(let w=0;w+N<=d.length;w+=N){let sq=0;for(let j=0;j<N;j++)sq+=d[w+j]*d[w+j];tot+=sq*N/2;
+    for(let k=k0;k<=k1;k++){let re=0,im=0;for(let j=0;j<N;j++){const a=2*Math.PI*k*j/N;re+=d[w+j]*Math.cos(a);im-=d[w+j]*Math.sin(a)}band+=re*re+im*im}}
+  const r={letters:n,onsets:on,peak:+peak.toFixed(3),rms:+rms.toFixed(4),listeningBandShare:(band/tot).toExponential(2),clipped:peak>=1};
+  document.body.setAttribute('data-audiotest',JSON.stringify(r));
+})();
+
+/* ---------- tests ---------- */
+const mirror={plain:document.getElementById('mirror-plain'),heard:document.getElementById('mirror-heard'),key:document.getElementById('mirror-key')};
+const rowText=r=>cells.slice(r*12,r*12+12).map(c=>c.wl.textContent).join('');
+window.__bank={rows:()=>({plain:rowText(0),heard:rowText(1),key:rowText(2)}),frame:()=>current&&{plain:current.plain,heard:current.heard,key:current.key,no:current.no},cells,ready:false,gl:false};
+window.__drum={spin:(n,p)=>Drum.spin(n,p),get on(){return Drum.on},get gain(){return Drum.gain},get receiving(){return Drum.receiving},get running(){return Drum.running},get calls(){return Drum.calls},get sounds(){return Drum.sounds}};
+function syncMirror(){const r=window.__bank.rows();if(mirror.plain.textContent!==r.plain)mirror.plain.textContent=r.plain.replace(/X/g,' ');mirror.heard.textContent=r.heard;mirror.key.textContent=r.key}
+
+/* ---------- the app: this machine and its contacts, nothing from the mockups ----------
+   The sheet's history comes from the store; the stations are the contacts, each with when
+   it was last heard; the counter is what the machine holds for others; the key check card
+   shows the safety number once paired. Readouts the node does not measure yet are left off. */
+const MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const dated=ms=>{const d=new Date(ms);return `${hhmm(ms)}, ${d.getDate()} ${MONTHS[d.getMonth()]}`};
+async function realSheet(){
+  const talk=new Map();for(const p of PEOPLE.slice(0,3))talk.set(p.id,await bridge.conversation(p.id));
+  const mine=talk.get(CONTACT.id)||[];
+  for(const m of mine)onMessage(m);
+  const at=s=>document.querySelector(s);
+  const fields=document.querySelectorAll('.fields b');
+  fields[1].textContent=mine.length?dated(mine[0].at_min*60000):'not yet';
+  fields[2].textContent='you';
+  const foot=document.querySelectorAll('.sh-foot b');foot[0].textContent=ME.name;foot[1].textContent='the microphone';
+  at('.top .build').textContent=`Build ${ME.version}`;
+  document.getElementById('fno').textContent='0';document.getElementById('fnt').textContent='0';
+  // the rate shows once the node says what it measures (showRate); the room's margin is not measured yet
+  document.querySelectorAll('.bankfoot .rd').forEach((r,i)=>{if(i===1||i===2)r.hidden=true});
+  TALK=talk;drawStations();
+  const counter=at('.row3 .counter');
+  counter.querySelector('.odo').innerHTML=String(Math.min(999,ME.held)).padStart(3,'0').split('').map((d,i)=>`<i${i===2?' id="held"':''}>${d}</i>`).join('');
+  document.documentElement.classList.add('real')}
+// stations: the contacts, with when each was last heard
+let TALK=new Map();
+function drawStations(){const row=document.querySelector('.row3'),counter=row.querySelector('.counter');row.querySelectorAll('.stn').forEach(s=>s.remove());
+  for(const p of PEOPLE.length?PEOPLE.slice(0,3):[null]){
+    const last=p&&[...(TALK.get(p.id)||[])].reverse().find(m=>!m.outgoing);
+    const stn=el('div','stn');stn.innerHTML='<span class="jewel off" aria-hidden="true"></span><span class="holder"><span></span></span>';
+    stn.querySelector('.holder span').append(p?p.name:'No contacts yet',el('small',null,!p?'pair by sound or light to add one':last?`${last.channel}, ${hhmm(last.at_min*60000)}`:'not heard yet'));
+    row.insertBefore(stn,counter)}}
+// the bytes-a-second readout: the rate the node measures for sound, or nothing when it has none
+function showRate(list){const s=list.find(c=>c.channel==='sound'),rd=document.getElementById('raterd');
+  soundBand=s&&s.band||null;
+  if(!s||!(s.rate>0)){rd.hidden=true;return}
+  document.getElementById('rate').innerHTML=String(Math.min(999,Math.round(s.rate))).padStart(3,'0').split('').map(d=>`<i>${d}</i>`).join('');
+  rd.title=`${s.rate.toFixed(1)} bytes of message a second over sound, as the modem measures it, counting the preamble, framing and error correction around them`;rd.hidden=false;rd.style.visibility=''}
+/* ---------- the key check card, and pairing by sound or by light ----------
+   At rest the card shows the last key check: in a plain browser the mockups' pencil menu,
+   in the app the safety number shared with the contact. Pair by sound plays your hello
+   (your name and key) and listens for one; an offer pencils their name, editable, over the
+   60-digit safety number for the two of you to compare. Matched, add stores them under the
+   name as written and stamps the card without moving the number; Doesn't match keeps nothing
+   and says so on a clean card. A hello heard while not listening is held for two minutes,
+   so the second to press sees the first's straight away.
+   Pair by light shows your hello as a light code on the signal lamp, and the camera reads theirs: hold the screens
+   face to face. It needs Light at Read and flash, and turns no switch: at Off or Read it is refused on the card, as
+   sound pairing is at Listen. Once their hello is in, the card takes the offer and the machine is told to finish:
+   your hello shows to the end of its window, so whoever pressed later still gets a whole one to read, then the lamp
+   closes on the offer. Escape (or the lamp's Stop key) while the hello is on the lamp, the light stamp again,
+   Doesn't match, Matched, add, Light leaving Read and flash, and three minutes all end it, and the screen clears.
+   The node marks the hello's frames (display's hello), so only the hello is ever taken off the lamp: a message by
+   light on it keeps its own caption and its own Escape. An offer says the channel its hello came in on. */
+const menu=document.querySelector('.menu'),pencilEl=document.getElementById('pencil'),pairBtn=document.getElementById('pairbtn');
+const yesBtn=document.getElementById('pairyes'),noBtn=document.getElementById('pairno'),lightPairBtn=document.getElementById('pairlight');
+// how long pairing stays in progress at most, as the node's PAIRING_CAP_MS (?paircap shortens it for checks)
+const PAIR_CAP=Q.has('paircap')?+Q.get('paircap'):180000;
+// pairing by light: 'reading' while your hello shows and the camera reads theirs, 'finishing' once theirs is in and
+// yours shows to the end of its window; null otherwise
+let lightPairing=null,pairCapT=null;
+// the stamp that started the pairing in progress, for focus to return to when it ends
+let startedBy=null;
+const stampFor=()=>startedBy==='light'?lightPairBtn:pairBtn;
+const menuNote=menu.querySelector('.note'),menuStamp=menu.querySelector('.stmp'),menuSvg=document.getElementById('menusvg'),menuWho=menu.querySelector('h2 span');
+const day=ms=>{const d=new Date(ms);return `${d.getDate()} ${MONTHS[d.getMonth()]}`};
+const HOLD_OFFER=Q.has('hold')?+Q.get('hold'):120000;
+let checkedWith=null;// the key check made on this page: {name, safety, at, by}
+let offer=null,heldOffer=null;
+const TILTS=[-.6,.4,-.2,.7,-.5,.2,.5,-.7,.3,-.3,.6,-.4];
+// their name above the ruled number, and (once matched) the stamp pressed on its corner
+function checkSheet(nameHtml,safety,stamp){const g=safety.trim().split(/\s+/);
+  return `<p class="pfrom">${nameHtml}</p><div class="snwrap"><ol class="sn" aria-label="Safety number, 12 groups of five">${g.map((x,i)=>`<li style="--t:${TILTS[i%12]}deg">${esc(x)}</li>`).join('')}</ol>${stamp||''}</div>`}
+const stampHtml=(date,fresh)=>`<div class="gstmp${fresh&&!RM.matches?' new':''}" aria-label="Matched${date?', '+date:''}">Matched${date?`<small>${esc(date)}</small>`:''}</div>`;
+function pencil(html){menuSvg.style.visibility='hidden';pencilEl.innerHTML=html;pencilEl.hidden=false}
+function noteSays(text){menuNote.textContent=text||''}
+// a pencil sketch in the card's hand: the same filter and stroke for every one, a seed of its own
+const sketch=(id,seed,body)=>`<svg class="ears" viewBox="0 0 64 40" aria-hidden="true"><defs><filter id="${id}" x="-10%" y="-10%" width="120%" height="120%"><feTurbulence baseFrequency=".08" numOctaves="2" seed="${seed}" result="t"/><feDisplacementMap in="SourceGraphic" in2="t" scale="1.6"/></filter></defs>
+    <g filter="url(#${id})" fill="none" stroke="#4b4a47" stroke-width="1.3" stroke-linecap="round">${body}</g></svg>`;
+// sound: a speaker's dot and its waves; light: two screens face to face, the code passing between them
+const EARS=sketch('penh',5,'<circle cx="10" cy="20" r="2.4" fill="#4b4a47" stroke="none"/><path d="M20 10 Q27 20 20 30"/><path d="M30 4 Q41 20 30 36"/><path d="M40 -1 Q55 20 40 41"/>');
+const FACES=sketch('penl',9,'<rect x="1" y="1" width="10" height="38" rx="2"/><rect x="53" y="1" width="10" height="38" rx="2"/><rect x="3.5" y="4" width="5" height="32" fill="#4b4a47" fill-opacity=".14" stroke="none"/><rect x="55.5" y="4" width="5" height="32" fill="#4b4a47" fill-opacity=".14" stroke="none"/><path d="M17 11 H47" stroke-dasharray="4 3"/><path d="M17 20 H47" stroke-dasharray="4 3"/><path d="M17 29 H47" stroke-dasharray="4 3"/>');
+function buttons(state){pairBtn.hidden=state==='offer'||state==='reading';lightPairBtn.hidden=state==='offer'||state==='listening';yesBtn.hidden=noBtn.hidden=state!=='offer';
+  pairBtn.textContent=state==='listening'?'Stop listening':'Pair by sound';lightPairBtn.textContent=state==='reading'?'Stop reading':'Pair by light';yesBtn.disabled=noBtn.disabled=false}
+function setState(state,gridded){menu.dataset.pair=state;if(state!=='reading'){clearTimeout(pairCapT);pairCapT=null}menu.classList.toggle('gridded',!!gridded);buttons(state);
+  menuStamp.hidden=true;menuStamp.classList.remove('new');menu.querySelector('.fp').hidden=true}
+function cardRest(fresh){setState('',true);offer=null;
+  const who=checkedWith||(!bridge.simulated&&CONTACT.id&&CONTACT.checked&&CONTACT.safety?{name:CONTACT.name,safety:CONTACT.safety}:null);
+  if(who){pencil(checkSheet(esc(who.name),who.safety,stampHtml(who.at?day(who.at):'',fresh)));menuWho.textContent=who.name;noteSays(who.at?`Checked in person, by ${who.by||'sound'}.`:'Checked in person.')}
+  else if(bridge.simulated){// the mockups' story
+    menu.classList.remove('gridded');pencilEl.hidden=true;menuSvg.style.visibility='';menu.querySelector('.fp').hidden=false;
+    menuWho.textContent=`menu 7, ${CONTACT.short}`;noteSays('Checked in person, by light.');
+    menuStamp.hidden=false;const d=menuStamp.querySelector('div');d.textContent='Matched';d.appendChild(el('small',null,'2 Oct'))}
+  else{menu.classList.remove('gridded');pencil('<p class="ph">not yet paired</p>');menuWho.textContent='';noteSays('Press Pair by sound or Pair by light, here and on their machine.')}}
+async function pairBySound(){
+  if(menu.dataset.pair==='listening'){bridge.stopPairing().catch(()=>{});cardRest();return}
+  pairBtn.disabled=true;
+  try{await bridge.pair('sound')}catch(why){pairBtn.disabled=false;cardRest();noteSays(sentence(why));return}
+  pairBtn.disabled=false;lightPairing=null;startedBy='sound';setState('listening');menuWho.textContent='pairing by sound';
+  pencil(`${EARS}
+    <p class="ph">listening for a hello…</p><p class="psub">Your hello plays once the room is quiet. Ask them to press Pair by sound too.</p>`);
+  noteSays('');
+  if(heldOffer)showOffer(heldOffer.o)}
+// your hello on the lamp, their camera reading it, and yours reading theirs
+async function pairByLight(){
+  if(menu.dataset.pair==='reading'){endLightPairing('Pairing by light stopped. Nothing was kept.');return}
+  if(!(KNOBS.k2.read&&KNOBS.k2.pos===2)){cardRest();noteSays(`${lightRefusal()}. Turn it to Read and flash to pair by light.`);return}
+  lightPairBtn.disabled=true;
+  try{await bridge.pair('light')}catch(why){lightPairBtn.disabled=false;cardRest();noteSays(sentence(why));return}
+  lightPairBtn.disabled=false;startedBy='light';setState('reading');menuWho.textContent='pairing by light';
+  // asked for afresh: a hello is not held back by an earlier Escape
+  lightPairing='reading';Lamp.stopped=false;Lamp.gone=null;
+  pencil(`${FACES}
+    <p class="ph">reading for a hello…</p><p class="psub">Your hello shows as a light code. Hold your screens face to face, and ask them to press Pair by light too.</p>`);
+  noteSays('');
+  pairCapT=setTimeout(()=>{if(menu.dataset.pair==='reading')endLightPairing('Pairing by light ended after three minutes. Nothing was kept.')},PAIR_CAP);
+  if(heldOffer)lightOffer(heldOffer.o)}
+// the hello comes off the lamp at once, and a frame of it still on its way is let go; a message on the lamp stays
+function helloOff(){if(Lamp.state!=='closed'&&Lamp.hello){Lamp.gone=Lamp.tag;lampClose(false)}}
+// stopped before their hello came: the screen clears, the card is as it was
+function endLightPairing(note){lightPairing=null;bridge.stopPairing().catch(()=>{});helloOff();cardRest();noteSays(note);lightPairBtn.focus({preventScroll:true})}
+// Light was turned off Read and flash (the machine has ended the pairing): reading, the card rests and says so;
+// finishing, the offer stays for the person to judge, and focus goes to Matched, add, as Escape leaves it
+function lightLeftFlash(){if(!lightPairing)return;const was=lightPairing;lightPairing=null;helloOff();
+  if(was==='reading'){cardRest();noteSays(`Pairing by light stopped. ${KNOBS.k2.pos===0?'Light is off':'Light is at Read'}, and nothing was kept.`);lightPairBtn.focus({preventScroll:true})}
+  else if(menu.dataset.pair==='offer'&&!yesBtn.hidden)yesBtn.focus({preventScroll:true})}
+// their hello is in: the card takes the offer under the lamp, and the lamp closes once yours has finished its window
+function lightOffer(o){const fromLamp=lampEl.contains(document.activeElement);
+  lightPairing='finishing';bridge.finishPairing().catch(()=>{});
+  showOffer(o);if(Lamp.state!=='closed')lampCaption();
+  if(fromLamp)lampStop.focus({preventScroll:true})}
+// the name field grows with what is written in it
+const fitName=i=>{i.size=Math.max(6,Math.min(28,i.value.length+1))};
+// o.channel: the channel their hello came in on, as the node says
+function showOffer(o){offer=o;heldOffer=null;
+  const inCard=menu.contains(document.activeElement);
+  setState('offer',true);menuWho.textContent=`pairing by ${o.channel}`;
+  pencil(checkSheet(`<input class="pname" id="peername" maxlength="40" spellcheck="false" autocomplete="off" aria-label="Their name, as you will keep it. Correct it before adding them." title="Their name, as you will keep it. Correct it before adding them."> said hello`,o.safety));
+  const nm=document.getElementById('peername');nm.value=o.name;fitName(nm);
+  nm.addEventListener('input',()=>fitName(nm));
+  nm.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();yesBtn.click()}});
+  noteSays('Compare these with theirs, out loud or side by side.');
+  if(inCard)yesBtn.focus()}
+bridge.on('pairOffer',o=>{
+  if(menu.dataset.pair==='listening'){showOffer(o);return}
+  if(menu.dataset.pair==='reading'){lightOffer(o);return}
+  if(menu.dataset.pair==='offer')return;
+  const held=heldOffer={o};noteSays(`${o.name} said hello by ${o.channel}. Press Pair by ${o.channel} to answer.`);
+  setTimeout(()=>{if(heldOffer!==held)return;heldOffer=null;if(menu.dataset.pair==='')cardRest();else if(menu.dataset.pair==='refused')noteSays('')},HOLD_OFFER)});
+pairBtn.addEventListener('click',pairBySound);
+lightPairBtn.addEventListener('click',pairByLight);
+noBtn.addEventListener('click',()=>{const o=offer;offer=null;lightPairing=null;bridge.stopPairing().catch(()=>{});helloOff();setState('refused');menuWho.textContent='';
+  pencil(`<p class="ph">not added</p><p class="psub">${esc(o?o.name:'Their machine')} is not a contact. Nothing from this hello was kept.</p>`);
+  noteSays('Not added. Nothing was kept.');stampFor().focus()});
+yesBtn.addEventListener('click',()=>{const o=offer;if(!o)return;
+  const nm=document.getElementById('peername'),name=(nm?nm.value:o.name).trim();
+  if(!name){noteSays('Write their name first.');nm.focus();return}
+  yesBtn.disabled=noBtn.disabled=true;
+  bridge.confirmPair(o.peer,name).then(id=>{
+    lightPairing=null;helloOff();
+    checkedWith={name,safety:o.safety,at:bridge.now(),by:o.channel};
+    const p={id,name,short:name.split(' ')[0],checked:true,safety:o.safety};
+    const i=PEOPLE.findIndex(x=>x.id===id);if(i<0)PEOPLE.push(p);else PEOPLE[i]=p;
+    if(!CONTACT.id){CONTACT=p;nameTheSheet(CONTACT)}
+    if(!bridge.simulated)drawStations();
+    cardRest(true);stampFor().focus()},
+  why=>{yesBtn.disabled=noBtn.disabled=false;noteSays(sentence(why))})});
+
+/* ---------- the flashing view ----------
+   The node hands the page each light code frame as it is due (display), and says when the screen is clear
+   (displayStopped). The first frame opens the signal lamp in the message sheet's place, still for a moment (a
+   plain field of the code's own mean grey, so nothing jumps when the frames start), then the frames follow,
+   each drawn exactly as the light crate's render_bits draws it: a white quiet zone three cells wide, cells of
+   whole device pixels, the leftover split evenly round the grid. Frames that come during the still moment are
+   let go; the node adds the still moment to the window whenever the screen lights from clear (its STILL_MS, the same
+   as READY_MS), so each message still shows code for at least four seconds and three times what a camera needs.
+   Escape (or Stop) turns the Light switch to Read, the machine's own way to stop flashing: the screen clears at
+   once, the message waits, and nothing more flashes until the switch is back at Read and flash. When the frames
+   are your pairing hello (display's hello), the lamp says to hold the screens face to face, and Escape (or Stop)
+   ends the pairing, not the switch: the hello stops, the screen clears, and Light stays where it is. */
+const lampEl=document.getElementById('lamp'),lampCv=document.getElementById('lampcode'),lampCtx=lampCv.getContext('2d',{alpha:false});
+const lampSay=document.getElementById('lampsay'),lampStop=document.getElementById('lampstop'),deckEl=document.querySelector('.deck'),sheetEl=document.querySelector('.sheet');
+// cells a side for each preset (0 slow, 1 normal, 2 fast), and the quiet zone, as crates/light CodeSpec and QUIET
+const LAMP_CELLS=[48,56,64],LAMP_QUIET=3;
+// the still moment before the first frame (the node's STILL_MS: change both); the grey of a half-dark grid (linear luminance 0.5)
+const READY_MS=Q.has('ready')?+Q.get('ready'):1200,LAMP_GREY='#bcbcbc';
+// closed, ready (still) or flashing; for: whose camera to hold it up to (a name, or null for anyone's)
+// next: whose camera the message about to go on screen is for (set as it starts playing); for: the one showing
+// hello: the frames on the lamp are your pairing hello; gone: the tag of a hello just taken off the lamp, whose
+// frames still on their way are let go
+const Lamp={state:'closed',tag:null,hello:false,test:false,gone:null,spec:1,bits:null,index:-1,shown:0,readyT:null,stopped:false,stopping:false,for:null,next:null,refocus:false,rateSpec:null};
+const odoDigits=(el,n,w)=>{el.innerHTML=String(Math.max(0,Math.min(10**w-1,Math.round(n)))).padStart(w,'0').split('').map(d=>`<i>${d}</i>`).join('')};
+// the canvas, sized to the bezel's opening in whole device pixels and placed on whole device pixels
+// the lamp's span: the sheet's column, and the card's when it stands beside the sheet (the wide layout)
+function lampPlace(){const a=sheetEl.getBoundingClientRect(),m=document.querySelector('.menu').getBoundingClientRect(),beside=Math.abs(m.top-a.top)<40&&m.left>a.left;
+  const left=Math.max(16,Math.round(a.left)),right=Math.min(innerWidth-16,Math.round(beside?m.right:a.right));
+  lampEl.style.left=left+'px';lampEl.style.width=Math.max(320,right-left)+'px'}
+function lampFit(){if(lampEl.hidden)return;
+  lampPlace();
+  const mid=lampEl.querySelector('.lamp-mid').getBoundingClientRect(),dpr=devicePixelRatio||1;
+  const css=Math.max(96,Math.floor(Math.min(mid.width,mid.height)-28)),px=Math.round(css*dpr);
+  if(lampCv.width!==px){lampCv.width=lampCv.height=px}
+  lampCv.style.width=lampCv.style.height=px/dpr+'px';lampCv.style.transform='';
+  const r=lampCv.getBoundingClientRect(),dx=(Math.round(r.left*dpr)-r.left*dpr)/dpr,dy=(Math.round(r.top*dpr)-r.top*dpr)/dpr;
+  if(dx||dy)lampCv.style.transform=`translate(${dx}px,${dy}px)`;
+  lampPaint()}
+new ResizeObserver(lampFit).observe(lampEl.querySelector('.lamp-mid'));
+addEventListener('resize',lampFit);
+// render_bits: the whole canvas light, then each dark cell
+function lampPaint(){const px=lampCv.width,n=LAMP_CELLS[Lamp.spec],cell=Math.floor(px/(n+2*LAMP_QUIET)),o=Math.floor((px-cell*n)/2),k=lampCtx;
+  k.fillStyle='#fff';k.fillRect(0,0,px,px);
+  if(Lamp.state!=='flashing'||!Lamp.bits){k.fillStyle=LAMP_GREY;k.fillRect(o,o,cell*n,cell*n);return}
+  k.fillStyle='#000';const b=Lamp.bits;
+  for(let i=0;i<n*n;i++)if(b[i>>3]&(128>>(i&7)))k.fillRect(o+(i%n)*cell,o+((i/n)|0)*cell,cell,cell)}
+function lampCaption(){const who=Lamp.for?`${Lamp.for}'s`:'their',hello=Lamp.hello,test=Lamp.test,finishing=hello&&lightPairing==='finishing';
+  lampSay.firstChild.nodeValue=finishing?'Their key is read. Yours finishes showing.':hello?'Hold your screens face to face.':test?'Hold a mirror up to this screen.':`Hold this screen up to ${who} camera.`;
+  lampSay.querySelector('small').textContent=Lamp.refused?Lamp.refused:finishing?'Escape stops it':Lamp.state==='ready'?'ready, Escape stops it':hello?'reading theirs, Escape stops it':test?'the camera reads it back, Escape stops it':'flashing, Escape stops it';
+  // the plate, the code's label and the Stop key say what is on the lamp: a message, your hello, or the self-test
+  const plate=hello?'Pairing by light':test?'Testing by light':'Flashing by light';
+  lampEl.querySelector('.lamp-head .pl.screw').textContent=plate;
+  lampEl.setAttribute('aria-label',plate);
+  lampCv.setAttribute('aria-label',hello?'Your hello as a light code':test?'The test message as a light code':'The message as a light code');
+  lampStop.title=hello?'Stops pairing by light. Escape does the same. The screen clears, and Light stays where it is.':test?'Stops the test. Escape does the same. The screen clears, and Light stays where it is.':'Stops flashing. Escape does the same. Light turns to Read, and the message waits until it is back at Read and flash.';
+  document.getElementById('lampnrd').title=hello?'Frames of your hello shown in this window':test?'Frames of the test message shown':'Frames of this message shown so far'}
+// the readout: the bytes a second this Flash speed shows, as the machine reckons it, read again when the speed changes
+function lampRate(){bridge.channels().then(list=>{const l=list.find(c=>c.channel==='light');const rd=document.getElementById('lamprd');
+  rd.hidden=!(l&&l.rate>0);if(l&&l.rate>0){odoDigits(document.getElementById('lamprate'),l.rate,4);
+    rd.title=`${Math.round(l.rate)} bytes a second at this Flash speed, coding included: what a camera reading every frame takes in`}},()=>{})}
+function lampOpen(){Lamp.state='ready';Lamp.shown=0;
+  Lamp.refocus=sheetEl.contains(document.activeElement)||document.activeElement===document.body;
+  lampEl.hidden=false;deckEl.classList.add('flashing');sheetEl.inert=true;
+  document.getElementById('lampjewel').classList.add('off');odoDigits(document.getElementById('lampn'),0,3);lampCaption();
+  lampFit();if(Lamp.refocus)lampStop.focus({preventScroll:true});
+  clearTimeout(Lamp.readyT);Lamp.readyT=setTimeout(()=>{if(Lamp.state!=='ready')return;Lamp.state='flashing';lampFrame()},READY_MS)}
+function lampFrame(){if(Lamp.state!=='flashing')return;lampPaint();
+  odoDigits(document.getElementById('lampn'),Lamp.shown,3);document.getElementById('lampjewel').classList.remove('off');lampCaption()}
+function lampClose(focusBack=true){clearTimeout(Lamp.readyT);if(Lamp.state==='closed')return;const test=Lamp.test;Lamp.state='closed';Lamp.bits=null;Lamp.tag=null;Lamp.hello=false;Lamp.test=false;Lamp.for=null;Lamp.refused='';Lamp.rateSpec=null;
+  const back=lampEl.contains(document.activeElement)||Lamp.refocus;
+  // back to the stamp that started a test by light
+  if(test&&back&&focusBack){lampEl.hidden=true;deckEl.classList.remove('flashing');sheetEl.inert=false;testLightBtn.focus({preventScroll:true});return}
+  lampEl.hidden=true;deckEl.classList.remove('flashing');sheetEl.inert=false;
+  // back to the reply line, or (a pairing's lamp closing on its offer) to the card's Matched, add
+  if(back&&focusBack)(menu.dataset.pair==='offer'&&!yesBtn.hidden?yesBtn:reply).focus({preventScroll:true})}
+bridge.on('display',d=>{
+  // stopped with Escape: nothing shows again until the machine says the screen is clear
+  if(Lamp.stopped||d.tag===Lamp.gone||!(d.spec in LAMP_CELLS)||d.bits.length!==Math.ceil(LAMP_CELLS[d.spec]**2/8))return;
+  // a new message on screen: it is for whoever the page last sent one by light to, if anyone, else for any camera
+  // (your pairing hello is for no one's camera in particular, and takes no send's name)
+  if(d.tag!==Lamp.tag){Lamp.tag=d.tag;Lamp.shown=0;Lamp.hello=d.hello;Lamp.test=d.test;if(d.hello||d.test)Lamp.for=null;else{Lamp.for=Lamp.next;Lamp.next=null}}
+  Lamp.spec=d.spec;Lamp.bits=d.bits;Lamp.index=d.index;Lamp.shown=d.index+1;
+  if(d.spec!==Lamp.rateSpec){Lamp.rateSpec=d.spec;lampRate()}
+  if(Lamp.state==='closed')lampOpen();else lampFrame()});
+bridge.on('displayStopped',()=>{Lamp.stopped=false;Lamp.gone=null;if(Lamp.hello&&lightPairing==='finishing')lightPairing=null;lampClose()});
+// the lamp goes, and the page says so, only once the machine has taken the switch's turn to Read; refused, the lamp
+// stays up (the machine is still flashing) and says why on its card
+// short enough for the top bar at every width; the whole story is in its title
+const UNSAVED_STOP='Flashing stopped, but not saved.';
+async function stopFlashing(){if(Lamp.state==='closed'||Lamp.stopping)return;
+  // the self-test on the lamp: the test ends, not the switch
+  if(Lamp.test){stopTest();return}
+  // your hello on the lamp: the pairing ends, not the switch; an offer already on the card stays for the person to
+  // judge. A message on the lamp stops the Task 6 way, whatever pairing is doing
+  if(Lamp.hello){
+    if(lightPairing==='reading'){endLightPairing('Pairing by light stopped. Nothing was kept.');return}
+    const offered=lightPairing==='finishing';lightPairing=null;bridge.stopPairing().catch(()=>{});helloOff();
+    if(offered)yesBtn.focus({preventScroll:true});return}
+  Lamp.stopping=true;
+  const taken=await turnKnob('k2',1,true);Lamp.stopping=false;
+  if(taken===true){if(Lamp.state!=='closed'){Lamp.stopped=true;lampClose()}say('Flashing stopped. Light is at Read, and the message waits.');return}
+  // the machine stopped, but couldn't keep the setting on disk: stopped all the same, and the page says what wasn't kept
+  if(taken&&taken.unsaved){if(Lamp.state!=='closed'){Lamp.stopped=true;lampClose()}say(UNSAVED_STOP,`Flashing stopped. Light is at Read for now. ${sentence(taken.unsaved)} So Light goes back to Read and flash next time.`);return}
+  if(Lamp.state!=='closed'){Lamp.refused=`Not stopped. ${sentence(taken)}`;lampCaption()}}
+lampStop.addEventListener('click',stopFlashing);
+addEventListener('keydown',e=>{if(e.key!=='Escape')return;if(Lamp.state!=='closed'){e.preventDefault();stopFlashing()}else if(Test){e.preventDefault();stopTest()}});
+
+/* ---------- testing the machine ----------
+   Test the machine, stamped at the foot of the sheet, has the machine seal a short message to its own key and play
+   it once the room is quiet, as any send waits. Its own microphone hears it, the drums turn as they do for any
+   message, and it lands on the sheet under the margin note self-test, with what came back, how fast and on which
+   band. Test by light shows it on the signal lamp for a mirror held up to the screen, and the camera reads it back.
+   The entry is the machine's own, sealed to itself, never typed as a message to the sheet's contact, and nothing of
+   it is kept: it is this page's alone, gone when it closes. Each needs its switch at its sending position, as
+   pairing does, and turns none: refused, the foot says which switch to turn, typed where its two fields were, until
+   a switch turns or a test starts. Escape, or the stamp again, stops it; a test that comes back with nothing says
+   what to try. On a new machine the empty sheet's first line suggests it, until a test has run. */
+// what the machine seals for a test, as the node's SELF_TEST_TEXT
+const SELF_TEST_TEXT='The machine hears itself.';
+// the switches' own refusals, as the node words them: anything else is said as it is
+const SWITCH_REFUSALS=['not sent: sound is off','not sent: sound is set to listen only','not sent: light is off','not sent: light is set to read only'];
+const NOTHING_TO_TEST={sound:'This Mac has no sound to test with.',light:'This Mac has no camera to test by light with.'};
+const testBtn=document.getElementById('testbtn'),testLightBtn=document.getElementById('testlight'),testNote=document.getElementById('testnote');
+// the test in progress: its channel, the tags it goes out under, its entry on the sheet once the machine took it, how
+// far it has got ('asking', 'waiting', 'playing' or 'arriving'), and its arrival on the drums
+let Test=null;
+// the band sound is really on, as channels() says, for what to try when nothing was heard
+let soundBand=null;
+// the first run's line on the sheet, until a test has run
+let firstRunLine=null;
+function testSays(text){testNote.textContent=text||''}
+// one stamp while a test runs, saying it stops it; both at rest
+function testStamps(){const on=Test&&Test.channel;testBtn.hidden=on==='light';testLightBtn.hidden=on==='sound';
+  testBtn.textContent=on==='sound'?'Stop the test':'Test the machine';testLightBtn.textContent=on==='light'?'Stop the test':'Test by light'}
+const testStampFor=channel=>channel==='light'?testLightBtn:testBtn;
+// the switch that won't let it run, said as what to turn
+function refuseTest(channel){const k=channel==='light'?KNOBS.k2:KNOBS.k1,name=channel==='light'?'Light':'Sound';
+  testSays(`${k.read?'':`The ${name} switch was not read from the machine. `}Turn ${name} to ${k.labels[2]} to ${channel==='light'?'test by light':'test the machine'}.`);
+  nudge(testStampFor(channel))}
+function testLine(text,live){if(!Test||!Test.ent)return;const st=Test.ent.querySelector('.state');st.textContent=text;st.classList.toggle('live',!!live)}
+// waiting: for a quiet room, by sound, as the outbox says it of any send
+function testWaiting(){if(!Test||Test.state!=='waiting')return;
+  testLine('sealed to this machine, '+(Test.channel==='light'?'waiting to go on screen':room==null?'waiting for quiet':room<sendUnder()?'playing next':`waiting for quiet, the room is at ${Math.round(room)} dB`))}
+function testShow(){if(!Test)return;if(Test.state==='waiting')testWaiting();
+  else if(Test.state==='playing')testLine(`sealed to this machine, ${Test.channel==='light'?'on the screen for a mirror':'playing by sound, listening for it'}`,true)}
+// a chunk of it came back: onto the drums, and its provisional tape typed into its own entry
+function testChunk(c){const a=Test.arr||(Test.arr={ent:Test.ent});
+  if(Test.state!=='arriving'){Test.state='arriving';testLine(`arriving by ${c.channel}, not yet checked`,true)}
+  toDrums(c,a);grow(()=>provisionalTape(a,c.text))}
+async function startTest(channel){
+  if(Test){if(Test.channel===channel)stopTest();return}
+  const k=channel==='light'?KNOBS.k2:KNOBS.k1,btn=testStampFor(channel);
+  if(!(k.read&&k.pos===2)){refuseTest(channel);return}
+  const t=Test={channel,tags:new Set(),ent:null,arr:null,state:'asking'};
+  btn.disabled=true;testSays('');
+  try{await bridge.selfTest(channel)}catch(why){btn.disabled=false;if(Test===t)Test=null;why=String(why&&why.message||why);
+    if(SWITCH_REFUSALS.includes(why))refuseTest(channel);else{testSays(why==='not sent: no sound or light to send on'?NOTHING_TO_TEST[channel]:sentence(why));nudge(btn)}return}
+  btn.disabled=false;
+  if(Test!==t)return;// it ended before the machine's answer came
+  if(channel==='light'){Lamp.stopped=false;Lamp.gone=null}
+  // the machine's own entry: no typed line, which on a contact's sheet would read as written to them
+  const ent=entry(bridge.now(),'self-test');ent.classList.add('selftest');
+  ent.querySelector('.what').append(el('div','state'));
+  t.ent=ent;if(t.state==='asking')t.state='waiting';
+  grow(()=>put(ent),true);testStamps();testShow();
+  bridge.channels().then(list=>{const s=list.find(c=>c.channel==='sound');if(s&&s.band)soundBand=s.band},()=>{})}
+// stopped from the page: the sheet says so at once, and the machine's own word of it finds nothing left to end
+function stopTest(){if(!Test)return;const ch=Test.channel;bridge.stopSelfTest().catch(()=>{});testEnded({state:'stopped',channel:ch});
+  // off the lamp at once, and a frame of it still on its way let go, as a hello is
+  if(Lamp.state!=='closed'&&Lamp.test){Lamp.gone=Lamp.tag;lampClose(false)}
+  testStampFor(ch).focus({preventScroll:true})}
+const secs=ms=>Math.max(1,Math.round(ms/1000));
+// how it went, typed under it: what came back and how fast (when the machine measured it), or what to try
+function testResult(t,light){const band=t.band||soundBand||'near silent',timed=+t.ms>0&&+t.rate>0;
+  if(light)return timed?`Read back in the mirror after ${secs(t.ms)} s.`:'Read back in the mirror.';
+  return timed?`Heard back after ${secs(t.ms)} s: ${(+t.rate).toFixed(1)} bytes a second on the ${band} band.`:`Heard back on the ${band} band.`}
+function testFailed(t,light){switch(t.state){
+  case 'stopped':return 'Test stopped.';
+  case 'noquiet':return 'Not played: the room never went quiet. Try somewhere quieter, or raise Send under in Settings.';
+  case 'unplayed':return light?'Not shown. Test again.':'Not played. Check the sound output and test again.';
+  default:return light?'Not read. Hold a mirror square in front of the screen and test again.'
+    :(t.band||soundBand)==='audible'?'Not heard. Raise the volume and test again.':'Not heard. Raise the volume, or set Band to Audible in Settings, and test again.'}}
+function testEnded(t){const T=Test;Test=null;testStamps();
+  if(firstRunLine){const f=firstRunLine;firstRunLine=null;grow(()=>f.remove())}
+  if(!T||!T.ent)return;const ent=T.ent,what=ent.querySelector('.what'),st=what.querySelector('.state'),light=T.channel==='light';
+  ent.querySelectorAll('.cur').forEach(c=>c.remove());st.classList.remove('live');
+  if(t.state==='heard'){
+    // what came back goes on the tape as a message does, once the drums have finished turning
+    whenDrumsRest(()=>grow(()=>{what.querySelectorAll('.strip').forEach(s=>s.remove());tape(what,t.text||SELF_TEST_TEXT,'strip',st);
+      st.textContent=testResult(t,light);
+      what.appendChild(el('div','stamp new',`${light?'seen':'heard'} by this machine, ${hhmm(bridge.now())}`))}));
+    return}
+  grow(()=>{if(t.state!=='stopped')ent.classList.add('failed');st.textContent=testFailed(t,light)})}
+bridge.on('selfTest',t=>{if(!Test||t.channel!==Test.channel)return;Test.tags.add(t.tag);
+  // by light it plays again under a fresh tag each window: an arrival already under way stays one
+  if(t.state==='waiting'||t.state==='playing'){if(Test.state!=='arriving'&&!(Test.state==='asking'&&t.state==='waiting'))Test.state=t.state;testShow();return}
+  testEnded(t)});
+testBtn.addEventListener('click',()=>startTest('sound'));
+testLightBtn.addEventListener('click',()=>startTest('light'));
+
+/* ---------- the eyepiece, and what the camera has to say ----------
+   While Light reads, the eyepiece on its switch shows what the camera sees, small and grey, so the reader can aim.
+   Its shutter closes it: the page then asks for no picture, and the machine sends none. The shutter's position
+   is this window's own (kept in its storage, not a machine setting); open unless closed here before. */
+const eyeEl=document.getElementById('eyepiece'),eyeCv=eyeEl.querySelector('canvas'),eyeCtx=eyeCv.getContext('2d');
+let eyeOpen=true;try{eyeOpen=localStorage.getItem('bombechat.eyepiece')!=='shut'}catch(e){}
+let eyeAsked=null;
+function showEyepiece(){const reading=KNOBS.k2.read&&KNOBS.k2.pos>0,want=eyeOpen&&reading&&!document.hidden;
+  eyeEl.setAttribute('aria-checked',eyeOpen);eyeEl.classList.toggle('shut',!eyeOpen);eyeEl.classList.toggle('dark',!want);
+  eyeEl.title=!eyeOpen?'Eyepiece shut: nothing the camera sees is shown. Press to open it.':reading?'What the camera sees, small and grey, to aim it by. Press to shut it.':'The camera is closed. Its eyepiece shows what it sees while Light reads.';
+  if(want!==eyeAsked){eyeAsked=want;if(!want){eyeCtx.fillStyle='#0d0d0c';eyeCtx.fillRect(0,0,eyeCv.width,eyeCv.height)}Promise.resolve(bridge.eyepiece(want)).catch(()=>{})}}
+eyeEl.addEventListener('click',()=>{eyeOpen=!eyeOpen;try{if(eyeOpen)localStorage.removeItem('bombechat.eyepiece');else localStorage.setItem('bombechat.eyepiece','shut')}catch(e){}
+  Drum.spin(1,1.6);showEyepiece()});
+document.addEventListener('visibilitychange',showEyepiece);
+// leaving the page (to the settings page, or closing) lets go of the eyepiece even where visibilitychange doesn't come;
+// coming back from the back/forward cache asks again
+addEventListener('pagehide',()=>{if(eyeAsked){eyeAsked=false;Promise.resolve(bridge.eyepiece(false)).catch(()=>{})}});
+addEventListener('pageshow',e=>{if(e.persisted){eyeAsked=null;showEyepiece()}});
+bridge.on('eyepiece',p=>{if(!eyeAsked||!(p.width>0&&p.height>0)||p.pixels.length!==p.width*p.height)return;
+  if(eyeCv.width!==p.width||eyeCv.height!==p.height){eyeCv.width=p.width;eyeCv.height=p.height}
+  const img=eyeCtx.createImageData(p.width,p.height);for(let i=0;i<p.pixels.length;i++){const v=p.pixels[i];img.data[i*4]=img.data[i*4+1]=img.data[i*4+2]=v;img.data[i*4+3]=255}
+  eyeCtx.putImageData(img,0,0)});
+// what the camera says goes on a strip of tape by the eyepiece: a code it sees and can't read, or why it can't open
+const TILT_OR_DIM='seeing a code: tilt or dim the screen';
+const lightNote=document.querySelector('#lightnote b');
+// (the camera sees a code it can't read: the tape says what to do, its label says why)
+function lightSays(state){const tilt=state===TILT_OR_DIM;lightNote.textContent=tilt?'Tilt or dim the screen.':/^unavailable: /.test(state)?sentence(state.slice(13)):'';
+  lightNote.parentElement.setAttribute('aria-label',tilt?'The camera sees a code it cannot read. Tilt or dim the screen.':lightNote.textContent)}
+
+/* ---------- open: replay what came before, then listen ---------- */
+drawOutbox();applyChannels();cardRest();
+function vuTitle(){document.querySelector('.vu').title=`Loudness of the room. Messages wait to play until it drops under ${sendUnder()} dB.`}
+vuTitle();
+if(!bridge.simulated)await realSheet();
+// the broadcasts kept, this machine's own and the ones heard, in their places among the messages
+for(const b of await bridge.broadcasts().catch(()=>[]))drawNotice(b);
+bridge.start();
+// a page opened (or reloaded) after the channel last changed still learns its state
+bridge.channels().then(list=>{list.forEach(onChannel);showRate(list)});
+booting=false;tick();setInterval(tick,20000);
+// a new machine: its empty sheet has one typed line, to try it alone first, until a test has run
+if(FIRST_RUN){const ent=entry(bridge.now(),'first run');ent.classList.add('firstrun');ent.querySelector('.what').appendChild(el('div','typed','On your own? Press Test the machine to hear it work.'));grow(()=>put(ent));firstRunLine=ent}
+syncMirror();
+requestAnimationFrame(()=>toBottom(false));
+
+/* arriving back from the settings page: finish the turn */
+try{if(sessionStorage.getItem('bombechat-turn')==='back-to-front'&&!RM.matches){sessionStorage.removeItem('bombechat-turn');
+  document.body.animate([{transform:'perspective(1600px) rotateY(-80deg)',opacity:0},{transform:'perspective(1600px) rotateY(0deg)',opacity:1}],{duration:520,easing:'cubic-bezier(.2,.8,.3,1)'})}}catch(e){}
+
+/* ---------- the drum bank in 3D ----------
+   Same machine as the back panel: built from machine-kit.js. The SVG drums above
+   stay as the model and the fallback: setLetter() records each turn (from, to,
+   start time) and the window letters, and this scene draws them. */
+const bank=document.getElementById('bank');
+try{await build()}catch(e){console.warn('drum bank stays flat:',e.message);window.__bank.ready=true}
+
+async function build(){
+  const { createMachine, engravingFace, engravingFont, engraveText } = await import('./machine-kit.js');
+  await engravingFace();
+  const host=document.createElement('div');host.className='bank3d';host.setAttribute('aria-hidden','true');bank.prepend(host);
+  const K=createMachine(host,{still:STILL,background:'#151614'});
+  const {THREE,renderer,scene,camera,M,tex,key,rim}=K;
+  bank.classList.add('gl');window.__bank.gl=true;
+  camera.fov=19;
+  key.position.set(-6,9,22);key.intensity=2.7;
+  Object.assign(key.shadow.camera,{left:-14,right:14,top:7,bottom:-7,near:1,far:60});key.shadow.camera.updateProjectionMatrix();
+  rim.intensity=.45;
+
+  /* ---- shared parts ---- */
+  const R=.46;// drum radius in world units; one unit = drum width / 0.92
+  const ringTex=K.canvasTex(1024,1024,(k,w)=>{const c=w/2;
+    const g=k.createRadialGradient(c*.8,c*.6,c*.1,c,c,c);g.addColorStop(0,'#2e2a26');g.addColorStop(.65,'#161412');g.addColorStop(1,'#0a0908');k.fillStyle=g;k.fillRect(0,0,w,w);
+    k.translate(c,c);k.fillStyle='#d8d0ba';k.font=engravingFont(90);k.textAlign='center';k.textBaseline='middle';
+    for(let i=0;i<26;i++){k.save();k.rotate(i*2*Math.PI/26);engraveText(k,'ABCDEFGHIJKLMNOPQRSTUVWXYZ'[i],0,-c*.735,90,.06);k.restore()}
+    k.strokeStyle='rgba(220,214,200,.28)';k.lineWidth=3;for(let i=0;i<26;i++){k.save();k.rotate((i+.5)*2*Math.PI/26);k.beginPath();k.moveTo(0,-c*.97);k.lineTo(0,-c*.88);k.stroke();k.restore()}
+    k.strokeStyle='rgba(220,214,200,.1)';k.lineWidth=2;k.beginPath();k.arc(0,0,c*.5,0,7);k.stroke();
+    for(let i=0;i<4;i++){k.save();k.rotate(Math.PI/4+i*Math.PI/2);k.fillStyle='#070605';k.beginPath();k.arc(0,-c*.37,c*.045,0,7);k.fill();k.strokeStyle='rgba(220,214,200,.2)';k.stroke();k.restore()}});
+  ringTex.wrapS=ringTex.wrapT=THREE.ClampToEdgeWrapping;ringTex.colorSpace=THREE.SRGBColorSpace;ringTex.anisotropy=16;
+  const faceMat=new THREE.MeshStandardMaterial({map:ringTex,roughness:.55,metalness:.05});
+  // rim: a turned profile with a bevel on both edges
+  const rimGeo=(()=>{const p=[[.395,0],[.445,0],[.462,.012],[.47,.04],[.47,.17],[.462,.2],[.445,.212],[.395,.212]].map(([r,y])=>new THREE.Vector2(r,y));const g=new THREE.LatheGeometry(p,96);g.rotateX(Math.PI/2);return g})();
+  const faceGeo=new THREE.CircleGeometry(.402,96);
+  const hubGeo=(()=>{const p=[[0,.0],[.075,0],[.08,.01],[.074,.034],[.05,.052],[0,.058]].map(([r,y])=>new THREE.Vector2(r,y));const g=new THREE.LatheGeometry(p,48);g.rotateX(Math.PI/2);return g})();
+  const slotGeo=new THREE.BoxGeometry(.1,.012,.02);
+  const shaftGeo=new THREE.CylinderGeometry(.03,.03,.2,16);shaftGeo.rotateX(Math.PI/2);
+  const rimMats={};const rimMat=c=>rimMats[c]||(rimMats[c]=new THREE.MeshPhysicalMaterial({color:new THREE.Color(c).multiplyScalar(.82),roughness:.46,metalness:.05,clearcoat:.45,clearcoatRoughness:.4,bumpMap:tex.wrinkle,bumpScale:.15}));
+  const tabMatBase={roughness:.45,metalness:0};
+  const pointerGeo=(()=>{const s=new THREE.Shape();s.moveTo(-.045,0);s.lineTo(.045,0);s.lineTo(0,-.07);s.closePath();return new THREE.ExtrudeGeometry(s,{depth:.02,bevelEnabled:true,bevelThickness:.006,bevelSize:.006,bevelSegments:2})})();
+  const railMat=new THREE.MeshStandardMaterial({color:'#8e8b84',roughness:.3,metalness:1});
+
+  /* ---- panel ---- */
+  const panel=new THREE.Mesh(new THREE.BoxGeometry(1,1,.3),M.panel);panel.position.z=-.36;panel.receiveShadow=true;scene.add(panel);
+
+  /* ---- drums ---- */
+  const drums=cells.map((cell,i)=>{const r=Math.floor(i/12),c=i%12;
+    const g=new THREE.Group();scene.add(g);
+    const rimM=new THREE.Mesh(rimGeo,rimMat(RIMS[(c*5+r*3)%12]));rimM.castShadow=true;rimM.receiveShadow=true;
+    const rot=new THREE.Group();
+    const face=new THREE.Mesh(faceGeo,faceMat);face.position.z=.19;face.receiveShadow=true;
+    const hub=new THREE.Mesh(hubGeo,M.steel);hub.position.z=.192;hub.castShadow=true;
+    const slot=new THREE.Mesh(slotGeo,M.hole);slot.position.z=.247;slot.rotation.z=-.5;
+    rot.add(rimM,face,hub,slot);g.add(rot);
+    const shaft=new THREE.Mesh(shaftGeo,M.steel);shaft.position.z=-.08;g.add(shaft);
+    // reading window: cream enamel tab, fixed, with the letter
+    const cv=document.createElement('canvas');cv.width=cv.height=128;const wt=new THREE.CanvasTexture(cv);wt.colorSpace=THREE.SRGBColorSpace;wt.anisotropy=8;
+    const tab=new THREE.Mesh(new THREE.BoxGeometry(.26,.25,.03),[new THREE.MeshStandardMaterial({color:'#e9e1cb',...tabMatBase}),new THREE.MeshStandardMaterial({color:'#e9e1cb',...tabMatBase}),new THREE.MeshStandardMaterial({color:'#e9e1cb',...tabMatBase}),new THREE.MeshStandardMaterial({color:'#e9e1cb',...tabMatBase}),new THREE.MeshStandardMaterial({map:wt,...tabMatBase}),new THREE.MeshStandardMaterial({color:'#e9e1cb'})]);
+    tab.position.set(0,R*.645,.225);tab.castShadow=true;g.add(tab);
+    const ptr=new THREE.Mesh(pointerGeo,M.brass);ptr.position.set(0,R+.1,-.18);ptr.scale.setScalar(1.35);ptr.castShadow=true;g.add(ptr);
+    return {cell,g,rot,cv,wt,last:'',r,c}});
+  function paintWindow(d){const wl=d.cell.wl;const ch=wl.textContent,fill=wl.getAttribute('fill')||'#15130f',op=+(wl.getAttribute('opacity')||1)*(+wl.style.opacity===0&&wl.style.opacity!==''?0:1);
+    const sig=ch+fill+op;if(sig===d.last)return false;d.last=sig;
+    const k=d.cv.getContext('2d');k.fillStyle='#ece4cd';k.fillRect(0,0,128,128);const sh=k.createLinearGradient(0,0,0,128);sh.addColorStop(0,'rgba(0,0,0,.09)');sh.addColorStop(.25,'rgba(0,0,0,0)');k.fillStyle=sh;k.fillRect(0,0,128,128);
+    k.globalAlpha=op;k.fillStyle=fill;k.font=engravingFont(98);k.textAlign='center';k.textBaseline='middle';engraveText(k,ch,64,69,98,.085);k.globalAlpha=1;
+    k.strokeStyle='rgba(0,0,0,.35)';k.lineWidth=4;k.strokeRect(2,2,124,124);d.wt.needsUpdate=true;return true}
+
+  /* ---- rails, plates, numbers ---- */
+  const rails=[];for(let i=0;i<5;i++){const m=new THREE.Mesh(new THREE.CylinderGeometry(i<3?.05:.035,i<3?.05:.035,1,24),railMat);m.rotation.z=Math.PI/2;m.castShadow=true;m.receiveShadow=true;scene.add(m);rails.push(m)}
+  const plates=['Plain','Heard','Key'].map(t=>K.plate(t.toUpperCase(),0,0,{h:.2,size:56,pad:.7}));
+  // slotted steel screws, as on every other plate (the CSS plates and the back panel's bolts)
+  const screwGeo=new THREE.CylinderGeometry(.035,.035,.025,20);screwGeo.rotateX(Math.PI/2);const screwSlot=new THREE.BoxGeometry(.052,.009,.008);
+  const SLOTS=[.62,-.48,.85,-.7,.4,-.9];
+  const plateScrews=plates.map((_,r)=>[0,1].map(i=>{const g=new THREE.Group();const h=new THREE.Mesh(screwGeo,M.steel);h.castShadow=true;const s=new THREE.Mesh(screwSlot,M.hole);s.position.z=.0135;s.rotation.z=SLOTS[r*2+i];g.add(h,s);scene.add(g);return g}));
+  const nums=[...Array(12)].map((_,i)=>K.engrave(String(i+1),0,0,.13,'#b8b09a'));
+
+  /* ---- place everything from the HTML layout ---- */
+  let U=1,BW=1,BH=1;
+  const toWorld=(px,py)=>new THREE.Vector3((px-BW/2)/U,-(py-BH/2)/U,0);
+  function layout(){const br=bank.getBoundingClientRect();BW=br.width;BH=br.height;if(!BW||!BH)return;
+    const dr=cells[0].el.getBoundingClientRect().width;U=dr/.92;
+    renderer.setSize(BW,BH,false);camera.aspect=BW/BH;
+    const D=(BH/U/2)/Math.tan(camera.fov*Math.PI/360);baseD=D;camera.updateProjectionMatrix();composer.setSize(BW,BH);
+    panel.scale.set(BW/U+.4,BH/U+.4,1);
+    drums.forEach(d=>{const r=d.cell.el.getBoundingClientRect();const p=toWorld(r.left-br.left+r.width/2,r.top-br.top+r.width*.08+r.width/2);d.g.position.copy(p)});
+    const rowY=[0,1,2].map(r=>drums[r*12].g.position.y);const x0=drums[0].g.position.x,x1=drums[11].g.position.x;
+    // shafts run behind each row, rails between rows
+    [0,1,2].forEach(r=>{const m=rails[r];m.position.set((x0+x1)/2,rowY[r],-.16);m.scale.set(1,(x1-x0)+1.2,1)});
+    [0,1].forEach(i=>{const m=rails[3+i];const y=(rowY[i]+rowY[i+1])/2;m.position.set((x0+x1)/2,y-.02,-.05);m.scale.set(1,(x1-x0)+1.2,1)});
+    const lab=[...document.querySelectorAll('.rowlab')];
+    const ps=(21/U)/.2;plates.forEach((p,r)=>{p.scale.set(ps,ps,1);const lr=lab[r].getBoundingClientRect();const w=p.geometry.parameters.width*ps;const pos=toWorld(lr.left-br.left+4,0);p.position.set(pos.x+w/2,rowY[r],-.18);
+      // the screws sit in the plate's ends, 8 px in, as the printed plates have them
+      plateScrews[r][0].position.set(p.position.x-w/2+8/U,rowY[r],-.155);plateScrews[r][1].position.set(p.position.x+w/2-8/U,rowY[r],-.155);plateScrews[r].forEach(m=>m.scale.setScalar((6/U)/.07))});
+    const cn=[...document.querySelectorAll('.colno')];nums.forEach((n,i)=>{const r=cn[i].getBoundingClientRect();const p=toWorld(r.left-br.left+r.width/2,r.top-br.top+r.height/2);n.position.set(p.x,p.y+.07,-.205);n.scale.setScalar(Math.max(1,(13/U)/.13))});
+    renderer.shadowMap.needsUpdate=true;dirty=true}
+  let baseD=10,dirty=true;
+  /* ---- lens ---- */
+  const composer=K.makeComposer({ao:!Q.has('noao')});
+  new ResizeObserver(layout).observe(bank);addEventListener('resize',layout);
+  document.fonts&&document.fonts.ready.then(()=>{drums.forEach(d=>d.last='');layout()});
+  let par={x:0,y:0},parT={x:0,y:0};
+  bank.addEventListener('pointermove',e=>{if(RM.matches||STILL)return;const r=bank.getBoundingClientRect();parT.x=(e.clientX-r.left)/r.width-.5;parT.y=(e.clientY-r.top)/r.height-.5});
+  bank.addEventListener('pointerleave',()=>{parT.x=parT.y=0});
+
+  // the same curve as the CSS turn: cubic-bezier(.2,.85,.25,1.04) over .95 s
+  function bez(x){const cx=3*.2,bx=3*(.25-.2)-cx,ax=1-cx-bx,cy=3*.85,by=3*(1.04-.85)-cy,ay=1-cy-by;let t=x;
+    for(let i=0;i<6;i++){const fx=((ax*t+bx)*t+cx)*t-x,d=(3*ax*t+2*bx)*t+cx;if(Math.abs(fx)<1e-5)break;t-=fx/d}return((ay*t+by)*t+cy)*t}
+  const DUR=950;let last=performance.now(),frames=0;
+  function frame(now){const dt=Math.min(.05,(now-last)/1000);last=now;let moving=false;
+    for(const d of drums){const c=d.cell;let ang=c.angle;
+      if(!c.snap){const k=(now-c.t0)/DUR;if(k<1){ang=c.from+(c.angle-c.from)*bez(Math.max(0,k));moving=true}}
+      const z=-ang*Math.PI/180;if(d.rot.rotation.z!==z){d.rot.rotation.z=z;dirty=true}
+      if(paintWindow(d))dirty=true}
+    if(moving){renderer.shadowMap.needsUpdate=true;dirty=true}
+    const k=1-Math.exp(-dt*4);par.x+=(parT.x-par.x)*k;par.y+=(parT.y-par.y)*k;
+    const want=new THREE.Vector3(par.x*.6,-par.y*.35,baseD);if(camera.position.distanceTo(want)>1e-4){camera.position.copy(want);camera.lookAt(par.x*.15,-par.y*.08,0);dirty=true}
+    if(dirty){composer.render();dirty=false}
+    if(++frames===3){window.__bank.ready=true}
+    syncMirror();requestAnimationFrame(frame)}
+  layout();requestAnimationFrame(frame);
+}
+</script>
+</body>
+</html>

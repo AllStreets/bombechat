@@ -5,6 +5,19 @@ on:
   pull_request:
 
 jobs:
+  # bluetooth/ (the Bluetooth edition) must be exactly what the sync script
+  # writes from the root and bluetooth/edition/, and the script is tested.
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sync script tests
+        run: bash tools/test-sync-bluetooth.sh
+
+      - name: bluetooth/ is in sync with the root
+        run: bash tools/sync-bluetooth.sh --check
+
   rust:
     runs-on: ubuntu-latest
     steps:
@@ -78,6 +91,17 @@ jobs:
             exit 1
           fi
 
+      # The Bluetooth edition is its own workspace, built into bluetooth/target.
+      - name: Cache cargo (Bluetooth edition)
+        uses: actions/cache@v4
+        with:
+          path: bluetooth/target
+          key: ${{ runner.os }}-cargo-bluetooth-${{ hashFiles('bluetooth/**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-bluetooth-
+
+      - name: cargo test --workspace (Bluetooth edition)
+        run: cd bluetooth && cargo test --workspace
+
   # Note: `npm run check:front` and `npm run check:settings` need a GPU-backed
   # Chrome to render the WebGL/Metal interface and are not run here; see the
-  # README "Checks" section. They stay a local gate.
+  # README "Checks" section. They stay a local gate, in bluetooth/ too.

@@ -145,6 +145,12 @@ npm run serve
 
 Then open http://localhost:4810/app/ui/bombechat.html.
 
+## Two editions
+
+The root of this repository is the airgapped build. `bluetooth/` is the standard build: the same project plus Bluetooth, buildable on its own (`cd bluetooth`, then the same commands). Its app is `app.bombechat.standard`, so its store and Keychain item never mix with the airgapped app's, and its plates say "standard build".
+
+`bluetooth/` is generated. `tools/sync-bluetooth.sh` copies everything the root tracks (apart from `docs/`, `mockups/`, `.github/`, this README and the script itself) into it, applies the small patches in `bluetooth/edition/patches/` and lays `bluetooth/edition/files/` over the top. Fix things at the root and run the script; CI fails if `bluetooth/` doesn't match what it writes, so the two editions differ only where `bluetooth/edition/` says they do. Nothing in the root project changes for Bluetooth, and the airgapped check still runs on it alone.
+
 ## Checks
 
 ```sh
