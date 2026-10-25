@@ -211,11 +211,11 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
 
 /* control panel */
 .panel{grid-area:panel;position:relative;display:grid;grid-template-rows:auto auto auto;align-content:space-between;gap:14px;min-height:0}
-.mods{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(104px,.78fr);gap:10px}
+.mods{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(100px,.66fr);gap:10px}
 .mod{display:flex;flex-direction:column;align-items:center;gap:6px;padding:10px 4px 12px;border-radius:2px;background:linear-gradient(#1f201d,#181917);box-shadow:inset 0 0 0 1px #000,inset 0 1px 0 rgba(255,255,255,.04)}
 .knob{all:unset;box-sizing:border-box;position:relative;display:block;width:100%;cursor:pointer;border-radius:6px}
 .knob svg{display:block;width:100%;height:auto;overflow:visible}
-.knob{aspect-ratio:132/96}
+.knob{aspect-ratio:138/96}
 .knob .cap{transition:transform .32s cubic-bezier(.3,1.5,.5,1)}
 .knob:hover .grip{fill:rgba(255,255,255,.08)}
 .knob:focus-visible{outline:1.5px solid var(--amber);outline-offset:2px}
@@ -501,23 +501,23 @@ bridge.on('channel',s=>{if(s.channel!=='sound')return;Drum.receiving=s.state==='
 
 /* ---------- channels ---------- */
 // Sentence case, set in the engraving face's small capitals. Three detents 120 degrees
-// apart: Off at eight o'clock, Listen at four, and the longest, Listen and send, at
-// twelve, where there is room to engrave it on two lines. Ticks sit inside the words.
+// apart, turning clockwise: Off at eight o'clock, Listen at twelve, Listen and send at
+// four. The longest is engraved on two lines, set right, its second line running in
+// under the knob's shadow. Ticks sit inside the words.
 const KNOBS={k1:{setting:'sound',labels:['Off','Listen','Listen and send'],pos:2,name:'Sound',say:['off','listening only, never makes a sound','listening and sending']},
              k2:{setting:'light',labels:['Off','Read','Read and flash'],pos:0,name:'Light',say:['off','reading the camera','reading the camera and flashing replies']}};
-// the turn runs Off, Listen, Listen and send, round through six o'clock
-const ANG=[-120,-240,-360];
+const ANG=[-120,0,120];
 // where each position's words sit, in the knob's own units: centre x, first baseline y, whether to break after the first word
-const PLACE=[{x:-41,y:29},{x:41,y:29},{x:0,y:-49.5,two:true}];
+const PLACE=[{x:-44,y:29.5},{x:0,y:-36},{x:68,y:29.5,two:true,anchor:'end'}];
 const LINE=12.6;
 function engraving(t,i,fill){const P=PLACE[i],w=t.split(' ');const lines=P.two&&w.length>1?[w[0],w.slice(1).join(' ')]:[t];
-  return lines.map((l,j)=>`<text x="${P.x}" y="${P.y+j*LINE}" font-family="${ENGR}" font-size="13.4" letter-spacing=".2" fill="${fill}" stroke="${fill}" stroke-width=".28" text-anchor="middle">${l}</text>`).join('')}
+  return lines.map((l,j)=>`<text x="${P.x}" y="${P.y+j*LINE}" font-family="${ENGR}" font-size="13.6" letter-spacing=".2" fill="${fill}" stroke="${fill}" stroke-width=".28" text-anchor="${P.anchor||'middle'}">${l}</text>`).join('')}
 function drawKnob(id){const el=document.getElementById(id),k=KNOBS[id];let fl='';
   for(let i=0;i<24;i++)fl+=`<path class="grip" transform="rotate(${i*15})" d="M-2 -24.5 Q0 -26.8 2 -24.5 L1.4 -18.5 L-1.4 -18.5Z" fill="rgba(255,255,255,.055)"/>`;
   let marks='';k.labels.forEach((t,i)=>{const r=ANG[i]*Math.PI/180,on=i===k.pos;
     const lx=Math.sin(r)*28.5,ly=-Math.cos(r)*28.5,mx=Math.sin(r)*32.5,my=-Math.cos(r)*32.5;
     marks+=`<line class="tick" x1="${lx}" y1="${ly}" x2="${mx}" y2="${my}" stroke="${on?'#e8e1cf':'#6d685c'}" stroke-width="1.2"/>`+engraving(t,i,on?'#f1ebd9':'#8a8476')});
-  el.innerHTML=`<svg viewBox="-66 -63 132 96" aria-hidden="true"><defs><radialGradient id="kb${id}" cx="40%" cy="30%" r="80%"><stop offset="0" stop-color="#3b3935"/><stop offset=".6" stop-color="#1a1917"/><stop offset="1" stop-color="#0a0a09"/></radialGradient></defs>
+  el.innerHTML=`<svg viewBox="-69 -51 138 96" aria-hidden="true"><defs><radialGradient id="kb${id}" cx="40%" cy="30%" r="80%"><stop offset="0" stop-color="#3b3935"/><stop offset=".6" stop-color="#1a1917"/><stop offset="1" stop-color="#0a0a09"/></radialGradient></defs>
   ${marks}<circle class="body" r="26" cy="3" fill="#000" opacity=".6"/><circle r="25.5" fill="url(#kb${id})"/>
   <g class="cap" style="transform:rotate(${ANG[k.pos]}deg)">${fl}<circle r="17" fill="#1d1c1a" stroke="rgba(0,0,0,.75)"/><circle r="17" fill="none" stroke="rgba(255,255,255,.07)" transform="translate(0,-.7)"/><rect x="-1.5" y="-24" width="3" height="12.5" rx="1.1" fill="#e9e3d2"/></g></svg>`;
   el.setAttribute('aria-valuenow',k.pos);el.setAttribute('aria-valuetext',k.labels[k.pos].toLowerCase());el.title=`${k.name}: ${k.say[k.pos]}. Click or use the arrow keys to turn.`}
@@ -563,6 +563,7 @@ bridge.on('roomDb',db=>{room=db;vuNeedle(room)});
    status line are drawn from those alone. */
 const outboxEl=document.getElementById('outbox');
 const outbox=new Map();// id -> {text,public,state,ent,how,leaving}
+const finished=new Set();// ids already sent, in case the send's own reply comes back later than the news
 const esc=s=>s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 function outItem(id){let it=outbox.get(id);if(!it){it={id,text:'',public:false,state:null,ent:null,how:'sound',leaving:false};outbox.set(id,it)}return it}
 function drawOutbox(){const q=[...outbox.values()].filter(m=>m.text&&(m.state==='waiting'||m.leaving));
@@ -575,7 +576,7 @@ function status(it){const st=it.ent&&it.ent.querySelector('.state');if(!st)retur
 function setOut(it,state){const was=it.state;it.state=state;status(it);
   if(state==='playing'&&was==='waiting'&&!RM.matches){it.leaving=true;const slip=outboxEl.querySelector(`[data-id="${it.id}"]`);if(slip)slip.classList.add('gone');setTimeout(()=>{it.leaving=false;drawOutbox()},460)}
   else drawOutbox();
-  if(state==='sent')outbox.delete(it.id)}
+  if(state==='sent'){outbox.delete(it.id);finished.add(it.id);setTimeout(()=>finished.delete(it.id),60000)}}
 bridge.on('outbox',o=>{const it=outItem(o.id);if(o.text&&!it.text){it.text=o.text;it.public=!!o.public}setOut(it,o.state)});
 const nowtime=document.getElementById('nowtime');
 const tick=()=>{nowtime.firstChild.nodeValue=hhmm(bridge.now())};
@@ -593,7 +594,9 @@ function send(how){const text=reply.value.trim();
   const ent=entry(bridge.now(),how);ent.classList.add('mine');const what=ent.querySelector('.what');what.append(el('div','typed',text),el('div','state'));
   grow(()=>log.appendChild(ent),true);
   reply.value='';fit();
-  bridge.send([CONTACT.id],text).then(id=>{sent.set(id,{ent,how});const it=outItem(id);Object.assign(it,{text,ent,how});
+  bridge.send([CONTACT.id],text).then(id=>{sent.set(id,{ent,how});
+    if(finished.has(id)){status({state:'sent',ent,how});tick();return}
+    const it=outItem(id);Object.assign(it,{text,ent,how});
     if(it.state)setOut(it,it.state);tick()})}
 
 /* ---------- key check menu ---------- */
