@@ -291,6 +291,9 @@ fn kept_device(path: &Path, pocket: &Pocket) -> Shared {
     Shared::new(Box::new(device(path).with_keeper(Box::new(pocket.clone()))))
 }
 
+// Lock Off keeps the store key in the macOS Keychain; elsewhere the lock
+// stays on (see the_lock_stays_on_where_there_is_no_keychain).
+#[cfg(target_os = "macos")]
 #[test]
 fn with_the_lock_off_the_next_launch_opens_without_asking() {
     let dir = TempDir::new().unwrap();
@@ -327,6 +330,9 @@ fn with_the_lock_off_the_next_launch_opens_without_asking() {
     assert_eq!(commands::contacts(&asks).unwrap_err(), "locked");
 }
 
+// Lock Off keeps the store key in the macOS Keychain; elsewhere the lock
+// stays on (see the_lock_stays_on_where_there_is_no_keychain).
+#[cfg(target_os = "macos")]
 #[test]
 fn without_the_keeper_the_lock_off_still_asks() {
     let dir = TempDir::new().unwrap();
@@ -344,6 +350,9 @@ fn without_the_keeper_the_lock_off_still_asks() {
     assert!(pocket.holds_a_key(), "kept again, since the lock is off");
 }
 
+// Lock Off keeps the store key in the macOS Keychain; elsewhere the lock
+// stays on (see the_lock_stays_on_where_there_is_no_keychain).
+#[cfg(target_os = "macos")]
 #[test]
 fn a_kept_key_that_no_longer_opens_the_store_is_let_go_and_the_passphrase_asked() {
     let dir = TempDir::new().unwrap();
@@ -477,6 +486,9 @@ fn a_key_left_in_the_keychain_goes_when_the_store_opens_with_the_lock_on() {
     assert!(!pocket.holds_a_key(), "the lock is on: nothing left behind");
 }
 
+// Lock Off keeps the store key in the macOS Keychain; elsewhere the lock
+// stays on (see the_lock_stays_on_where_there_is_no_keychain).
+#[cfg(target_os = "macos")]
 #[test]
 fn a_keychain_that_will_not_keep_the_key_leaves_the_lock_on_and_says_why() {
     let dir = TempDir::new().unwrap();
@@ -519,6 +531,9 @@ fn a_keychain_that_will_not_keep_the_key_leaves_the_lock_on_and_says_why() {
     );
 }
 
+// Lock Off keeps the store key in the macOS Keychain; elsewhere the lock
+// stays on (see the_lock_stays_on_where_there_is_no_keychain).
+#[cfg(target_os = "macos")]
 #[test]
 fn a_kept_key_survives_a_store_that_could_not_be_read_just_then() {
     let dir = TempDir::new().unwrap();
@@ -541,6 +556,34 @@ fn a_kept_key_survives_a_store_that_could_not_be_read_just_then() {
         commands::contacts(&again),
         Ok(vec![]),
         "opens without asking again"
+    );
+}
+
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn the_lock_stays_on_where_there_is_no_keychain() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("bombechat.db");
+    let pocket = Pocket::default();
+    let first = kept_device(&path, &pocket);
+    commands::unlock(&first, "correct horse".into(), Some("Ana".into())).unwrap();
+    assert_eq!(
+        commands::set_setting(&first, "lock".into(), 0),
+        Err("The Keychain is only on macOS, so the lock stays on".to_string())
+    );
+    assert_eq!(commands::settings(&first)["lock"], 1, "still on");
+    assert!(!pocket.holds_a_key(), "nothing kept");
+    assert_eq!(
+        serde_json::to_value(&commands::setting_notes(&first)["lock"]).unwrap(),
+        serde_json::json!({ "note": "Keychain only on macOS", "value": 1 })
+    );
+    drop(first);
+
+    let later = kept_device(&path, &pocket);
+    assert_eq!(
+        commands::contacts(&later).unwrap_err(),
+        "locked",
+        "the passphrase is asked at every launch"
     );
 }
 

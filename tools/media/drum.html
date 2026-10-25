@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>One drum</title>
+<!-- One drum off the bank, face on, for the logo. Built from the app's own
+     machine-kit and the same parts as the drum bank in app/ui/bombechat.html.
+     Driven by tools/media.cjs: ?rim=<hex>&letter=B&turn=<letters> -->
+<link rel="stylesheet" href="/app/ui/fonts/fonts.css">
+<style>html,body{margin:0;background:#141311}#v{width:512px;height:512px}</style>
+<script type="importmap">
+{ "imports": {
+  "three": "/app/ui/vendor/three/build/three.module.js",
+  "three/addons/": "/app/ui/vendor/three/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="v"></div>
+<script type="module">
+import { createMachine, engravingFace, engravingFont, engraveText } from '/app/ui/machine-kit.js';
+const Q = new URLSearchParams(location.search);
+const RIM = '#' + (Q.get('rim') || '7a2a22'), LETTER = Q.get('letter') || 'B', TURN = +(Q.get('turn') || 1);
+const BG = '#' + (Q.get('bg') || '141311');
+// The window letter in the engraving face with the ring's own hairline. The bank paints its windows
+// at .085 on a 128 px texture that shows about 40 px tall, where that reads as this; drawn as large
+// as the logo draws it, .085 swells Marcellus's flared strokes into a slab.
+const WEIGHT = +(Q.get('weight') || .035);
+await engravingFace();
+const host = document.getElementById('v');
+const K = createMachine(host, { still: true, background: BG });
+const { THREE, renderer, scene, camera, M, tex, key, rim } = K;
+renderer.setSize(512, 512, false);
+camera.fov = 9; camera.aspect = 1;
+const D = (.5 / Math.tan(camera.fov * Math.PI / 360)) * 1.02;
+camera.position.set(0, 0, D); camera.lookAt(0, 0, 0); camera.near = D - 2; camera.far = D + 2; camera.updateProjectionMatrix();
+key.position.set(-6, 9, 22); key.intensity = 2.7;
+Object.assign(key.shadow.camera, { left: -1, right: 1, top: 1, bottom: -1, near: 1, far: 60 }); key.shadow.camera.updateProjectionMatrix();
+key.shadow.radius = 6;
+rim.intensity = .45;
+
+// the parts, as the drum bank cuts them
+const R = .46;
+const ringTex = K.canvasTex(2048, 2048, (k, w) => { const c = w / 2, s = w / 1024;
+  const g = k.createRadialGradient(c * .8, c * .6, c * .1, c, c, c); g.addColorStop(0, '#2e2a26'); g.addColorStop(.65, '#161412'); g.addColorStop(1, '#0a0908'); k.fillStyle = g; k.fillRect(0, 0, w, w);
+  k.translate(c, c); k.fillStyle = '#d8d0ba'; k.font = engravingFont(90 * s); k.textAlign = 'center'; k.textBaseline = 'middle';
+  for (let i = 0; i < 26; i++) { k.save(); k.rotate(i * 2 * Math.PI / 26); engraveText(k, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'[i], 0, -c * .735, 90 * s, .06); k.restore(); }
+  k.strokeStyle = 'rgba(220,214,200,.28)'; k.lineWidth = 3 * s; for (let i = 0; i < 26; i++) { k.save(); k.rotate((i + .5) * 2 * Math.PI / 26); k.beginPath(); k.moveTo(0, -c * .97); k.lineTo(0, -c * .88); k.stroke(); k.restore(); }
+  k.strokeStyle = 'rgba(220,214,200,.1)'; k.lineWidth = 2 * s; k.beginPath(); k.arc(0, 0, c * .5, 0, 7); k.stroke();
+  for (let i = 0; i < 4; i++) { k.save(); k.rotate(Math.PI / 4 + i * Math.PI / 2); k.fillStyle = '#070605'; k.beginPath(); k.arc(0, -c * .37, c * .045, 0, 7); k.fill(); k.strokeStyle = 'rgba(220,214,200,.2)'; k.stroke(); k.restore(); }
+});
+ringTex.wrapS = ringTex.wrapT = THREE.ClampToEdgeWrapping; ringTex.colorSpace = THREE.SRGBColorSpace; ringTex.anisotropy = 16;
+const faceMat = new THREE.MeshStandardMaterial({ map: ringTex, roughness: .55, metalness: .05 });
+const rimGeo = (() => { const p = [[.395, 0], [.445, 0], [.462, .012], [.47, .04], [.47, .17], [.462, .2], [.445, .212], [.395, .212]].map(([r, y]) => new THREE.Vector2(r, y)); const g = new THREE.LatheGeometry(p, 192); g.rotateX(Math.PI / 2); return g; })();
+const faceGeo = new THREE.CircleGeometry(.402, 192);
+const hubGeo = (() => { const p = [[0, 0], [.075, 0], [.08, .01], [.074, .034], [.05, .052], [0, .058]].map(([r, y]) => new THREE.Vector2(r, y)); const g = new THREE.LatheGeometry(p, 96); g.rotateX(Math.PI / 2); return g; })();
+const slotGeo = new THREE.BoxGeometry(.1, .012, .02);
+const rimMat = new THREE.MeshPhysicalMaterial({ color: new THREE.Color(RIM).multiplyScalar(.82), roughness: .46, metalness: .05, clearcoat: .45, clearcoatRoughness: .4, bumpMap: tex.wrinkle, bumpScale: .15 });
+
+const panel = new THREE.Mesh(new THREE.BoxGeometry(3, 3, .3), M.panel); panel.position.z = -.36; panel.receiveShadow = true;
+if (Q.has('panel')) scene.add(panel);
+const g = new THREE.Group(); scene.add(g);
+const rot = new THREE.Group();
+const rimM = new THREE.Mesh(rimGeo, rimMat); rimM.castShadow = rimM.receiveShadow = true;
+const face = new THREE.Mesh(faceGeo, faceMat); face.position.z = .19; face.receiveShadow = true;
+const hub = new THREE.Mesh(hubGeo, M.brass); hub.position.z = .192; hub.castShadow = true;
+const slot = new THREE.Mesh(slotGeo, M.hole); slot.position.z = .247; slot.rotation.z = -1.0;
+rot.add(rimM, face, hub, slot); g.add(rot);
+// the letter ring turned so the window letter's own engraving sits under it
+rot.rotation.z = TURN * 2 * Math.PI / 26;
+const cv = document.createElement('canvas'); cv.width = cv.height = 512; const wt = new THREE.CanvasTexture(cv); wt.colorSpace = THREE.SRGBColorSpace; wt.anisotropy = 16;
+{ const k = cv.getContext('2d'); k.scale(4, 4); k.fillStyle = '#ece4cd'; k.fillRect(0, 0, 128, 128);
+  const sh = k.createLinearGradient(0, 0, 0, 128); sh.addColorStop(0, 'rgba(0,0,0,.09)'); sh.addColorStop(.25, 'rgba(0,0,0,0)'); k.fillStyle = sh; k.fillRect(0, 0, 128, 128);
+  k.fillStyle = '#15130f'; k.font = engravingFont(98); k.textAlign = 'center'; k.textBaseline = 'middle'; engraveText(k, LETTER, 64, 69, 98, WEIGHT);
+  k.strokeStyle = 'rgba(0,0,0,.35)'; k.lineWidth = 4; k.strokeRect(2, 2, 124, 124); }
+const tabMat = { roughness: .45, metalness: 0 };
+const cream = () => new THREE.MeshStandardMaterial({ color: '#e9e1cb', ...tabMat });
+const tab = new THREE.Mesh(new THREE.BoxGeometry(.26, .25, .03), [cream(), cream(), cream(), cream(), new THREE.MeshStandardMaterial({ map: wt, ...tabMat }), cream()]);
+tab.position.set(0, R * .645, .225); tab.castShadow = true; g.add(tab);
+
+const composer = K.makeComposer({ ao: true });
+composer.setSize(512, 512);
+renderer.shadowMap.needsUpdate = true;
+composer.render(); composer.render();
+// the rim's outer edge, in pixels from the centre of a 512 px view, for the mask
+const edge = new THREE.Vector3(.47, 0, .17).project(camera);
+window.__drum = { ready: true, edge: edge.x * 256 };
+</script>
+</body>
+</html>
