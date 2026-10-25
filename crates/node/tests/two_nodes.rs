@@ -207,8 +207,8 @@ fn pair_then_message_then_receipt() {
     );
     let mut now = 1_000;
 
-    a.node.start_pairing("Ana");
-    b.node.start_pairing("Ben");
+    a.node.start_pairing("Ana").unwrap();
+    b.node.start_pairing("Ben").unwrap();
     run(&mut [&mut a, &mut b], &mut now, 200, |p| {
         offer(p[0]).is_some() && offer(p[1]).is_some()
     });

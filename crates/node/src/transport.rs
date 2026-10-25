@@ -53,4 +53,16 @@ pub trait Transport: Send {
     fn rate(&self) -> Option<f32> {
         None
     }
+
+    /// Whether to listen at all. Off, what the carrier picks up is let go
+    /// unheard (not kept for later). On by default; a carrier that cannot
+    /// stop listening ignores this, and the node drops what it hears.
+    fn set_listening(&mut self, _on: bool) {}
+
+    /// Whether frames may go out. Off, queued frames wait (they are not
+    /// dropped) until it is on again. On by default.
+    fn set_sending(&mut self, _on: bool) {}
+
+    /// For sound: play only while the room is quieter than `db`.
+    fn set_send_under(&mut self, _db: f32) {}
 }

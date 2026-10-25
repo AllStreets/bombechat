@@ -41,6 +41,12 @@ enum Input {
 /// afterwards. Errors a running stream reports later (via
 /// [`AudioIo::take_error`]) are reported the same way.
 ///
+/// With [`set_listening`](Transport::set_listening) off, the microphone
+/// stays open but what it hears is let go without being demodulated (so
+/// no frames and no room level); with
+/// [`set_sending`](Transport::set_sending) off the queue waits and nothing
+/// plays.
+///
 /// Every frame handed to [`send`](Transport::send) is queued in the
 /// [`QuietGate`] (as bytes; it is modulated when it plays). Each poll
 /// feeds the gate the room level from the demodulator and plays whatever
@@ -79,6 +85,10 @@ pub struct SoundTransport {
     speaker_free_ms: u64,
     /// Envelopes with a frame the speaker refused to play, by tag.
     unplayed: HashSet<u16>,
+    /// Off: what the microphone hears is let go undemodulated.
+    listening: bool,
+    /// Off: nothing plays; the gate's queue waits.
+    sending: bool,
 }
 
 impl SoundTransport {
@@ -98,6 +108,8 @@ impl SoundTransport {
             playing: HashMap::new(),
             speaker_free_ms: 0,
             unplayed: HashSet::new(),
+            listening: true,
+            sending: true,
         }
     }
 
@@ -149,6 +161,18 @@ impl Transport for SoundTransport {
         Some(measured_rate(&self.cfg))
     }
 
+    fn set_listening(&mut self, on: bool) {
+        self.listening = on;
+    }
+
+    fn set_sending(&mut self, on: bool) {
+        self.sending = on;
+    }
+
+    fn set_send_under(&mut self, db: f32) {
+        self.gate.set_send_under(db);
+    }
+
     fn send(&mut self, frame: Vec<u8>) {
         let tag = frame_tag(&frame);
         let tags: HashSet<Option<u16>> = self.queued.values().map(|f| frame_tag(f)).collect();
@@ -180,6 +204,7 @@ impl Transport for SoundTransport {
         }
 
         let samples = std::mem::take(&mut *self.heard.lock().unwrap_or_else(|p| p.into_inner()));
+        let samples = if self.listening { samples } else { Vec::new() };
         for event in self.demod.push(&samples) {
             match event {
                 DemodEvent::Frame(bytes) => events.push(TransportEvent::Frame(bytes)),
@@ -191,7 +216,7 @@ impl Transport for SoundTransport {
             }
         }
 
-        while let Some(item) = self.gate.due(now_ms) {
+        while let Some(item) = self.sending.then(|| self.gate.due(now_ms)).flatten() {
             let Some(frame) = self.queued.get(&item) else {
                 continue;
             };
@@ -481,5 +506,70 @@ mod tests {
         // Frames of an envelope already queued are still accepted.
         t.send(split(&[2; 10], 0).remove(0));
         assert_eq!(t.queued.len(), before + 1);
+    }
+
+    /// 200 ms at a steady -60 dBFS: about 34 dB in the room.
+    fn murmur(io: &Scripted) {
+        if let Some(sink) = io.sink.lock().unwrap().as_mut() {
+            sink(&vec![0.001; 9_600]);
+        }
+    }
+
+    #[test]
+    fn with_listening_off_what_the_microphone_hears_is_let_go() {
+        let io = Scripted::default();
+        let mut t = transport(&io);
+        t.poll(0);
+        let frame = split(b"hello", 7).remove(0);
+        let heard = |events: &[TransportEvent]| {
+            events
+                .iter()
+                .filter(|e| matches!(e, TransportEvent::Frame(_) | TransportEvent::RoomDb(_)))
+                .count()
+        };
+        let say = |io: &Scripted| {
+            let mut x = modulate(&ModemConfig::default(), &frame);
+            x.extend(vec![0.0; 9_600]);
+            if let Some(sink) = io.sink.lock().unwrap().as_mut() {
+                sink(&x);
+            }
+        };
+
+        t.set_listening(false);
+        say(&io);
+        assert_eq!(heard(&t.poll(100)), 0, "nothing demodulated while off");
+        t.set_listening(true);
+        assert_eq!(heard(&t.poll(200)), 0, "nor kept for later");
+        say(&io);
+        assert!(t.poll(300).contains(&TransportEvent::Frame(frame.clone())));
+    }
+
+    #[test]
+    fn with_sending_off_the_queue_waits() {
+        let io = Scripted::default();
+        let mut t = transport(&io);
+        t.poll(0);
+        t.set_sending(false);
+        t.send(split(b"hello", 7).remove(0));
+        io.quiet();
+        assert!(progress(t.poll(100)).is_empty());
+        assert!(io.played.lock().unwrap().is_empty(), "nothing played");
+        t.set_sending(true);
+        io.quiet();
+        assert_eq!(progress(t.poll(200)), vec![TransportEvent::Playing(7)]);
+    }
+
+    #[test]
+    fn send_under_moves_the_quiet_gate() {
+        let io = Scripted::default();
+        let mut t = transport(&io);
+        t.poll(0);
+        t.set_send_under(30.0);
+        t.send(split(b"hello", 7).remove(0));
+        murmur(&io);
+        assert!(progress(t.poll(100)).is_empty(), "34 dB is not under 30");
+        t.set_send_under(40.0);
+        murmur(&io);
+        assert_eq!(progress(t.poll(200)), vec![TransportEvent::Playing(7)]);
     }
 }

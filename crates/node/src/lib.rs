@@ -56,6 +56,17 @@
 //! first), and opened on the first tick after [`Node::unlock`]. While
 //! locked, [`Node::send`], [`Node::broadcast`] and [`Node::start_pairing`]
 //! do nothing, and [`Node::confirm_pairing`] stores nothing.
+//!
+//! # The Sound switch
+//!
+//! [`Node::set_sound`]: at [`SoundSwitch::Listen`] the node hears but never
+//! transmits; at [`SoundSwitch::Off`] it neither hears nor transmits.
+//!
+//! # Delivery kept in the store
+//!
+//! A message sent is stored waiting, with its sealed envelope, and marked
+//! sent or failed as its carrier reports. One still waiting when the app
+//! quits is queued again on the next [`Node::unlock`].
 
 mod control;
 mod sound;
@@ -127,8 +138,8 @@ pub enum OutboxState {
     Playing,
     /// Every frame, repeats included, has finished going out.
     Sent,
-    /// It will not go out: no carrier took it, or the carrier refused or
-    /// could not play it.
+    /// It will not go out: no carrier took it, the carrier refused or
+    /// could not play it, or the Sound switch does not allow sending.
     Failed,
 }
 
@@ -143,6 +154,37 @@ impl OutboxState {
         }
     }
 }
+
+/// The Sound switch on the front of the machine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SoundSwitch {
+    /// Not listening, never transmitting.
+    Off,
+    /// Listening through the microphone; never makes a sound: no
+    /// messages, broadcasts, receipts or pairing hellos go out.
+    Listen,
+    /// Listening, and playing sends, receipts and hellos. The default.
+    ListenAndSend,
+}
+
+impl SoundSwitch {
+    /// The switch by its position, as the settings page numbers it: 0 Off,
+    /// 1 Listen, 2 Listen and send.
+    pub fn from_index(i: usize) -> Option<SoundSwitch> {
+        match i {
+            0 => Some(SoundSwitch::Off),
+            1 => Some(SoundSwitch::Listen),
+            2 => Some(SoundSwitch::ListenAndSend),
+            _ => None,
+        }
+    }
+}
+
+/// The sound channel's state when a send is refused at Listen.
+pub const LISTEN_ONLY: &str = "not sent: sound is set to listen only";
+
+/// The sound channel's state when a send is refused with sound Off.
+pub const SOUND_OFF: &str = "not sent: sound is off";
 
 /// The channel state reported when a send asks for a channel this plan
 /// does not build.
@@ -363,6 +405,8 @@ pub struct Node {
     failed: HashSet<usize>,
     /// The receiving/listening state last reported, by transport.
     reception: Vec<&'static str>,
+    /// Where the Sound switch is.
+    sound: SoundSwitch,
 }
 
 impl Node {
@@ -389,6 +433,7 @@ impl Node {
             arriving: HashSet::new(),
             failed: HashSet::new(),
             reception,
+            sound: SoundSwitch::ListenAndSend,
         };
         if let Some(store) = store {
             node.unlock(store);
@@ -397,10 +442,90 @@ impl Node {
     }
 
     /// Hand the node its opened store. Envelopes held while locked are
-    /// opened on the next [`tick`](Node::tick).
+    /// opened on the next [`tick`](Node::tick). Messages that were still
+    /// waiting to go out when the store was last open are queued again
+    /// under the same envelope, or marked failed if it has expired.
     pub fn unlock(&mut self, store: Store) {
         self.me = Some(store.me());
+        let waiting = store.waiting();
         self.store = Some(store);
+        let now = now_min();
+        for (m, bytes) in waiting {
+            match Envelope::decode(&bytes) {
+                Ok(env) if env.id == m.id && env.expires_min > now => {
+                    self.sent_to.insert(env.id, vec![m.contact]);
+                    let tag = self.transmit(&env);
+                    self.track(tag, env.id);
+                }
+                _ => self.settle(m.id, OutboxState::Failed, None),
+            }
+        }
+    }
+
+    /// Set the Sound switch. Off, sound transports stop listening; at
+    /// Listen and Off nothing more is queued on them (sends and
+    /// broadcasts are refused, receipts and hellos are not sent) and what
+    /// is already queued waits.
+    pub fn set_sound(&mut self, switch: SoundSwitch) {
+        self.sound = switch;
+        for t in &mut self.transports {
+            if t.name() == Channel::Sound {
+                t.set_listening(switch != SoundSwitch::Off);
+                t.set_sending(switch == SoundSwitch::ListenAndSend);
+            }
+        }
+    }
+
+    /// Play sound only while the room is quieter than `db`.
+    pub fn set_send_under(&mut self, db: f32) {
+        for t in &mut self.transports {
+            t.set_send_under(db);
+        }
+    }
+
+    /// Why nothing may be sent by sound right now, if so: the channel
+    /// state to report.
+    fn sound_refusal(&self) -> Option<&'static str> {
+        match self.sound {
+            SoundSwitch::Off => Some(SOUND_OFF),
+            SoundSwitch::Listen => Some(LISTEN_ONLY),
+            SoundSwitch::ListenAndSend => None,
+        }
+    }
+
+    /// Report a send refused by the Sound switch: `why`, then the state
+    /// the channel is in.
+    fn report_refusal(&mut self, why: &'static str) {
+        self.pending.push(NodeEvent::ChannelState {
+            channel: Channel::Sound,
+            state: why.to_string(),
+        });
+        for ti in 0..self.transports.len() {
+            if self.channel(ti) == Channel::Sound {
+                self.pending.push(NodeEvent::ChannelState {
+                    channel: Channel::Sound,
+                    state: self.reception[ti].to_string(),
+                });
+            }
+        }
+    }
+
+    /// A send is over: record how it went in the store (if it is a stored
+    /// message) and report it, now into `events` or else on the next tick.
+    fn settle(&mut self, id: [u8; 16], state: OutboxState, events: Option<&mut Vec<NodeEvent>>) {
+        let delivery = match state {
+            OutboxState::Sent => Delivery::Sent,
+            OutboxState::Failed => Delivery::Failed,
+            OutboxState::Waiting | OutboxState::Playing => Delivery::Waiting,
+        };
+        if let Some(store) = &self.store {
+            let _ = store.set_delivery(&id, delivery);
+        }
+        let event = NodeEvent::Outbox { id, state };
+        match events {
+            Some(events) => events.push(event),
+            None => self.pending.push(event),
+        }
     }
 
     /// Whether to send delivery receipts for messages from contacts. On by
@@ -446,6 +571,10 @@ impl Node {
     /// sends nothing, returns [`NOT_SENT`] and reports the channel as
     /// [`NOT_IN_THIS_PLAN`] on the next tick.
     ///
+    /// With the Sound switch at Listen or Off the message is sealed and
+    /// stored but not sent: it is reported [`OutboxState::Failed`] and the
+    /// channel as [`LISTEN_ONLY`] or [`SOUND_OFF`] on the next tick.
+    ///
     /// A message to several contacts is one envelope; the store keeps one
     /// row per message id, so it is filed under the first of them.
     pub fn send(&mut self, to: &[ContactId], text: &str, channel: Channel) -> [u8; 16] {
@@ -478,7 +607,8 @@ impl Node {
         let now = now_min();
         let who: Vec<PublicIdentity> = recipients.iter().map(|c| c.who.clone()).collect();
         let env = seal_private(me, &who, text, now, TTL_MIN);
-        let stored = StoredMessage {
+        let refused = self.sound_refusal();
+        let mut stored = StoredMessage {
             id: env.id,
             contact: recipients[0].id,
             outgoing: true,
@@ -486,9 +616,21 @@ impl Node {
             channel,
             at_min: now,
             heard: false,
-            delivery: Delivery::Sent,
+            delivery: Delivery::Waiting,
         };
-        if store.put_message(&stored).is_err() {
+        if let Some(why) = refused {
+            stored.delivery = Delivery::Failed;
+            if store.put_message(&stored).is_err() {
+                return NOT_SENT;
+            }
+            self.report_refusal(why);
+            self.pending.push(NodeEvent::Outbox {
+                id: env.id,
+                state: OutboxState::Failed,
+            });
+            return env.id;
+        }
+        if store.put_outgoing(&stored, &env.encode()).is_err() {
             return NOT_SENT;
         }
         self.sent_to
@@ -499,7 +641,8 @@ impl Node {
     }
 
     /// Sign `text` as a public broadcast and send it. Returns its envelope
-    /// id, or [`NOT_SENT`] if locked or the text is too long.
+    /// id, or [`NOT_SENT`] if locked or the text is too long. Refused by
+    /// the Sound switch as [`Node::send`] is.
     pub fn broadcast(&mut self, text: &str) -> [u8; 16] {
         let Some(me) = &self.me else {
             return NOT_SENT;
@@ -508,6 +651,14 @@ impl Node {
             return NOT_SENT;
         }
         let env = seal_public(me, text, now_min(), TTL_MIN);
+        if let Some(why) = self.sound_refusal() {
+            self.report_refusal(why);
+            self.pending.push(NodeEvent::Outbox {
+                id: env.id,
+                state: OutboxState::Failed,
+            });
+            return env.id;
+        }
         let tag = self.transmit(&env);
         self.track(tag, env.id);
         env.id
@@ -516,24 +667,33 @@ impl Node {
     /// Put a send in the outbox: reported waiting on the next tick, then
     /// as its transport reports its tag playing and sent.
     fn track(&mut self, tag: u16, id: [u8; 16]) {
-        let state = if self.transports.is_empty() {
-            OutboxState::Failed
+        if self.transports.is_empty() {
+            self.settle(id, OutboxState::Failed, None);
         } else {
             self.outbox.insert(tag, id);
-            OutboxState::Waiting
-        };
-        self.pending.push(NodeEvent::Outbox { id, state });
+            self.pending.push(NodeEvent::Outbox {
+                id,
+                state: OutboxState::Waiting,
+            });
+        }
     }
 
     /// Announce this device for pairing: a signed hello carrying its
     /// identity and `my_name` (cut to 64 bytes). Anyone who hears it gets
-    /// a [`NodeEvent::PairOffer`].
-    pub fn start_pairing(&mut self, my_name: &str) {
+    /// a [`NodeEvent::PairOffer`]. Refused with "locked" before
+    /// [`Node::unlock`], and with the channel state it reports when the
+    /// Sound switch is not at Listen and send.
+    pub fn start_pairing(&mut self, my_name: &str) -> Result<(), &'static str> {
         let Some(me) = &self.me else {
-            return;
+            return Err("locked");
         };
         let env = control::pair_hello(me, my_name, random_id(), now_min(), TTL_MIN);
+        if let Some(why) = self.sound_refusal() {
+            self.report_refusal(why);
+            return Err(why);
+        }
         self.transmit(&env);
+        Ok(())
     }
 
     /// Store `peer` as a contact named `name`, marked checked (the user
@@ -575,6 +735,9 @@ impl Node {
             for heard in self.transports[ti].poll(now_ms) {
                 match heard {
                     TransportEvent::Frame(frame) => {
+                        if channel == Channel::Sound && self.sound == SoundSwitch::Off {
+                            continue;
+                        }
                         for e in self.reassemblers[ti].push(&frame, now_ms) {
                             match e {
                                 Event::FrameOk { tag, .. } => {
@@ -601,18 +764,12 @@ impl Node {
                     }
                     TransportEvent::Sent(tag) => {
                         if let Some(id) = self.outbox.remove(&tag) {
-                            events.push(NodeEvent::Outbox {
-                                id,
-                                state: OutboxState::Sent,
-                            });
+                            self.settle(id, OutboxState::Sent, Some(&mut events));
                         }
                     }
                     TransportEvent::Dropped(tag) => {
                         if let Some(id) = self.outbox.remove(&tag) {
-                            events.push(NodeEvent::Outbox {
-                                id,
-                                state: OutboxState::Failed,
-                            });
+                            self.settle(id, OutboxState::Failed, Some(&mut events));
                         }
                     }
                     TransportEvent::RoomDb(db) => events.push(NodeEvent::RoomDb(db)),
@@ -890,10 +1047,11 @@ impl Node {
         }
     }
 
-    /// Send `contact` a receipt for message `id`, if receipts are on and
-    /// none went out for it in the last [`RECEIPT_GAP_MS`].
+    /// Send `contact` a receipt for message `id`, if receipts are on, the
+    /// Sound switch is at Listen and send, and none went out for it in the
+    /// last [`RECEIPT_GAP_MS`].
     fn send_receipt(&mut self, id: [u8; 16], contact: &Contact) {
-        if !self.receipts || low_order(&contact.who.dh) {
+        if !self.receipts || self.sound_refusal().is_some() || low_order(&contact.who.dh) {
             return;
         }
         if let Some(at) = self.receipts_sent.get(&id) {
@@ -995,6 +1153,8 @@ mod tests {
     struct Wire {
         inbox: Arc<Mutex<Vec<Vec<u8>>>>,
         sent: Arc<Mutex<Vec<Vec<u8>>>>,
+        /// Reported on the next poll, after the frames.
+        news: Arc<Mutex<Vec<TransportEvent>>>,
     }
 
     impl Transport for Wire {
@@ -1005,16 +1165,40 @@ mod tests {
             self.sent.lock().unwrap().push(frame);
         }
         fn poll(&mut self, _now_ms: u64) -> Vec<TransportEvent> {
-            std::mem::take(&mut *self.inbox.lock().unwrap())
+            let mut events: Vec<TransportEvent> = std::mem::take(&mut *self.inbox.lock().unwrap())
                 .into_iter()
                 .map(TransportEvent::Frame)
-                .collect()
+                .collect();
+            events.extend(std::mem::take(&mut *self.news.lock().unwrap()));
+            events
         }
     }
 
     impl Wire {
         fn hear(&self, env: &Envelope, tag: u16) {
             self.inbox.lock().unwrap().extend(split(&env.encode(), tag));
+        }
+
+        /// The tag of the frames last sent.
+        fn last_tag(&self) -> u16 {
+            let sent = self.sent.lock().unwrap();
+            let f = sent.last().expect("something was sent");
+            u16::from_be_bytes([f[0], f[1]])
+        }
+
+        /// The envelopes sent, reassembled from their frames.
+        fn envelopes(&self) -> Vec<Envelope> {
+            let mut r = Reassembler::new();
+            self.sent
+                .lock()
+                .unwrap()
+                .iter()
+                .flat_map(|f| r.push(f, 0))
+                .filter_map(|e| match e {
+                    Event::Complete { bytes, .. } => Envelope::decode(&bytes).ok(),
+                    _ => None,
+                })
+                .collect()
         }
     }
 
@@ -1365,7 +1549,7 @@ mod tests {
         let mut node = Node::new(None, vec![Box::new(wire.clone())]);
         assert_eq!(node.send(&[ContactId(1)], "hi", Channel::Sound), NOT_SENT);
         assert_eq!(node.broadcast("hi"), NOT_SENT);
-        node.start_pairing("me");
+        assert_eq!(node.start_pairing("me"), Err("locked"));
         let peer = Identity::generate().public();
         assert_eq!(node.confirm_pairing(&peer, "p"), NOT_STORED);
         assert!(wire.sent.lock().unwrap().is_empty());
@@ -1629,5 +1813,145 @@ mod tests {
         one[0] = 1;
         assert!(low_order(&one));
         assert!(!low_order(&Identity::generate().public().dh));
+    }
+
+    fn outbox(events: &[NodeEvent]) -> Vec<([u8; 16], OutboxState)> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                NodeEvent::Outbox { id, state } => Some((*id, *state)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn states(events: &[NodeEvent]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                NodeEvent::ChannelState { state, .. } => Some(state.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn at_listen_it_hears_but_never_transmits() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (a, b) = (Identity::generate(), Identity::generate());
+        let (mut node, wire, ids) = node(&dir, &b, &[&a]);
+        node.set_sound(SoundSwitch::Listen);
+
+        let env = seal_private(&a, &[b.public()], "heard, no receipt", now_min(), 60);
+        wire.hear(&env, 1);
+        assert_eq!(messages(&node.tick(1)), vec!["heard, no receipt"]);
+        assert!(wire.sent.lock().unwrap().is_empty(), "no receipt");
+
+        let id = node.send(&ids, "refused", Channel::Sound);
+        assert_ne!(id, NOT_SENT, "kept, so the sheet can say it was not sent");
+        let public = node.broadcast("refused too");
+        assert_eq!(node.start_pairing("Ben"), Err(LISTEN_ONLY));
+        let events = node.tick(2);
+        assert_eq!(
+            outbox(&events),
+            vec![(id, OutboxState::Failed), (public, OutboxState::Failed)]
+        );
+        assert!(states(&events).contains(&LISTEN_ONLY.to_string()));
+        assert!(wire.sent.lock().unwrap().is_empty(), "nothing transmitted");
+        let kept = node.conversation(ids[0]);
+        assert_eq!(kept.last().unwrap().delivery, Delivery::Failed);
+
+        node.set_sound(SoundSwitch::ListenAndSend);
+        let id = node.send(&ids, "now it goes", Channel::Sound);
+        assert_eq!(outbox(&node.tick(3)), vec![(id, OutboxState::Waiting)]);
+        assert!(!wire.sent.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn at_off_it_hears_nothing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (a, b) = (Identity::generate(), Identity::generate());
+        let (mut node, wire, ids) = node(&dir, &b, &[&a]);
+        node.set_sound(SoundSwitch::Off);
+        wire.hear(&seal_private(&a, &[b.public()], "unheard", now_min(), 60), 1);
+        let events = node.tick(1);
+        assert!(messages(&events).is_empty());
+        assert!(!events
+            .iter()
+            .any(|e| matches!(e, NodeEvent::ChunkLanded { .. })));
+        node.send(&ids, "refused", Channel::Sound);
+        assert!(states(&node.tick(2)).contains(&SOUND_OFF.to_string()));
+        assert!(wire.sent.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_send_is_stored_waiting_until_its_carrier_says_how_it_went() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (a, b) = (Identity::generate(), Identity::generate());
+        let (mut node, wire, ids) = node(&dir, &a, &[&b]);
+        let delivery = |node: &Node, id: [u8; 16]| {
+            node.conversation(ids[0])
+                .into_iter()
+                .find(|m| m.id == id)
+                .unwrap()
+                .delivery
+        };
+
+        let sent = node.send(&ids, "goes out", Channel::Sound);
+        assert_eq!(delivery(&node, sent), Delivery::Waiting);
+        wire.news
+            .lock()
+            .unwrap()
+            .push(TransportEvent::Sent(wire.last_tag()));
+        node.tick(1);
+        assert_eq!(delivery(&node, sent), Delivery::Sent);
+
+        let dropped = node.send(&ids, "refused by the carrier", Channel::Sound);
+        wire.news
+            .lock()
+            .unwrap()
+            .push(TransportEvent::Dropped(wire.last_tag()));
+        node.tick(2);
+        assert_eq!(delivery(&node, dropped), Delivery::Failed);
+    }
+
+    #[test]
+    fn what_was_still_waiting_at_quit_is_queued_again_on_unlock() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (a, b) = (Identity::generate(), Identity::generate());
+        let path = dir.path().join("a.db");
+        let store = Store::create(&path, "pass", &a, "me").unwrap();
+        let c = store.add_contact("b", &b.public(), true).unwrap();
+        let mut node = Node::new(Some(store), vec![Box::new(Wire::default())]);
+        let id = node.send(&[c], "still waiting", Channel::Sound);
+        // A message whose envelope ran out while the app was closed.
+        let old = seal_private(&a, &[b.public()], "too old", now_min() - 3 * TTL_MIN, 60);
+        let stale = StoredMessage {
+            id: old.id,
+            contact: c,
+            outgoing: true,
+            text: "too old".into(),
+            channel: Channel::Sound,
+            at_min: now_min() - 3 * TTL_MIN,
+            heard: false,
+            delivery: Delivery::Waiting,
+        };
+        node.store.as_ref().unwrap().put_outgoing(&stale, &old.encode()).unwrap();
+        drop(node);
+
+        let wire = Wire::default();
+        let mut node = Node::new(None, vec![Box::new(wire.clone())]);
+        assert!(wire.sent.lock().unwrap().is_empty());
+        node.unlock(Store::open(&path, "pass").unwrap());
+        let resent: Vec<_> = wire.envelopes().iter().map(|e| e.id).collect();
+        assert_eq!(resent, vec![id], "the same envelope, and not the stale one");
+        let events = node.tick(1);
+        assert_eq!(
+            outbox(&events),
+            vec![(id, OutboxState::Waiting), (old.id, OutboxState::Failed)]
+        );
+        let kept = node.conversation(c);
+        assert_eq!(kept[0].delivery, Delivery::Waiting);
+        assert_eq!(kept[1].delivery, Delivery::Failed);
     }
 }
