@@ -365,6 +365,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bombechat-session"
+version = "0.1.0"
+dependencies = [
+ "bombechat-core",
+ "ed25519-dalek",
+ "snow",
+ "zeroize",
+]
+
+[[package]]
 name = "bombechat-store"
 version = "0.1.0"
 dependencies = [
@@ -3993,6 +4003,20 @@ name = "smallvec"
 version = "1.16.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0d5d4b1981b8bbbb7aed204cae5726d683d5d6ac7e74ec54122ea28f315e7c8"
+
+[[package]]
+name = "snow"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "599b506ccc4aff8cf7844bc42cf783009a434c1e26c964432560fb6d6ad02d82"
+dependencies = [
+ "chacha20poly1305",
+ "curve25519-dalek",
+ "getrandom 0.3.4",
+ "rustc_version",
+ "sha2",
+ "subtle",
+]
 
 [[package]]
 name = "socket2"

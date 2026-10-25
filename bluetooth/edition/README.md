@@ -20,10 +20,14 @@ What lives here:
 
 - `PATCHED`: the shared files this edition changes, each with a patch.
 - `patches/`: those changes, kept small. The identifier
-  (`app.bombechat.standard`, so the store and Keychain item are its own) and
-  the Bluetooth usage line in `Info.plist`.
+  (`app.bombechat.standard`, so the store and Keychain item are its own),
+  the Bluetooth usage line in `Info.plist`, and the workspace's extra member
+  `crates/session` in `Cargo.toml` (with the curve code optimised in dev
+  builds, so the session tests stay quick).
 - `files/`: files the edition adds or replaces. `app/ui/edition.css` names
-  this build "standard build" on the machine's plates.
+  this build "standard build" on the machine's plates. `crates/session` is
+  the live session crate: Noise_XX_25519_ChaChaPoly_SHA256 handshakes that
+  prove each side's whole identity, then transport encryption.
 
 Prefer adding a file here over patching a shared one.
 

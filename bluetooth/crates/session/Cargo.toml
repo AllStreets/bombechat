@@ -1,0 +1,22 @@
+[package]
+name = "bombechat-session"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bombechat-core = { path = "../core" }
+ed25519-dalek = "2.2.0"
+# Noise_XX_25519_ChaChaPoly_SHA256 through snow's default resolver with
+# only the pure-Rust primitives this pattern needs: curve25519-dalek,
+# chacha20poly1305, sha2 and getrandom. Default features are off because
+# snow's `std` feature also pulls in ring (C and assembly), which the
+# default resolver never uses. snow brings no networking crates.
+snow = { version = "=0.10.0", default-features = false, features = [
+    "default-resolver",
+    "use-curve25519",
+    "use-chacha20poly1305",
+    "use-sha2",
+    "use-getrandom",
+] }
+zeroize = "1"
+

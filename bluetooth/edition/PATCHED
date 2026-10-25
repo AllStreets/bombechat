@@ -2,3 +2,4 @@
 # patches/; tools/sync-bluetooth.sh fails if this list and the patches disagree.
 app/src-tauri/Info.plist
 app/src-tauri/tauri.conf.json
+Cargo.toml
