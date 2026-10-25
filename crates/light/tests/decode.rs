@@ -15,7 +15,9 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use bombechat_light::{encode, read, CodeSpec, Collector, Layout, LightEvent, ReadOutcome};
-use camera::textures::{blinds, checkerboard, diagonal_stripes, finder_stripes, keyboard, qr_like};
+use camera::textures::{
+    blinds, checkerboard, diagonal_stripes, finder_stripes, irregular, keyboard, qr_like, IRREGULAR,
+};
 use camera::{in_view, shoot, Camera, Code, Noise, Pose};
 use image::GrayImage;
 
@@ -913,6 +915,72 @@ fn a_code_beside_finder_like_textures_reads() {
     }
 }
 
+/// A placement's name, the code's centre and scale, and which columns the
+/// texture covers.
+type Placement = (&'static str, (f64, f64, f64), fn(u32) -> bool);
+
+/// Where an irregular texture covers the picture, and where the code
+/// goes: one side, both sides, or a wide or narrow strip.
+fn placements() -> Vec<Placement> {
+    vec![
+        ("left", (0.72, 0.5, 0.5), |x| x < 512),
+        ("right", (0.28, 0.5, 0.5), |x| x >= 768),
+        ("both sides", (0.5, 0.5, 0.4), |x| !(380..900).contains(&x)),
+        ("left 60%", (0.72, 0.5, 0.5), |x| x < 640),
+        ("left 20%", (0.72, 0.5, 0.5), |x| x < 256),
+        ("left 10%", (0.72, 0.5, 0.5), |x| x < 128),
+    ]
+}
+
+/// Every irregular texture in every placement beside a code of each
+/// preset, with the frame shown: (description, picture, frame).
+fn codes_beside_irregular_textures() -> Vec<(String, GrayImage, Vec<u8>)> {
+    let textures: Vec<(&str, GrayImage)> = IRREGULAR
+        .iter()
+        .map(|&name| (name, irregular(name, 1280, 720)))
+        .collect();
+    let mut out = Vec::new();
+    for (name, spec) in presets() {
+        let mut rng = Noise::new(101);
+        let frame = some_frame(&spec, &mut rng);
+        for (place, (cx, cy, scale), inside) in placements() {
+            let pose = Pose {
+                scale,
+                centre: (cx, cy),
+                ..Pose::default()
+            };
+            let base = shoot(&[code(&spec, &frame, pose)], &Camera::default(), 10);
+            for (texture, tex) in &textures {
+                let img = GrayImage::from_fn(1280, 720, |x, y| {
+                    if inside(x) {
+                        *tex.get_pixel(x, y)
+                    } else {
+                        *base.get_pixel(x, y)
+                    }
+                });
+                out.push((format!("{name}, {texture} {place}"), img, frame.clone()));
+            }
+        }
+    }
+    out
+}
+
+/// Finder-ratio textures with no fixed period, in any placement, never
+/// hide a code beside them.
+#[test]
+fn a_code_beside_irregular_finder_textures_reads() {
+    for (what, img, frame) in codes_beside_irregular_textures() {
+        assert_eq!(read(&img), ReadOutcome::Frames(vec![frame]), "{what}");
+    }
+    for name in IRREGULAR {
+        assert_eq!(
+            read(&irregular(name, 1280, 720)),
+            ReadOutcome::NoCode,
+            "{name} alone"
+        );
+    }
+}
+
 /// The top of the scale range: the quiet zone fills the frame height.
 #[test]
 fn a_code_filling_the_frame_reads() {
@@ -1354,6 +1422,16 @@ fn decode_time_per_frame() {
                 ));
             }
         }
+    }
+    for (what, img, _) in codes_beside_irregular_textures() {
+        pictures.push(("code beside irregular texture", what, img));
+    }
+    for name in IRREGULAR {
+        pictures.push((
+            "irregular texture",
+            name.to_string(),
+            irregular(name, 1280, 720),
+        ));
     }
     let portrait = Camera {
         width: 2160,

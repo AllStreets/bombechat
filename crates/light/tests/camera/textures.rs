@@ -125,3 +125,89 @@ pub fn qr_like(m: usize, rng: &mut Noise) -> Vec<bool> {
     }
     grid
 }
+
+/// The textures built to beat a per-row budget: finder-ratio groups
+/// whose sizes or spacing change from group to group, so no simple
+/// periodicity rule catches them. Every second pair of rows differs.
+pub const IRREGULAR: [&str; 5] = [
+    "alt 2/4",
+    "jitter",
+    "period8",
+    "period10",
+    "interleave 2/3 p8",
+];
+
+/// One of [`IRREGULAR`], `w` by `h`.
+pub fn irregular(name: &str, w: u32, h: u32) -> GrayImage {
+    let finder = |u: u32, gap: u32| {
+        vec![
+            (true, u),
+            (false, u),
+            (true, 3 * u),
+            (false, u),
+            (true, u),
+            (false, gap),
+        ]
+    };
+    let rows: Vec<Vec<u8>> = (0..h)
+        .map(|y| {
+            let mut rng = Noise::new(0x9E37_79B9_7F4A_7C15 ^ ((y as u64 / 2 + 1) * 7919));
+            let runs: Vec<(bool, u32)> = match name {
+                // Units 2 and 4 alternating: neighbours differ in size.
+                "alt 2/4" => [finder(2, 2), finder(4, 4)].concat(),
+                // A random unit from 2 to 5 for each group.
+                "jitter" => (0..400)
+                    .flat_map(|_| {
+                        let u = 2 + (rng.next() % 4) as u32;
+                        finder(u, u)
+                    })
+                    .collect(),
+                // An extra dark and light pair between groups.
+                "period8" => vec![
+                    (true, 2),
+                    (false, 2),
+                    (true, 6),
+                    (false, 2),
+                    (true, 2),
+                    (false, 4),
+                    (true, 2),
+                    (false, 4),
+                ],
+                "period10" => vec![
+                    (true, 2),
+                    (false, 2),
+                    (true, 6),
+                    (false, 2),
+                    (true, 2),
+                    (false, 4),
+                    (true, 4),
+                    (false, 4),
+                    (true, 4),
+                    (false, 4),
+                ],
+                // Units 2 and 3 interleaved with bars between.
+                "interleave 2/3 p8" => [
+                    finder(2, 4),
+                    vec![(true, 6), (false, 4)],
+                    finder(3, 4),
+                    vec![(true, 9), (false, 4)],
+                ]
+                .concat(),
+                _ => panic!("no texture {name}"),
+            };
+            let mut row = Vec::with_capacity(w as usize);
+            'fill: loop {
+                for &(dark, len) in &runs {
+                    for _ in 0..len {
+                        row.push(if dark { 0 } else { 255 });
+                        if row.len() as u32 >= w {
+                            break 'fill;
+                        }
+                    }
+                }
+            }
+            row
+        })
+        .collect();
+    GrayImage::from_fn(w, h, |x, y| Luma([rows[y as usize][x as usize]]))
+}
