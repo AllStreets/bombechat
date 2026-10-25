@@ -418,10 +418,17 @@ for px, cut, out in json.loads(sys.argv[2]):
     const kept = { sound: 2, volume: 2, band: 0, light: 2, flash: 1, machine: 1, machvol: 2, carry: 1, hops: 3, hold: 2, quiet: 2, repeats: 2, lock: 1, expire: 0, inperson: 1 };
     const setUp = kept => { try { localStorage.clear(); sessionStorage.clear(); sessionStorage.setItem('bombechat.simulated-machine', JSON.stringify(kept)); } catch (e) {} };
     const TEXT = 'Water at the church on Fifth until dusk.';
+    // the core's own frames, as tools/check.cjs takes them (crates/light/examples/page_frames.rs), so the lamp shows
+    // real codes: finders, orientation mark, quiet zone and all. Handed to the simulator before the page loads.
+    const CODE = JSON.parse(execFileSync('cargo', ['run', '-q', '-p', 'bombechat-light', '--example', 'page_frames', '--', 'frames', String(kept.flash), '80', '4660'], { cwd: ROOT, encoding: 'utf8', maxBuffer: 1 << 28 }));
+    const real = ([spec, frames]) => { window.__lightFrames = { [spec]: frames }; };
+    const realArgs = [CODE.spec, CODE.frames.map(f => f.bits)];
+    fs.writeFileSync(path.join(ROOT, 'checks', 'media', 'light-frames.json'), JSON.stringify(CODE.frames.map(f => f.frame)));
     // the still: the lamp mid-message, at 2x
     {
       const c = await ctx(1440, 900, 2);
       await c.addInitScript(setUp, kept);
+      await c.addInitScript(real, realArgs);
       const p = await front(c, 'still');
       await p.fill('#reply', TEXT);
       await p.click('#flash');
@@ -434,6 +441,7 @@ for px, cut, out in json.loads(sys.argv[2]):
     const tmp = path.join(ROOT, 'checks', 'media', 'light'); fs.rmSync(tmp, { recursive: true, force: true }); fs.mkdirSync(tmp, { recursive: true });
     const c = await ctx(1280, 800, 1.5);
     await c.addInitScript(setUp, kept);
+    await c.addInitScript(real, realArgs);
     await c.addInitScript(virtualClock);
     const p = await front(c, 'still');
     await p.fill('#reply', TEXT);
