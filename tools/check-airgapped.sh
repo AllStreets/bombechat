@@ -11,7 +11,7 @@ cd "$(dirname "$0")/.."
 
 # Crates that would mean Bluetooth or networking leaked into the airgapped
 # build. Matched case-insensitively against `cargo tree` output lines.
-BANNED_PATTERN='btleplug|bluer|bluest|corebluetooth|reqwest|hyper|ureq|tauri-plugin-updater|tauri-plugin-http|tokio-tungstenite'
+BANNED_PATTERN='btleplug|bluer|bluest|corebluetooth|core-bluetooth|iobluetooth|reqwest|hyper|ureq|tauri-plugin-updater|tauri-plugin-http|tokio-tungstenite'
 
 TREE_CMD=(cargo tree --workspace --no-default-features -e normal --prefix none)
 if [ -n "${CHECK_FEATURES:-}" ]; then
