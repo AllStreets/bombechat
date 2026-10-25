@@ -56,6 +56,11 @@ fn set_setting(state: State<'_, Shared>, id: String, value_index: usize) -> Resu
     commands::set_setting(&state, id, value_index)
 }
 
+#[tauri::command]
+fn settings(state: State<'_, Shared>) -> std::collections::BTreeMap<&'static str, usize> {
+    commands::settings(&state)
+}
+
 /// Async, so the key derivation (Argon2id, most of a second) runs off the
 /// window's thread as well as off the machine's lock.
 #[tauri::command]
@@ -125,6 +130,7 @@ pub fn run() {
             pair,
             confirm_pair,
             set_setting,
+            settings,
             unlock,
             contacts,
             conversation,

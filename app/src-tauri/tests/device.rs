@@ -179,3 +179,65 @@ fn the_page_learns_the_rate_the_sound_transport_measures() {
         ("sound", "listening", Some(16.1))
     );
 }
+
+#[test]
+fn every_setting_is_kept_and_read_back_after_a_restart() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("bombechat.db");
+    let first = Shared::new(Box::new(device(&path)));
+    assert_eq!(commands::settings(&first)["sound"], 2, "nothing saved yet");
+    for (id, count, _) in commands::SETTINGS {
+        commands::set_setting(&first, id.into(), count - 1).unwrap();
+    }
+    drop(first);
+
+    let later = Shared::new(Box::new(device(&path)));
+    let all = commands::settings(&later);
+    for (id, count, _) in commands::SETTINGS {
+        assert_eq!(all[id], count - 1, "{id} kept");
+    }
+}
+
+#[test]
+fn a_saved_listen_is_what_the_next_launch_reports() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("bombechat.db");
+    let first = Shared::new(Box::new(device(&path)));
+    commands::set_setting(&first, "sound".into(), 1).unwrap();
+    drop(first);
+    let later = device(&path);
+    assert_eq!(later.setting("sound"), Some(1));
+    assert_eq!(
+        commands::settings(&Shared::new(Box::new(later)))["sound"],
+        1
+    );
+}
+
+#[test]
+fn a_corrupt_settings_file_falls_back_to_the_defaults() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("bombechat.db");
+    fs::write(dir.path().join("settings.json"), b"{\"sound\": 1, \"quie").unwrap();
+    let s = Shared::new(Box::new(device(&path)));
+    let all = commands::settings(&s);
+    assert_eq!(all["sound"], 2);
+    assert_eq!(all["quiet"], 2);
+}
+
+#[test]
+fn unknown_ids_and_values_out_of_range_in_the_file_are_ignored() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("bombechat.db");
+    fs::write(
+        dir.path().join("settings.json"),
+        br#"{"warp": 3, "sound": 9, "quiet": 4}"#,
+    )
+    .unwrap();
+    let d = device(&path);
+    assert_eq!(d.setting("warp"), None);
+    assert_eq!(d.setting("sound"), None, "out of range is not kept");
+    let all = commands::settings(&Shared::new(Box::new(d)));
+    assert!(!all.contains_key("warp"));
+    assert_eq!(all["sound"], 2);
+    assert_eq!(all["quiet"], 4);
+}

@@ -47,8 +47,9 @@ const PARTS = { top: '.top', bank: '.bank', sheet: '.sheet', compose: '.compose'
 // __emit sends an event as the node would. pair() hears `hello` say hello 1.2 s later.
 // Given `people`, the store exists and is locked instead: contacts are those, conversation(id)
 // answers talk[id], and the unlock emits `afterUnlock` ([name, payload] pairs) before it resolves,
-// as the node's first tick after an unlock opens what it heard while locked.
-function tauriStub({ hello, safety, people, talk, afterUnlock }) {
+// as the node's first tick after an unlock opens what it heard while locked. `settings` is what the
+// machine has kept (every setting, as the settings command answers); the defaults if not given.
+function tauriStub({ hello, safety, people, talk, afterUnlock, settings }) {
   let unlocked = false;
   const listeners = {};
   window.__calls = [];
@@ -61,6 +62,7 @@ function tauriStub({ hello, safety, people, talk, afterUnlock }) {
         case 'unlock': unlocked = true; for (const [name, payload] of afterUnlock || []) window.__emit(name, payload); return Promise.resolve(null);
         case 'machine': return Promise.resolve({ name: 'Machine No. 1', key: 'a3f09c1e'.repeat(16), you: 'Ana Lima', held: 0, version: '0.1.0' });
         case 'conversation': return Promise.resolve((talk || {})[args.contactId] || []);
+        case 'settings': return Promise.resolve(settings || { sound: 2, volume: 2, band: 0, light: 0, flash: 1, machine: 1, machvol: 2, carry: 1, hops: 3, hold: 2, quiet: 2, repeats: 2, lock: 1, expire: 2, inperson: 1 });
         case 'channels': return Promise.resolve([{ channel: 'sound', state: 'listening', rate: 16.1 }]);
         case 'pair': setTimeout(() => window.__emit('pairOffer', { peer: { sign: Array(32).fill(5), dh: Array(32).fill(6) }, name: hello, safety }), 1200); return Promise.resolve(null);
         case 'confirm_pair': return Promise.resolve(7);
@@ -372,6 +374,48 @@ function measureText() {
       report.lockedThenUnlocked = shown;
     }
     await lk.close();
+
+    // the machine's saved settings are the only record: the page draws the switches from settings() and never
+    // sends one back at load (set_setting is called 0 times), whatever localStorage holds. A saved Listen
+    // boots at Listen with localStorage cleared, or holding an old Listen and send, on the app path and in the
+    // simulator; turning the switch then sends exactly that one change.
+    report.settingsAtBoot = {};
+    for (const where of ['app', 'browser']) for (const stale of [false, true]) {
+      const tag = `${where}, localStorage ${stale ? 'stale' : 'cleared'}`;
+      const sb = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 });
+      watch(sb, `settings at boot, ${tag}`);
+      await sb.addInitScript(stale => { try { localStorage.clear(); if (stale) localStorage.setItem('bombechat.settings', JSON.stringify({ sound: 2, light: 2, quiet: 0 })); } catch (e) {} }, stale);
+      if (where === 'app') {
+        await sb.addInitScript(tauriStub, { hello: 'Marisol Ortega', safety: '', people: [{ id: 1, name: 'Marisol Ortega', checked: true, safety: '' }],
+          settings: { sound: 1, volume: 2, band: 0, light: 0, flash: 1, machine: 1, machvol: 2, carry: 1, hops: 3, hold: 2, quiet: 4, repeats: 2, lock: 1, expire: 2, inperson: 1 } });
+        await sb.goto(url('still'));
+        await sb.waitForSelector('.unlock input[name=pass]');
+        await sb.fill('.unlock input[name=pass]', 'correct horse');
+        await sb.click('.unlock button');
+      } else {
+        // the simulated machine's own record, apart from the page's storage
+        await sb.addInitScript(() => { try { sessionStorage.setItem('bombechat.simulated-machine', JSON.stringify({ sound: 1, quiet: 4 })); } catch (e) {} });
+        await sb.goto(url('still'));
+      }
+      await sb.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
+      await sb.waitForTimeout(400);
+      const sets = () => window.__TAURI__ ? __calls.filter(c => c[0] === 'set_setting').map(c => c[1]) : __sim.settingsSet;
+      const booted = await sb.evaluate(`({ sound: document.getElementById('k1').getAttribute('aria-valuenow'), light: document.getElementById('k2').getAttribute('aria-valuenow'),
+        sendLamp: document.getElementById('sendsound').getAttribute('aria-disabled'), vu: document.querySelector('.vu').title, sets: (${sets})() })`);
+      if (booted.sound !== '1') problems.push(`${tag}: a saved Listen booted with the Sound switch at ${booted.sound}`);
+      if (booted.light !== '0') problems.push(`${tag}: the Light switch booted at ${booted.light}, the machine keeps Off`);
+      if (booted.sendLamp !== 'true') problems.push(`${tag}: Send was offered at Listen`);
+      if (!/under 50 dB/.test(booted.vu)) problems.push(`${tag}: Send under is not the machine's 50 dB: ${booted.vu}`);
+      if ((Array.isArray(booted.sets) ? booted.sets.length : booted.sets) !== 0) problems.push(`${tag}: the page sent settings at load: ${JSON.stringify(booted.sets)}`);
+      if (!stale) await sb.locator('.panel').screenshot({ path: path.join(out, `settings-at-boot-${where}.png`) });
+      await sb.click('#k1');
+      await sb.waitForTimeout(200);
+      const turned = await sb.evaluate(`(${sets})()`);
+      const kept = where === 'browser' ? await sb.evaluate(() => import('./bridge.js').then(m => m.bridge.settings())) : null;
+      if (where === 'app' ? JSON.stringify(turned) !== JSON.stringify([{ id: 'sound', valueIndex: 2 }]) : turned !== 1 || kept.sound !== 2) problems.push(`${tag}: turning the Sound switch sent ${JSON.stringify(turned)}, kept ${JSON.stringify(kept)}`);
+      report.settingsAtBoot[tag] = { ...booted, turned };
+      await sb.close();
+    }
 
     // pairing by sound on the key check card, in a plain browser (the simulator) and in the app
     // (window.__TAURI__ stubbed, from first run), at 1024, 1440 and 1728, with 2x crops of each state

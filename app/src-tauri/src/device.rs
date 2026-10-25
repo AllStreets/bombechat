@@ -11,7 +11,7 @@ use bombechat_modem::{AudioIo, Band, CpalAudio, ModemConfig, QuietGate};
 use bombechat_node::{Node, NodeEvent, SoundSwitch, SoundTransport, Transport};
 use bombechat_store::{Channel, Contact, ContactId, Store, StoreError, StoredMessage};
 
-use crate::commands::{Lock, Machine, Opened, Unlocking};
+use crate::commands::{is_setting, Lock, Machine, Opened, Unlocking};
 
 /// The quiet gate's defaults, as the settings page shows them: send under
 /// 40 dB, two repeats a minute and a half apart.
@@ -112,9 +112,10 @@ pub struct Device {
     unlocking: bool,
     /// The person's name from the store, once unlocked.
     my_name: Option<String>,
-    /// Settings as the page last set them, kept in [`SETTINGS_FILE`]
-    /// beside the store. The Sound switch and Send under are applied to
-    /// the node; the rest are only kept in this plan.
+    /// Settings as the person last set them, kept in [`SETTINGS_FILE`]
+    /// beside the store: the only record of them, which the page reads
+    /// at load. The Sound switch and Send under are applied to the node;
+    /// the rest are only kept in this plan.
     settings: HashMap<String, usize>,
     /// Reported on the first tick, e.g. why there is no sound transport.
     pending: Vec<NodeEvent>,
@@ -222,13 +223,17 @@ fn settings_path(store_path: &Path) -> PathBuf {
     store_path.with_file_name(SETTINGS_FILE)
 }
 
-/// The settings kept at `path`, or none if there are none (or they
-/// cannot be read; the page sends its own on load).
+/// The settings kept at `path`, leaving out any id or value the settings
+/// page does not have; none if there are none or the file cannot be read
+/// (each setting is then at its default).
 fn load_settings(path: &Path) -> HashMap<String, usize> {
     fs::read(path)
         .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .and_then(|bytes| serde_json::from_slice::<HashMap<String, usize>>(&bytes).ok())
         .unwrap_or_default()
+        .into_iter()
+        .filter(|(id, value)| is_setting(id, *value))
+        .collect()
 }
 
 /// Keep `settings` at `path`, written beside it first and moved into
@@ -285,6 +290,10 @@ impl Machine for Device {
                 eprintln!("bombechat: settings not saved: {e}");
             }
         }
+    }
+
+    fn settings(&self) -> HashMap<String, usize> {
+        self.settings.clone()
     }
 
     fn lock(&self) -> Lock {

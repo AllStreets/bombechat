@@ -1,7 +1,7 @@
 //! The Tauri commands and event payloads, against a fake machine: no
 //! audio, no window, no store on disk.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -21,6 +21,8 @@ struct Calls {
     pairings: Vec<String>,
     confirmed: Vec<(PublicIdentity, String)>,
     settings: Vec<(String, usize)>,
+    /// What the fake's settings file holds, as `settings` reads it back.
+    saved: HashMap<String, usize>,
     passphrases: Arc<Mutex<Vec<String>>>,
     /// The name each unlock was given.
     names: Arc<Mutex<Vec<String>>>,
@@ -141,6 +143,14 @@ impl Machine for Fake {
             .unwrap()
             .settings
             .push((id.to_string(), value_index));
+        self.calls
+            .lock()
+            .unwrap()
+            .saved
+            .insert(id.to_string(), value_index);
+    }
+    fn settings(&self) -> HashMap<String, usize> {
+        self.calls.lock().unwrap().saved.clone()
     }
     fn lock(&self) -> Lock {
         self.lock
@@ -301,6 +311,108 @@ fn set_setting_takes_the_ids_and_values_the_settings_page_has() {
         calls.lock().unwrap().settings,
         vec![("sound".to_string(), 2), ("quiet".to_string(), 4)]
     );
+}
+
+#[test]
+fn settings_are_the_saved_values_with_defaults_for_the_rest() {
+    let (m, calls) = fake(Lock::Locked);
+    let all = commands::settings(&m);
+    assert_eq!(
+        all.len(),
+        commands::SETTINGS.len(),
+        "every setting, saved or not"
+    );
+    assert_eq!(
+        all["sound"], 2,
+        "Listen and send until the person says otherwise"
+    );
+    assert_eq!(all["quiet"], 2, "40 dB");
+    assert_eq!(all["light"], 0);
+    assert_eq!(all["hops"], 3);
+
+    commands::set_setting(&m, "sound".into(), 1).unwrap();
+    commands::set_setting(&m, "expire".into(), 0).unwrap();
+    let all = commands::settings(&m);
+    assert_eq!(
+        all["sound"], 1,
+        "a saved Listen is read back, locked or not"
+    );
+    assert_eq!(all["expire"], 0);
+    assert_eq!(
+        calls.lock().unwrap().settings.len(),
+        2,
+        "reading sets nothing"
+    );
+}
+
+#[test]
+fn settings_drop_unknown_ids_and_values_out_of_range() {
+    let (m, calls) = fake(Lock::Unlocked);
+    {
+        let mut c = calls.lock().unwrap();
+        c.saved.insert("warp".into(), 1);
+        c.saved.insert("sound".into(), 7);
+        c.saved.insert("repeats".into(), 0);
+    }
+    let all = commands::settings(&m);
+    assert!(!all.contains_key("warp"));
+    assert_eq!(all["sound"], 2, "out of range: the default");
+    assert_eq!(all["repeats"], 0);
+}
+
+#[test]
+fn every_setting_has_a_default_within_its_values() {
+    for (id, count, default) in commands::SETTINGS {
+        assert!(default < count, "{id}: default {default} of {count}");
+    }
+}
+
+#[test]
+fn every_setting_is_one_the_settings_page_has_with_its_default() {
+    let page = include_str!("../../ui/settings.html");
+    for (id, count, default) in commands::SETTINGS {
+        let at = page
+            .find(&format!("{{id:'{id}',"))
+            .unwrap_or_else(|| panic!("settings.html has no {id}"));
+        let line = &page[at..at + page[at..].find('\n').unwrap()];
+        let values = line
+            .split("values:[")
+            .nth(1)
+            .and_then(|v| v.split(']').next())
+            .unwrap();
+        assert_eq!(values.split(',').count(), count, "{id}: how many values");
+        assert!(
+            line.contains(&format!(",v:{default},")),
+            "{id}: the page's default is not {default}"
+        );
+    }
+    assert_eq!(
+        page.matches("{id:'").count(),
+        commands::SETTINGS.len(),
+        "settings.html has a setting the device does not keep"
+    );
+}
+
+#[test]
+fn the_simulator_keeps_the_same_settings_with_the_same_defaults() {
+    let sim = include_str!("../../ui/simulator.js");
+    let line = sim
+        .lines()
+        .find(|l| l.starts_with("const DEFAULTS = {"))
+        .expect("simulator.js lists its settings");
+    let mut kept: Vec<String> = line
+        .trim_start_matches("const DEFAULTS = {")
+        .trim_end_matches("};")
+        .split(',')
+        .map(|kv| kv.replace(' ', ""))
+        .collect();
+    let mut want: Vec<String> = commands::SETTINGS
+        .iter()
+        .map(|(id, _, default)| format!("{id}:{default}"))
+        .collect();
+    kept.sort();
+    want.sort();
+    assert_eq!(kept, want);
 }
 
 #[test]
@@ -489,10 +601,18 @@ fn a_tick_that_keeps_panicking_is_reported_once_in_a_while() {
         .lock()
         .unwrap()
         .extend([None, None, None, Some(vec![NodeEvent::RoomDb(39.0)])]);
-    assert_eq!(commands::tick(&r.shared, 20).len(), 1, "the first is reported");
+    assert_eq!(
+        commands::tick(&r.shared, 20).len(),
+        1,
+        "the first is reported"
+    );
     assert!(commands::tick(&r.shared, 40).is_empty(), "the next is not");
     assert!(commands::tick(&r.shared, 60).is_empty());
-    assert_eq!(commands::tick(&r.shared, 80).len(), 1, "and a good tick still is");
+    assert_eq!(
+        commands::tick(&r.shared, 80).len(),
+        1,
+        "and a good tick still is"
+    );
 }
 
 #[test]

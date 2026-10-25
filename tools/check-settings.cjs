@@ -105,8 +105,45 @@ const url = q => 'http://127.0.0.1:4811/' + path.relative(ROOTDIR, page) + (q ? 
   await nar.screenshot({ path: path.join(out, 'narrow.png'), fullPage: false });
   const overflow = await nar.evaluate(() => document.documentElement.scrollWidth > innerWidth);
   if (overflow) problems.push('horizontal overflow at 900px');
+  // the machine's saved settings are the only record: the page renders every row from settings() and sends
+  // nothing at load, whatever localStorage holds (cleared, or an old copy). In the simulator and on the app
+  // path (window.__TAURI__ stubbed); a change the person makes then sends exactly that one setting.
+  const atBoot = {};
+  if (APP) for (const where of ['browser', 'app']) for (const stale of [false, true]) {
+    const tag = `${where}, localStorage ${stale ? 'stale' : 'cleared'}`;
+    const ctx = await browser.newContext({ viewport: vp, deviceScaleFactor: 2 });
+    await ctx.addInitScript(stale => { try { localStorage.clear(); if (stale) localStorage.setItem('bombechat.settings', JSON.stringify({ sound: 2, hops: 0, quiet: 0 })); } catch (e) {} }, stale);
+    const kept = { sound: 1, volume: 2, band: 0, light: 0, flash: 1, machine: 1, machvol: 2, carry: 1, hops: 6, hold: 2, quiet: 4, repeats: 2, lock: 1, expire: 0, inperson: 1 };
+    if (where === 'app') await ctx.addInitScript(kept => {
+      window.__calls = [];
+      window.__TAURI__ = { event: { listen: () => Promise.resolve(() => {}) }, core: { invoke: (cmd, args) => { window.__calls.push([cmd, args]);
+        return Promise.resolve(cmd === 'settings' ? kept : cmd === 'channels' ? [{ channel: 'sound', state: 'listening', rate: 16.1 }] : null); } } };
+    }, kept);
+    else await ctx.addInitScript(kept => { try { sessionStorage.setItem('bombechat.simulated-machine', JSON.stringify(kept)); } catch (e) {} }, { sound: 1, hops: 6, quiet: 4, expire: 0 });
+    const sp = await ctx.newPage();
+    sp.on('pageerror', e => problems.push(`${tag}: page error: ` + e.message));
+    sp.on('console', m => m.type() === 'error' && problems.push(`${tag}: console: ` + m.text()));
+    await sp.goto(url('still'), { waitUntil: 'domcontentloaded', timeout: 120000 });
+    await sp.waitForFunction(() => window.__ready, null, { timeout: 90000 });
+    await sp.waitForTimeout(300);
+    const sets = () => window.__TAURI__ ? __calls.filter(c => c[0] === 'set_setting').map(c => c[1]) : __sim.settingsSet;
+    const shown = await sp.evaluate(ids => Object.fromEntries(ids.map(id => [id, +document.querySelector(`.row[data-id="${id}"] .jk[aria-checked="true"]`).dataset.i])), Object.keys(kept));
+    const plugs = await sp.evaluate(ids => Object.fromEntries(ids.map(id => [id, window.__bc.end(id).jack])), Object.keys(kept));
+    const sent = await sp.evaluate(`(${sets})()`);
+    if (JSON.stringify(shown) !== JSON.stringify(kept)) problems.push(`${tag}: the rows show ${JSON.stringify(shown)}, the machine keeps ${JSON.stringify(kept)}`);
+    if (JSON.stringify(plugs) !== JSON.stringify(kept)) problems.push(`${tag}: the plugs sit at ${JSON.stringify(plugs)}, the machine keeps ${JSON.stringify(kept)}`);
+    if ((Array.isArray(sent) ? sent.length : sent) !== 0) problems.push(`${tag}: the page sent settings at load: ${JSON.stringify(sent)}`);
+    if (!stale) await sp.screenshot({ path: path.join(out, `at-boot-${where}.png`), clip: { x: 0, y: 46, width: 460, height: 854 } });
+    await sp.click('.row[data-id="sound"] .jk[data-i="2"]');
+    await sp.waitForTimeout(200);
+    const changed = await sp.evaluate(`(${sets})()`);
+    const keptAfter = where === 'browser' ? await sp.evaluate(() => import('./bridge.js').then(m => m.bridge.settings())) : null;
+    if (where === 'app' ? JSON.stringify(changed) !== JSON.stringify([{ id: 'sound', valueIndex: 2 }]) : changed !== 1 || keptAfter.sound !== 2) problems.push(`${tag}: choosing Listen and send sent ${JSON.stringify(changed)}, kept ${JSON.stringify(keptAfter)}`);
+    atBoot[tag] = { shown, sent, changed };
+    await ctx.close();
+  }
   await browser.close();
-  console.log(JSON.stringify({ out, fps, results, keyboard: [before, after], problems }, null, 2));
+  console.log(JSON.stringify({ out, fps, results, keyboard: [before, after], atBoot, problems }, null, 2));
   server.close();
   process.exit(problems.length ? 1 : 0);
 })();

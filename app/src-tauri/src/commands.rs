@@ -11,6 +11,7 @@
 //! and public keys, never a private or session key.
 
 use std::any::Any;
+use std::collections::{BTreeMap, HashMap};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -33,12 +34,13 @@ const PANIC_REPORT_GAP: Duration = Duration::from_secs(5);
 const MAX_NAME_CHARS: usize = 40;
 
 /// The command names, exactly as `bridge.js` invokes them.
-pub const NAMES: [&str; 10] = [
+pub const NAMES: [&str; 11] = [
     "send",
     "broadcast",
     "pair",
     "confirm_pair",
     "set_setting",
+    "settings",
     "unlock",
     "contacts",
     "channels",
@@ -47,24 +49,33 @@ pub const NAMES: [&str; 10] = [
 ];
 
 /// Each setting the settings page can change, with how many values it
-/// has (`app/ui/settings.html`). `set_setting` accepts only these.
-pub const SETTINGS: [(&str, usize); 15] = [
-    ("sound", 3),
-    ("volume", 5),
-    ("band", 2),
-    ("light", 3),
-    ("flash", 3),
-    ("machine", 2),
-    ("machvol", 5),
-    ("carry", 2),
-    ("hops", 7),
-    ("hold", 5),
-    ("quiet", 5),
-    ("repeats", 4),
-    ("lock", 2),
-    ("expire", 4),
-    ("inperson", 2),
+/// has and the value it has until the person changes it
+/// (`app/ui/settings.html`). `set_setting` accepts only these, and
+/// `settings` reports each of them.
+pub const SETTINGS: [(&str, usize, usize); 15] = [
+    ("sound", 3, 2),
+    ("volume", 5, 2),
+    ("band", 2, 0),
+    ("light", 3, 0),
+    ("flash", 3, 1),
+    ("machine", 2, 1),
+    ("machvol", 5, 2),
+    ("carry", 2, 1),
+    ("hops", 7, 3),
+    ("hold", 5, 2),
+    ("quiet", 5, 2),
+    ("repeats", 4, 2),
+    ("lock", 2, 1),
+    ("expire", 4, 2),
+    ("inperson", 2, 1),
 ];
+
+/// Whether `value_index` is one of the values setting `id` has.
+pub fn is_setting(id: &str, value_index: usize) -> bool {
+    SETTINGS
+        .iter()
+        .any(|(name, count, _)| *name == id && value_index < *count)
+}
 
 /// Whether the store is open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -108,6 +119,9 @@ pub trait Machine: Send {
     /// Record a setting the page changed. `id` and `value_index` have been
     /// checked against [`SETTINGS`].
     fn set_setting(&mut self, id: &str, value_index: usize);
+    /// The settings as last kept, by id, whatever the lock. May hold ids
+    /// or values [`SETTINGS`] does not know; [`settings`] drops those.
+    fn settings(&self) -> HashMap<String, usize>;
     fn lock(&self) -> Lock;
     /// Begin an unlock: refuse if already unlocked or unlocking, otherwise
     /// mark it unlocking and hand back the work to do off the lock.
@@ -277,14 +291,29 @@ pub fn confirm_pair(s: &Shared, peer_hex: String, name: String) -> Result<i64, S
 
 /// `set_setting { id, valueIndex }`.
 pub fn set_setting(s: &Shared, id: String, value_index: usize) -> Result<(), String> {
-    match SETTINGS.iter().find(|(name, _)| *name == id) {
-        Some((_, count)) if value_index < *count => {
+    match SETTINGS.iter().find(|(name, _, _)| *name == id) {
+        Some((_, count, _)) if value_index < *count => {
             s.machine().set_setting(&id, value_index);
             Ok(())
         }
         Some(_) => Err(format!("no value {value_index} for {id}")),
         None => Err(format!("no such setting: {id}")),
     }
+}
+
+/// `settings`: every setting's value, by id, as the machine keeps it, or
+/// its default if it has none (or none it knows). The page renders from
+/// this and never sends a setting back unless the person changed it.
+/// Settings are not secret, so this answers locked or not.
+pub fn settings(s: &Shared) -> BTreeMap<&'static str, usize> {
+    let kept = s.machine().settings();
+    SETTINGS
+        .iter()
+        .map(|&(id, count, default)| {
+            let value = kept.get(id).copied().filter(|v| *v < count);
+            (id, value.unwrap_or(default))
+        })
+        .collect()
 }
 
 /// `unlock { passphrase, name? }`. The key is derived (Argon2id, most of a

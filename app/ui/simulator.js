@@ -12,6 +12,12 @@
 // key and a seeded safety number); confirmPair adds him to contacts() under the
 // name as the page corrected it.
 //
+// Settings: the simulated machine keeps them as the device keeps settings.json,
+// apart from the page's own storage: in memory, carried between the front and
+// back pages in sessionStorage under MACHINE_SETTINGS (a stand-in for the file
+// beside the store; clearing the page's localStorage leaves it alone).
+// settings() answers every setting the settings page has, defaults for the rest.
+//
 // Query parameters: ?f=N starts the incoming message at chunk N (0 based),
 // ?still holds everything where it lands (no room meter, no further chunks).
 const SHOWN = 'Water is at the church on Fifth. Bring the radio, we leave at dusk.';
@@ -20,6 +26,17 @@ const MARISOL = 1;
 const TAG = 0x5a1e;
 
 const TEODOR = 2;
+// every setting on the settings page and its value until the person changes it, as the device's commands::SETTINGS
+const DEFAULTS = { sound: 2, volume: 2, band: 0, light: 0, flash: 1, machine: 1, machvol: 2, carry: 1, hops: 3, hold: 2, quiet: 2, repeats: 2, lock: 1, expire: 2, inperson: 1 };
+const MACHINE_SETTINGS = 'bombechat.simulated-machine';
+function keptSettings() {
+  let kept = {};
+  try { kept = JSON.parse(sessionStorage.getItem(MACHINE_SETTINGS) || '{}') || {}; } catch (e) {}
+  const out = { ...DEFAULTS };
+  for (const id in DEFAULTS) if (Number.isInteger(kept[id]) && kept[id] >= 0) out[id] = kept[id];
+  return out;
+}
+function keepSettings(settings) { try { sessionStorage.setItem(MACHINE_SETTINGS, JSON.stringify(settings)); } catch (e) {} }
 // bytes of message a second over sound, as the modem measures it at its defaults (crates/modem measured_rate)
 const RATE = 16.1;
 const PAIR_MS = 2400;
@@ -69,7 +86,7 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
   let c = query.has('f') ? Math.max(0, Math.min(NC - 1, +query.get('f') || 0)) : 1;
   let clock = at(9, 15) * 60000;
   const setClock = (h, m) => { clock = at(h, m) * 60000; };
-  const settings = { sound: 2, light: 0 };
+  const settings = keptSettings();
   // waiting to send; the public one was queued before the page opened
   const queue = [{ id: bytes(16), text: 'Public: the library on Halsted has power and charging.', public: true }];
   let room = 47, dipUntil = 0, nextDip = 0, sending = false, paused = false, done = false, started = false;
@@ -151,6 +168,8 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
     fail() { sound('failed'); },
     receiving(on) { sound(on ? 'receiving' : 'listening'); },
     pause() { paused = true; },
+    // how many times a setting was set, for the check that a page's load sets none
+    settingsSet: 0,
   };
 
   return {
@@ -171,7 +190,13 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
       if (!people.some(p => p.id === TEODOR)) people.push({ id: TEODOR, name, checked: true, safety });
       return Promise.resolve(TEODOR);
     },
-    setSetting(id, valueIndex) { settings[id] = valueIndex; return Promise.resolve(); },
+    setSetting(id, valueIndex) {
+      test.settingsSet += 1;
+      if (!(id in DEFAULTS)) return Promise.reject(`no such setting: ${id}`);
+      settings[id] = valueIndex; keepSettings(settings);
+      return Promise.resolve();
+    },
+    settings: () => Promise.resolve({ ...settings }),
     unlock: () => Promise.resolve(),
     contacts: () => Promise.resolve(people.map(p => ({ ...p }))),
     // the sheet's history arrives as events when the conversation starts, as the mockups showed it

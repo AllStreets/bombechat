@@ -11,7 +11,11 @@
 //                                won't send, e.g. 'not sent: sound is set to listen only'
 //   confirmPair(peerHex, name)   [confirm_pair { peerHex, name }]   resolves to the new contact id; name as the person
 //                                corrected it on the card (the hello's name is only a suggestion)
-//   setSetting(id, valueIndex)   [set_setting { id, valueIndex }]
+//   setSetting(id, valueIndex)   [set_setting { id, valueIndex }]  only for a change the person just made: the
+//                                machine keeps every setting and is their only record
+//   settings()                   [settings]                         resolves to { [id]: valueIndex } for every setting on the
+//                                settings page, as the machine keeps them (defaults for any never set), locked or not.
+//                                Pages render from this at load and never send it back
 //   unlock(passphrase, name)     [unlock { passphrase, name }]      rejects with a sentence to show, e.g. 'wrong passphrase'.
 //                                name: your own name, needed the first time (it creates the store and goes in your
 //                                pairing hellos), ignored after
@@ -139,6 +143,7 @@ function tauriBackend() {
     pair: () => invoke('pair'),
     confirmPair: (peerHex, name) => invoke('confirm_pair', { peerHex, name }).then(contactId),
     setSetting: (id, valueIndex) => invoke('set_setting', { id, valueIndex }),
+    settings: () => invoke('settings'),
     unlock: (passphrase, name) => invoke('unlock', name === undefined ? { passphrase } : { passphrase, name }),
     contacts: () => invoke('contacts').then(list => list.map(person)),
     conversation: contactId => invoke('conversation', { contactId }).then(list => list.map(normalise.message)),
@@ -158,6 +163,7 @@ function simulatedBackend() {
     pair: () => sim.pair(),
     confirmPair: (peerHex, name) => sim.confirmPair(peerHex, name).then(contactId),
     setSetting: (id, valueIndex) => sim.setSetting(id, valueIndex),
+    settings: () => sim.settings(),
     unlock: (passphrase, name) => sim.unlock(passphrase, name),
     contacts: () => sim.contacts().then(list => list.map(person)),
     conversation: contactId => sim.conversation(contactId).then(list => list.map(normalise.message)),
@@ -177,6 +183,7 @@ export const bridge = {
   pair: () => backend.pair(),
   confirmPair: (peerHex, name) => backend.confirmPair(peerHex, name),
   setSetting: (id, valueIndex) => backend.setSetting(id, valueIndex),
+  settings: () => backend.settings(),
   unlock: (passphrase, name) => backend.unlock(passphrase, name),
   contacts: () => backend.contacts(),
   conversation: contactId => backend.conversation(contactId),
