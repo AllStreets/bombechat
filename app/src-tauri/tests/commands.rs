@@ -18,7 +18,11 @@ use serde_json::json;
 struct Calls {
     sent: Vec<(Vec<ContactId>, String, Channel)>,
     broadcasts: Vec<String>,
+    /// The channel each broadcast went on.
+    broadcast_on: Vec<Channel>,
     pairings: Vec<String>,
+    /// How many times pairing was stopped.
+    stopped: usize,
     confirmed: Vec<(PublicIdentity, String)>,
     settings: Vec<(String, usize)>,
     /// What the fake's settings file holds, as `settings` reads it back.
@@ -96,8 +100,10 @@ impl Machine for Fake {
             NOT_SENT
         }
     }
-    fn broadcast(&mut self, text: &str) -> [u8; 16] {
-        self.calls.lock().unwrap().broadcasts.push(text.to_string());
+    fn broadcast(&mut self, text: &str, channel: Channel) -> [u8; 16] {
+        let mut calls = self.calls.lock().unwrap();
+        calls.broadcasts.push(text.to_string());
+        calls.broadcast_on.push(channel);
         ID
     }
     fn start_pairing(&mut self, my_name: &str) -> Result<(), String> {
@@ -107,6 +113,9 @@ impl Machine for Fake {
             .pairings
             .push(my_name.to_string());
         Ok(())
+    }
+    fn stop_pairing(&mut self) {
+        self.calls.lock().unwrap().stopped += 1;
     }
     fn confirm_pairing(&mut self, peer: &PublicIdentity, name: &str) -> ContactId {
         self.calls
@@ -294,9 +303,32 @@ fn send_passes_the_channel_and_reports_nothing_sent_as_an_error() {
 #[test]
 fn broadcast_returns_the_id_as_hex() {
     let (m, calls) = fake(Lock::Unlocked);
-    let id = commands::broadcast(&m, "Shelter open.".into()).unwrap();
+    let id = commands::broadcast(&m, "Shelter open.".into(), "sound".into()).unwrap();
     assert_eq!(id, "0123456789abcdeffedcba9876543210");
     assert_eq!(calls.lock().unwrap().broadcasts, vec!["Shelter open."]);
+}
+
+#[test]
+fn broadcast_passes_the_channel_and_refuses_one_there_is_none_of() {
+    let (m, calls) = fake(Lock::Unlocked);
+    commands::broadcast(&m, "By light.".into(), "Light".into()).unwrap();
+    commands::broadcast(&m, "By sound.".into(), "sound".into()).unwrap();
+    assert_eq!(
+        commands::broadcast(&m, "By pigeon.".into(), "pigeon".into()),
+        Err("no such channel: pigeon".to_string())
+    );
+    assert_eq!(
+        calls.lock().unwrap().broadcast_on,
+        vec![Channel::Light, Channel::Sound]
+    );
+}
+
+#[test]
+fn stop_pairing_ends_the_pairing_in_progress() {
+    let (m, calls) = fake(Lock::Unlocked);
+    commands::pair(&m).unwrap();
+    commands::stop_pairing(&m);
+    assert_eq!(calls.lock().unwrap().stopped, 1);
 }
 
 #[test]
@@ -304,7 +336,7 @@ fn an_empty_broadcast_is_refused_with_a_sentence() {
     let (m, calls) = fake(Lock::Unlocked);
     for text in ["", "   ", "\n\t"] {
         assert_eq!(
-            commands::broadcast(&m, text.into()),
+            commands::broadcast(&m, text.into(), "sound".into()),
             Err("Write the notice first".to_string())
         );
     }
@@ -315,9 +347,9 @@ fn an_empty_broadcast_is_refused_with_a_sentence() {
 fn a_broadcast_longer_than_an_envelope_holds_is_refused_with_its_length() {
     let (m, calls) = fake(Lock::Unlocked);
     let longest = "x".repeat(MAX_BROADCAST);
-    assert!(commands::broadcast(&m, longest.clone()).is_ok());
+    assert!(commands::broadcast(&m, longest.clone(), "sound".into()).is_ok());
     assert_eq!(
-        commands::broadcast(&m, "x".repeat(MAX_BROADCAST + 1)),
+        commands::broadcast(&m, "x".repeat(MAX_BROADCAST + 1), "sound".into()),
         Err(format!(
             "Too long to broadcast: {} bytes, at most {MAX_BROADCAST}",
             MAX_BROADCAST + 1
@@ -325,7 +357,7 @@ fn a_broadcast_longer_than_an_envelope_holds_is_refused_with_its_length() {
     );
     // counted in bytes, as the envelope holds it: each of these is two
     let accents = "é".repeat(MAX_BROADCAST / 2 + 1);
-    assert!(commands::broadcast(&m, accents).is_err());
+    assert!(commands::broadcast(&m, accents, "sound".into()).is_err());
     assert_eq!(calls.lock().unwrap().broadcasts, vec![longest]);
 }
 
@@ -680,6 +712,30 @@ fn channels_carry_the_rate_each_measures_listening_until_it_reports_otherwise() 
 }
 
 #[test]
+fn channels_carry_the_light_rate_with_no_band() {
+    let r = rig(Lock::Unlocked, None);
+    r.rates
+        .lock()
+        .unwrap()
+        .extend([(Channel::Sound, 16.1), (Channel::Light, 2290.0)]);
+    r.script
+        .lock()
+        .unwrap()
+        .push_back(Some(vec![NodeEvent::ChannelState {
+            channel: Channel::Light,
+            state: "unavailable: camera permission denied".to_string(),
+        }]));
+    commands::tick(&r.shared, 20);
+    assert_eq!(
+        serde_json::to_value(commands::channels(&r.shared)).unwrap(),
+        json!([
+            { "channel": "light", "state": "unavailable: camera permission denied", "rate": 2290.0f32 },
+            { "channel": "sound", "state": "listening", "rate": 16.1f32 }
+        ])
+    );
+}
+
+#[test]
 fn a_tick_that_panics_reports_sound_failed_and_the_pump_carries_on() {
     let r = rig(Lock::Unlocked, None);
     r.script
@@ -803,6 +859,32 @@ fn node_events_become_the_bridge_events_with_the_payloads_bridge_js_expects() {
             json!({ "channel": "sound", "state": "receiving" })
         )
     );
+    assert_eq!(
+        bridge_event(&NodeEvent::Display {
+            tag: 0x0d0e,
+            bits: vec![0xa5, 0x0f],
+            spec_id: 2,
+            index: 7,
+        }),
+        (
+            "display",
+            json!({ "tag": 0x0d0e, "bits": [0xa5, 0x0f], "spec": 2, "index": 7 })
+        )
+    );
+    assert_eq!(
+        bridge_event(&NodeEvent::DisplayStopped { tag: 0x0d0e }),
+        ("displayStopped", json!({ "tag": 0x0d0e }))
+    );
+    assert_eq!(
+        bridge_event(&NodeEvent::ChannelState {
+            channel: Channel::Light,
+            state: bombechat_node::TILT_OR_DIM.to_string()
+        }),
+        (
+            "channel",
+            json!({ "channel": "light", "state": "seeing a code: tilt or dim the screen" })
+        )
+    );
     for (state, word) in [
         (OutboxState::Waiting, "waiting"),
         (OutboxState::Playing, "playing"),
@@ -828,6 +910,8 @@ fn every_event_name_is_one_bridge_js_listens_for() {
         "roomDb",
         "channel",
         "outbox",
+        "display",
+        "displayStopped",
     ];
     let list = bridge
         .lines()
@@ -872,13 +956,13 @@ fn every_command_name_is_registered_with_tauri() {
 }
 
 #[test]
-fn settings_that_wait_for_relay_or_light_are_refused_and_say_what_they_wait_for() {
+fn settings_that_wait_for_relay_are_refused_and_say_what_they_wait_for() {
     let (m, calls) = fake(Lock::Unlocked);
     for (id, name, note) in commands::COMING {
         let why = commands::set_setting(&m, id.into(), 0).unwrap_err();
         assert_eq!(why, format!("{name} {note}"));
         assert!(why.starts_with(char::is_uppercase), "{why}: a sentence");
-        assert!(note == "comes with relay" || note == "comes with light");
+        assert_eq!(note, "comes with relay");
     }
     assert!(
         calls.lock().unwrap().settings.is_empty(),
@@ -889,9 +973,25 @@ fn settings_that_wait_for_relay_or_light_are_refused_and_say_what_they_wait_for(
     for id in ["carry", "hops", "hold"] {
         assert_eq!(notes[id], json!({ "note": "comes with relay" }), "{id}");
     }
-    for id in ["light", "flash"] {
-        assert_eq!(notes[id], json!({ "note": "comes with light" }), "{id}");
-    }
+}
+
+#[test]
+fn the_light_switch_and_flash_speed_are_live_settings() {
+    let (m, calls) = fake(Lock::Locked);
+    let notes = serde_json::to_value(commands::setting_notes(&m)).unwrap();
+    assert!(notes.get("light").is_none() && notes.get("flash").is_none());
+    assert_eq!(commands::settings(&m)["light"], 0, "Off until turned");
+    assert_eq!(commands::settings(&m)["flash"], 1, "Normal");
+    commands::set_setting(&m, "light".into(), 2).unwrap();
+    commands::set_setting(&m, "flash".into(), 0).unwrap();
+    assert!(commands::set_setting(&m, "light".into(), 3).is_err());
+    assert!(commands::set_setting(&m, "flash".into(), 3).is_err());
+    assert_eq!(
+        calls.lock().unwrap().settings,
+        vec![("light".to_string(), 2), ("flash".to_string(), 0)]
+    );
+    let all = commands::settings(&m);
+    assert_eq!((all["light"], all["flash"]), (2, 0), "read back as kept");
 }
 
 #[test]
@@ -901,15 +1001,10 @@ fn a_value_an_older_build_kept_for_a_waiting_setting_is_not_reported_as_working(
         let mut c = calls.lock().unwrap();
         c.saved.insert("carry".into(), 0);
         c.saved.insert("hops".into(), 6);
-        c.saved.insert("light".into(), 2);
         c.saved.insert("inperson".into(), 0);
     }
     let all = commands::settings(&m);
-    assert_eq!(
-        (all["carry"], all["hops"], all["light"]),
-        (1, 3, 0),
-        "their defaults"
-    );
+    assert_eq!((all["carry"], all["hops"]), (1, 3), "their defaults");
     assert_eq!(all["inperson"], 1, "always on");
 }
 
@@ -997,4 +1092,51 @@ fn the_simulator_holds_the_same_settings_with_the_same_notes() {
     have.sort();
     let want: Vec<String> = want.iter().map(|w| w.replace(' ', "")).collect();
     assert_eq!(have, want);
+}
+
+/// A `const NAME = [a, b, c];` line of simulator.js, as numbers.
+fn simulator_list(name: &str) -> Vec<f64> {
+    let sim = include_str!("../../ui/simulator.js");
+    let start = format!("const {name} = [");
+    sim.lines()
+        .find(|l| l.starts_with(&start))
+        .unwrap_or_else(|| panic!("simulator.js has no {name}"))
+        .trim_start_matches(start.as_str())
+        .trim_end_matches("];")
+        .split(',')
+        .map(|n| n.trim().parse().expect("a number"))
+        .collect()
+}
+
+#[test]
+fn the_simulator_flashes_at_the_presets_rates_and_grid_sizes() {
+    use bombechat_light::CodeSpec;
+    let presets = CodeSpec::presets();
+    let rates: Vec<f64> = presets
+        .iter()
+        .map(|p| {
+            (p.packets_per_frame() * p.symbol_size as usize) as f64
+                * f64::from(p.frames_per_second())
+        })
+        .collect();
+    assert_eq!(simulator_list("LIGHT_RATES"), rates);
+    let cells: Vec<f64> = presets.iter().map(|p| f64::from(p.cells)).collect();
+    assert_eq!(simulator_list("LIGHT_CELLS"), cells);
+    let fps: Vec<f64> = presets
+        .iter()
+        .map(|p| f64::from(p.frames_per_second()))
+        .collect();
+    assert_eq!(simulator_list("LIGHT_FPS"), fps);
+}
+
+#[test]
+fn the_simulator_refuses_light_as_the_node_does() {
+    let sim = include_str!("../../ui/simulator.js");
+    let line = sim
+        .lines()
+        .find(|l| l.starts_with("const LIGHT_SAYS = ["))
+        .expect("simulator.js has LIGHT_SAYS");
+    for say in [bombechat_node::LIGHT_OFF, bombechat_node::READ_ONLY] {
+        assert!(line.contains(&format!("'{say}'")), "{say}");
+    }
 }

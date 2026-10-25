@@ -1,5 +1,5 @@
-//! The real machine: a [`Node`] over the sound card, and the store in the
-//! app data folder.
+//! The real machine: a [`Node`] over the sound card and the camera, and
+//! the store in the app data folder.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -7,8 +7,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use bombechat_core::{Identity, PublicIdentity};
+use bombechat_light::{CameraIo, CodeSpec};
 use bombechat_modem::{AudioIo, Band, CpalAudio, ModemConfig, QuietGate};
-use bombechat_node::{Node, NodeEvent, SoundSwitch, SoundTransport, Transport};
+use bombechat_node::{
+    LightSwitch, LightTransport, Node, NodeEvent, SoundSwitch, SoundTransport, Transport,
+};
 use bombechat_store::{
     Channel, Contact, ContactId, Store, StoreError, StoreKey, StoredBroadcast, StoredMessage,
 };
@@ -58,6 +61,57 @@ const SETTINGS_FILE: &str = "settings.json";
 
 /// The channel state when the sound card runs too slow for either band.
 pub const RATE_TOO_LOW: &str = "unavailable: microphone sample rate too low";
+
+/// The light channel's state on a system this build has no camera code
+/// for (the camera is reached through AVFoundation, on macOS only).
+pub const NO_CAMERA_HERE: &str = "unavailable: no camera on this system";
+
+/// The default camera, where this build can reach one. Nothing is opened
+/// here: the light transport opens it on its own thread once the Light
+/// switch is turned to Read (opening may wait on the permission prompt).
+#[cfg(target_os = "macos")]
+fn system_camera() -> Option<Box<dyn CameraIo>> {
+    Some(Box::new(bombechat_light::AvCamera::new()))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn system_camera() -> Option<Box<dyn CameraIo>> {
+    None
+}
+
+/// The sound transport over `audio`: on the near-silent band if its
+/// sample rate can carry it, else on the audible band; if neither fits,
+/// none, and [`RATE_TOO_LOW`] to report.
+fn sound_transport(audio: Box<dyn AudioIo>) -> Result<Box<dyn Transport>, NodeEvent> {
+    let rate = audio.sample_rate();
+    match modem_config(rate) {
+        Some(cfg) => {
+            if cfg.band != Band::NearSilent {
+                eprintln!("bombechat: the sound card runs at {rate} Hz, too slow for the near-silent band; using the audible band");
+            }
+            let gate = QuietGate::new(SEND_UNDER_DB, REPEATS, REPEAT_GAP_S);
+            Ok(Box::new(SoundTransport::new(audio, cfg, gate)))
+        }
+        None => Err(NodeEvent::ChannelState {
+            channel: Channel::Sound,
+            state: RATE_TOO_LOW.to_string(),
+        }),
+    }
+}
+
+/// The light transport over `camera`, showing codes at Normal until the
+/// Flash speed setting says otherwise.
+fn light_transport(camera: Box<dyn CameraIo>) -> Box<dyn Transport> {
+    Box::new(LightTransport::new(camera, CodeSpec::normal()))
+}
+
+/// The flash speed preset at Flash speed `value_index`: 0 Slow, 1 Normal,
+/// 2 Fast.
+fn flash_preset(value_index: usize) -> Option<CodeSpec> {
+    u8::try_from(value_index)
+        .ok()
+        .and_then(CodeSpec::from_preset)
+}
 
 /// The modem configuration for a sound card at `sample_rate`: the
 /// near-silent band if the rate can carry it, else the audible band, else
@@ -188,47 +242,60 @@ pub struct Device {
 }
 
 impl Device {
-    /// A machine listening through the default sound card, with its store
-    /// at `store_path`. If the sound card cannot be opened, it runs with
-    /// no transport and says why on its first tick.
-    pub fn with_sound_card(store_path: PathBuf) -> Device {
+    /// A machine listening through the default sound card and reading
+    /// through the default camera, with its store at `store_path`. If the
+    /// sound card cannot be opened, or there is no camera code for this
+    /// system, it runs without that channel and says why on its first
+    /// tick. The camera itself is only opened once the Light switch is
+    /// at Read, and its permission prompt, missing camera or interruption
+    /// is reported then, as the light channel's state.
+    pub fn with_hardware(store_path: PathBuf) -> Device {
+        let (mut transports, mut pending) = (Vec::new(), Vec::new());
         match CpalAudio::new() {
-            Ok(audio) => Device::with_audio(store_path, Box::new(audio)),
-            Err(e) => Device::new(
-                store_path,
-                Vec::new(),
-                vec![NodeEvent::ChannelState {
-                    channel: Channel::Sound,
-                    state: format!("unavailable: {e}"),
-                }],
-            ),
+            Ok(audio) => match sound_transport(Box::new(audio)) {
+                Ok(t) => transports.push(t),
+                Err(e) => pending.push(e),
+            },
+            Err(e) => pending.push(NodeEvent::ChannelState {
+                channel: Channel::Sound,
+                state: format!("unavailable: {e}"),
+            }),
+        }
+        match system_camera() {
+            Some(camera) => transports.push(light_transport(camera)),
+            None => pending.push(NodeEvent::ChannelState {
+                channel: Channel::Light,
+                state: NO_CAMERA_HERE.to_string(),
+            }),
+        }
+        Device::new(store_path, transports, pending)
+    }
+
+    /// A machine listening and playing through `audio`, with no light
+    /// channel: on the near-silent band if its sample rate can carry it,
+    /// else on the audible band; if neither fits it runs with no
+    /// transport and reports [`RATE_TOO_LOW`] on its first tick.
+    pub fn with_audio(store_path: PathBuf, audio: Box<dyn AudioIo>) -> Device {
+        match sound_transport(audio) {
+            Ok(sound) => Device::new(store_path, vec![sound], Vec::new()),
+            Err(e) => Device::new(store_path, Vec::new(), vec![e]),
         }
     }
 
-    /// A machine listening and playing through `audio`: on the
-    /// near-silent band if its sample rate can carry it, else on the
-    /// audible band; if neither fits it runs with no transport and
-    /// reports [`RATE_TOO_LOW`] on its first tick.
-    pub fn with_audio(store_path: PathBuf, audio: Box<dyn AudioIo>) -> Device {
-        let rate = audio.sample_rate();
-        match modem_config(rate) {
-            Some(cfg) => {
-                if cfg.band != Band::NearSilent {
-                    eprintln!("bombechat: the sound card runs at {rate} Hz, too slow for the near-silent band; using the audible band");
-                }
-                let gate = QuietGate::new(SEND_UNDER_DB, REPEATS, REPEAT_GAP_S);
-                let sound = SoundTransport::new(audio, cfg, gate);
-                Device::new(store_path, vec![Box::new(sound)], Vec::new())
-            }
-            None => Device::new(
-                store_path,
-                Vec::new(),
-                vec![NodeEvent::ChannelState {
-                    channel: Channel::Sound,
-                    state: RATE_TOO_LOW.to_string(),
-                }],
-            ),
+    /// As [`Device::with_audio`], and reading and flashing through
+    /// `camera` as the Light switch allows.
+    pub fn with_audio_and_camera(
+        store_path: PathBuf,
+        audio: Box<dyn AudioIo>,
+        camera: Box<dyn CameraIo>,
+    ) -> Device {
+        let (mut transports, mut pending) = (Vec::new(), Vec::new());
+        match sound_transport(audio) {
+            Ok(t) => transports.push(t),
+            Err(e) => pending.push(e),
         }
+        transports.push(light_transport(camera));
+        Device::new(store_path, transports, pending)
     }
 
     /// A machine over `transports`, reporting `pending` on its first tick,
@@ -415,6 +482,16 @@ impl Device {
                     self.node.set_sound(switch);
                 }
             }
+            "light" => {
+                if let Some(switch) = LightSwitch::from_index(value_index) {
+                    self.node.set_light(switch);
+                }
+            }
+            "flash" => {
+                if let Some(spec) = flash_preset(value_index) {
+                    self.node.set_light_preset(spec);
+                }
+            }
             "quiet" => {
                 if let Some(db) = SEND_UNDER_STEPS.get(value_index) {
                     self.node.set_send_under(*db);
@@ -499,12 +576,16 @@ impl Machine for Device {
         self.node.send(to, text, channel)
     }
 
-    fn broadcast(&mut self, text: &str) -> [u8; 16] {
-        self.node.broadcast(text)
+    fn broadcast(&mut self, text: &str, channel: Channel) -> [u8; 16] {
+        self.node.broadcast(text, channel)
     }
 
     fn start_pairing(&mut self, my_name: &str) -> Result<(), String> {
         self.node.start_pairing(my_name).map_err(str::to_string)
+    }
+
+    fn stop_pairing(&mut self) {
+        self.node.stop_pairing();
     }
 
     fn confirm_pairing(&mut self, peer: &PublicIdentity, name: &str) -> ContactId {

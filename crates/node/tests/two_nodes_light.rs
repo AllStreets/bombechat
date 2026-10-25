@@ -104,7 +104,7 @@ impl Peer {
                         bits: bits.clone(),
                     })
                 }
-                NodeEvent::DisplayStopped => self.screen = None,
+                NodeEvent::DisplayStopped { .. } => self.screen = None,
                 _ => {}
             }
         }

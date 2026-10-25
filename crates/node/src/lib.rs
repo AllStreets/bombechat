@@ -72,7 +72,8 @@
 //! A message goes out on the channel it is sent on, and only there. A
 //! pairing hello goes out on every channel whose switch allows sending.
 //! A receipt goes back on the channel its message came in on if that
-//! channel may send, else on another that may. Broadcasts go by sound.
+//! channel may send, else on another that may. A broadcast goes out on
+//! the channel it is sent on, as a message does.
 //! Light shows each envelope for a sending window
 //! ([`light::SEND_WINDOW`] times the frames a receiver needs at least),
 //! cut short once everyone a message was for has sent a receipt.
@@ -132,6 +133,19 @@ const LISTENING: &str = "listening";
 /// microphone or camera is closed, not merely idle, so this is reported
 /// instead of [`LISTENING`].
 const OFF: &str = "off";
+
+/// The light channel's state while a code is in view but cannot be read:
+/// the screen is too bright, at too steep an angle or too far away.
+/// Reported at most once in [`HINT_GAP_MS`]; it gives way to the
+/// channel's state once a code reads, or once no unreadable code has been
+/// in view for [`HINT_HOLD_MS`].
+pub const TILT_OR_DIM: &str = "seeing a code: tilt or dim the screen";
+
+/// The shortest time between two [`TILT_OR_DIM`] reports on a channel.
+const HINT_GAP_MS: u64 = 5_000;
+
+/// [`TILT_OR_DIM`] gives way this long after the last unreadable code.
+const HINT_HOLD_MS: u64 = 3_000;
 
 /// Returned by [`Node::send`] and [`Node::broadcast`] when nothing was
 /// sent. No real envelope has this id.
@@ -312,8 +326,9 @@ pub enum NodeEvent {
         spec_id: u8,
         index: u32,
     },
-    /// Light: clear the screen; nothing is being shown.
-    DisplayStopped,
+    /// Light: clear the screen; nothing is being shown. `tag` is the
+    /// envelope whose frame was on it.
+    DisplayStopped { tag: u16 },
 }
 
 impl fmt::Debug for NodeEvent {
@@ -369,7 +384,10 @@ impl fmt::Debug for NodeEvent {
                 .field("spec_id", spec_id)
                 .field("index", index)
                 .finish_non_exhaustive(),
-            NodeEvent::DisplayStopped => f.write_str("DisplayStopped"),
+            NodeEvent::DisplayStopped { tag } => f
+                .debug_struct("DisplayStopped")
+                .field("tag", tag)
+                .finish(),
         }
     }
 }
@@ -519,6 +537,16 @@ pub struct Node {
     failed: HashSet<usize>,
     /// The receiving/listening state last reported, by transport.
     reception: Vec<&'static str>,
+    /// Whether [`TILT_OR_DIM`] is the state last reported, by transport.
+    hinting: Vec<bool>,
+    /// When [`TILT_OR_DIM`] was last reported, by transport.
+    hinted_at: Vec<Option<u64>>,
+    /// When a code was last in view and could not be read, by transport.
+    unreadable_at: Vec<u64>,
+    /// Envelopes that arrived and would not open, by (transport, tag):
+    /// once handed over whole, their transport is asked to collect them
+    /// afresh ([`Transport::rejected`]).
+    unopened: HashSet<(usize, u16)>,
     /// Where the Sound switch is.
     sound: SoundSwitch,
     /// Where the Light switch is.
@@ -538,7 +566,7 @@ impl Node {
     /// locked; see [`Node::unlock`].
     pub fn new(store: Option<Store>, transports: Vec<Box<dyn Transport>>) -> Node {
         let reassemblers = transports.iter().map(|_| Reassembler::new()).collect();
-        let reception = transports.iter().map(|_| LISTENING).collect();
+        let reception: Vec<&'static str> = transports.iter().map(|_| LISTENING).collect();
         let mut node = Node {
             store: None,
             me: None,
@@ -558,6 +586,10 @@ impl Node {
             held: HashSet::new(),
             heard_by: HashMap::new(),
             failed: HashSet::new(),
+            hinting: vec![false; reception.len()],
+            hinted_at: vec![None; reception.len()],
+            unreadable_at: vec![0; reception.len()],
+            unopened: HashSet::new(),
             reception,
             sound: SoundSwitch::ListenAndSend,
             light: LightSwitch::Off,
@@ -914,12 +946,20 @@ impl Node {
     }
 
     /// Sign `text` as a public broadcast, keep it ([`Node::broadcasts`];
-    /// while waiting, with its envelope, so an unlock queues it again)
-    /// and send it. Returns its envelope
-    /// id, or [`NOT_SENT`] if locked or the text is longer than
-    /// [`MAX_BROADCAST`]. Refused by
-    /// the Sound switch as [`Node::send`] is.
-    pub fn broadcast(&mut self, text: &str) -> [u8; 16] {
+    /// while waiting, with its envelope, so an unlock queues it again,
+    /// by sound: the store keeps no channel for it) and send it over
+    /// `channel`. Returns its envelope id, or [`NOT_SENT`] if locked or
+    /// the text is longer than [`MAX_BROADCAST`]. Refused by the
+    /// channel's switch as [`Node::send`] is, and on
+    /// [`Channel::Bluetooth`] likewise.
+    pub fn broadcast(&mut self, text: &str, channel: Channel) -> [u8; 16] {
+        if channel == Channel::Bluetooth {
+            self.pending.push(NodeEvent::ChannelState {
+                channel,
+                state: NOT_IN_THIS_PLAN.to_string(),
+            });
+            return NOT_SENT;
+        }
         if self.me.is_none() || self.store.is_none() || text.len() > MAX_BROADCAST {
             return NOT_SENT;
         }
@@ -928,7 +968,7 @@ impl Node {
             return NOT_SENT;
         };
         let env = seal_public(me, text, now_min(), TTL_MIN);
-        let refused = self.refusal(Channel::Sound);
+        let refused = self.refusal(channel);
         let mut kept = StoredBroadcast {
             id: env.id,
             outgoing: true,
@@ -946,15 +986,15 @@ impl Node {
             return NOT_SENT;
         }
         if let Some(why) = refused {
-            self.report_refusal(Channel::Sound, why);
+            self.report_refusal(channel, why);
             self.pending.push(NodeEvent::Outbox {
                 id: env.id,
                 state: OutboxState::Failed,
             });
             return env.id;
         }
-        let tag = self.transmit(&env, &[Channel::Sound]);
-        self.track(tag, env.id, Channel::Sound);
+        let tag = self.transmit(&env, &[channel]);
+        self.track(tag, env.id, channel);
         env.id
     }
 
@@ -1182,7 +1222,18 @@ impl Node {
                         spec_id: spec,
                         index,
                     }),
-                    TransportEvent::DisplayStopped => events.push(NodeEvent::DisplayStopped),
+                    TransportEvent::DisplayStopped { tag } => {
+                        events.push(NodeEvent::DisplayStopped { tag })
+                    }
+                    TransportEvent::CodeUnreadable => self.unreadable(ti, now_ms, &mut events),
+                    TransportEvent::CodeRead => {
+                        if self.hinting[ti] {
+                            self.hinting[ti] = false;
+                            // Not a state it can be in: the next report
+                            // says the state it is in.
+                            self.reception[ti] = TILT_OR_DIM;
+                        }
+                    }
                     TransportEvent::RoomDb(db) => events.push(NodeEvent::RoomDb(db)),
                     TransportEvent::Unavailable(reason) => events.push(NodeEvent::ChannelState {
                         channel,
@@ -1199,6 +1250,8 @@ impl Node {
         let reassemblers = &self.reassemblers;
         self.progress
             .retain(|(ti, tag), _| reassemblers[*ti].prefix(*tag).is_some());
+        self.unopened
+            .retain(|(ti, tag)| reassemblers[*ti].prefix(*tag).is_some());
         // An arrival the reassembler (or the transport holding it) gave up
         // on was abandoned.
         let failed = &mut self.failed;
@@ -1223,6 +1276,15 @@ impl Node {
         for ti in 0..self.transports.len() {
             let channel = self.channel(ti);
             let failed = self.failed.remove(&ti);
+            if self.hinting[ti] {
+                let stale = self.now_ms.saturating_sub(self.unreadable_at[ti]) >= HINT_HOLD_MS;
+                if failed || stale || self.closed(channel) {
+                    self.hinting[ti] = false;
+                    self.reception[ti] = TILT_OR_DIM;
+                } else {
+                    continue;
+                }
+            }
             if failed {
                 events.push(NodeEvent::ChannelState {
                     channel,
@@ -1313,17 +1375,38 @@ impl Node {
             self.locked_inbox.push_back((ti, tag, bytes));
             return;
         }
-        let Ok(env) = Envelope::decode(&bytes) else {
-            self.progress.remove(&(ti, tag));
-            self.failed.insert(ti);
-            return;
-        };
-        match env.kind {
-            Kind::Private => self.advance(ti, tag, &bytes, events),
-            Kind::Public => self.on_public(ti, &env, events),
-            Kind::Control => self.on_control(ti, &env, events),
+        match Envelope::decode(&bytes) {
+            Ok(env) => match env.kind {
+                Kind::Private => self.advance(ti, tag, &bytes, events),
+                Kind::Public => self.on_public(ti, tag, &env, events),
+                Kind::Control => self.on_control(ti, tag, &env, events),
+            },
+            Err(_) => {
+                self.failed.insert(ti);
+                self.unopened.insert((ti, tag));
+            }
         }
         self.progress.remove(&(ti, tag));
+        if self.unopened.remove(&(ti, tag)) && self.transports[ti].rejected(tag) {
+            self.reassemblers[ti].forget(tag);
+        }
+    }
+
+    /// A code was in view on transport `ti` and could not be read: say
+    /// [`TILT_OR_DIM`], unless it was said less than [`HINT_GAP_MS`] ago.
+    fn unreadable(&mut self, ti: usize, now_ms: u64, events: &mut Vec<NodeEvent>) {
+        self.unreadable_at[ti] = now_ms;
+        let channel = self.channel(ti);
+        let recent = self.hinted_at[ti].is_some_and(|at| now_ms.saturating_sub(at) < HINT_GAP_MS);
+        if self.hinting[ti] || recent || self.closed(channel) {
+            return;
+        }
+        self.hinting[ti] = true;
+        self.hinted_at[ti] = Some(now_ms);
+        events.push(NodeEvent::ChannelState {
+            channel,
+            state: TILT_OR_DIM.to_string(),
+        });
     }
 
     /// Open as many chunks of a private envelope as `bytes` (a prefix of
@@ -1336,6 +1419,7 @@ impl Node {
                 None => return,
                 Some(Err(())) => {
                     self.progress.insert(key, Progress::Settled);
+                    self.unopened.insert(key);
                     return;
                 }
                 Some(Ok(layout)) => layout,
@@ -1358,6 +1442,10 @@ impl Node {
                     .ok()
                 })
                 .flatten();
+            if fresh && opener.is_none() {
+                // Not sealed to this machine, or its header is damaged.
+                self.unopened.insert(key);
+            }
             let progress = match opener {
                 Some(opener) => Progress::Opening {
                     id: layout.id,
@@ -1402,6 +1490,7 @@ impl Node {
                 Err(_) => {
                     *progress = Progress::Settled;
                     self.failed.insert(ti);
+                    self.unopened.insert(key);
                     return;
                 }
             }
@@ -1418,6 +1507,7 @@ impl Node {
             Ok(opened) => self.deliver(ti, id, opened, events),
             Err(_) => {
                 self.failed.insert(ti);
+                self.unopened.insert(key);
             }
         }
     }
@@ -1522,7 +1612,7 @@ impl Node {
         }
     }
 
-    fn on_public(&mut self, ti: usize, env: &Envelope, events: &mut Vec<NodeEvent>) {
+    fn on_public(&mut self, ti: usize, tag: u16, env: &Envelope, events: &mut Vec<NodeEvent>) {
         if self.already_have(&env.id) {
             return;
         }
@@ -1530,6 +1620,7 @@ impl Node {
         // garbage sent under a stolen id cannot suppress the real envelope.
         let Ok((signer, text, _)) = open_public(env, now_min()) else {
             self.failed.insert(ti);
+            self.unopened.insert((ti, tag));
             return;
         };
         self.mark_seen(env.id);
@@ -1565,7 +1656,7 @@ impl Node {
         });
     }
 
-    fn on_control(&mut self, ti: usize, env: &Envelope, events: &mut Vec<NodeEvent>) {
+    fn on_control(&mut self, ti: usize, tag: u16, env: &Envelope, events: &mut Vec<NodeEvent>) {
         if self.already_have(&env.id) {
             return;
         }
@@ -1574,9 +1665,13 @@ impl Node {
         // which is, and only once it has verified.
         let (control, inner_id) = match control::open(me, &env.body, now_min()) {
             Ok(opened) => opened,
-            Err(control::Refused::NotForMe) => return,
+            Err(control::Refused::NotForMe) => {
+                self.unopened.insert((ti, tag));
+                return;
+            }
             Err(control::Refused::Bad) => {
                 self.failed.insert(ti);
+                self.unopened.insert((ti, tag));
                 return;
             }
         };
@@ -1637,6 +1732,8 @@ mod tests {
         band: Arc<Mutex<Option<Band>>>,
         /// Tags it was told were delivered.
         delivered: Arc<Mutex<Vec<u16>>>,
+        /// Tags it was told would not open.
+        rejected: Arc<Mutex<Vec<u16>>>,
         /// Light, not sound.
         light: bool,
     }
@@ -1651,6 +1748,11 @@ mod tests {
         }
         fn delivered(&mut self, tag: u16) {
             self.delivered.lock().unwrap().push(tag);
+        }
+        /// Light collects afresh, as the light transport does.
+        fn rejected(&mut self, tag: u16) -> bool {
+            self.rejected.lock().unwrap().push(tag);
+            self.light
         }
         fn send(&mut self, frame: Vec<u8>) {
             self.sent.lock().unwrap().push(frame);
@@ -1878,8 +1980,8 @@ mod tests {
         assert_eq!(node.send(&[], "hi", Channel::Sound), NOT_SENT);
         assert_eq!(node.send(&[ContactId(999)], "hi", Channel::Sound), NOT_SENT);
         assert_eq!(node.send(&ids, &"x".repeat(4000), Channel::Sound), NOT_SENT);
-        assert_eq!(node.broadcast(&"x".repeat(4000)), NOT_SENT);
-        assert_eq!(node.broadcast(&"x".repeat(MAX_BROADCAST + 1)), NOT_SENT);
+        assert_eq!(node.broadcast(&"x".repeat(4000), Channel::Sound), NOT_SENT);
+        assert_eq!(node.broadcast(&"x".repeat(MAX_BROADCAST + 1), Channel::Sound), NOT_SENT);
         assert!(wire.sent.lock().unwrap().is_empty());
 
         let longest = (0..4000)
@@ -1891,7 +1993,7 @@ mod tests {
             NOT_SENT
         );
         // the longest broadcast the page is told of still fits in an envelope
-        assert_ne!(node.broadcast(&"x".repeat(MAX_BROADCAST)), NOT_SENT);
+        assert_ne!(node.broadcast(&"x".repeat(MAX_BROADCAST), Channel::Sound), NOT_SENT);
     }
 
     fn offers(events: &[NodeEvent]) -> usize {
@@ -2192,6 +2294,134 @@ mod tests {
         assert_eq!(light_states(node.tick(5)), vec!["failed", "listening"]);
     }
 
+    fn light_states(events: &[NodeEvent]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                NodeEvent::ChannelState {
+                    channel: Channel::Light,
+                    state,
+                } => Some(state.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_broadcast_goes_on_the_channel_it_is_sent_on_and_its_switch_refuses_it() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (a, b) = (Identity::generate(), Identity::generate());
+        let (mut node, sound, light, _) = two_channel_node(&dir, &a, &b);
+        let id = node.broadcast("By light.", Channel::Light);
+        assert_ne!(id, NOT_SENT);
+        assert_eq!(light.envelopes().len(), 1);
+        assert_eq!(light.envelopes()[0].kind, Kind::Public);
+        assert!(sound.sent.lock().unwrap().is_empty());
+        let tag = light.last_tag();
+        assert_eq!(outbox(&node.tick(1)), vec![(id, OutboxState::Waiting)]);
+        light.news.lock().unwrap().push(TransportEvent::Sent(tag));
+        assert_eq!(outbox(&node.tick(2)), vec![(id, OutboxState::Sent)]);
+
+        node.set_light(LightSwitch::Read);
+        let refused = node.broadcast("Not by light.", Channel::Light);
+        let events = node.tick(3);
+        assert_eq!(outbox(&events), vec![(refused, OutboxState::Failed)]);
+        assert_eq!(light_states(&events)[0], READ_ONLY);
+        assert_eq!(light.envelopes().len(), 1, "nothing more shown");
+        assert_eq!(
+            node.broadcasts().last().map(|b| b.delivery),
+            Some(Delivery::Failed)
+        );
+
+        assert_eq!(node.broadcast("No.", Channel::Bluetooth), NOT_SENT);
+    }
+
+    #[test]
+    fn an_unreadable_code_says_tilt_or_dim_at_most_every_few_seconds_until_one_reads() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (a, b) = (Identity::generate(), Identity::generate());
+        let (mut node, _, light, _) = two_channel_node(&dir, &b, &a);
+        node.tick(0);
+        let unreadable = |node: &mut Node, now: u64| {
+            light
+                .news
+                .lock()
+                .unwrap()
+                .push(TransportEvent::CodeUnreadable);
+            light_states(&node.tick(now))
+        };
+        assert_eq!(unreadable(&mut node, 100), vec![TILT_OR_DIM]);
+        assert!(unreadable(&mut node, 200).is_empty(), "said once");
+        // Arriving while it says so: the hint stays until a code reads.
+        light.news.lock().unwrap().push(TransportEvent::Arriving(9));
+        assert!(light_states(&node.tick(300)).is_empty());
+        light.news.lock().unwrap().push(TransportEvent::CodeRead);
+        assert_eq!(light_states(&node.tick(400)), vec!["receiving"]);
+        // Unreadable again soon after: not said again yet.
+        assert!(unreadable(&mut node, 1_000).is_empty());
+        assert!(unreadable(&mut node, 4_000).is_empty());
+        assert_eq!(unreadable(&mut node, 5_100), vec![TILT_OR_DIM]);
+        // No unreadable code in view for a while: it gives way by itself.
+        assert!(light_states(&node.tick(7_000)).is_empty());
+        assert_eq!(light_states(&node.tick(8_200)), vec!["receiving"]);
+
+        // Off says off, whatever the hint.
+        assert_eq!(unreadable(&mut node, 20_000), vec![TILT_OR_DIM]);
+        node.set_light(LightSwitch::Off);
+        assert_eq!(light_states(&node.tick(20_100)), vec!["off"]);
+        assert!(unreadable(&mut node, 30_000).is_empty(), "never while off");
+    }
+
+    #[test]
+    fn a_light_envelope_that_will_not_open_is_collected_afresh() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (a, b, c) = (
+            Identity::generate(),
+            Identity::generate(),
+            Identity::generate(),
+        );
+        let (mut node, sound, light, _) = two_channel_node(&dir, &b, &a);
+        node.tick(0);
+
+        // Damaged in a chunk: it fails, the transport is told, and the
+        // same envelope handed over again under the same tag opens.
+        let env = seal_private(&a, &[b.public()], "second try", now_min(), 60);
+        let mut bytes = env.encode();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 1;
+        light.inbox.lock().unwrap().extend(split(&bytes, 40));
+        let events = node.tick(1);
+        assert!(messages(&events).is_empty());
+        assert_eq!(light_states(&events), vec!["failed", "listening"]);
+        assert_eq!(*light.rejected.lock().unwrap(), vec![40]);
+        light.hear(&env, 40);
+        assert_eq!(messages(&node.tick(2)), vec!["second try"]);
+
+        // Sealed to someone else: rejected too.
+        light.hear(&seal_private(&a, &[c.public()], "not ours", now_min(), 60), 41);
+        assert!(messages(&node.tick(3)).is_empty());
+        assert_eq!(*light.rejected.lock().unwrap(), vec![40, 41]);
+
+        // A tampered public notice.
+        let mut notice = seal_public(&a, "Road open.", now_min(), 60);
+        notice.body[0] ^= 1;
+        light.hear(&notice, 42);
+        node.tick(4);
+        assert_eq!(*light.rejected.lock().unwrap(), vec![40, 41, 42]);
+
+        // Sound keeps what it completed: told, but nothing is collected
+        // afresh.
+        let env = seal_private(&a, &[b.public()], "by sound", now_min(), 60);
+        let mut bytes = env.encode();
+        let end = bytes.len() - 1;
+        bytes[end] ^= 1;
+        sound.inbox.lock().unwrap().extend(split(&bytes, 43));
+        node.tick(5);
+        assert_eq!(*sound.rejected.lock().unwrap(), vec![43]);
+        sound.hear(&env, 43);
+        assert!(messages(&node.tick(6)).is_empty(), "the tag is spent on sound");
+    }
+
     /// An unlocked node for `me` over a real light transport (its camera
     /// never shows anything), Light at Read and flash.
     fn light_node(dir: &tempfile::TempDir, me: &Identity) -> Node {
@@ -2218,7 +2448,7 @@ mod tests {
                             tags.push(tag);
                         }
                     }
-                    NodeEvent::DisplayStopped => lit = false,
+                    NodeEvent::DisplayStopped { .. } => lit = false,
                     _ => {}
                 }
             }
@@ -2347,7 +2577,7 @@ mod tests {
         let wire = Wire::default();
         let mut node = Node::new(None, vec![Box::new(wire.clone())]);
         assert_eq!(node.send(&[ContactId(1)], "hi", Channel::Sound), NOT_SENT);
-        assert_eq!(node.broadcast("hi"), NOT_SENT);
+        assert_eq!(node.broadcast("hi", Channel::Sound), NOT_SENT);
         assert_eq!(node.start_pairing("me"), Err("locked"));
         let peer = Identity::generate().public();
         assert_eq!(node.confirm_pairing(&peer, "p"), NOT_STORED);
@@ -2675,7 +2905,7 @@ mod tests {
                 .collect()
         };
         let id = node.send(&ids, "hi", Channel::Sound);
-        let public = node.broadcast("Road north is open.");
+        let public = node.broadcast("Road north is open.", Channel::Sound);
         assert_eq!(
             outbox(node.tick(1)),
             vec![(id, OutboxState::Waiting), (public, OutboxState::Waiting)]
@@ -2809,7 +3039,7 @@ mod tests {
 
         let id = node.send(&ids, "refused", Channel::Sound);
         assert_ne!(id, NOT_SENT, "kept, so the sheet can say it was not sent");
-        let public = node.broadcast("refused too");
+        let public = node.broadcast("refused too", Channel::Sound);
         assert_eq!(node.start_pairing("Ben"), Err(LISTEN_ONLY));
         let events = node.tick(2);
         assert_eq!(
@@ -2924,7 +3154,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let (a, c) = (Identity::generate(), Identity::generate());
         let (mut node, wire, _) = node(&dir, &a, &[]);
-        let id = node.broadcast("Water at the church.");
+        let id = node.broadcast("Water at the church.", Channel::Sound);
         let kept = node.broadcasts();
         assert_eq!(kept.len(), 1);
         assert!(kept[0].outgoing && kept[0].verified);
@@ -2943,7 +3173,7 @@ mod tests {
         // at Listen it is kept, as failed, and nothing plays
         node.set_sound(SoundSwitch::Listen);
         let before = wire.sent.lock().unwrap().len();
-        let refused = node.broadcast("refused");
+        let refused = node.broadcast("refused", Channel::Sound);
         assert_eq!(wire.sent.lock().unwrap().len(), before);
         assert_eq!(node.broadcasts()[1].id, refused);
         assert_eq!(node.broadcasts()[1].delivery, Delivery::Failed);
@@ -2983,7 +3213,7 @@ mod tests {
         let path = dir.path().join("a.db");
         let store = Store::create(&path, "pass", &a, "me").unwrap();
         let mut node = Node::new(Some(store), vec![Box::new(Wire::default())]);
-        let id = node.broadcast("Shelter open until dawn.");
+        let id = node.broadcast("Shelter open until dawn.", Channel::Sound);
         drop(node);
 
         let wire = Wire::default();

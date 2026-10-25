@@ -373,7 +373,7 @@ fn broadcast_from_stranger_is_unverified() {
     );
     let mut now = 1_000;
 
-    c.node.broadcast("Road north is open.");
+    c.node.broadcast("Road north is open.", Channel::Sound);
     run(&mut [&mut c, &mut b], &mut now, 200, |p| {
         p[1].events
             .iter()

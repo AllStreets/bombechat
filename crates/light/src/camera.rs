@@ -18,6 +18,11 @@ pub enum CameraError {
     NoDevice,
     /// The user (or a policy) has not allowed this app to use the camera.
     PermissionDenied,
+    /// The user was asked for camera permission and did not answer in
+    /// time.
+    NotAnswered,
+    /// Another app has taken the camera, or the system interrupted it.
+    Interrupted,
     /// The camera cannot do what was asked, or some other failure that
     /// does not fit the other variants. The string is a detail for logs.
     Unsupported(String),
@@ -28,6 +33,8 @@ impl fmt::Display for CameraError {
         match self {
             CameraError::NoDevice => write!(f, "no camera available"),
             CameraError::PermissionDenied => write!(f, "camera access denied"),
+            CameraError::NotAnswered => write!(f, "camera permission not answered"),
+            CameraError::Interrupted => write!(f, "camera interrupted"),
             CameraError::Unsupported(detail) => write!(f, "camera unsupported: {detail}"),
         }
     }
@@ -327,9 +334,7 @@ mod avf {
             unsafe { AVCaptureDevice::requestAccessForMediaType_completionHandler(media, &answer) };
             match rx.recv_timeout(ANSWER_WITHIN) {
                 Ok(granted) => Ok(granted),
-                Err(mpsc::RecvTimeoutError::Timeout) => Err(CameraError::Unsupported(
-                    "no answer to the camera permission request".into(),
-                )),
+                Err(mpsc::RecvTimeoutError::Timeout) => Err(CameraError::NotAnswered),
                 Err(mpsc::RecvTimeoutError::Disconnected) => Ok(false),
             }
         })
@@ -572,9 +577,7 @@ mod avf {
                 if !running.device.isConnected() {
                     Some(CameraError::NoDevice)
                 } else if running.session.isInterrupted() {
-                    Some(CameraError::Unsupported(
-                        "the camera is in use by another app".into(),
-                    ))
+                    Some(CameraError::Interrupted)
                 } else if !running.session.isRunning() {
                     Some(CameraError::Unsupported("the camera stopped".into()))
                 } else {
@@ -664,12 +667,11 @@ mod tests {
         /// refusal and not a hang.
         #[test]
         fn no_answer_to_the_prompt_is_an_error() {
-            let unanswered = CameraError::Unsupported("no answer".into());
             assert_eq!(
                 decide(AVAuthorizationStatus::NotDetermined, || Err(
-                    unanswered.clone()
+                    CameraError::NotAnswered
                 )),
-                Err(unanswered)
+                Err(CameraError::NotAnswered)
             );
         }
 

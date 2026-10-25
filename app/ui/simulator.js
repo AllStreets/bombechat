@@ -19,6 +19,11 @@
 // settings() answers every setting the settings page has, defaults for the rest; settingNotes() the ones it can't
 // change, which setSetting refuses with the device's sentence.
 //
+// Light: a send or notice by light at Read and flash is shown as the node shows one: display frames at the Flash
+// speed's rate (synthetic bits, the size of that preset's grid) for at least four seconds, then displayStopped, then
+// sent. At Read or Off it is refused as the node refuses it. Turning Light down mid-flash clears the screen and the
+// send waits; turning it back to Read and flash carries on.
+//
 // Query parameters: ?f=N starts the incoming message at chunk N (0 based),
 // ?still holds everything where it lands (no room meter, no further chunks).
 const SHOWN = 'Water is at the church on Fifth. Bring the radio, we leave at dusk.';
@@ -32,11 +37,11 @@ const DEFAULTS = { sound: 2, volume: 2, band: 0, light: 0, flash: 1, machine: 1,
 // how many values each has; like the device, a value outside these is refused, and dropped if found kept
 const COUNTS = { sound: 3, volume: 5, band: 2, light: 3, flash: 3, machine: 2, machvol: 5, carry: 2, hops: 7, hold: 5, quiet: 5, repeats: 4, lock: 2, expire: 4, inperson: 2 };
 const isSetting = (id, v) => id in COUNTS && Number.isInteger(v) && v >= 0 && v < COUNTS[id];
-// the settings this machine can't change, as the device's setting_notes: relay and light wait for their features, and
-// on the airgapped build every contact is checked in person. The simulated machine is a Mac, so its lock can come off
-const NOTES = { carry: { note: 'comes with relay' }, hops: { note: 'comes with relay' }, hold: { note: 'comes with relay' }, light: { note: 'comes with light' }, flash: { note: 'comes with light' }, inperson: { note: 'always, on this build', value: 1 } };
+// the settings this machine can't change, as the device's setting_notes: relay waits for its feature, and on the
+// airgapped build every contact is checked in person. The simulated machine is a Mac, so its lock can come off
+const NOTES = { carry: { note: 'comes with relay' }, hops: { note: 'comes with relay' }, hold: { note: 'comes with relay' }, inperson: { note: 'always, on this build', value: 1 } };
 // what set_setting says for each, as the device says it
-const REFUSED = { carry: 'Carry for others comes with relay', hops: 'Hop limit comes with relay', hold: 'Hold for comes with relay', light: 'Light switch comes with light', flash: 'Flash speed comes with light', inperson: 'On this build every new contact needs a key check' };
+const REFUSED = { carry: 'Carry for others comes with relay', hops: 'Hop limit comes with relay', hold: 'Hold for comes with relay', inperson: 'On this build every new contact needs a key check' };
 const MACHINE_SETTINGS = 'bombechat.simulated-machine';
 function keptSettings() {
   let kept = {};
@@ -58,6 +63,15 @@ function keepNotice(n) {
 function keepSettings(settings) { try { sessionStorage.setItem(MACHINE_SETTINGS, JSON.stringify(settings)); } catch (e) {} }
 // bytes of message a second over sound, as the modem measures it at its defaults (crates/modem measured_rate)
 const RATE = 16.1;
+// light, by Flash speed (Slow, Normal, Fast), as the light transport's rate and code presets have them: bytes a second,
+// cells a side, frames a second (crates/light CodeSpec)
+const LIGHT_RATES = [948, 2290, 4680];
+const LIGHT_CELLS = [48, 56, 64];
+const LIGHT_FPS = [6, 10, 15];
+// the shortest an envelope is shown, as the light transport's HUMAN_FLOOR_MS
+const LIGHT_FLOOR_MS = 4000;
+// the light refusals and states, as the node's
+const LIGHT_SAYS = ['not sent: light is off', 'not sent: light is set to read only'];
 // the longest broadcast, in UTF-8 bytes of text, as the node's MAX_BROADCAST (an envelope less its header and signing)
 const MAX_BROADCAST = 3939;
 const PAIR_MS = 2400;
@@ -117,6 +131,9 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
 
   let soundState = null;// the last state the sound channel reported, for channels()
   const sound = state => { soundState = state; emit('channel', { channel: 'Sound', state }); };
+  let lightState = null;// likewise for light
+  const light = state => { lightState = state; emit('channel', { channel: 'Light', state }); };
+  const lightAt = () => settings.light === 0 ? 'off' : 'listening';
   const outbox = (m, state, first) => {
     if (m.kept) keepNotice({ ...m.kept, state: state === 'playing' ? 'waiting' : state });
     emit('outbox', first ? { id: m.id, state, text: m.text, public: !!m.public } : { id: m.id, state });
@@ -154,6 +171,38 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
     later(() => { sending = false; }, 460);
     later(() => { outbox(m, 'sent'); if (!m.public) emit('heard', { id: m.id, by: MARISOL }); }, 1960);
   }
+
+  // light: one envelope on screen at a time, its frames paced at the Flash speed it went on screen at
+  const flashes = [];
+  let flashing = null;// { m, spec, shown, window, lit, announced, heard }
+  let flashT = null;
+  const frameBits = (spec, tag, index) => { const r = seeded((tag << 12) ^ index ^ (spec << 28)); return Array.from({ length: Math.ceil(LIGHT_CELLS[spec] ** 2 / 8) }, r); };
+  function flashTick() {
+    if (!flashing) { flashing = flashes.shift() || null; if (flashing) { flashing.spec = settings.flash; flashing.window = Math.ceil(LIGHT_FLOOR_MS * LIGHT_FPS[flashing.spec] / 1000); } }
+    const f = flashing;
+    if (!f) { flashT = null; return; }
+    if (settings.light < 2) {
+      // Light turned down: the screen clears and the send waits, carrying on where it stopped
+      if (f.lit) { f.lit = false; emit('displayStopped', { tag: f.tag }); }
+      if (f.announced) { f.announced = false; outbox(f.m, 'waiting'); }
+      flashT = later(flashTick, 200); return;
+    }
+    if (!f.announced) { f.announced = true; outbox(f.m, 'playing'); }
+    emit('display', { tag: f.tag, bits: frameBits(f.spec, f.tag, f.shown), spec: f.spec, index: f.shown });
+    f.lit = true; f.shown += 1;
+    if (f.shown >= f.window) {
+      flashing = null;
+      later(() => { if (!flashing) emit('displayStopped', { tag: f.tag }); outbox(f.m, 'sent'); if (f.heard) emit('heard', { id: f.m.id, by: MARISOL }); }, 1000 / LIGHT_FPS[f.spec]);
+    }
+    flashT = later(flashTick, 1000 / LIGHT_FPS[f.spec]);
+  }
+  function flash(m, heard) {
+    flashes.push({ m, tag: Math.floor(Math.random() * 65536), shown: 0, lit: false, announced: false, heard });
+    later(() => outbox(m, 'waiting'));
+    if (!flashT) flashT = later(flashTick, 0);
+  }
+  // refused by the Light switch, as the node refuses a send: the channel says why, the outbox fails, then the state
+  function refuseLight(m) { later(() => { light(LIGHT_SAYS[settings.light]); outbox(m, 'failed'); light(lightAt()); }); }
 
   function start() {
     if (started) return; started = true;
@@ -206,14 +255,14 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
     send(contactIds, text, channel) {
       const m = { id: bytes(16), text };
       clock += 60000;
-      if (channel === 'light') {
-        later(() => outbox(m, 'playing'));
-        later(() => { outbox(m, 'sent'); emit('heard', { id: m.id, by: MARISOL }); }, 1500);
-      } else { queue.push(m); later(() => outbox(m, 'waiting')); }
+      if (channel === 'light') { if (settings.light < 2) refuseLight(m); else flash(m, true); }
+      else { queue.push(m); later(() => outbox(m, 'waiting')); }
       return Promise.resolve(m.id);
     },
-    // refused as the broadcast command refuses; at Listen or Off, as the node does: the channel says why, then the outbox fails
-    broadcast(text) {
+    // refused as the broadcast command refuses; at Listen or Off (light: Read or Off), as the node does: the channel
+    // says why, then the outbox fails
+    broadcast(text, channel = 'sound') {
+      if (channel !== 'sound' && channel !== 'light') return Promise.reject(`no such channel: ${channel}`);
       if (!text.trim()) return Promise.reject('Write the notice first');
       const n = utf8(text).length;
       if (n > MAX_BROADCAST) return Promise.reject(`Too long to broadcast: ${n} bytes, at most ${MAX_BROADCAST}`);
@@ -221,11 +270,13 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
       clock += 60000;
       m.kept = { id: m.id, outgoing: true, signer: SELF_KEY.slice(0, 64), text, verified: true, hops: 0, at_min: Math.floor(clock / 60000), state: 'waiting' };
       keepNotice(m.kept);
-      if (settings.sound < 2) later(() => { sound(settings.sound === 0 ? 'not sent: sound is off' : 'not sent: sound is set to listen only'); outbox(m, 'failed'); sound(settings.sound === 0 ? 'off' : 'listening'); });
+      if (channel === 'light') { if (settings.light < 2) refuseLight(m); else flash(m, false); }
+      else if (settings.sound < 2) later(() => { sound(settings.sound === 0 ? 'not sent: sound is off' : 'not sent: sound is set to listen only'); outbox(m, 'failed'); sound(settings.sound === 0 ? 'off' : 'listening'); });
       else { queue.push(m); later(() => outbox(m, 'waiting')); }
       return Promise.resolve(m.id);
     },
     pair() { later(() => emit('pairOffer', { peer: signer(0x2c, 0x91), name: 'Teodor Vance', safety }), PAIR_MS); return Promise.resolve(); },
+    stopPairing: () => Promise.resolve(),
     confirmPair(peerHex, name) {
       if (!people.some(p => p.id === TEODOR)) people.push({ id: TEODOR, name, checked: true, safety });
       return Promise.resolve(TEODOR);
@@ -235,7 +286,10 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
       if (!(id in COUNTS)) return Promise.reject(`no such setting: ${id}`);
       if (!isSetting(id, valueIndex)) return Promise.reject(`no value ${valueIndex} for ${id}`);
       if (REFUSED[id]) return Promise.reject(REFUSED[id]);
+      const was = settings[id];
       settings[id] = valueIndex; keepSettings(settings);
+      // the light channel says when its camera closes or opens, as the node does on its next tick
+      if (id === 'light' && (was === 0) !== (valueIndex === 0)) later(() => light(lightAt()));
       return Promise.resolve();
     },
     // read from the record each time, as the device answers from its own: another page may have changed it
@@ -249,7 +303,8 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
     broadcasts: () => Promise.resolve(keptNotices()),
     // you are Teodor here: his key signs your broadcasts
     machine: () => Promise.resolve({ name: 'Machine No. 1', key: SELF_KEY, you: 'Teodor Vance', held: 6, version: '0.4', broadcast_max: MAX_BROADCAST }),
-    channels: () => Promise.resolve([{ channel: 'Sound', state: soundState || 'listening', rate: RATE, band: settings.band ? 'audible' : 'near silent' }]),
+    channels: () => Promise.resolve([{ channel: 'Sound', state: soundState || 'listening', rate: RATE, band: settings.band ? 'audible' : 'near silent' },
+      { channel: 'Light', state: lightState || lightAt(), rate: LIGHT_RATES[settings.flash] }]),
     test,
   };
 }

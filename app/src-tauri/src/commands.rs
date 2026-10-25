@@ -35,10 +35,11 @@ const PANIC_REPORT_GAP: Duration = Duration::from_secs(5);
 const MAX_NAME_CHARS: usize = 40;
 
 /// The command names, exactly as `bridge.js` invokes them.
-pub const NAMES: [&str; 13] = [
+pub const NAMES: [&str; 14] = [
     "send",
     "broadcast",
     "pair",
+    "stop_pairing",
     "confirm_pair",
     "set_setting",
     "settings",
@@ -76,12 +77,10 @@ pub const SETTINGS: [(&str, usize, usize); 15] = [
 /// Settings whose feature this build does not have yet, with their name
 /// on the settings page and what they wait for. `set_setting` refuses
 /// them and `settings` reports their default: nothing pretends they work.
-pub const COMING: [(&str, &str, &str); 5] = [
+pub const COMING: [(&str, &str, &str); 3] = [
     ("carry", "Carry for others", "comes with relay"),
     ("hops", "Hop limit", "comes with relay"),
     ("hold", "Hold for", "comes with relay"),
-    ("light", "Light switch", "comes with light"),
-    ("flash", "Flash speed", "comes with light"),
 ];
 
 /// New contacts need a key check: on this build every contact is added
@@ -190,14 +189,17 @@ pub type Opened = Box<dyn Any + Send>;
 pub type Unlocking = Box<dyn FnOnce(&str, &str) -> Result<Opened, String> + Send>;
 
 /// The node as the commands see it. The app's is [`crate::Device`], a
-/// [`bombechat_node::Node`] over the sound card and the store in the app
-/// data folder; tests use a fake.
+/// [`bombechat_node::Node`] over the sound card and the camera and the
+/// store in the app data folder; tests use a fake.
 pub trait Machine: Send {
     fn send(&mut self, to: &[ContactId], text: &str, channel: Channel) -> [u8; 16];
-    fn broadcast(&mut self, text: &str) -> [u8; 16];
-    /// Play this machine's pairing hello, or say why not (for example,
-    /// the Sound switch is at Listen).
+    fn broadcast(&mut self, text: &str, channel: Channel) -> [u8; 16];
+    /// Send this machine's pairing hello on every channel that may send
+    /// (by light it keeps showing until pairing ends), or say why not
+    /// (for example, the Sound switch is at Listen).
     fn start_pairing(&mut self, my_name: &str) -> Result<(), String>;
+    /// End the pairing in progress, if any: the hello stops showing.
+    fn stop_pairing(&mut self);
     fn confirm_pairing(&mut self, peer: &PublicIdentity, name: &str) -> ContactId;
     fn contacts(&self) -> Vec<Contact>;
     /// The stored messages with one contact, oldest first.
@@ -373,12 +375,14 @@ pub fn send(
     sent(s.machine().send(&to, &text, channel))
 }
 
-/// `broadcast { text }`: the broadcast's id, as hex. Refused with a
-/// sentence to show when there is nothing to say, or more than one
+/// `broadcast { text, channel }`: the broadcast's id, as hex. Refused
+/// with a sentence to show when there is nothing to say, or more than one
 /// envelope holds ([`MAX_BROADCAST`] bytes, which `machine` reports).
-/// The Sound switch's refusal comes as for `send`: the channel state,
-/// then the outbox's `failed`.
-pub fn broadcast(s: &Shared, text: String) -> Result<String, String> {
+/// The channel's switch refuses it as for `send` (sound unless at Listen
+/// and send, light unless at Read and flash): the channel state, then
+/// the outbox's `failed`.
+pub fn broadcast(s: &Shared, text: String, channel: String) -> Result<String, String> {
+    let channel = parse_channel(&channel)?;
     if text.trim().is_empty() {
         return Err("Write the notice first".to_string());
     }
@@ -388,11 +392,13 @@ pub fn broadcast(s: &Shared, text: String) -> Result<String, String> {
             text.len()
         ));
     }
-    sent(s.machine().broadcast(&text))
+    sent(s.machine().broadcast(&text, channel))
 }
 
-/// `pair`: announce this machine for pairing, under the person's name.
-/// Refused with the reason when the Sound switch does not allow sending.
+/// `pair`: announce this machine for pairing, under the person's name,
+/// on every channel whose switch allows sending; by light the hello
+/// keeps showing until `stop_pairing`, `confirm_pair` or three minutes.
+/// Refused with the reason when no switch allows sending.
 pub fn pair(s: &Shared) -> Result<(), String> {
     let mut machine = s.machine();
     if machine.lock() != Lock::Unlocked {
@@ -402,6 +408,12 @@ pub fn pair(s: &Shared) -> Result<(), String> {
         .my_name()
         .unwrap_or_else(|| MACHINE_NAME.to_string());
     machine.start_pairing(&name)
+}
+
+/// `stop_pairing`: end the pairing in progress, if any; the hello stops
+/// showing. Nothing to refuse: with none in progress it does nothing.
+pub fn stop_pairing(s: &Shared) {
+    s.machine().stop_pairing();
 }
 
 /// `confirm_pair { peerHex, name }`: store the peer (its sign key then its
@@ -560,8 +572,8 @@ pub fn machine(s: &Shared) -> Result<MachineView, String> {
 /// `channels`: the last state each channel reported, so a page that
 /// opens (or reloads) after the event knows it: "unavailable: ...",
 /// "receiving" mid-message, and so on, with each channel's measured rate
-/// where it has one. A channel with a rate that has reported nothing yet
-/// is listening.
+/// where it has one (sound's at its band, light's at the Flash speed). A
+/// channel with a rate that has reported nothing yet is listening.
 pub fn channels(s: &Shared) -> Vec<ChannelView> {
     let rates = s.machine().rates();
     let band = s.machine().band().map(band_name);
@@ -670,8 +682,8 @@ pub fn bridge_event(e: &NodeEvent) -> (&'static str, Value) {
             "outbox",
             json!({ "id": id.to_vec(), "state": state.as_str() }),
         ),
-        // Light code frames for the flashing view (wired into the page in
-        // Plan 2 Task 5): public code bits only, never key material.
+        // Light code frames for the flashing view: public code bits only,
+        // never key material.
         NodeEvent::Display {
             tag,
             bits,
@@ -681,6 +693,6 @@ pub fn bridge_event(e: &NodeEvent) -> (&'static str, Value) {
             "display",
             json!({ "tag": tag, "bits": bits, "spec": spec_id, "index": index }),
         ),
-        NodeEvent::DisplayStopped => ("displayStopped", Value::Null),
+        NodeEvent::DisplayStopped { tag } => ("displayStopped", json!({ "tag": tag })),
     }
 }

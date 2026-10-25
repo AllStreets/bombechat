@@ -593,7 +593,7 @@ const MAX_BROADCAST=SELF&&Number.isInteger(SELF.broadcast_max)?SELF.broadcast_ma
 // if it cannot answer, the switches show Off and say they were not read: never the most permissive position
 let KEPT_READ=true;
 const KEPT=await bridge.settings().catch(()=>{KEPT_READ=false;return {sound:0,light:0,machine:0}});
-// the settings this machine can't change yet: Light comes with light, so its switch is taped down at Off
+// the settings this machine can't change: a switch held by one is taped down, the tape saying why
 const NOTES=await bridge.settingNotes().catch(()=>({}));
 try{localStorage.removeItem('bombechat.settings')}catch(e){}
 // true while the page replays what happened before it opened: nothing animates
@@ -758,8 +758,9 @@ bridge.on('message',m=>{
   whenDrumsRest(()=>grow(()=>{ent.classList.remove('arriving');const what=ent.querySelector('.what');what.textContent='';tape(what,m.text)}))});
 // a send the Sound switch refused says why: 'not sent: sound is set to listen only'
 let refusedWhy=null;
-function onChannel(s){if(s.channel!=='sound')return;Drum.receiving=s.state==='receiving';if(s.state==='failed')failArrival(arrival);
-  if(/^not sent: /.test(s.state))refusedWhy=s.state}
+// a switch's refusal, on either channel, goes with the outbox failure that follows it
+function onChannel(s){if(/^not sent: /.test(s.state))refusedWhy=s.state;
+  if(s.channel!=='sound')return;Drum.receiving=s.state==='receiving';if(s.state==='failed')failArrival(arrival)}
 bridge.on('channel',onChannel);
 
 /* ---------- channels ---------- */

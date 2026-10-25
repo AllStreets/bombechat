@@ -56,8 +56,14 @@ pub enum TransportEvent {
         spec: u8,
         bits: Vec<u8>,
     },
-    /// Light: clear the screen; nothing is being shown.
-    DisplayStopped,
+    /// Light: clear the screen; nothing is being shown. `tag` is the
+    /// envelope whose frame was on it.
+    DisplayStopped { tag: u16 },
+    /// Light: a code was in view this poll but could not be read (too
+    /// small, blurred, glare). At most once a poll.
+    CodeUnreadable,
+    /// Light: a code was read this poll. At most once a poll.
+    CodeRead,
 }
 
 /// A carrier for on-air frames.
@@ -93,6 +99,15 @@ pub trait Transport: Send {
     /// sending it. A carrier that keeps sending until told (light) reports
     /// it [`TransportEvent::Sent`]; others ignore this.
     fn delivered(&mut self, _tag: u16) {}
+
+    /// The envelope this transport handed over under `tag` would not
+    /// open (not for this machine, damaged, or tampered with). A carrier
+    /// that remembers what it collected (light) forgets it, so the same
+    /// envelope shown again is collected afresh, and returns true: the
+    /// node then forgets the tag's frames too. Others return false.
+    fn rejected(&mut self, _tag: u16) -> bool {
+        false
+    }
 
     /// For light: show what goes on screen from now on in this code
     /// preset (the flash speed). What is on screen finishes as it started.

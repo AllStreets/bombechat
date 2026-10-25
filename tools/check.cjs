@@ -83,10 +83,11 @@ function tauriStub({ hello, safety, people, talk, afterUnlock, settings, broadca
         case 'machine': return Promise.resolve({ name: 'Machine No. 1', key: 'a3f09c1e'.repeat(16), you: 'Ana Lima', held: 0, version: '0.1.0', broadcast_max: broadcastMax });
         case 'conversation': return Promise.resolve((talk || {})[args.contactId] || []);
         case 'settings': return settings === 'unread' ? Promise.reject('the machine did not answer') : Promise.resolve(settings || { sound: 2, volume: 2, band: 0, light: 0, flash: 1, machine: 1, machvol: 2, carry: 1, hops: 3, hold: 2, quiet: 2, repeats: 2, lock: 1, expire: 0, inperson: 1 });
-        // as the device answers on this build: relay and light wait for their features, the key check is always on
+        // as the device answers on this build: relay waits for its feature, the key check is always on
         case 'setting_notes': return settings === 'unread' ? Promise.reject('the machine did not answer') : Promise.resolve({ carry: { note: 'comes with relay' }, hops: { note: 'comes with relay' }, hold: { note: 'comes with relay' },
-          light: { note: 'comes with light' }, flash: { note: 'comes with light' }, inperson: { note: 'always, on this build', value: 1 } });
-        case 'channels': return Promise.resolve([{ channel: 'sound', state: 'listening', rate: 16.1 }]);
+          inperson: { note: 'always, on this build', value: 1 } });
+        case 'channels': return Promise.resolve([{ channel: 'sound', state: 'listening', rate: 16.1 }, { channel: 'light', state: 'off', rate: 2290 }]);
+        case 'stop_pairing': return Promise.resolve(null);
         case 'pair': setTimeout(() => window.__emit('pairOffer', { peer: { sign: Array(32).fill(5), dh: Array(32).fill(6) }, name: hello, safety }), 1200); return Promise.resolve(null);
         case 'confirm_pair': return Promise.resolve(7);
         case 'set_setting': return refuseSetting ? Promise.reject(refuseSetting) : Promise.resolve(null);
@@ -503,8 +504,9 @@ function measureText() {
       await kr.close();
     }
     // Machine sound and Machine volume are the machine's settings: the title bar's lever shows what it keeps and the
-    // drums play at its volume; moving the lever sends that one change. The Light switch, whose feature isn't fitted
-    // yet, is taped down at Off, says what it waits for, and turning it sends nothing.
+    // drums play at its volume; moving the lever sends that one change. The Light switch is live: no tape, it boots at
+    // the machine's Off, and each turn sends that one change. At Read and flash, a notice by light reaches the page as
+    // display frames (the Normal grid, 56 cells a side) and then displayStopped for the same tag.
     for (const where of ['app', 'browser']) {
       const ms = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 });
       watch(ms, `machine sound, ${where}`);
@@ -524,25 +526,44 @@ function measureText() {
       const sets = () => window.__TAURI__ ? __calls.filter(c => c[0] === 'set_setting').map(c => c[1]) : __sim.settingsSet;
       const booted = await ms.evaluate(`({ lever: document.getElementById('snd').getAttribute('aria-pressed'), on: __drum.on, gain: __drum.gain, label: document.querySelector('.sndlab').textContent,
         light: document.getElementById('k2').getAttribute('aria-valuenow'), lightOff: document.getElementById('k2').getAttribute('aria-disabled'), tape: (document.querySelector('.tapedown') || {}).textContent, sets: (${sets})() })`);
-      await ms.locator('.mod:has(#k2)').screenshot({ path: path.join(out, `light-taped-${where}.png`) });
+      await ms.locator('.mod:has(#k2)').screenshot({ path: path.join(out, `light-live-${where}.png`) });
       await ms.click('#k2', { force: true });
       await ms.focus('#k2'); await ms.keyboard.press('ArrowRight');
       await ms.waitForTimeout(400);
-      const light = await ms.evaluate(`({ light: document.getElementById('k2').getAttribute('aria-valuenow'), sets: (${sets})() })`);
+      const light = await ms.evaluate(`({ light: document.getElementById('k2').getAttribute('aria-valuenow'), flash: document.getElementById('flash').getAttribute('aria-disabled'), sets: (${sets})() })`);
+      await ms.locator('.mod:has(#k2)').screenshot({ path: path.join(out, `light-flash-${where}.png`) });
+      // the frames a notice by light hands the page, through the bridge as the page gets them
+      const shown = await ms.evaluate(where === 'app'
+        ? () => import('./bridge.js').then(({ bridge }) => { const got = { frames: [], stopped: [] };
+            bridge.on('display', d => got.frames.push(d)); bridge.on('displayStopped', d => got.stopped.push(d));
+            window.__emit('display', { tag: 9, bits: Array(392).fill(165), spec: 1, index: 0 }); window.__emit('displayStopped', { tag: 9 });
+            return got; })
+        : () => import('./bridge.js').then(async ({ bridge }) => { const got = { frames: [], stopped: [] };
+            bridge.on('display', d => got.frames.push(d)); bridge.on('displayStopped', d => got.stopped.push(d));
+            await bridge.broadcast('Water at the church.', 'light'); await new Promise(r => setTimeout(r, 4600));
+            const light = (await bridge.channels()).find(c => c.channel === 'light');
+            return { ...got, rate: light && light.rate }; }));
+      const lightSets = where === 'app' ? light.sets.length : light.sets;
       await ms.click('#snd');
       await ms.waitForTimeout(200);
       const flipped = await ms.evaluate(`({ lever: document.getElementById('snd').getAttribute('aria-pressed'), on: __drum.on, sets: (${sets})() })`);
+      if (where === 'app') flipped.sets = flipped.sets.slice(lightSets); else flipped.sets -= lightSets;
       const kept = where === 'browser' ? await ms.evaluate(() => import('./bridge.js').then(m => m.bridge.settings())) : null;
       const none = s => (Array.isArray(s) ? s.length : s) === 0;
       if (booted.lever !== 'false' || booted.on !== false) problems.push(`${where}: the machine keeps Machine sound off, the lever shows ${JSON.stringify(booted)}`);
       if (Math.abs(booted.gain - .9) > 1e-6) problems.push(`${where}: Machine volume 5 plays the drums at ${booted.gain}, not 0.9`);
       if (booted.label !== 'Machine sound') problems.push(`${where}: the lever is labelled ${booted.label}`);
       if (!none(booted.sets)) problems.push(`${where}: settings sent at load: ${JSON.stringify(booted.sets)}`);
-      if (booted.light !== '0' || booted.lightOff !== 'true' || booted.tape !== 'comes with light') problems.push(`${where}: the Light switch is not taped down at Off: ${JSON.stringify(booted)}`);
-      if (light.light !== '0' || !none(light.sets)) problems.push(`${where}: turning the taped Light switch did something: ${JSON.stringify(light)}`);
+      if (booted.light !== '0' || booted.lightOff === 'true' || booted.tape !== undefined) problems.push(`${where}: the Light switch is not live at Off: ${JSON.stringify(booted)}`);
+      if (light.light !== '2' || light.flash !== 'false' || (where === 'app' ? JSON.stringify(light.sets) !== JSON.stringify([{ id: 'light', valueIndex: 1 }, { id: 'light', valueIndex: 2 }]) : light.sets !== 2 || kept.light !== 2))
+        problems.push(`${where}: turning the Light switch twice did not reach Read and flash: ${JSON.stringify(light)}, kept ${JSON.stringify(kept)}`);
+      const frames = shown.frames, tag = frames.length && frames[0].tag;
+      if (!frames.length || frames.some(f => f.tag !== tag || f.bits.length !== 392 || f.spec !== 1) || frames.some((f, i) => f.index !== i)
+        || JSON.stringify(shown.stopped) !== JSON.stringify([{ tag }]) || (where === 'browser' && (frames.length !== 40 || shown.rate !== 2290)))
+        problems.push(`${where}: a notice by light did not reach the page as frames: ${frames.length} frames, first ${JSON.stringify(frames[0] && { ...frames[0], bits: frames[0].bits.length })}, stopped ${JSON.stringify(shown.stopped)}, rate ${shown.rate}`);
       if (flipped.lever !== 'true' || !flipped.on || (where === 'app' ? JSON.stringify(flipped.sets) !== JSON.stringify([{ id: 'machine', valueIndex: 1 }]) : flipped.sets !== 1 || kept.machine !== 1))
         problems.push(`${where}: the lever sent ${JSON.stringify(flipped)}, kept ${JSON.stringify(kept)}`);
-      report[`machineSound-${where}`] = { booted, light, flipped };
+      report[`machineSound-${where}`] = { booted, light, flipped, frames: shown.frames.length };
       await ms.close();
     }
 

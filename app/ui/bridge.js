@@ -4,21 +4,27 @@
 // Commands (Tauri command names in brackets, arguments camelCase as Tauri expects):
 //   send(contactIds, text, channel)  [send { contactIds, text, channel }]  resolves to the message id, as hex;
 //                                channel 'sound' (the default) or 'light'. Rejects with 'not sent' when nothing
-//                                went: in this plan only sound sends, and light reports channel 'unavailable: ...'
-//   broadcast(text)              [broadcast { text }]               resolves to the message id, as hex. Rejects with a
-//                                sentence to show: 'Write the notice first' (nothing but spaces), 'Too long to broadcast:
-//                                N bytes, at most M' (M is machine().broadcast_max). The Sound switch refuses it as send
-//   pair()                       [pair]                             plays this machine's hello (once the room is quiet); a
-//                                peer's hello arrives as pairOffer. Rejects with the reason when the Sound switch
-//                                won't send, e.g. 'not sent: sound is set to listen only'
+//                                went. A switch that won't send it (sound short of Listen and send, light short of
+//                                Read and flash) says why on its channel ('not sent: light is off', 'not sent: light is
+//                                set to read only'), then the outbox reports it 'failed'
+//   broadcast(text, channel)     [broadcast { text, channel }]      resolves to the message id, as hex; channel 'sound' (the
+//                                default) or 'light'. Rejects with a sentence to show: 'Write the notice first' (nothing
+//                                but spaces), 'Too long to broadcast: N bytes, at most M' (M is machine().broadcast_max).
+//                                The channel's switch refuses it as send
+//   pair()                       [pair]                             sends this machine's hello on every channel whose switch
+//                                allows it: by sound once the room is quiet, by light shown until pairing ends (a peer's
+//                                hello arrives as pairOffer). Rejects with the reason when no switch will send, e.g.
+//                                'not sent: sound is set to listen only'
+//   stopPairing()                [stop_pairing]                     ends the pairing in progress: the hello stops showing.
+//                                confirmPair ends it too, and it ends by itself after three minutes
 //   confirmPair(peerHex, name)   [confirm_pair { peerHex, name }]   resolves to the new contact id; name as the person
 //                                corrected it on the card (the hello's name is only a suggestion)
 //   setSetting(id, valueIndex)   [set_setting { id, valueIndex }]  only for a change the person just made: the
 //                                machine keeps every setting and is their only record. Rejects with a sentence to show
 //                                when the machine won't take it, e.g. 'Unlock first, then the lock can come off'
 //   settingNotes()               [setting_notes]                    resolves to { [id]: { note, value? } } for each setting this
-//                                machine can't change: note is what its row says instead ('comes with relay', 'comes with
-//                                light', 'always, on this build', 'Keychain only on macOS'); value the one it is held at,
+//                                machine can't change: note is what its row says instead ('comes with relay', 'always,
+//                                on this build', 'Keychain only on macOS'); value the one it is held at,
 //                                absent for a setting that waits for a feature (its plug is parked)
 //   settings()                   [settings]                         resolves to { [id]: valueIndex } for every setting on the
 //                                settings page, as the machine keeps them (defaults for any never set), locked or not.
@@ -41,9 +47,10 @@
 //                                longest broadcast in UTF-8 bytes
 //   channels()                   [channels]                         resolves to [{ channel, state, rate? }]: the last state each
 //                                channel reported, for a page that opened after the event. None reported: listening.
-//                                rate: the payload bytes a second the channel's modem measures (sound has one), for the
-//                                bytes-a-second readout. band (sound): 'near silent' or 'audible', the band it is really on
-//                                (a sound card too slow for near silent stays audible, whatever Tone band says)
+//                                rate: the payload bytes a second the channel moves (sound at its band, light at the
+//                                Flash speed), for the bytes-a-second readout. band (sound): 'near silent' or 'audible',
+//                                the band it is really on (a sound card too slow for near silent stays audible, whatever
+//                                Tone band says)
 //
 // Events (on(name, fn)), as the node's NodeEvent after normalising:
 //   chunk      { tag, index, of, view: { plain, heard, key }, text }
@@ -59,15 +66,26 @@
 //                                                               events, kept ones (and this machine's own) from broadcasts()
 //   pairOffer  { peer, name, safety }                           peer: hex of sign key then dh key
 //   roomDb     number
-//   channel    { channel, state }       state 'receiving' while a message arrives by sound; 'failed' when one
+//   channel    { channel, state }       state 'receiving' while a message arrives; 'failed' when one
 //                                       stops arriving or fails its checks (the state it is then in follows);
-//                                       'not sent: sound is set to listen only' (or '...: sound is off') just before
-//                                       the outbox 'failed' of a send the Sound switch refused (then the state it is in);
+//                                       'not sent: sound is set to listen only' (or '...: sound is off', '...: light is
+//                                       off', '...: light is set to read only') just before the outbox 'failed' of a send
+//                                       its switch refused (then the state it is in); 'off' with the switch at Off;
+//                                       light: 'seeing a code: tilt or dim the screen' while a code is in view but can't
+//                                       be read (until one reads), 'unavailable: camera permission denied' (or '...: camera
+//                                       permission not answered', '...: no camera', '...: camera in use by another app');
 //                                       anything else (e.g. 'listening', 'unavailable: ...') otherwise
 //   outbox     { id, state, text?, public? }   a send's progress: 'waiting' (for the room to fall under Send under),
 //                                       'playing', 'sent', or 'failed' (it will never go out). text and public come with the first report of a send
 //                                       this page didn't make (one queued before it opened); the simulator sends
 //                                       them, the node does not yet, so in the app such a send shows no slip.
+//   display    { tag, bits, spec, index }  light: put this code frame on screen now, in place of the last. bits: the
+//                                       whole grid, one bit a cell (dark 1), row-major from the top left, most
+//                                       significant bit first; the grid is 48, 56 or 64 cells a side for spec 0 (slow),
+//                                       1 (normal) or 2 (fast). index counts the frames of envelope tag shown so far.
+//                                       Public code bits only, never a key. Not held before ready(): a frame is only
+//                                       worth showing when it comes
+//   displayStopped { tag }             light: clear the screen; tag's frame was on it
 // Ids arrive as byte arrays or hex and leave as lowercase hex. Channels arrive as "Sound" or "sound" and leave lower case.
 //
 // A chunk is only known to come from a holder of the content key until the
@@ -114,7 +132,9 @@ function provisional(tag, index, of, plain) {
   return decoder.decode(new Uint8Array(a.so.slice(SENDER_LEN, end))).replace(/\uFFFD+$/, '');
 }
 
-const EVENTS = ['chunk', 'message', 'heard', 'broadcast', 'pairOffer', 'roomDb', 'channel', 'outbox'];
+const EVENTS = ['chunk', 'message', 'heard', 'broadcast', 'pairOffer', 'roomDb', 'channel', 'outbox', 'display', 'displayStopped'];
+// shown as they come, or not at all: never held for a page still setting up
+const LIVE = new Set(['display', 'displayStopped']);
 const normalise = {
   chunk: c => {
     const plain = bytesOf(c.view.plain);
@@ -129,6 +149,8 @@ const normalise = {
   roomDb: d => +(d && typeof d === 'object' ? d.db : d),
   channel: s => ({ ...s, channel: lower(s.channel) }),
   outbox: o => ({ ...o, id: hex(o.id), state: lower(o.state) }),
+  display: d => ({ tag: +d.tag, bits: bytesOf(d.bits), spec: +d.spec, index: +d.index }),
+  displayStopped: d => ({ tag: d && typeof d === 'object' ? +d.tag : +d }),
 };
 
 const handlers = Object.fromEntries(EVENTS.map(e => [e, new Set()]));
@@ -136,7 +158,7 @@ const HELD_MAX = 2000;
 let held = [];// events that arrived before ready(), in order
 function deliver(event, raw) {
   if (!handlers[event]) return;
-  if (held) { held.push([event, raw]); if (held.length > HELD_MAX) held.shift(); return; }
+  if (held) { if (LIVE.has(event)) return; held.push([event, raw]); if (held.length > HELD_MAX) held.shift(); return; }
   const payload = normalise[event](raw);
   for (const fn of handlers[event]) fn(payload);
 }
@@ -154,8 +176,9 @@ function tauriBackend() {
   for (const event of EVENTS) tauri.event.listen(event, e => deliver(event, e.payload));
   return {
     send: (contactIds, text, channel) => invoke('send', { contactIds, text, channel }).then(hex),
-    broadcast: text => invoke('broadcast', { text }).then(hex),
+    broadcast: (text, channel) => invoke('broadcast', { text, channel }).then(hex),
     pair: () => invoke('pair'),
+    stopPairing: () => invoke('stop_pairing'),
     confirmPair: (peerHex, name) => invoke('confirm_pair', { peerHex, name }).then(contactId),
     setSetting: (id, valueIndex) => invoke('set_setting', { id, valueIndex }),
     settings: () => invoke('settings'),
@@ -176,8 +199,9 @@ function simulatedBackend() {
   window.__sim = sim.test;
   return {
     send: (contactIds, text, channel) => sim.send(contactIds, text, channel).then(hex),
-    broadcast: text => sim.broadcast(text).then(hex),
+    broadcast: (text, channel) => sim.broadcast(text, channel).then(hex),
     pair: () => sim.pair(),
+    stopPairing: () => sim.stopPairing(),
     confirmPair: (peerHex, name) => sim.confirmPair(peerHex, name).then(contactId),
     setSetting: (id, valueIndex) => sim.setSetting(id, valueIndex),
     settings: () => sim.settings(),
@@ -198,8 +222,9 @@ const backend = tauri ? tauriBackend() : simulatedBackend();
 export const bridge = {
   simulated: !tauri,
   send: (contactIds, text, channel = 'sound') => backend.send(contactIds, text, lower(channel)),
-  broadcast: text => backend.broadcast(text),
+  broadcast: (text, channel = 'sound') => backend.broadcast(text, lower(channel)),
   pair: () => backend.pair(),
+  stopPairing: () => backend.stopPairing(),
   confirmPair: (peerHex, name) => backend.confirmPair(peerHex, name),
   setSetting: (id, valueIndex) => backend.setSetting(id, valueIndex),
   settings: () => backend.settings(),

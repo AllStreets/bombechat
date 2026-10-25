@@ -307,6 +307,8 @@ fn reason(e: &CameraError) -> String {
     match e {
         CameraError::PermissionDenied => "camera permission denied".to_string(),
         CameraError::NoDevice => "no camera".to_string(),
+        CameraError::NotAnswered => "camera permission not answered".to_string(),
+        CameraError::Interrupted => "camera in use by another app".to_string(),
         CameraError::Unsupported(detail) => format!("camera unsupported ({detail})"),
     }
 }
@@ -350,8 +352,8 @@ pub struct LightTransport {
     /// frame slot after the last one shown, counted from there, and the
     /// frames a second of the run.
     pace: Option<(u64, u64, u64)>,
-    /// Whether a frame is on screen now.
-    lit: bool,
+    /// The tag of the envelope whose frame is on screen now, if any.
+    lit: Option<u16>,
     pending: Vec<TransportEvent>,
     listening: bool,
     sending: bool,
@@ -404,7 +406,7 @@ impl LightTransport {
             queue: VecDeque::new(),
             showing: None,
             pace: None,
-            lit: false,
+            lit: None,
             pending: Vec::new(),
             listening: true,
             sending: true,
@@ -455,8 +457,10 @@ impl LightTransport {
         })
     }
 
-    /// Take what the worker reported.
+    /// Take what the worker reported. Whether a code was read, or seen
+    /// and not read, is said once for the whole poll.
     fn take_reports(&mut self, now_ms: u64, events: &mut Vec<TransportEvent>) {
+        let (mut read_any, mut bad_any) = (false, false);
         while let Ok(report) = self.reports.try_recv() {
             match report {
                 Report::Started(start) if start == self.start => {
@@ -472,10 +476,17 @@ impl LightTransport {
                 }
                 Report::Read(start, outcome) if start == self.start && self.listening => {
                     let read = self.collector.push_read(&outcome, now_ms);
+                    bad_any |= read.contains(&LightEvent::FrameBad);
+                    read_any |= read.iter().any(|e| matches!(e, LightEvent::FrameOk { .. }));
                     self.collected(read, now_ms, events);
                 }
                 _ => {}
             }
+        }
+        if read_any {
+            events.push(TransportEvent::CodeRead);
+        } else if bad_any {
+            events.push(TransportEvent::CodeUnreadable);
         }
     }
 
@@ -509,7 +520,7 @@ impl LightTransport {
         if self.showing.is_none() {
             self.showing = self.next_up();
         }
-        if self.showing.is_none() && !self.lit {
+        if self.showing.is_none() && self.lit.is_none() {
             self.pace = None;
             return;
         }
@@ -531,10 +542,9 @@ impl LightTransport {
         }
         self.pace = Some((from, slot + 1, fps));
         let Some(out) = self.showing.as_mut() else {
-            if self.lit {
-                self.lit = false;
+            if let Some(tag) = self.lit.take() {
                 self.pace = None;
-                events.push(TransportEvent::DisplayStopped);
+                events.push(TransportEvent::DisplayStopped { tag });
             }
             return;
         };
@@ -549,7 +559,7 @@ impl LightTransport {
             spec: out.spec.preset().expect("only presets are kept"),
             bits: grid_bits(&out.spec, &frame),
         });
-        self.lit = true;
+        self.lit = Some(out.tag);
         out.shown += 1;
         if out.shown >= out.window {
             events.push(TransportEvent::Sent(out.tag));
@@ -621,9 +631,8 @@ impl Transport for LightTransport {
         if on {
             return;
         }
-        if self.lit {
-            self.lit = false;
-            self.pending.push(TransportEvent::DisplayStopped);
+        if let Some(tag) = self.lit.take() {
+            self.pending.push(TransportEvent::DisplayStopped { tag });
         }
         self.pace = None;
         if let Some(out) = self.showing.as_mut() {
@@ -640,12 +649,14 @@ impl Transport for LightTransport {
     fn delivered(&mut self, tag: u16) {
         if self.showing.as_ref().is_some_and(|o| o.tag == tag) {
             self.showing = None;
-            if self.queue.is_empty() && self.lit {
+            if self.queue.is_empty() {
                 // Nothing follows: clear the screen now rather than at the
                 // end of the frame on it.
-                self.lit = false;
-                self.pace = None;
-                self.pending.push(TransportEvent::DisplayStopped);
+                if let Some(lit) = self.lit.take() {
+                    self.pace = None;
+                    self.pending
+                        .push(TransportEvent::DisplayStopped { tag: lit });
+                }
             }
         } else if let Some(i) = self.queue.iter().position(|(t, _)| *t == tag) {
             self.queue.remove(i);
@@ -653,6 +664,13 @@ impl Transport for LightTransport {
             return;
         }
         self.pending.push(TransportEvent::Sent(tag));
+    }
+
+    /// Forget that `tag` was collected, so its frames still being shown
+    /// are collected afresh: a damaged collection gets another try.
+    fn rejected(&mut self, tag: u16) -> bool {
+        self.collector.reject(tag);
+        true
     }
 
     fn send(&mut self, frame: Vec<u8>) {
@@ -758,7 +776,7 @@ mod tests {
         assert!(shown.is_empty());
         assert_eq!(
             rest,
-            vec![TransportEvent::DisplayStopped],
+            vec![TransportEvent::DisplayStopped { tag: 7 }],
             "cleared when the last frame's time is up"
         );
     }
@@ -859,7 +877,7 @@ mod tests {
                 TransportEvent::Sent(7),
                 TransportEvent::Playing(8),
                 TransportEvent::Sent(8),
-                TransportEvent::DisplayStopped
+                TransportEvent::DisplayStopped { tag: 8 }
             ]
         );
         t.delivered(8);
@@ -949,11 +967,60 @@ mod tests {
         settle(&t);
         assert!(cam.show_next());
         settle(&t);
-        let frames: Vec<TransportEvent> = split(b"hi", 3)
+        let mut frames: Vec<TransportEvent> = split(b"hi", 3)
             .into_iter()
             .map(TransportEvent::Frame)
             .collect();
+        frames.push(TransportEvent::CodeRead);
         assert_eq!(t.poll(20), frames);
+    }
+
+    #[test]
+    fn a_rejected_envelope_is_collected_again_from_the_next_picture() {
+        let cam = FakeCamera::new(vec![hi(), hi()]);
+        let mut t = transport(&cam);
+        t.poll(0);
+        settle(&t);
+        assert!(cam.show_next());
+        settle(&t);
+        assert!(t.poll(20).contains(&TransportEvent::CodeRead));
+        assert!(t.rejected(3), "light collects afresh");
+        assert!(cam.show_next());
+        settle(&t);
+        let again = t.poll(40);
+        assert!(
+            again.iter().any(|e| matches!(e, TransportEvent::Frame(_))),
+            "handed over again: {again:?}"
+        );
+    }
+
+    #[test]
+    fn a_code_that_cannot_be_read_is_said_once_a_poll() {
+        // A finger over the middle of the code: its finders in view, a
+        // third of its data hidden.
+        let mut picture = hi();
+        for (x, y, p) in picture.enumerate_pixels_mut() {
+            if (300..500).contains(&x) && (200..400).contains(&y) {
+                *p = image::Luma([90]);
+            }
+        }
+        let cam = FakeCamera::new(vec![picture.clone(), picture]);
+        let mut t = transport(&cam);
+        t.poll(0);
+        settle(&t);
+        assert!(cam.show_next());
+        settle(&t);
+        assert!(cam.show_next());
+        settle(&t);
+        let events = t.poll(20);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| **e == TransportEvent::CodeUnreadable)
+                .count(),
+            1,
+            "{events:?}"
+        );
     }
 
     #[test]

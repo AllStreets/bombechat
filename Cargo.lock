@@ -286,9 +286,11 @@ name = "bombechat-app"
 version = "0.1.0"
 dependencies = [
  "bombechat-core",
+ "bombechat-light",
  "bombechat-modem",
  "bombechat-node",
  "bombechat-store",
+ "image",
  "keyring",
  "serde",
  "serde_json",

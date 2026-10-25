@@ -1,6 +1,7 @@
 //! Bombechat's desktop shell, airgapped build: the web interface in
 //! `app/ui/` in a Tauri window, wired to a [`bombechat_node::Node`]
-//! listening and playing through the sound card.
+//! listening and playing through the sound card, and reading through the
+//! camera and flashing codes on the page.
 //!
 //! The node lives behind a mutex in [`commands::Shared`]. A pump thread
 //! ticks it every 20 ms and re-emits each [`bombechat_node::NodeEvent`] as
@@ -38,13 +39,18 @@ fn send(
 }
 
 #[tauri::command]
-fn broadcast(state: State<'_, Shared>, text: String) -> Result<String, String> {
-    commands::broadcast(&state, text)
+fn broadcast(state: State<'_, Shared>, text: String, channel: String) -> Result<String, String> {
+    commands::broadcast(&state, text, channel)
 }
 
 #[tauri::command]
 fn pair(state: State<'_, Shared>) -> Result<(), String> {
     commands::pair(&state)
+}
+
+#[tauri::command]
+fn stop_pairing(state: State<'_, Shared>) {
+    commands::stop_pairing(&state)
 }
 
 #[tauri::command]
@@ -131,7 +137,7 @@ pub fn run() {
             std::fs::create_dir_all(&dir)?;
             let store = dir.join(STORE_FILE);
             let device =
-                Device::with_sound_card(store.clone()).with_keeper(keychain::system(&store));
+                Device::with_hardware(store.clone()).with_keeper(keychain::system(&store));
             app.manage(Shared::new(Box::new(device)));
             let handle = app.handle().clone();
             thread::Builder::new()
@@ -143,6 +149,7 @@ pub fn run() {
             send,
             broadcast,
             pair,
+            stop_pairing,
             confirm_pair,
             set_setting,
             settings,

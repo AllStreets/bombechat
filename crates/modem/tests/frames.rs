@@ -237,6 +237,24 @@ fn duplicate_frame_of_completed_tag_does_not_double_complete() {
 }
 
 #[test]
+fn a_forgotten_tag_completes_again_from_its_frames() {
+    let env = vec![5u8; 60];
+    let frames = split(&env, 77);
+    let completes = |r: &mut Reassembler| {
+        frames
+            .iter()
+            .flat_map(|f| r.push(f, 0))
+            .filter(|e| matches!(e, Event::Complete { .. }))
+            .count()
+    };
+    let mut r = Reassembler::new();
+    assert_eq!(completes(&mut r), 1);
+    assert_eq!(completes(&mut r), 0, "remembered as complete");
+    r.forget(77);
+    assert_eq!(completes(&mut r), 1, "collected afresh");
+}
+
+#[test]
 #[should_panic(expected = "255 frames")]
 fn split_panics_when_envelope_needs_more_than_255_frames() {
     let too_big = vec![0u8; 255 * FRAME_DATA + 1];
