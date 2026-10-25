@@ -22,6 +22,10 @@ import { createMachine, engravingFace, engravingFont, engraveText } from '/app/u
 const Q = new URLSearchParams(location.search);
 const RIM = '#' + (Q.get('rim') || '7a2a22'), LETTER = Q.get('letter') || 'B', TURN = +(Q.get('turn') || 1);
 const BG = '#' + (Q.get('bg') || '141311');
+// The window letter in the engraving face with the ring's own hairline. The bank paints its windows
+// at .085 on a 128 px texture that shows about 40 px tall, where that reads as this; drawn as large
+// as the logo draws it, .085 swells Marcellus's flared strokes into a slab.
+const WEIGHT = +(Q.get('weight') || .035);
 await engravingFace();
 const host = document.getElementById('v');
 const K = createMachine(host, { still: true, background: BG });
@@ -64,10 +68,10 @@ const slot = new THREE.Mesh(slotGeo, M.hole); slot.position.z = .247; slot.rotat
 rot.add(rimM, face, hub, slot); g.add(rot);
 // the letter ring turned so the window letter's own engraving sits under it
 rot.rotation.z = TURN * 2 * Math.PI / 26;
-const cv = document.createElement('canvas'); cv.width = cv.height = 256; const wt = new THREE.CanvasTexture(cv); wt.colorSpace = THREE.SRGBColorSpace; wt.anisotropy = 16;
-{ const k = cv.getContext('2d'); k.scale(2, 2); k.fillStyle = '#ece4cd'; k.fillRect(0, 0, 128, 128);
+const cv = document.createElement('canvas'); cv.width = cv.height = 512; const wt = new THREE.CanvasTexture(cv); wt.colorSpace = THREE.SRGBColorSpace; wt.anisotropy = 16;
+{ const k = cv.getContext('2d'); k.scale(4, 4); k.fillStyle = '#ece4cd'; k.fillRect(0, 0, 128, 128);
   const sh = k.createLinearGradient(0, 0, 0, 128); sh.addColorStop(0, 'rgba(0,0,0,.09)'); sh.addColorStop(.25, 'rgba(0,0,0,0)'); k.fillStyle = sh; k.fillRect(0, 0, 128, 128);
-  k.fillStyle = '#15130f'; k.font = engravingFont(98); k.textAlign = 'center'; k.textBaseline = 'middle'; engraveText(k, LETTER, 64, 69, 98, .085);
+  k.fillStyle = '#15130f'; k.font = engravingFont(98); k.textAlign = 'center'; k.textBaseline = 'middle'; engraveText(k, LETTER, 64, 69, 98, WEIGHT);
   k.strokeStyle = 'rgba(0,0,0,.35)'; k.lineWidth = 4; k.strokeRect(2, 2, 124, 124); }
 const tabMat = { roughness: .45, metalness: 0 };
 const cream = () => new THREE.MeshStandardMaterial({ color: '#e9e1cb', ...tabMat });

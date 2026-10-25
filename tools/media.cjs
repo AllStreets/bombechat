@@ -117,7 +117,7 @@ for name in sys.argv[2:]:
 <title>Bombechat</title>
 <defs>
 <style>@font-face{font-family:'Marcellus SC';src:url(data:font/woff2;base64,${font}) format('woff2')}
-.ring text{font-family:'Marcellus SC',serif;font-size:8.4px;fill:#ddd5c0;text-anchor:middle;dominant-baseline:central;stroke:#ddd5c0;stroke-width:.18px}</style>
+.ring text{font-family:'Marcellus SC',serif;font-size:8.4px;fill:#ddd5c0;text-anchor:middle;dominant-baseline:central;stroke:#ddd5c0;stroke-width:.3px}</style>
 <radialGradient id="face" cx="40%" cy="30%" r="80%"><stop offset="0" stop-color="#3a3530"/><stop offset=".65" stop-color="#1d1a17"/><stop offset="1" stop-color="#0d0c0a"/></radialGradient>
 <linearGradient id="rim" x1="0" y1="0" x2=".35" y2="1"><stop offset="0" stop-color="#b34a3d"/><stop offset=".5" stop-color="#8e3328"/><stop offset="1" stop-color="#5e1f18"/></linearGradient>
 <linearGradient id="bevel" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".22"/><stop offset=".5" stop-color="#fff" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".35"/></linearGradient>
@@ -134,7 +134,7 @@ for name in sys.argv[2:]:
 <g transform="rotate(${-TURN * 360 / 26})" fill="#070605" stroke="#dcd6c8" stroke-opacity=".2" stroke-width=".3">${holes}</g>
 <rect x="-11.4" y="-36.6" width="23.4" height="22.8" rx=".8" fill="#000" opacity=".45" transform="translate(1 1.4)"/>
 <rect x="-11.7" y="-37.4" width="23.4" height="22.8" rx=".8" fill="url(#tab)" stroke="#000" stroke-opacity=".35" stroke-width=".7"/>
-<text x="0" y="-19.4" text-anchor="middle" font-family="'Marcellus SC',serif" font-size="18.5" fill="#3d3833" stroke="#3d3833" stroke-width=".7">B</text>
+<text x="0" y="-19.4" text-anchor="middle" font-family="'Marcellus SC',serif" font-size="18.5" fill="#15130f" stroke="#15130f" stroke-width=".6">B</text>
 <circle r="7.6" cx=".6" cy="1" fill="#000" opacity=".5"/>
 <circle r="7.3" fill="url(#hub)"/><circle r="7.3" fill="none" stroke="#000" stroke-opacity=".45" stroke-width=".5"/>
 <rect x="-4.6" y="-.55" width="9.2" height="1.1" rx=".3" fill="#0b0a09" transform="rotate(${(-1 + TURN * 2 * Math.PI / 26) * -180 / Math.PI})"/>
