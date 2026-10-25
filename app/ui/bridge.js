@@ -7,7 +7,8 @@
 //                                went: in this plan only sound sends, and light reports channel 'unavailable: ...'
 //   broadcast(text)              [broadcast { text }]               resolves to the message id, as hex
 //   pair()                       [pair]                             plays this machine's hello (once the room is quiet); a
-//                                peer's hello arrives as pairOffer
+//                                peer's hello arrives as pairOffer. Rejects with the reason when the Sound switch
+//                                won't send, e.g. 'not sent: sound is set to listen only'
 //   confirmPair(peerHex, name)   [confirm_pair { peerHex, name }]   resolves to the new contact id; name as the person
 //                                corrected it on the card (the hello's name is only a suggestion)
 //   setSetting(id, valueIndex)   [set_setting { id, valueIndex }]
@@ -32,13 +33,17 @@
 //                plain: one letter per byte; ASCII letters upper-cased, every other byte X (the Bombe's spacer)
 //                heard, key: one letter per byte, by letter(b)
 //                text: the message text decrypted so far under this tag, NOT yet checked (see below)
-//   message    { id, contact, outgoing, text, channel, at_min, heard }
+//   message    { id, contact, outgoing, text, channel, at_min, heard, state }
+//                state: an outgoing message's delivery as the store keeps it, 'waiting', 'sent' or
+//                'failed' (received messages are 'sent'); absent in the simulator
 //   heard      { id, by }
 //   broadcast  { signer, text, verified }                       signer: hex of the signing key
 //   pairOffer  { peer, name, safety }                           peer: hex of sign key then dh key
 //   roomDb     number
 //   channel    { channel, state }       state 'receiving' while a message arrives by sound; 'failed' when one
 //                                       stops arriving or fails its checks (the state it is then in follows);
+//                                       'not sent: sound is set to listen only' (or '...: sound is off') just before
+//                                       the outbox 'failed' of a send the Sound switch refused (then the state it is in);
 //                                       anything else (e.g. 'listening', 'unavailable: ...') otherwise
 //   outbox     { id, state, text?, public? }   a send's progress: 'waiting' (for the room to fall under Send under),
 //                                       'playing', 'sent', or 'failed' (it will never go out). text and public come with the first report of a send
@@ -78,7 +83,10 @@ const SENDER_LEN = 68, SIGNATURE_LEN = 64;
 const arriving = new Map(); // tag -> { bytes so far, chunk size }
 const decoder = new TextDecoder('utf-8');
 function provisional(tag, index, of, plain) {
-  const a = index === 0 || !arriving.has(tag) ? { so: [], size: 0 } : arriving.get(tag);
+  // a later chunk of a tag whose start was missed (the page opened mid-message): its bytes
+  // don't start at the sender, so they can't be cut to the text
+  if (index > 0 && !arriving.has(tag)) return '';
+  const a = index === 0 ? { so: [], size: 0 } : arriving.get(tag);
   if (index < of - 1) a.size = plain.length;
   a.so.push(...plain); arriving.set(tag, a);
   const last = index === of - 1;

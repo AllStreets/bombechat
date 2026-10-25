@@ -548,16 +548,26 @@ function cut(t,max){const w=t.split(' ');const out=[];let cur='';w.forEach(x=>{i
 const TILT=[-.3,.4,-.15];
 function tape(what,text,cls='strip',before=null){const lines=text.split('\n').flatMap(l=>l.length>56?cut(l,40):[l]);
   return lines.map((l,i)=>{const s=el('div',cls,l);if(i){s.style.transform=`rotate(${TILT[(i-1)%3]}deg)`;s.style.marginLeft=`${i*2}px`}what.insertBefore(s,before);return s})}
-// ms null: heard, but when is not known (the store keeps no time for it)
-function stamp(what,how,ms){const s=el('div',booting?'stamp':'stamp new',`${how==='light'?'seen':'heard'} by ${CONTACT.short}${ms==null?'':', '+hhmm(ms)}`);what.appendChild(s)}
+// ms null: heard, but when is not known (the store keeps no time for it). by: the contact who heard it
+const shortName=id=>{const p=PEOPLE.find(x=>x.id===id);return p?p.short:CONTACT.short};
+function stamp(what,how,ms,by){const s=el('div',booting?'stamp':'stamp new',`${how==='light'?'seen':'heard'} by ${shortName(by)}${ms==null?'':', '+hhmm(ms)}`);what.appendChild(s)}
 const sent=new Map();// message id -> {ent,how}
+// every message on the sheet, by id: one the store already showed (say, heard while locked
+// and loaded on unlock) is not drawn again when its events arrive after
+const onSheet=new Set();
 const hopsWord=n=>['no hops','one hop','two hops','three hops','four hops','five hops','six hops','seven hops'][n]||`${n} hops`;
 
 function onMessage(m){
+  if(onSheet.has(m.id))return;
   if(!m.outgoing&&m.channel==='sound'&&!m.via&&arrival&&arrival.ent)return;// it finishes a provisional entry: see below
   if(m.contact!==CONTACT.id)return;// another person's sheet
+  onSheet.add(m.id);
   const how=m.via?'relay':m.channel;const ent=entry(m.at_min*60000,how);const what=ent.querySelector('.what');
-  if(m.outgoing){what.appendChild(el('div','typed',m.text));sent.set(m.id,{ent,how:m.channel});if(m.heard)stamp(what,m.channel,bridge.simulated?bridge.now():null)}
+  if(m.outgoing){what.appendChild(el('div','typed',m.text));sent.set(m.id,{ent,how:m.channel});
+    if(m.heard)stamp(what,m.channel,bridge.simulated?bridge.now():null,m.contact);
+    // what the store says of its delivery: still waiting (queued again on unlock), or never sent
+    else if(m.state==='failed'){ent.classList.add('failed');what.appendChild(el('div','state',sentence('not sent')))}
+    else if(m.state==='waiting'){what.appendChild(el('div','state'));const it=outItem(m.id);Object.assign(it,{text:m.text,ent,how:m.channel});setOut(it,it.state||'waiting')}}
   else{tape(what,m.text);if(m.via)what.appendChild(el('div','state',`passed on by the ${m.via}`))}
   grow(()=>log.appendChild(ent))}
 bridge.on('message',onMessage);
@@ -565,7 +575,7 @@ bridge.on('broadcast',b=>{const ent=entry(bridge.now(),'public');const what=ent.
   what.appendChild(el('div','state',`${b.verified?'signed':'signed, not checked,'} ${b.signer.slice(0,4).toUpperCase()}${b.hops?', '+hopsWord(b.hops):''}`));
   grow(()=>log.appendChild(ent))});
 bridge.on('heard',h=>{const s=sent.get(h.id);if(!s||s.ent.querySelector('.stamp'))return;
-  grow(()=>{const st=s.ent.querySelector('.state');if(st)st.remove();stamp(s.ent.querySelector('.what'),s.how,bridge.now())})});
+  grow(()=>{const st=s.ent.querySelector('.state');if(st)st.remove();stamp(s.ent.querySelector('.what'),s.how,bridge.now(),h.by)})});
 
 /* ---------- a message arriving: provisional tape ----------
    As chunks decrypt, their text types onto the sheet in pencil-grey tape. Until
@@ -595,9 +605,14 @@ bridge.on('chunk',c=>{const v=c.view,fpc=Math.max(1,Math.ceil(v.plain.length/W))
 bridge.on('message',m=>{
   if(m.outgoing||m.channel!=='sound'||m.via||!arrival||!arrival.ent)return;
   const a=arrival,ent=a.ent;a.ent=null;clearTimeout(a.stallT);
-  if(m.contact!==CONTACT.id){grow(()=>ent.remove());return}
+  // another person's, or already on the sheet: the provisional tape goes
+  if(m.contact!==CONTACT.id||onSheet.has(m.id)){grow(()=>ent.remove());return}
+  onSheet.add(m.id);
   whenDrumsRest(()=>grow(()=>{ent.classList.remove('arriving');const what=ent.querySelector('.what');what.textContent='';tape(what,m.text)}))});
-function onChannel(s){if(s.channel!=='sound')return;Drum.receiving=s.state==='receiving';if(s.state==='failed')failArrival(arrival)}
+// a send the Sound switch refused says why: 'not sent: sound is set to listen only'
+let refusedWhy=null;
+function onChannel(s){if(s.channel!=='sound')return;Drum.receiving=s.state==='receiving';if(s.state==='failed')failArrival(arrival);
+  if(/^not sent: /.test(s.state))refusedWhy=s.state}
 bridge.on('channel',onChannel);
 
 /* ---------- channels ---------- */
@@ -666,21 +681,26 @@ bridge.on('roomDb',db=>{room=db;vuNeedle(room)});
 const outboxEl=document.getElementById('outbox');
 const outbox=new Map();// id -> {text,public,state,ent,how,leaving}
 const finished=new Map();// id -> 'sent' or 'failed', in case the send's own reply comes back later than the news
+const finishedWhy=new Map();// id -> why it failed, if the node said
+// Send under, from the settings page: 30 to 50 dB in fives, 40 unless changed
+const sendUnder=()=>{const v=savedSettings().quiet;return v>=0&&v<=4?30+5*v:40};
 const esc=s=>s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 function outItem(id){let it=outbox.get(id);if(!it){it={id,text:'',public:false,state:null,ent:null,how:'sound',leaving:false};outbox.set(id,it)}return it}
 function drawOutbox(){const q=[...outbox.values()].filter(m=>m.text&&(m.state==='waiting'||m.leaving));
   if(!q.length){outboxEl.innerHTML='<div class="slip empty">Nothing waiting to send.</div>';return}
-  outboxEl.innerHTML=q.slice(0,2).map(m=>`<div class="slip${m.leaving?' gone':''}" data-id="${m.id}">${esc(m.text)}<small>${m.public?'public, ':''}sends once under 40 dB</small></div>`).join('')+(q.length>2?`<div class="slip empty">and ${q.length-2} more</div>`:'')}
+  outboxEl.innerHTML=q.slice(0,2).map(m=>`<div class="slip${m.leaving?' gone':''}" data-id="${m.id}">${esc(m.text)}<small>${m.public?'public, ':''}sends once under ${sendUnder()} dB</small></div>`).join('')+(q.length>2?`<div class="slip empty">and ${q.length-2} more</div>`:'')}
 function status(it){const st=it.ent&&it.ent.querySelector('.state');if(!st)return;
   st.classList.toggle('live',it.state==='playing');
   if(it.ent)it.ent.classList.toggle('failed',it.state==='failed');
-  st.textContent=it.state==='waiting'?(room==null?'waiting for quiet':room<40?'playing next':`waiting for quiet, the room is at ${Math.round(room)} dB`)
-    :it.state==='playing'?(it.how==='light'?'flashing on screen':'playing by sound'):it.state==='sent'?'sent, not heard yet':it.state==='failed'?sentence('not sent'):''}
+  st.textContent=it.state==='waiting'?(room==null?'waiting for quiet':room<sendUnder()?'playing next':`waiting for quiet, the room is at ${Math.round(room)} dB`)
+    :it.state==='playing'?(it.how==='light'?'flashing on screen':'playing by sound'):it.state==='sent'?'sent, not heard yet':it.state==='failed'?sentence(it.why||'not sent'):''}
 function setOut(it,state){const was=it.state;it.state=state;status(it);
   if(state==='playing'&&was==='waiting'&&!RM.matches){it.leaving=true;const slip=outboxEl.querySelector(`[data-id="${it.id}"]`);if(slip)slip.classList.add('gone');setTimeout(()=>{it.leaving=false;drawOutbox()},460)}
   else drawOutbox();
-  if(state==='sent'||state==='failed'){outbox.delete(it.id);finished.set(it.id,state);setTimeout(()=>finished.delete(it.id),60000)}}
-bridge.on('outbox',o=>{const it=outItem(o.id);if(o.text&&!it.text){it.text=o.text;it.public=!!o.public}setOut(it,o.state)});
+  if(state==='sent'||state==='failed'){outbox.delete(it.id);finished.set(it.id,state);if(it.why)finishedWhy.set(it.id,it.why);setTimeout(()=>{finished.delete(it.id);finishedWhy.delete(it.id)},60000)}}
+// the reason the switch gave goes with the failure it caused (the channel event comes first)
+bridge.on('outbox',o=>{const it=outItem(o.id);if(o.text&&!it.text){it.text=o.text;it.public=!!o.public}
+  if(o.state==='failed'&&refusedWhy){it.why=refusedWhy;refusedWhy=null}setOut(it,o.state)});
 const nowtime=document.getElementById('nowtime');
 const tick=()=>{nowtime.firstChild.nodeValue=hhmm(bridge.now())};
 const reply=document.getElementById('reply'),form=document.getElementById('compose');
@@ -698,7 +718,7 @@ function send(how){const text=reply.value.trim();
   grow(()=>log.appendChild(ent),true);
   reply.value='';fit();
   bridge.send([CONTACT.id],text,how).then(id=>{sent.set(id,{ent,how});
-    if(finished.has(id)){status({state:finished.get(id),ent,how});tick();return}
+    if(finished.has(id)){status({state:finished.get(id),why:finishedWhy.get(id),ent,how});tick();return}
     const it=outItem(id);Object.assign(it,{text,ent,how});
     if(it.state)setOut(it,it.state);tick()},
     why=>{ent.classList.add('failed');ent.querySelector('.state').textContent=sentence(why)})}

@@ -45,7 +45,10 @@ const PARTS = { top: '.top', bank: '.bank', sheet: '.sheet', compose: '.compose'
 // The app's side of the bridge, for checking the app path in a plain browser: a first-run machine
 // (no store yet) whose commands answer as the Tauri shell's do. Every call is kept in __calls;
 // __emit sends an event as the node would. pair() hears `hello` say hello 1.2 s later.
-function tauriStub({ hello, safety }) {
+// Given `people`, the store exists and is locked instead: contacts are those, conversation(id)
+// answers talk[id], and the unlock emits `afterUnlock` ([name, payload] pairs) before it resolves,
+// as the node's first tick after an unlock opens what it heard while locked.
+function tauriStub({ hello, safety, people, talk, afterUnlock }) {
   let unlocked = false;
   const listeners = {};
   window.__calls = [];
@@ -54,10 +57,10 @@ function tauriStub({ hello, safety }) {
     event: { listen: (name, f) => { (listeners[name] = listeners[name] || []).push(f); return Promise.resolve(() => {}); } },
     core: { invoke: (cmd, args) => { window.__calls.push([cmd, args]);
       switch (cmd) {
-        case 'contacts': return unlocked ? Promise.resolve([]) : Promise.reject('no store yet');
-        case 'unlock': unlocked = true; return Promise.resolve(null);
+        case 'contacts': return unlocked ? Promise.resolve(people || []) : Promise.reject(people ? 'locked' : 'no store yet');
+        case 'unlock': unlocked = true; for (const [name, payload] of afterUnlock || []) window.__emit(name, payload); return Promise.resolve(null);
         case 'machine': return Promise.resolve({ name: 'Machine No. 1', key: 'a3f09c1e'.repeat(16), you: 'Ana Lima', held: 0, version: '0.1.0' });
-        case 'conversation': return Promise.resolve([]);
+        case 'conversation': return Promise.resolve((talk || {})[args.contactId] || []);
         case 'channels': return Promise.resolve([{ channel: 'sound', state: 'listening', rate: 16.1 }]);
         case 'pair': setTimeout(() => window.__emit('pairOffer', { peer: { sign: Array(32).fill(5), dh: Array(32).fill(6) }, name: hello, safety }), 1200); return Promise.resolve(null);
         case 'confirm_pair': return Promise.resolve(7);
@@ -332,6 +335,43 @@ function measureText() {
     if (done.arriving || done.lastText !== 'Bring water.' || done.lastProvisional) problems.push(`the message did not replace its provisional tape: ${JSON.stringify(done)}`);
     report.provisional = { hanging, stalled, other, done };
     await pv.close();
+
+    // a message heard while locked: the node's first tick after the unlock opens it (chunk, then
+    // message, held by the bridge while the page sets up) and the store already has it, so the
+    // sheet loads it too. It shows once, with no provisional tape left behind. A send the store
+    // kept as failed says Not sent.
+    const lk = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 });
+    watch(lk, 'locked');
+    {
+      const said = 'Heard while locked.';
+      const bytes = [...Buffer.from(said)];
+      const id = Array.from({ length: 16 }, (_, i) => i + 1);
+      const heard = { id, contact: 1, outgoing: false, text: said, channel: 'sound', at_min: 29_000_000, heard: false, state: 'sent' };
+      const unsent = { id: id.map(b => b + 100), contact: 1, outgoing: true, text: 'Thanks, on my way.', channel: 'sound', at_min: 29_000_001, heard: false, state: 'failed' };
+      const plain = [...Array(68).fill(0), ...bytes, ...Array(64).fill(0)];
+      const chunk = { tag: 0x0b0e, index: 0, of: 1, view: { plain, heard: plain.map(b => b ^ 1), key: plain.map(() => 1) } };
+      await lk.addInitScript(tauriStub, { hello: 'Marisol Ortega', safety: '', people: [{ id: 1, name: 'Marisol Ortega', checked: true, safety: '90817 26354 55102 83746 19283 74650 31415 92653 58979 32384 62643 38327' }],
+        talk: { 1: [heard, unsent] }, afterUnlock: [['chunk', chunk], ['message', heard]] });
+      await lk.goto(url(''));
+      await lk.waitForSelector('.unlock input[name=pass]');
+      await lk.fill('.unlock input[name=pass]', 'correct horse');
+      await lk.click('.unlock button');
+      await lk.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
+      await lk.waitForTimeout(3500);
+      const shown = await lk.evaluate(t => {
+        const ents = [...document.querySelectorAll('#log .ent')];
+        const text = e => [...e.querySelectorAll('.strip,.typed')].map(s => s.textContent).join(' ');
+        const unsentEnt = ents.find(e => text(e) === 'Thanks, on my way.');
+        return { copies: ents.filter(e => text(e) === t).length, arriving: document.querySelectorAll('#log .ent.arriving').length,
+          provisional: document.querySelectorAll('#log .provisional').length,
+          unsent: unsentEnt ? { failed: unsentEnt.classList.contains('failed'), state: (unsentEnt.querySelector('.state') || {}).textContent } : null };
+      }, said);
+      if (shown.copies !== 1 || shown.arriving || shown.provisional) problems.push(`a message heard while locked shows ${shown.copies} times after unlock: ${JSON.stringify(shown)}`);
+      if (!shown.unsent || !shown.unsent.failed || shown.unsent.state !== 'Not sent.') problems.push(`a send the store kept as failed does not say Not sent: ${JSON.stringify(shown.unsent)}`);
+      await lk.locator('.sheet').screenshot({ path: path.join(out, 'locked-then-unlocked.png') });
+      report.lockedThenUnlocked = shown;
+    }
+    await lk.close();
 
     // pairing by sound on the key check card, in a plain browser (the simulator) and in the app
     // (window.__TAURI__ stubbed, from first run), at 1024, 1440 and 1728, with 2x crops of each state
