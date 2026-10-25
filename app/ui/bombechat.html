@@ -285,14 +285,17 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
 .sh-foot p{font-family:var(--print);font-size:12.5px;color:var(--green-ink);text-align:right}
 /* testing the machine: rubber stamps along the foot of the sheet, in the sheet's own green ink, with a typed line
    beside them for what the machine says about a test it won't run */
-.sh-foot .testrow{grid-column:1/-1;display:flex;align-items:center;justify-content:flex-end;gap:8px 16px;padding-top:8px;min-height:44px}
-.sh-foot .testnote{flex:1 1 auto;min-width:0;font-family:var(--type);font-size:12.5px;line-height:1.35;color:#6e6553;text-align:left}
-.sh-foot .testnote.refused{color:#7a3a30}
-.testrow .rs{flex:none;box-sizing:border-box;min-height:28px}
+.sh-head .nonet{margin:0 18px 1px auto;font-family:var(--print);font-size:12.5px;text-align:right}
+.sh-foot .fld{grid-row:1;grid-column:1}
+.sh-foot .fld+.fld{grid-column:2}
+.sh-foot .teststamps{grid-row:1;grid-column:3;display:flex;justify-content:flex-end;align-items:flex-end;gap:12px;margin-bottom:-3px}
+.teststamps .rs{flex:none;box-sizing:border-box;min-height:28px}
+/* what the machine says of a test it won't run, typed in place of the two fields beside the stamps while it stands */
+.sh-foot .testnote{grid-row:1;grid-column:1/3;align-self:center;font-family:var(--type);font-size:12.5px;line-height:15px;color:#7a3a30;text-align:left;padding-right:12px}
+.sh-foot .testnote:empty{display:none}
+.sh-foot:has(.testnote:not(:empty)) .fld{visibility:hidden}
 .rs.test{--ink:var(--green-ink);--tilt:-1.6deg}
 .rs.test.light{--tilt:1.2deg}
-/* a new machine's first line: what the machine says, set level with the time beside it */
-.ent.firstrun .what{padding-top:3px}
 
 /* key check card */
 .menu{grid-area:menu;position:relative;background:#f1eee5;border-radius:1px;padding:14px 16px 12px;color:var(--graphite);transform:rotate(.6deg);min-height:0;
@@ -505,7 +508,7 @@ body:has(.lamp:not([hidden])){perspective:none}
 
   <main class="deck">
     <article class="sheet" aria-label="Message sheet with Marisol Ortega">
-      <div class="sh-head"><h1>Message sheet</h1><span class="no">No.<b>1</b></span></div>
+      <div class="sh-head"><h1>Message sheet</h1><p class="nonet">Nothing on this sheet has crossed a network.</p><span class="no">No.<b>1</b></span></div>
       <div class="fields">
         <div>With<b>Marisol Ortega</b></div>
         <div>Opened<b>06.52, 24 Oct</b></div>
@@ -526,10 +529,10 @@ body:has(.lamp:not([hidden])){perspective:none}
         <p class="pubnote" id="pubnote" aria-live="polite"></p>
       </form>
       <div class="sh-foot">
-        <div>Received on<b>kitchen laptop</b></div>
-        <div>Heard through<b>built-in mic</b></div>
-        <p>Nothing on this sheet has crossed a network.</p>
-        <div class="testrow"><p class="testnote" id="testnote" role="status" aria-live="polite"></p><button type="button" class="rs test" id="testbtn" title="Seals a short message to this machine's own key and plays it once the room is quiet. The microphone hears it back and it lands on this sheet. Nothing of it is kept. Sound must be at Listen and send.">Test the machine</button><button type="button" class="rs test light" id="testlight" title="Shows a short message sealed to this machine's own key as a light code. Hold a mirror up to the screen and the camera reads it back. Nothing of it is kept. Light must be at Read and flash.">Test by light</button></div>
+        <div class="fld">Received on<b>kitchen laptop</b></div>
+        <div class="fld">Heard through<b>built-in mic</b></div>
+        <p class="testnote" id="testnote" role="status" aria-live="polite"></p>
+        <div class="teststamps"><button type="button" class="rs test" id="testbtn" title="Seals a short message to this machine's own key and plays it once the room is quiet. The microphone hears it back and it lands on this sheet. Nothing of it is kept. Sound must be at Listen and send.">Test the machine</button><button type="button" class="rs test light" id="testlight" title="Shows a short message sealed to this machine's own key as a light code. Hold a mirror up to the screen and the camera reads it back. Nothing of it is kept. Light must be at Read and flash.">Test by light</button></div>
       </div>
     </article>
 
@@ -786,7 +789,7 @@ const hopsWord=n=>['no hops','one hop','two hops','three hops','four hops','five
 
 function onMessage(m){
   if(onSheet.has(m.id))return;
-  if(!m.outgoing&&!m.via&&arrival&&arrival.ent&&!arrival.test&&m.channel===arrival.how)return;// it finishes a provisional entry: see below
+  if(!m.outgoing&&!m.via&&arrival&&arrival.ent&&m.channel===arrival.how)return;// it finishes a provisional entry: see below
   if(m.contact!==CONTACT.id)return;// another person's sheet
   onSheet.add(m.id);
   const how=m.via?'relay':m.channel;const ent=entry(m.at_min*60000,how);const what=ent.querySelector('.what');
@@ -828,21 +831,22 @@ function provisionalTape(a,text){const what=a.ent.querySelector('.what'),note=wh
   const last=strips.length?strips[strips.length-1]:what.insertBefore(el('div','strip provisional feed'),note);
   last.appendChild(el('span','cur'))}
 function failArrival(a){if(!a||!a.ent)return;clearTimeout(a.stallT);const ent=a.ent;a.ent=null;
-  // the self-test's arrival: the machine says how the test ended (selfTest), not the arrival
-  if(a.test)return;
   grow(()=>{ent.classList.remove('arriving');ent.classList.add('failed');ent.querySelectorAll('.cur').forEach(c=>c.remove());
     const note=ent.querySelector('.state');note.classList.remove('live');note.textContent='did not check'})}
-bridge.on('chunk',c=>{const v=c.view,fpc=Math.max(1,Math.ceil(v.plain.length/W));
-  if(!arrival||arrival.tag!==c.tag||c.index===0){failArrival(arrival);const test=!!(Test&&Test.ent&&Test.tags.has(c.tag));
-    arrival={tag:c.tag,fpc,how:c.channel,test,ent:test?testArriving(c.channel):arrivingEntry(c.channel),text:''}}
-  const base=c.index*arrival.fpc,total=c.index===c.of-1?base+fpc:c.of*arrival.fpc;
+// each landed chunk onto the drums, twelve letters a frame, after what is already waiting to show
+function toDrums(c,a){const v=c.view,fpc=Math.max(1,Math.ceil(v.plain.length/W));if(!a.fpc||c.index===0)a.fpc=fpc;
+  const base=c.index*a.fpc,total=c.index===c.of-1?base+fpc:c.of*a.fpc;
   for(let i=0;i<fpc;i++){const s=i*W;frames.push({plain:pad(v.plain.slice(s,s+W)),heard:pad(v.heard.slice(s,s+W)),key:pad(v.key.slice(s,s+W)),no:base+i,total,index:c.index,of:c.of})}
-  const a=arrival;
-  if(a.ent){a.text=c.text;grow(()=>provisionalTape(a,c.text));clearTimeout(a.stallT);if(!a.test)a.stallT=setTimeout(()=>failArrival(a),STALL)}
-  pump()});
+  pump()}
+bridge.on('chunk',c=>{
+  // the self-test's own chunks type into its entry, and leave any message arriving meanwhile as it was
+  if(Test&&Test.ent&&Test.tags.has(c.tag)){testChunk(c);return}
+  if(!arrival||arrival.tag!==c.tag||c.index===0){failArrival(arrival);arrival={tag:c.tag,how:c.channel,ent:arrivingEntry(c.channel),text:''}}
+  const a=arrival;toDrums(c,a);
+  if(a.ent){a.text=c.text;grow(()=>provisionalTape(a,c.text));clearTimeout(a.stallT);a.stallT=setTimeout(()=>failArrival(a),STALL)}});
 // the message the chunks were spelling: the provisional tape gives way to the real entry
 bridge.on('message',m=>{
-  if(m.outgoing||m.via||!arrival||!arrival.ent||arrival.test||m.channel!==arrival.how)return;
+  if(m.outgoing||m.via||!arrival||!arrival.ent||m.channel!==arrival.how)return;
   const a=arrival,ent=a.ent;a.ent=null;clearTimeout(a.stallT);
   // another person's, or already on the sheet: the provisional tape goes
   if(m.contact!==CONTACT.id||onSheet.has(m.id)){grow(()=>ent.remove());return}
@@ -893,6 +897,8 @@ const saidEl=document.getElementById('said');let saidT;
 function say(text,full=text){saidEl.textContent=text;saidEl.title=full;saidEl.style.opacity=1;clearTimeout(saidT);saidT=setTimeout(()=>saidEl.style.opacity=0,text.length>40?5200:2600)}
 // resolves true once the machine has taken the turn, or to why it would not
 function turnKnob(id,pos,again){const k=KNOBS[id];if(k.held)return Promise.resolve(`${k.name}: ${k.held}`);pos=Math.max(0,Math.min(2,pos));if(pos===k.pos&&k.read&&!again)return Promise.resolve(true);const was={pos:k.pos,read:k.read};k.pos=pos;k.read=true;
+  // a switch turned: the test's refusal has had its answer
+  testSays('');
   // turned back to Read and flash: what Escape stopped may show again
   if(id==='k2'&&pos===2)Lamp.stopped=false;
   const cap=document.querySelector(`#${id} .cap`);cap.style.transform=`rotate(${ANG[pos]}deg)`;setTimeout(()=>drawKnob(id),RM.matches?0:330);
@@ -1430,48 +1436,57 @@ addEventListener('keydown',e=>{if(e.key!=='Escape')return;if(Lamp.state!=='close
    it once the room is quiet, as any send waits. Its own microphone hears it, the drums turn as they do for any
    message, and it lands on the sheet under the margin note self-test, with what came back, how fast and on which
    band. Test by light shows it on the signal lamp for a mirror held up to the screen, and the camera reads it back.
-   Nothing of it is kept: the entry is this page's alone, gone when it closes. Each needs its switch at its sending
-   position, as pairing does, and turns none: refused, the line beside the stamps says which switch to turn. Escape,
-   or the stamp again, stops it; a test that comes back with nothing says what to try. On a new machine the empty
-   sheet's first line suggests it. */
+   The entry is the machine's own, sealed to itself, never typed as a message to the sheet's contact, and nothing of
+   it is kept: it is this page's alone, gone when it closes. Each needs its switch at its sending position, as
+   pairing does, and turns none: refused, the foot says which switch to turn, typed where its two fields were, until
+   a switch turns or a test starts. Escape, or the stamp again, stops it; a test that comes back with nothing says
+   what to try. On a new machine the empty sheet's first line suggests it, until a test has run. */
 // what the machine seals for a test, as the node's SELF_TEST_TEXT
 const SELF_TEST_TEXT='The machine hears itself.';
+// the switches' own refusals, as the node words them: anything else is said as it is
+const SWITCH_REFUSALS=['not sent: sound is off','not sent: sound is set to listen only','not sent: light is off','not sent: light is set to read only'];
+const NOTHING_TO_TEST={sound:'This Mac has no sound to test with.',light:'This Mac has no camera to test by light with.'};
 const testBtn=document.getElementById('testbtn'),testLightBtn=document.getElementById('testlight'),testNote=document.getElementById('testnote');
-// the test in progress: its channel, the tags it goes out under, its entry on the sheet once the machine took it, and
-// how far it has got ('asking', 'waiting', 'playing' or 'arriving')
+// the test in progress: its channel, the tags it goes out under, its entry on the sheet once the machine took it, how
+// far it has got ('asking', 'waiting', 'playing' or 'arriving'), and its arrival on the drums
 let Test=null;
 // the band sound is really on, as channels() says, for what to try when nothing was heard
 let soundBand=null;
-function testSays(text,refused){testNote.textContent=text||'';testNote.classList.toggle('refused',!!refused)}
+// the first run's line on the sheet, until a test has run
+let firstRunLine=null;
+function testSays(text){testNote.textContent=text||''}
 // one stamp while a test runs, saying it stops it; both at rest
 function testStamps(){const on=Test&&Test.channel;testBtn.hidden=on==='light';testLightBtn.hidden=on==='sound';
   testBtn.textContent=on==='sound'?'Stop the test':'Test the machine';testLightBtn.textContent=on==='light'?'Stop the test':'Test by light'}
 const testStampFor=channel=>channel==='light'?testLightBtn:testBtn;
 // the switch that won't let it run, said as what to turn
 function refuseTest(channel){const k=channel==='light'?KNOBS.k2:KNOBS.k1,name=channel==='light'?'Light':'Sound';
-  testSays(`${k.read?'':`The ${name} switch was not read from the machine. `}Turn ${name} to ${k.labels[2]} to ${channel==='light'?'test by light':'test the machine'}.`,true);
+  testSays(`${k.read?'':`The ${name} switch was not read from the machine. `}Turn ${name} to ${k.labels[2]} to ${channel==='light'?'test by light':'test the machine'}.`);
   nudge(testStampFor(channel))}
 function testLine(text,live){if(!Test||!Test.ent)return;const st=Test.ent.querySelector('.state');st.textContent=text;st.classList.toggle('live',!!live)}
 // waiting: for a quiet room, by sound, as the outbox says it of any send
 function testWaiting(){if(!Test||Test.state!=='waiting')return;
-  testLine(Test.channel==='light'?'waiting to go on screen':room==null?'waiting for quiet':room<sendUnder()?'playing next':`waiting for quiet, the room is at ${Math.round(room)} dB`)}
+  testLine('sealed to this machine, '+(Test.channel==='light'?'waiting to go on screen':room==null?'waiting for quiet':room<sendUnder()?'playing next':`waiting for quiet, the room is at ${Math.round(room)} dB`))}
 function testShow(){if(!Test)return;if(Test.state==='waiting')testWaiting();
-  else if(Test.state==='playing')testLine(Test.channel==='light'?'on the screen for a mirror':'playing by sound, listening for it',true)}
-// its first chunk: the provisional tape types into the test's own entry
-function testArriving(how){Test.state='arriving';testLine(`arriving by ${how}, not yet checked`,true);return Test.ent}
+  else if(Test.state==='playing')testLine(`sealed to this machine, ${Test.channel==='light'?'on the screen for a mirror':'playing by sound, listening for it'}`,true)}
+// a chunk of it came back: onto the drums, and its provisional tape typed into its own entry
+function testChunk(c){const a=Test.arr||(Test.arr={ent:Test.ent});
+  if(Test.state!=='arriving'){Test.state='arriving';testLine(`arriving by ${c.channel}, not yet checked`,true)}
+  toDrums(c,a);grow(()=>provisionalTape(a,c.text))}
 async function startTest(channel){
   if(Test){if(Test.channel===channel)stopTest();return}
   const k=channel==='light'?KNOBS.k2:KNOBS.k1,btn=testStampFor(channel);
   if(!(k.read&&k.pos===2)){refuseTest(channel);return}
-  const t=Test={channel,tags:new Set(),ent:null,state:'asking'};
-  btn.disabled=true;
-  try{await bridge.selfTest(channel)}catch(why){btn.disabled=false;if(Test===t)Test=null;
-    if(/^not sent: /.test(String(why)))refuseTest(channel);else{testSays(sentence(why),true);nudge(btn)}return}
-  btn.disabled=false;testSays('');
+  const t=Test={channel,tags:new Set(),ent:null,arr:null,state:'asking'};
+  btn.disabled=true;testSays('');
+  try{await bridge.selfTest(channel)}catch(why){btn.disabled=false;if(Test===t)Test=null;why=String(why&&why.message||why);
+    if(SWITCH_REFUSALS.includes(why))refuseTest(channel);else{testSays(why==='not sent: no sound or light to send on'?NOTHING_TO_TEST[channel]:sentence(why));nudge(btn)}return}
+  btn.disabled=false;
   if(Test!==t)return;// it ended before the machine's answer came
   if(channel==='light'){Lamp.stopped=false;Lamp.gone=null}
-  const ent=entry(bridge.now(),'self-test');ent.classList.add('mine','selftest');
-  ent.querySelector('.what').append(el('div','typed',SELF_TEST_TEXT),el('div','state'));
+  // the machine's own entry: no typed line, which on a contact's sheet would read as written to them
+  const ent=entry(bridge.now(),'self-test');ent.classList.add('selftest');
+  ent.querySelector('.what').append(el('div','state'));
   t.ent=ent;if(t.state==='asking')t.state='waiting';
   grow(()=>put(ent),true);testStamps();testShow();
   bridge.channels().then(list=>{const s=list.find(c=>c.channel==='sound');if(s&&s.band)soundBand=s.band},()=>{})}
@@ -1481,21 +1496,27 @@ function stopTest(){if(!Test)return;const ch=Test.channel;bridge.stopSelfTest().
   if(Lamp.state!=='closed'&&Lamp.test){Lamp.gone=Lamp.tag;lampClose(false)}
   testStampFor(ch).focus({preventScroll:true})}
 const secs=ms=>Math.max(1,Math.round(ms/1000));
+// how it went, typed under it: what came back and how fast (when the machine measured it), or what to try
+function testResult(t,light){const band=t.band||soundBand||'near silent',timed=+t.ms>0&&+t.rate>0;
+  if(light)return timed?`Read back in the mirror after ${secs(t.ms)} s.`:'Read back in the mirror.';
+  return timed?`Heard back after ${secs(t.ms)} s: ${(+t.rate).toFixed(1)} bytes a second on the ${band} band.`:`Heard back on the ${band} band.`}
+function testFailed(t,light){switch(t.state){
+  case 'stopped':return 'Test stopped.';
+  case 'noquiet':return 'Not played: the room never went quiet. Try somewhere quieter, or raise Send under in Settings.';
+  case 'unplayed':return light?'Not shown. Test again.':'Not played. Check the sound output and test again.';
+  default:return light?'Not read. Hold a mirror square in front of the screen and test again.'
+    :(t.band||soundBand)==='audible'?'Not heard. Raise the volume and test again.':'Not heard. Raise the volume, or set Band to Audible in Settings, and test again.'}}
 function testEnded(t){const T=Test;Test=null;testStamps();
-  if(arrival&&arrival.test){arrival.ent=null;arrival=null}
+  if(firstRunLine){const f=firstRunLine;firstRunLine=null;grow(()=>f.remove())}
   if(!T||!T.ent)return;const ent=T.ent,what=ent.querySelector('.what'),st=what.querySelector('.state'),light=T.channel==='light';
   ent.querySelectorAll('.cur').forEach(c=>c.remove());st.classList.remove('live');
   if(t.state==='heard'){
     // what came back goes on the tape as a message does, once the drums have finished turning
     whenDrumsRest(()=>grow(()=>{what.querySelectorAll('.strip').forEach(s=>s.remove());tape(what,t.text||SELF_TEST_TEXT,'strip',st);
-      st.textContent=light?`Read back in the mirror after ${secs(t.ms)} s.`:`Heard back after ${secs(t.ms)} s: ${(+t.rate).toFixed(1)} bytes a second on the ${t.band||soundBand||'near silent'} band.`;
+      st.textContent=testResult(t,light);
       what.appendChild(el('div','stamp new',`${light?'seen':'heard'} by this machine, ${hhmm(bridge.now())}`))}));
     return}
-  grow(()=>{if(t.state!=='stopped')ent.classList.add('failed');
-    st.textContent=t.state==='stopped'?'Test stopped.'
-      :t.state==='unplayed'?(light?'Not shown. Test again.':'Not played. Check the sound output and test again.')
-      :light?'Not read. Hold a mirror square in front of the screen and test again.'
-      :(t.band||soundBand)==='audible'?'Not heard. Raise the volume and test again.':'Not heard. Raise the volume, or set Band to Audible in Settings, and test again.'})}
+  grow(()=>{if(t.state!=='stopped')ent.classList.add('failed');st.textContent=testFailed(t,light)})}
 bridge.on('selfTest',t=>{if(!Test||t.channel!==Test.channel)return;Test.tags.add(t.tag);
   // by light it plays again under a fresh tag each window: an arrival already under way stays one
   if(t.state==='waiting'||t.state==='playing'){if(Test.state!=='arriving'&&!(Test.state==='asking'&&t.state==='waiting'))Test.state=t.state;testShow();return}
@@ -1543,8 +1564,8 @@ bridge.start();
 // a page opened (or reloaded) after the channel last changed still learns its state
 bridge.channels().then(list=>{list.forEach(onChannel);showRate(list)});
 booting=false;tick();setInterval(tick,20000);
-// a new machine: its empty sheet has one typed line, to try it alone first
-if(FIRST_RUN){const ent=entry(bridge.now(),'');ent.classList.add('firstrun');ent.querySelector('.what').appendChild(el('div','state','Try it alone first: press Test the machine, at the foot of this sheet.'));grow(()=>put(ent))}
+// a new machine: its empty sheet has one typed line, to try it alone first, until a test has run
+if(FIRST_RUN){const ent=entry(bridge.now(),'first run');ent.classList.add('firstrun');ent.querySelector('.what').appendChild(el('div','typed','On your own? Press Test the machine to hear it work.'));grow(()=>put(ent));firstRunLine=ent}
 syncMirror();
 requestAnimationFrame(()=>toBottom(false));
 

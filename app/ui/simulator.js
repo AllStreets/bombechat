@@ -36,13 +36,14 @@
 // in. It never reaches the sheet as a message, the outbox or a receipt. ?selftest=deaf hears nothing, so it is given up
 // SELF_TEST_MS after it should have finished going out; ?testpace=ms paces its chunks (and the quiet it waits for)
 // instead, and ?testcap=ms gives it up that long after it began to play. Refused, as pairing is, when the channel's
-// switch won't send, and ended when the switch turns away from sending. The scripted message still arriving is heard
-// out at once when a test starts, and the conversation stops there.
+// switch won't send, and ended when the switch turns away from sending. The scripted conversation holds still while a
+// test runs and carries on after it, so a message can be part way in when a test starts and finish after it.
+// ?testhold keeps a test by sound waiting for quiet until window.__sim.quiet() brings a quiet spell.
 //
 // The eyepiece: while asked for and Light reads, a made-up grey room (a window, a desk, someone moving) four times a
 // second, 64 by 48, as the camera's would come.
 //
-// Query parameters: ?f=N starts the incoming message at chunk N (0 based),
+// Query parameters: ?f=N starts the incoming message at chunk N (0 based), ?next=ms holds its next chunk that long,
 // ?still holds everything where it lands (no room meter, no further chunks).
 const SHOWN = 'Water is at the church on Fifth. Bring the radio, we leave at dusk.';
 const CHUNK = 48;
@@ -156,6 +157,9 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
   const deaf = query.get('selftest') === 'deaf';
   const testPace = query.has('testpace') ? +query.get('testpace') : null;
   const testCap = query.has('testcap') ? +query.get('testcap') : SELF_TEST_MS;
+  const testHold = query.has('testhold');
+  // how long after the start the scripted message's next chunk comes (?next=ms)
+  const firstNext = query.has('next') ? +query.get('next') : 4200;
   const incoming = chunked(sealedInner(SHOWN, at(9, 14), 1931), 1931);
   const NC = incoming.length;
   let c = query.has('f') ? Math.max(0, Math.min(NC - 1, +query.get('f') || 0)) : 1;
@@ -294,12 +298,18 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
   // the self-test in progress: { tag, channel, timers, at (when it began to play), flash (by light) }
   let selfTest = null;
   const testSays = (t, state, extra = {}) => emit('selfTest', { tag: t.tag, channel: t.channel === 'light' ? 'Light' : 'Sound', state, ...extra });
+  // whether a test is what holds the scripted conversation still
+  let heldForTest = false;
   function endTest(state, extra) {
     const t = selfTest; if (!t) return;
     selfTest = null; t.timers.forEach(clearTimeout);
     if (t.flash) offScreen(t.flash);
     testSays(t, state, extra);
+    // the conversation carries on where it stopped
+    if (heldForTest) { heldForTest = false; paused = false; if (started && !done && !still) later(nextChunk, 4200); }
   }
+  // a quiet spell, as the meter shows it, and a test by sound waiting for one plays
+  function quietSpell() { room = 36.5; emit('roomDb', room); testQuiet(); }
   // its envelope, sealed as the node seals it, and how long it takes over sound
   const testParts = t => chunked(sealedInner(SELF_TEST_TEXT, Math.floor(clock / 60000), t.tag), t.tag);
   const testBytes = parts => SEALED_HEAD + parts.reduce((n, p) => n + p.plain.length + CHUNK_TAG, 0);
@@ -349,7 +359,7 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
     if (still) return;
     nextDip = performance.now() + 9000;
     setInterval(roomTick, 170);
-    if (!done) later(nextChunk, 4200);
+    if (!done) later(nextChunk, firstNext);
   }
 
   const people = [{ id: MARISOL, name: 'Marisol Ortega', checked: true }];
@@ -382,6 +392,8 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
     fail() { sound('failed'); },
     receiving(on) { sound(on ? 'receiving' : 'listening'); },
     pause() { paused = true; },
+    // a quiet spell in the room now (for ?testhold)
+    quiet() { quietSpell(); },
     // how many times a setting was set, for the check that a page's load sets none
     settingsSet: 0,
   };
@@ -439,9 +451,7 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
         return Promise.reject(why);
       }
       endTest('stopped');
-      // the scripted message still arriving is heard out at once, so the test's chunks are the only ones on their way
-      if (started && !done && settings.sound > 0) finish();
-      paused = true;
+      if (!paused) { paused = true; heldForTest = true; }
       const t = selfTest = { tag: Math.floor(Math.random() * 65536), channel, timers: [], at: 0 };
       later(() => {
         if (selfTest !== t) return;
@@ -452,9 +462,10 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
             test: () => { if (selfTest !== t || t.at) return; testPlaying(t, 0); if (!deaf) testHeard(t, testParts(t), () => testPace ?? PAIR_MS); } };
           flashes.push(t.flash);
           if (!flashT) flashT = later(flashTick, 0);
+        } else if (testHold) {
+          // waiting until the page's check brings a quiet spell (test.quiet)
         } else if (still || testPace != null) {
-          // a quiet spell, as the meter shows it
-          t.timers.push(later(() => { if (selfTest !== t) return; room = 36.5; emit('roomDb', room); testQuiet(); }, testPace ?? 600));
+          t.timers.push(later(() => { if (selfTest === t) quietSpell(); }, testPace ?? 600));
         } else testQuiet();
       });
       return Promise.resolve();
