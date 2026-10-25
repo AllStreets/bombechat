@@ -1,5 +1,5 @@
 use bombechat_core::{Identity, PublicIdentity};
-use bombechat_store::{Channel, Contact, Delivery, Store, StoreError, StoredMessage};
+use bombechat_store::{Channel, Contact, Delivery, Store, StoreError, StoreKey, StoredMessage};
 use tempfile::tempdir;
 
 fn marisol() -> PublicIdentity {
@@ -177,7 +177,9 @@ fn has_message_and_mark_heard() {
     let path = d.path().join("b.db");
     let me = Identity::generate();
     let store = Store::create(&path, "correct horse", &me, "Kitchen laptop").unwrap();
-    let contact = store.add_contact("Marisol Ortega", &marisol(), false).unwrap();
+    let contact = store
+        .add_contact("Marisol Ortega", &marisol(), false)
+        .unwrap();
 
     let id = [5u8; 16];
     assert!(!store.has_message(&id));
@@ -207,7 +209,9 @@ fn put_message_with_existing_id_upserts() {
     let path = d.path().join("b.db");
     let me = Identity::generate();
     let store = Store::create(&path, "correct horse", &me, "Kitchen laptop").unwrap();
-    let contact = store.add_contact("Marisol Ortega", &marisol(), false).unwrap();
+    let contact = store
+        .add_contact("Marisol Ortega", &marisol(), false)
+        .unwrap();
 
     let id = [7u8; 16];
     store
@@ -276,7 +280,13 @@ fn open_on_a_nonexistent_path_is_io_error() {
 fn open_with_a_missing_sidecar_is_io_error() {
     let d = tempdir().unwrap();
     let path = d.path().join("b.db");
-    Store::create(&path, "correct horse", &Identity::generate(), "Kitchen laptop").unwrap();
+    Store::create(
+        &path,
+        "correct horse",
+        &Identity::generate(),
+        "Kitchen laptop",
+    )
+    .unwrap();
 
     let mut sidecar = path.as_os_str().to_owned();
     sidecar.push(".salt");
@@ -292,7 +302,13 @@ fn open_with_a_missing_sidecar_is_io_error() {
 fn open_with_a_short_sidecar_is_corrupt() {
     let d = tempdir().unwrap();
     let path = d.path().join("b.db");
-    Store::create(&path, "correct horse", &Identity::generate(), "Kitchen laptop").unwrap();
+    Store::create(
+        &path,
+        "correct horse",
+        &Identity::generate(),
+        "Kitchen laptop",
+    )
+    .unwrap();
 
     let mut sidecar = path.as_os_str().to_owned();
     sidecar.push(".salt");
@@ -329,7 +345,13 @@ fn files_are_created_private_on_unix() {
         use std::os::unix::fs::PermissionsExt;
         let d = tempdir().unwrap();
         let path = d.path().join("b.db");
-        Store::create(&path, "correct horse", &Identity::generate(), "Kitchen laptop").unwrap();
+        Store::create(
+            &path,
+            "correct horse",
+            &Identity::generate(),
+            "Kitchen laptop",
+        )
+        .unwrap();
 
         let db_mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(db_mode, 0o600, "db file mode was {:o}", db_mode);
@@ -348,8 +370,7 @@ fn files_are_created_private_on_unix() {
 #[test]
 fn set_checked_updates_the_contact() {
     let d = tempdir().unwrap();
-    let store =
-        Store::create(&d.path().join("b.db"), "pw", &Identity::generate(), "me").unwrap();
+    let store = Store::create(&d.path().join("b.db"), "pw", &Identity::generate(), "me").unwrap();
     let c = store.add_contact("Marisol", &marisol(), false).unwrap();
     assert!(!store.contacts()[0].checked);
     store.set_checked(c, true).unwrap();
@@ -361,8 +382,7 @@ fn set_checked_updates_the_contact() {
 #[test]
 fn message_by_id() {
     let d = tempdir().unwrap();
-    let store =
-        Store::create(&d.path().join("b.db"), "pw", &Identity::generate(), "me").unwrap();
+    let store = Store::create(&d.path().join("b.db"), "pw", &Identity::generate(), "me").unwrap();
     let c = store.add_contact("Marisol", &marisol(), true).unwrap();
     let m = StoredMessage {
         id: [3u8; 16],
@@ -396,7 +416,10 @@ fn an_outgoing_message_keeps_where_its_delivery_got_to() {
         delivery: Delivery::Waiting,
     };
     store.put_outgoing(&m, b"sealed envelope").unwrap();
-    assert_eq!(store.waiting(), vec![(m.clone(), b"sealed envelope".to_vec())]);
+    assert_eq!(
+        store.waiting(),
+        vec![(m.clone(), b"sealed envelope".to_vec())]
+    );
     drop(store);
 
     let store = Store::open(&path, "pw").unwrap();
@@ -406,6 +429,95 @@ fn an_outgoing_message_keeps_where_its_delivery_got_to() {
     assert!(store.waiting().is_empty());
     assert_eq!(store.message(&[5u8; 16]).unwrap().delivery, Delivery::Sent);
     store.set_delivery(&[5u8; 16], Delivery::Failed).unwrap();
-    assert_eq!(store.message(&[5u8; 16]).unwrap().delivery, Delivery::Failed);
+    assert_eq!(
+        store.message(&[5u8; 16]).unwrap().delivery,
+        Delivery::Failed
+    );
     assert_eq!(Delivery::Failed.as_str(), "failed");
+}
+
+fn message(
+    id: u8,
+    contact: bombechat_store::ContactId,
+    at_min: u32,
+    outgoing: bool,
+    delivery: Delivery,
+) -> StoredMessage {
+    StoredMessage {
+        id: [id; 16],
+        contact,
+        outgoing,
+        text: format!("message {id}"),
+        channel: Channel::Sound,
+        at_min,
+        heard: false,
+        delivery,
+    }
+}
+
+#[test]
+fn the_key_a_passphrase_derives_opens_the_store_without_the_passphrase() {
+    let d = tempdir().unwrap();
+    let path = d.path().join("b.db");
+    let me = Identity::generate();
+    drop(Store::create(&path, "correct horse", &me, "Kitchen laptop").unwrap());
+
+    let key = Store::key_for(&path, "correct horse").unwrap();
+    let kept = StoreKey::from_bytes(key.as_bytes()).unwrap();
+    let store = Store::open_with_key(&path, &kept).unwrap();
+    assert_eq!(store.me().public(), me.public());
+    drop(store);
+
+    let wrong = Store::key_for(&path, "wrong").unwrap();
+    assert!(matches!(
+        Store::open_with_key(&path, &wrong),
+        Err(StoreError::WrongPassphrase)
+    ));
+    assert!(StoreKey::from_bytes(&[1; 31]).is_none());
+    assert_eq!(format!("{key:?}"), "StoreKey(..)", "never printed");
+}
+
+#[test]
+fn forgetting_erases_only_what_is_older_than_the_cut_off() {
+    let d = tempdir().unwrap();
+    let store = Store::create(&d.path().join("b.db"), "pw", &Identity::generate(), "me").unwrap();
+    let c = store.add_contact("Marisol", &marisol(), true).unwrap();
+    store
+        .put_message(&message(1, c, 100, false, Delivery::Sent))
+        .unwrap();
+    store
+        .put_message(&message(2, c, 199, true, Delivery::Sent))
+        .unwrap();
+    store
+        .put_message(&message(3, c, 200, false, Delivery::Sent))
+        .unwrap();
+    store
+        .put_message(&message(4, c, 900, true, Delivery::Failed))
+        .unwrap();
+    // still waiting to go out: kept until it has gone
+    store
+        .put_outgoing(&message(5, c, 50, true, Delivery::Waiting), b"sealed")
+        .unwrap();
+
+    assert_eq!(store.latest_at_min(), Some(900));
+    assert_eq!(store.forget_before(200).unwrap(), 2);
+    let left: Vec<u8> = store.conversation(c).iter().map(|m| m.id[0]).collect();
+    assert_eq!(left, vec![3, 4, 5], "at the cut-off and after are kept");
+    assert_eq!(store.waiting().len(), 1);
+
+    // A clock set back gives an earlier cut-off: nothing newer than it goes,
+    // including messages stamped "in the future" by the clock before.
+    assert_eq!(store.forget_before(10).unwrap(), 0);
+    assert_eq!(store.conversation(c).len(), 3);
+
+    store.set_delivery(&[5; 16], Delivery::Sent).unwrap();
+    assert_eq!(store.forget_before(200).unwrap(), 1, "gone, so it can go");
+}
+
+#[test]
+fn an_empty_store_has_no_latest_stamp() {
+    let d = tempdir().unwrap();
+    let store = Store::create(&d.path().join("b.db"), "pw", &Identity::generate(), "me").unwrap();
+    assert_eq!(store.latest_at_min(), None);
+    assert_eq!(store.forget_before(u32::MAX).unwrap(), 0);
 }

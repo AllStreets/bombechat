@@ -17,6 +17,7 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use bombechat_core::{safety_number, PublicIdentity};
+use bombechat_modem::Band;
 use bombechat_node::{NodeEvent, NOT_SENT, NOT_STORED};
 use bombechat_store::{Channel, Contact, ContactId, StoredMessage};
 use serde::Serialize;
@@ -34,13 +35,14 @@ const PANIC_REPORT_GAP: Duration = Duration::from_secs(5);
 const MAX_NAME_CHARS: usize = 40;
 
 /// The command names, exactly as `bridge.js` invokes them.
-pub const NAMES: [&str; 11] = [
+pub const NAMES: [&str; 12] = [
     "send",
     "broadcast",
     "pair",
     "confirm_pair",
     "set_setting",
     "settings",
+    "setting_notes",
     "unlock",
     "contacts",
     "channels",
@@ -69,6 +71,80 @@ pub const SETTINGS: [(&str, usize, usize); 15] = [
     ("expire", 4, 2),
     ("inperson", 2, 1),
 ];
+
+/// Settings whose feature this build does not have yet, with their name
+/// on the settings page and what they wait for. `set_setting` refuses
+/// them and `settings` reports their default: nothing pretends they work.
+pub const COMING: [(&str, &str, &str); 5] = [
+    ("carry", "Carry for others", "comes with relay"),
+    ("hops", "Hop limit", "comes with relay"),
+    ("hold", "Hold for", "comes with relay"),
+    ("light", "Light switch", "comes with light"),
+    ("flash", "Flash speed", "comes with light"),
+];
+
+/// New contacts need a key check: on this build every contact is added
+/// by checking keys in person (there is no other way to add one), so the
+/// setting is always On.
+pub const KEY_CHECK_ALWAYS: &str = "always, on this build";
+
+/// Lock with passphrase, off a Mac: Off keeps the store key in the macOS
+/// Keychain, which other systems do not have, so it stays On.
+pub const KEYCHAIN_ONLY_ON_MACOS: &str = "Keychain only on macOS";
+
+/// Whether the Keychain is there to keep the store key when the lock is
+/// off.
+const HAS_KEYCHAIN: bool = cfg!(target_os = "macos");
+
+/// A setting the person cannot change on this machine: what it says
+/// instead of a working value, and the value it is held at, if it has
+/// one (a setting that waits for a feature has none).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SettingNote {
+    pub note: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<usize>,
+}
+
+/// Every setting the person cannot change on this machine, by id.
+fn held_settings() -> BTreeMap<&'static str, SettingNote> {
+    let mut held: BTreeMap<&'static str, SettingNote> = COMING
+        .iter()
+        .map(|&(id, _, note)| (id, SettingNote { note, value: None }))
+        .collect();
+    held.insert(
+        "inperson",
+        SettingNote {
+            note: KEY_CHECK_ALWAYS,
+            value: Some(1),
+        },
+    );
+    if !HAS_KEYCHAIN {
+        held.insert(
+            "lock",
+            SettingNote {
+                note: KEYCHAIN_ONLY_ON_MACOS,
+                value: Some(1),
+            },
+        );
+    }
+    held
+}
+
+/// Why setting `id` cannot be changed on this machine, as a sentence to
+/// show, if it cannot.
+fn refusal(id: &str) -> Option<String> {
+    if let Some((_, name, note)) = COMING.iter().find(|(c, _, _)| *c == id) {
+        return Some(format!("{name} {note}"));
+    }
+    match id {
+        "inperson" => Some("On this build every new contact needs a key check".to_string()),
+        "lock" if !HAS_KEYCHAIN => {
+            Some("The Keychain is only on macOS, so the lock stays on".to_string())
+        }
+        _ => None,
+    }
+}
 
 /// Whether `value_index` is one of the values setting `id` has.
 pub fn is_setting(id: &str, value_index: usize) -> bool {
@@ -116,9 +192,12 @@ pub trait Machine: Send {
     fn me(&self) -> Option<PublicIdentity>;
     /// How many sealed messages it holds for other people.
     fn held_for_others(&self) -> usize;
-    /// Record a setting the page changed. `id` and `value_index` have been
-    /// checked against [`SETTINGS`].
-    fn set_setting(&mut self, id: &str, value_index: usize);
+    /// Record and apply a setting the page changed, or refuse it with a
+    /// sentence to show (for example, the lock cannot come off while the
+    /// store is locked). `id` and `value_index` have been checked against
+    /// [`SETTINGS`], and are never one the machine cannot change
+    /// ([`setting_notes`]).
+    fn set_setting(&mut self, id: &str, value_index: usize) -> Result<(), String>;
     /// The settings as last kept, by id, whatever the lock. May hold ids
     /// or values [`SETTINGS`] does not know; [`settings`] drops those.
     fn settings(&self) -> HashMap<String, usize>;
@@ -133,6 +212,12 @@ pub trait Machine: Send {
     /// Each channel's measured rate, in payload bytes a second, for the
     /// channels that have one: what the page's bytes-a-second readout shows.
     fn rates(&self) -> Vec<(Channel, f32)>;
+    /// The band sound is on, if there is a sound channel: not always the
+    /// Tone band setting (a sound card too slow for near silent stays
+    /// audible).
+    fn band(&self) -> Option<Band> {
+        None
+    }
     fn tick(&mut self, now_ms: u64) -> Vec<NodeEvent>;
 }
 
@@ -170,14 +255,24 @@ pub struct ContactView {
     pub safety: String,
 }
 
-/// A channel's last reported state, and its measured rate in payload
-/// bytes a second if it has one.
+/// A channel's last reported state, its measured rate in payload bytes a
+/// second if it has one, and for sound the band it is on ("near silent"
+/// or "audible").
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ChannelView {
     pub channel: &'static str,
     pub state: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rate: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub band: Option<&'static str>,
+}
+
+fn band_name(b: Band) -> &'static str {
+    match b {
+        Band::NearSilent => "near silent",
+        Band::Audible => "audible",
+    }
 }
 
 /// This machine as the page sees it: its plate name, its public identity
@@ -289,28 +384,45 @@ pub fn confirm_pair(s: &Shared, peer_hex: String, name: String) -> Result<i64, S
     }
 }
 
-/// `set_setting { id, valueIndex }`.
+/// `set_setting { id, valueIndex }`. Refused, with a sentence to show,
+/// for a setting this machine cannot change ([`setting_notes`]) and when
+/// the machine refuses it.
 pub fn set_setting(s: &Shared, id: String, value_index: usize) -> Result<(), String> {
     match SETTINGS.iter().find(|(name, _, _)| *name == id) {
-        Some((_, count, _)) if value_index < *count => {
-            s.machine().set_setting(&id, value_index);
-            Ok(())
-        }
+        Some((_, count, _)) if value_index < *count => match refusal(&id) {
+            Some(why) => Err(why),
+            None => s.machine().set_setting(&id, value_index),
+        },
         Some(_) => Err(format!("no value {value_index} for {id}")),
         None => Err(format!("no such setting: {id}")),
     }
+}
+
+/// `setting_notes`: the settings this machine cannot change, by id, each
+/// with what the settings page says in its place ("comes with relay",
+/// "always, on this build") and the value it is held at, if any.
+pub fn setting_notes(_s: &Shared) -> BTreeMap<&'static str, SettingNote> {
+    held_settings()
 }
 
 /// `settings`: every setting's value, by id, as the machine keeps it, or
 /// its default if it has none (or none it knows). The page renders from
 /// this and never sends a setting back unless the person changed it.
 /// Settings are not secret, so this answers locked or not.
+///
+/// A setting the machine cannot change reports the value it is held at,
+/// or its default if it waits for a feature, whatever an older build
+/// kept for it.
 pub fn settings(s: &Shared) -> BTreeMap<&'static str, usize> {
     let kept = s.machine().settings();
+    let held = held_settings();
     SETTINGS
         .iter()
         .map(|&(id, count, default)| {
-            let value = kept.get(id).copied().filter(|v| *v < count);
+            let value = match held.get(id) {
+                Some(h) => h.value,
+                None => kept.get(id).copied().filter(|v| *v < count),
+            };
             (id, value.unwrap_or(default))
         })
         .collect()
@@ -387,6 +499,7 @@ pub fn machine(s: &Shared) -> Result<MachineView, String> {
 /// is listening.
 pub fn channels(s: &Shared) -> Vec<ChannelView> {
     let rates = s.machine().rates();
+    let band = s.machine().band().map(band_name);
     let mut seen: Vec<(Channel, String)> =
         s.channels.lock().unwrap_or_else(|p| p.into_inner()).clone();
     for (c, _) in &rates {
@@ -399,6 +512,7 @@ pub fn channels(s: &Shared) -> Vec<ChannelView> {
             channel: channel_name(c),
             state,
             rate: rates.iter().find(|(k, _)| *k == c).map(|(_, r)| *r),
+            band: band.filter(|_| c == Channel::Sound),
         })
         .collect()
 }

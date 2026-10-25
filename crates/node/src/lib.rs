@@ -81,7 +81,7 @@ use bombechat_core::{
     open_public, safety_number, seal_private, seal_public, ChunkOpener, ChunkView, Envelope,
     Identity, Kind, Opened, PublicIdentity, CHUNK, MAX_ENVELOPE,
 };
-use bombechat_modem::{split, Event, Reassembler};
+use bombechat_modem::{split, Band, Event, Reassembler};
 use bombechat_store::{Channel, Contact, ContactId, Delivery, Store, StoredMessage};
 use rand_core::{OsRng, RngCore};
 
@@ -410,6 +410,9 @@ pub struct Node {
     reception: Vec<&'static str>,
     /// Where the Sound switch is.
     sound: SoundSwitch,
+    /// The latest minute stamped on a stored message: stamps never go
+    /// back before it, whatever the wall clock does.
+    last_stamp: u32,
 }
 
 impl Node {
@@ -437,6 +440,7 @@ impl Node {
             failed: HashSet::new(),
             reception,
             sound: SoundSwitch::ListenAndSend,
+            last_stamp: 0,
         };
         if let Some(store) = store {
             node.unlock(store);
@@ -450,6 +454,7 @@ impl Node {
     /// under the same envelope, or marked failed if it has expired.
     pub fn unlock(&mut self, store: Store) {
         self.me = Some(store.me());
+        self.last_stamp = self.last_stamp.max(store.latest_at_min().unwrap_or(0));
         let waiting = store.waiting();
         self.store = Some(store);
         let now = now_min();
@@ -484,6 +489,69 @@ impl Node {
         for t in &mut self.transports {
             t.set_send_under(db);
         }
+    }
+
+    /// Play sound at `gain`, 0 (silent) to 1 (full scale).
+    pub fn set_volume(&mut self, gain: f32) {
+        for t in &mut self.transports {
+            t.set_volume(gain);
+        }
+    }
+
+    /// Play each sound frame again `repeats` times after its first play.
+    pub fn set_repeats(&mut self, repeats: u8) {
+        for t in &mut self.transports {
+            t.set_repeats(repeats);
+        }
+    }
+
+    /// Move the sound transports to `band` (or as near as each can go).
+    /// A transport whose band changes gives up whatever was part way
+    /// through arriving on it: that arrival is reported "failed" on the
+    /// next tick, as one that stopped arriving is, so the page marks it
+    /// as not checked.
+    pub fn set_band(&mut self, band: Band) {
+        for ti in 0..self.transports.len() {
+            let before = self.transports[ti].band();
+            self.transports[ti].set_band(band);
+            if self.transports[ti].band() == before {
+                continue;
+            }
+            self.reassemblers[ti] = Reassembler::new();
+            self.progress.retain(|(t, _), _| *t != ti);
+            let was_arriving = self.arriving.iter().any(|(t, _)| *t == ti);
+            self.arriving.retain(|(t, _)| *t != ti);
+            if was_arriving {
+                self.failed.insert(ti);
+            }
+        }
+    }
+
+    /// The band the sound transport is on, if there is one.
+    pub fn band(&self) -> Option<Band> {
+        self.transports
+            .iter()
+            .filter(|t| t.name() == Channel::Sound)
+            .find_map(|t| t.band())
+    }
+
+    /// Erase stored messages stamped before minute `cutoff_min`, except
+    /// ones still waiting to go out. Returns how many went; none while
+    /// locked.
+    pub fn forget_before(&self, cutoff_min: u32) -> usize {
+        self.store
+            .as_ref()
+            .and_then(|s| s.forget_before(cutoff_min).ok())
+            .unwrap_or(0)
+    }
+
+    /// The minute to stamp on a message stored now: the wall clock's,
+    /// but never earlier than the last stamp, so a clock set back cannot
+    /// make a new message look older than ones before it (and be erased
+    /// early by "Delete messages after").
+    fn stamp(&mut self) -> u32 {
+        self.last_stamp = self.last_stamp.max(now_min());
+        self.last_stamp
     }
 
     /// Why nothing may be sent by sound right now, if so: the channel
@@ -588,6 +656,10 @@ impl Node {
             });
             return NOT_SENT;
         }
+        if self.me.is_none() || self.store.is_none() {
+            return NOT_SENT;
+        }
+        let at_min = self.stamp();
         let (Some(me), Some(store)) = (&self.me, &self.store) else {
             return NOT_SENT;
         };
@@ -617,7 +689,7 @@ impl Node {
             outgoing: true,
             text: text.to_string(),
             channel,
-            at_min: now,
+            at_min,
             heard: false,
             delivery: Delivery::Waiting,
         };
@@ -1015,11 +1087,11 @@ impl Node {
         let Some(contact) = self.contact_for(&opened.sender) else {
             return;
         };
+        let now = self.stamp();
         let store = self.store.as_ref().expect("unlocked");
         if store.has_message(&id) {
             return;
         }
-        let now = now_min();
         let message = StoredMessage {
             id,
             contact: contact.id,
@@ -1163,6 +1235,8 @@ mod tests {
         sent: Arc<Mutex<Vec<Vec<u8>>>>,
         /// Reported on the next poll, after the frames.
         news: Arc<Mutex<Vec<TransportEvent>>>,
+        /// The band it was last moved to, if ever.
+        band: Arc<Mutex<Option<Band>>>,
     }
 
     impl Transport for Wire {
@@ -1179,6 +1253,12 @@ mod tests {
                 .collect();
             events.extend(std::mem::take(&mut *self.news.lock().unwrap()));
             events
+        }
+        fn set_band(&mut self, band: Band) {
+            *self.band.lock().unwrap() = Some(band);
+        }
+        fn band(&self) -> Option<Band> {
+            *self.band.lock().unwrap()
         }
     }
 
@@ -1654,6 +1734,99 @@ mod tests {
     }
 
     #[test]
+    fn a_band_change_abandons_an_arrival_as_failed_and_the_next_one_lands() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (a, b) = (Identity::generate(), Identity::generate());
+        let (mut node, wire, _) = node(&dir, &b, &[&a]);
+        let env = seal_private(&a, &[b.public()], &"long ".repeat(40), now_min(), 60);
+        wire.inbox
+            .lock()
+            .unwrap()
+            .push(split(&env.encode(), 9).remove(0));
+        assert_eq!(sound_states(&node.tick(1)), vec!["receiving"]);
+
+        node.set_band(Band::Audible);
+        assert_eq!(node.band(), Some(Band::Audible));
+        let after = node.tick(2);
+        assert_eq!(sound_states(&after), vec!["failed", "listening"]);
+        assert!(messages(&after).is_empty());
+
+        // The same band again changes nothing, and abandons nothing.
+        wire.inbox
+            .lock()
+            .unwrap()
+            .push(split(&env.encode(), 10).remove(0));
+        assert_eq!(sound_states(&node.tick(3)), vec!["receiving"]);
+        node.set_band(Band::Audible);
+        assert!(sound_states(&node.tick(4)).is_empty(), "still receiving");
+
+        // A whole message on the new band arrives and is delivered.
+        let next = seal_private(&a, &[b.public()], "On the new band.", now_min(), 60);
+        wire.hear(&next, 11);
+        assert_eq!(
+            messages(&node.tick(5)),
+            vec!["On the new band.".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_band_change_with_nothing_arriving_reports_nothing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (a, b) = (Identity::generate(), Identity::generate());
+        let (mut node, _wire, _) = node(&dir, &b, &[&a]);
+        node.tick(1);
+        node.set_band(Band::Audible);
+        assert!(sound_states(&node.tick(2)).is_empty());
+    }
+
+    #[test]
+    fn stamps_never_go_back_before_the_latest_stored_message() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (a, b) = (Identity::generate(), Identity::generate());
+        let path = dir.path().join("b.db");
+        let store = Store::create(&path, "pass", &b, "me").unwrap();
+        let contact = store.add_contact("a", &a.public(), true).unwrap();
+        // Stored while the clock ran an hour fast; it has since been set back.
+        let ahead = now_min() + 60;
+        store
+            .put_message(&StoredMessage {
+                id: [1; 16],
+                contact,
+                outgoing: false,
+                text: "From the fast clock.".into(),
+                channel: Channel::Sound,
+                at_min: ahead,
+                heard: false,
+                delivery: Delivery::Sent,
+            })
+            .unwrap();
+        let wire = Wire::default();
+        let mut node = Node::new(Some(store), vec![Box::new(wire.clone())]);
+
+        let sent = node.send(&[contact], "After the clock went back.", Channel::Sound);
+        let heard = seal_private(&a, &[b.public()], "Heard after.", now_min(), 60);
+        wire.hear(&heard, 5);
+        node.tick(1);
+        let sheet = node.conversation(contact);
+        let at = |id: [u8; 16]| sheet.iter().find(|m| m.id == id).unwrap().at_min;
+        assert!(
+            at(sent) >= ahead,
+            "a message sent now is not older than one before it"
+        );
+        assert!(at(heard.id) >= ahead);
+
+        // So erasing what is older than the stamp before cannot take them.
+        assert_eq!(node.forget_before(ahead), 0);
+        assert_eq!(node.conversation(contact).len(), 3);
+    }
+
+    #[test]
+    fn forgetting_while_locked_erases_nothing() {
+        let node = Node::new(None, Vec::new());
+        assert_eq!(node.forget_before(u32::MAX), 0);
+    }
+
+    #[test]
     fn an_arrival_that_fails_verification_reports_failed() {
         let dir = tempfile::TempDir::new().unwrap();
         let (a, b) = (Identity::generate(), Identity::generate());
@@ -1881,7 +2054,10 @@ mod tests {
         let (a, b) = (Identity::generate(), Identity::generate());
         let (mut node, wire, ids) = node(&dir, &b, &[&a]);
         node.set_sound(SoundSwitch::Off);
-        wire.hear(&seal_private(&a, &[b.public()], "unheard", now_min(), 60), 1);
+        wire.hear(
+            &seal_private(&a, &[b.public()], "unheard", now_min(), 60),
+            1,
+        );
         let events = node.tick(1);
         assert!(messages(&events).is_empty());
         assert!(!events
@@ -1949,7 +2125,11 @@ mod tests {
             heard: false,
             delivery: Delivery::Waiting,
         };
-        node.store.as_ref().unwrap().put_outgoing(&stale, &old.encode()).unwrap();
+        node.store
+            .as_ref()
+            .unwrap()
+            .put_outgoing(&stale, &old.encode())
+            .unwrap();
         drop(node);
 
         let wire = Wire::default();

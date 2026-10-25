@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use bombechat_modem::{
-    dbfs_to_room_db, measured_rate, modulate, AudioError, AudioIo, DemodEvent, Demodulator,
+    dbfs_to_room_db, measured_rate, modulate, AudioError, AudioIo, Band, DemodEvent, Demodulator,
     ModemConfig, QuietGate, DEFAULT_CALIBRATION_OFFSET,
 };
 use bombechat_store::Channel;
@@ -95,6 +95,8 @@ pub struct SoundTransport {
     listening: bool,
     /// Off: nothing plays; the gate's queue waits.
     sending: bool,
+    /// The gain on every sample played, 0 to 1.
+    gain: f32,
 }
 
 impl SoundTransport {
@@ -116,6 +118,7 @@ impl SoundTransport {
             unplayed: HashSet::new(),
             listening: true,
             sending: true,
+            gain: 1.0,
         }
     }
 
@@ -192,6 +195,51 @@ impl Transport for SoundTransport {
         self.gate.set_send_under(db);
     }
 
+    /// Takes effect from the next frame handed to the speaker; one
+    /// already playing finishes as it was.
+    fn set_volume(&mut self, gain: f32) {
+        self.gain = if gain.is_finite() {
+            gain.clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+    }
+
+    /// Frames already queued follow the new count; one that has already
+    /// played as often as it now should is let go (and its envelope
+    /// reported sent once it finishes).
+    fn set_repeats(&mut self, repeats: u8) {
+        self.gate.set_repeats(repeats);
+        let gate = &self.gate;
+        self.queued.retain(|item, _| gate.is_queued(*item));
+    }
+
+    /// A sample rate too low for the near-silent band keeps the audible
+    /// one. Queued frames are modulated when they play, so they go out on
+    /// the new band; the demodulator starts afresh, dropping whatever
+    /// was part way through arriving.
+    fn set_band(&mut self, band: Band) {
+        let wanted = ModemConfig { band, ..self.cfg };
+        let fallback = ModemConfig {
+            band: Band::Audible,
+            ..self.cfg
+        };
+        let Some(cfg) = [wanted, fallback]
+            .into_iter()
+            .find(|c| c.validate().is_ok())
+        else {
+            return;
+        };
+        if cfg.band != self.cfg.band {
+            self.cfg = cfg;
+            self.demod = Demodulator::new(cfg);
+        }
+    }
+
+    fn band(&self) -> Option<Band> {
+        Some(self.cfg.band)
+    }
+
     fn send(&mut self, frame: Vec<u8>) {
         let tag = frame_tag(&frame);
         let tags: HashSet<Option<u16>> = self.queued.values().map(|f| frame_tag(f)).collect();
@@ -239,7 +287,10 @@ impl Transport for SoundTransport {
             let Some(frame) = self.queued.get(&item) else {
                 continue;
             };
-            let samples = modulate(&self.cfg, frame);
+            let mut samples = modulate(&self.cfg, frame);
+            if self.gain != 1.0 {
+                samples.iter_mut().for_each(|x| *x *= self.gain);
+            }
             let tag = frame_tag(frame);
             if !self.gate.is_queued(item) {
                 self.queued.remove(&item);
@@ -706,5 +757,140 @@ mod tests {
         t.set_send_under(40.0);
         murmur(&io);
         assert_eq!(progress(t.poll(200)), vec![TransportEvent::Playing(7)]);
+    }
+
+    fn peak(samples: &[f32]) -> f32 {
+        samples.iter().fold(0.0, |m, x| m.max(x.abs()))
+    }
+
+    #[test]
+    fn volume_is_a_gain_on_what_plays() {
+        let io = Scripted::default();
+        let mut t = transport(&io);
+        t.poll(0);
+        let frame = split(b"hello", 7).remove(0);
+        let full = peak(&modulate(&ModemConfig::default(), &frame));
+        t.set_volume(0.2);
+        t.send(frame.clone());
+        io.quiet();
+        t.poll(100);
+        let played = io.played.lock().unwrap().clone();
+        assert_eq!(played.len(), 1);
+        assert!(
+            (peak(&played[0]) - 0.2 * full).abs() < 1e-4,
+            "a fifth as loud"
+        );
+
+        t.set_volume(7.0);
+        t.send(split(b"again", 8).remove(0));
+        io.quiet();
+        t.poll(200_000);
+        let loudest = peak(io.played.lock().unwrap().last().unwrap());
+        assert!(loudest <= full + 1e-4, "never past full scale");
+    }
+
+    #[test]
+    fn fewer_repeats_let_a_frame_go_and_its_envelope_is_sent() {
+        let io = Scripted::default();
+        let mut t = SoundTransport::new(
+            Box::new(io.clone()),
+            ModemConfig::default(),
+            QuietGate::new(40.0, 3, 90),
+        );
+        t.poll(0);
+        t.send(split(b"hello", 7).remove(0));
+        io.quiet();
+        assert_eq!(progress(t.poll(100)), vec![TransportEvent::Playing(7)]);
+        t.set_repeats(0);
+        assert!(
+            t.queued.is_empty(),
+            "played once, which is all it now plays"
+        );
+        assert_eq!(progress(t.poll(100_000)), vec![TransportEvent::Sent(7)]);
+        assert_eq!(io.played.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn more_repeats_play_a_queued_frame_more_often() {
+        let io = Scripted::default();
+        let mut t = transport(&io);
+        t.poll(0);
+        t.set_repeats(2);
+        t.send(split(b"hello", 7).remove(0));
+        for now in [100, 90_200, 180_300] {
+            io.quiet();
+            t.poll(now);
+        }
+        assert_eq!(io.played.lock().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn the_band_moves_what_plays_and_what_is_heard() {
+        let io = Scripted::default();
+        let mut t = transport(&io);
+        t.poll(0);
+        assert_eq!(t.band(), Some(Band::NearSilent));
+        t.set_band(Band::Audible);
+        assert_eq!(t.band(), Some(Band::Audible));
+        let audible = ModemConfig {
+            band: Band::Audible,
+            ..ModemConfig::default()
+        };
+        let frame = split(b"hello", 7).remove(0);
+        t.send(frame.clone());
+        io.quiet();
+        t.poll(100);
+        assert_eq!(
+            io.played.lock().unwrap().clone(),
+            vec![modulate(&audible, &frame)],
+            "played on the audible band"
+        );
+
+        let say = |cfg: &ModemConfig| {
+            let mut x = modulate(cfg, &frame);
+            x.extend(vec![0.0; 9_600]);
+            if let Some(sink) = io.sink.lock().unwrap().as_mut() {
+                sink(&x);
+            }
+        };
+        say(&audible);
+        assert!(t.poll(200).contains(&TransportEvent::Frame(frame.clone())));
+        say(&ModemConfig::default());
+        assert!(
+            !t.poll(300).contains(&TransportEvent::Frame(frame.clone())),
+            "the near-silent band is no longer heard"
+        );
+    }
+
+    /// A card at 32 kHz cannot carry the near-silent band.
+    #[derive(Clone, Default)]
+    struct Slow(Scripted);
+
+    impl AudioIo for Slow {
+        fn start_input(&mut self, sink: Sink) -> Result<(), AudioError> {
+            self.0.start_input(sink)
+        }
+        fn play(&mut self, samples: Vec<f32>) -> Result<(), AudioError> {
+            self.0.play(samples)
+        }
+        fn sample_rate(&self) -> u32 {
+            32_000
+        }
+    }
+
+    #[test]
+    fn a_card_too_slow_for_near_silent_stays_audible() {
+        let audible = ModemConfig {
+            sample_rate: 32_000,
+            band: Band::Audible,
+            ..ModemConfig::default()
+        };
+        let mut t = SoundTransport::new(
+            Box::new(Slow::default()),
+            audible,
+            QuietGate::new(40.0, 0, 90),
+        );
+        t.set_band(Band::NearSilent);
+        assert_eq!(t.band(), Some(Band::Audible));
     }
 }

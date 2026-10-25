@@ -5,6 +5,7 @@
 //! knows nothing of envelopes, keys or contacts. The node reassembles and
 //! opens what the frames carry.
 
+use bombechat_modem::Band;
 use bombechat_store::Channel;
 
 /// What a transport reports from one [`Transport::poll`].
@@ -65,4 +66,23 @@ pub trait Transport: Send {
 
     /// For sound: play only while the room is quieter than `db`.
     fn set_send_under(&mut self, _db: f32) {}
+
+    /// For sound: how loud to play, as a gain on the played samples from
+    /// 0 (silent) to 1 (full scale).
+    fn set_volume(&mut self, _gain: f32) {}
+
+    /// For sound: how many times each frame plays again after its first
+    /// play.
+    fn set_repeats(&mut self, _repeats: u8) {}
+
+    /// For sound: move to `band`, or as near it as the carrier can go.
+    /// What was part way through arriving is lost: the receiver starts
+    /// afresh on the new band.
+    fn set_band(&mut self, _band: Band) {}
+
+    /// For sound: the band it is on, which may not be the band asked for
+    /// (a sound card too slow for near silent stays audible).
+    fn band(&self) -> Option<Band> {
+        None
+    }
 }

@@ -79,6 +79,22 @@ impl QuietGate {
         self.send_under_db
     }
 
+    /// Change how many times each item plays again after its first play.
+    /// Items already queued follow the new count too: one that has
+    /// already played that many repeats is let go at its next turn
+    /// rather than played again.
+    pub fn set_repeats(&mut self, repeats: u8) {
+        self.repeats = repeats;
+        let repeats = repeats as u32;
+        self.queue
+            .retain(|e| e.plays_done == 0 || (e.plays_done as u32) <= repeats);
+    }
+
+    /// How many times each item plays again after its first play.
+    pub fn repeats(&self) -> u8 {
+        self.repeats
+    }
+
     /// Queue `item` to play once the room is quiet.
     pub fn enqueue(&mut self, item: usize) {
         self.queue.push_back(Entry {
@@ -256,5 +272,36 @@ mod tests {
         // Item 1's repeat is not due yet (gap not elapsed); item 2 is
         // ready for its first play.
         assert_eq!(g.due(1000), Some(2));
+    }
+
+    #[test]
+    fn fewer_repeats_let_go_of_items_that_have_played_enough() {
+        let mut g = QuietGate::new(40.0, 3, 90);
+        g.enqueue(1);
+        g.enqueue(2);
+        g.observe(10.0, 0);
+        assert_eq!(g.due(0), Some(1));
+        assert_eq!(g.due(0), Some(2));
+        assert_eq!(g.due(90_000), Some(1), "item 1 has played twice");
+
+        g.set_repeats(1);
+        assert_eq!(g.repeats(), 1);
+        assert!(!g.is_queued(1), "two plays is all one repeat allows");
+        assert!(g.is_queued(2), "item 2 still has its repeat");
+        assert_eq!(g.due(90_000), Some(2));
+        assert!(!g.is_queued(2));
+        assert_eq!(g.due(500_000), None);
+    }
+
+    #[test]
+    fn more_repeats_apply_to_items_already_queued() {
+        let mut g = QuietGate::new(40.0, 0, 90);
+        g.enqueue(4);
+        g.observe(10.0, 0);
+        g.set_repeats(2);
+        assert_eq!(g.due(0), Some(4));
+        assert_eq!(g.due(90_000), Some(4));
+        assert_eq!(g.due(180_000), Some(4));
+        assert_eq!(g.due(270_000), None);
     }
 }

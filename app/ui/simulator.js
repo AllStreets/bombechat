@@ -16,7 +16,8 @@
 // apart from the page's own storage: in memory, carried between the front and
 // back pages in sessionStorage under MACHINE_SETTINGS (a stand-in for the file
 // beside the store; clearing the page's localStorage leaves it alone).
-// settings() answers every setting the settings page has, defaults for the rest.
+// settings() answers every setting the settings page has, defaults for the rest; settingNotes() the ones it can't
+// change, which setSetting refuses with the device's sentence.
 //
 // Query parameters: ?f=N starts the incoming message at chunk N (0 based),
 // ?still holds everything where it lands (no room meter, no further chunks).
@@ -31,12 +32,18 @@ const DEFAULTS = { sound: 2, volume: 2, band: 0, light: 0, flash: 1, machine: 1,
 // how many values each has; like the device, a value outside these is refused, and dropped if found kept
 const COUNTS = { sound: 3, volume: 5, band: 2, light: 3, flash: 3, machine: 2, machvol: 5, carry: 2, hops: 7, hold: 5, quiet: 5, repeats: 4, lock: 2, expire: 4, inperson: 2 };
 const isSetting = (id, v) => id in COUNTS && Number.isInteger(v) && v >= 0 && v < COUNTS[id];
+// the settings this machine can't change, as the device's setting_notes: relay and light wait for their features, and
+// on the airgapped build every contact is checked in person. The simulated machine is a Mac, so its lock can come off
+const NOTES = { carry: { note: 'comes with relay' }, hops: { note: 'comes with relay' }, hold: { note: 'comes with relay' }, light: { note: 'comes with light' }, flash: { note: 'comes with light' }, inperson: { note: 'always, on this build', value: 1 } };
+// what set_setting says for each, as the device says it
+const REFUSED = { carry: 'Carry for others comes with relay', hops: 'Hop limit comes with relay', hold: 'Hold for comes with relay', light: 'Light switch comes with light', flash: 'Flash speed comes with light', inperson: 'On this build every new contact needs a key check' };
 const MACHINE_SETTINGS = 'bombechat.simulated-machine';
 function keptSettings() {
   let kept = {};
   try { kept = JSON.parse(sessionStorage.getItem(MACHINE_SETTINGS) || '{}') || {}; } catch (e) {}
   const out = { ...DEFAULTS };
   for (const id in DEFAULTS) if (isSetting(id, kept[id])) out[id] = kept[id];
+  for (const id in NOTES) out[id] = NOTES[id].value ?? DEFAULTS[id];
   return out;
 }
 function keepSettings(settings) { try { sessionStorage.setItem(MACHINE_SETTINGS, JSON.stringify(settings)); } catch (e) {} }
@@ -197,17 +204,19 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
       test.settingsSet += 1;
       if (!(id in COUNTS)) return Promise.reject(`no such setting: ${id}`);
       if (!isSetting(id, valueIndex)) return Promise.reject(`no value ${valueIndex} for ${id}`);
+      if (REFUSED[id]) return Promise.reject(REFUSED[id]);
       settings[id] = valueIndex; keepSettings(settings);
       return Promise.resolve();
     },
     // read from the record each time, as the device answers from its own: another page may have changed it
     settings: () => Promise.resolve(Object.assign(settings, keptSettings()) && { ...settings }),
+    settingNotes: () => Promise.resolve(JSON.parse(JSON.stringify(NOTES))),
     unlock: () => Promise.resolve(),
     contacts: () => Promise.resolve(people.map(p => ({ ...p }))),
     // the sheet's history arrives as events when the conversation starts, as the mockups showed it
     conversation: () => Promise.resolve([]),
     machine: () => Promise.resolve({ name: 'Machine No. 1', key: '', held: 6, version: '0.4' }),
-    channels: () => Promise.resolve([{ channel: 'Sound', state: soundState || 'listening', rate: RATE }]),
+    channels: () => Promise.resolve([{ channel: 'Sound', state: soundState || 'listening', rate: RATE, band: settings.band ? 'audible' : 'near silent' }]),
     test,
   };
 }

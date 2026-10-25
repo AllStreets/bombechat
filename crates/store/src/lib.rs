@@ -202,6 +202,35 @@ impl std::fmt::Display for StoreError {
 
 impl std::error::Error for StoreError {}
 
+/// The 32-byte SQLCipher key a passphrase derives for one store. Wiped
+/// from memory when dropped. Kept outside the store only when the person
+/// turns the passphrase lock off, and then only in the system keychain.
+pub struct StoreKey(Zeroizing<[u8; ARGON2_KEY_LEN]>);
+
+impl StoreKey {
+    /// The key's bytes.
+    pub fn as_bytes(&self) -> &[u8; ARGON2_KEY_LEN] {
+        &self.0
+    }
+
+    /// A key from its bytes, as kept in the keychain; none if they are
+    /// not 32 bytes.
+    pub fn from_bytes(bytes: &[u8]) -> Option<StoreKey> {
+        let mut key = Zeroizing::new([0u8; ARGON2_KEY_LEN]);
+        if bytes.len() != ARGON2_KEY_LEN {
+            return None;
+        }
+        key.copy_from_slice(bytes);
+        Some(StoreKey(key))
+    }
+}
+
+impl std::fmt::Debug for StoreKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("StoreKey(..)")
+    }
+}
+
 /// The encrypted on-device store: identity, contacts and messages.
 pub struct Store {
     conn: Mutex<Connection>,
@@ -237,7 +266,8 @@ impl Store {
         let conn = open_existing(path)?;
         key_connection(&conn, &key)?;
 
-        conn.execute_batch(SCHEMA).map_err(|_| StoreError::Corrupt)?;
+        conn.execute_batch(SCHEMA)
+            .map_err(|_| StoreError::Corrupt)?;
         store_identity(&conn, me, my_name)?;
 
         guard.disarm();
@@ -248,11 +278,23 @@ impl Store {
 
     /// Open an existing encrypted store at `path`.
     pub fn open(path: &Path, passphrase: &str) -> Result<Store, StoreError> {
-        let salt = read_salt_sidecar(path)?;
-        let key = derive_key(passphrase, &salt)?;
+        Store::open_with_key(path, &Store::key_for(path, passphrase)?)
+    }
 
+    /// The key `passphrase` derives for the store at `path` (Argon2id
+    /// with the store's salt: most of a second). Whether it is the right
+    /// key is only known by opening the store with it.
+    pub fn key_for(path: &Path, passphrase: &str) -> Result<StoreKey, StoreError> {
+        let salt = read_salt_sidecar(path)?;
+        derive_key(passphrase, &salt).map(StoreKey)
+    }
+
+    /// Open an existing encrypted store at `path` with its key, as
+    /// [`Store::key_for`] derived it: no key derivation, so it is quick.
+    /// A key that is not this store's is [`StoreError::WrongPassphrase`].
+    pub fn open_with_key(path: &Path, key: &StoreKey) -> Result<Store, StoreError> {
         let conn = open_existing(path)?;
-        key_connection(&conn, &key)?;
+        key_connection(&conn, &key.0)?;
         verify_key(&conn)?;
         verify_identity_present(&conn)?;
         migrate(&conn)?;
@@ -442,16 +484,18 @@ impl Store {
             .expect("querying conversation");
 
         rows.map(|r| r.expect("reading message row"))
-            .map(|(id, contact, outgoing, text, channel, at_min, heard, delivery)| StoredMessage {
-                id: id.try_into().expect("message id is 16 bytes"),
-                contact: ContactId(contact),
-                outgoing: outgoing != 0,
-                text,
-                channel: Channel::from_i64(channel).expect("valid channel"),
-                at_min,
-                heard: heard != 0,
-                delivery: Delivery::from_i64(delivery),
-            })
+            .map(
+                |(id, contact, outgoing, text, channel, at_min, heard, delivery)| StoredMessage {
+                    id: id.try_into().expect("message id is 16 bytes"),
+                    contact: ContactId(contact),
+                    outgoing: outgoing != 0,
+                    text,
+                    channel: Channel::from_i64(channel).expect("valid channel"),
+                    at_min,
+                    heard: heard != 0,
+                    delivery: Delivery::from_i64(delivery),
+                },
+            )
             .collect()
     }
 
@@ -497,6 +541,29 @@ impl Store {
             .find(|m| &m.id == id)
     }
 
+    /// Erase every message stamped before minute `cutoff_min`, except
+    /// outgoing ones still waiting to go out (they are erased once they
+    /// have gone, at the next purge). Messages stamped at or after the
+    /// cut-off are never touched. Returns how many were erased.
+    pub fn forget_before(&self, cutoff_min: u32) -> Result<usize, StoreError> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        conn.execute(
+            "DELETE FROM messages WHERE at_min < ?1 AND NOT (outgoing = 1 AND delivery = 0)",
+            params![cutoff_min],
+        )
+        .map_err(|_| StoreError::Corrupt)
+    }
+
+    /// The latest minute any stored message is stamped with, if any.
+    pub fn latest_at_min(&self) -> Option<u32> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        conn.query_row("SELECT MAX(at_min) FROM messages", [], |row| {
+            row.get::<_, Option<u32>>(0)
+        })
+        .ok()
+        .flatten()
+    }
+
     /// Set whether a contact's safety number has been checked. Unknown
     /// ids are ignored.
     pub fn set_checked(&self, c: ContactId, checked: bool) -> Result<(), StoreError> {
@@ -512,7 +579,10 @@ impl Store {
 
 /// Derive the 32-byte SQLCipher key from `passphrase` and `salt` with
 /// Argon2id (`m = 64 MiB`, `t = 3`, `p = 1`).
-fn derive_key(passphrase: &str, salt: &[u8; SALT_LEN]) -> Result<Zeroizing<[u8; ARGON2_KEY_LEN]>, StoreError> {
+fn derive_key(
+    passphrase: &str,
+    salt: &[u8; SALT_LEN],
+) -> Result<Zeroizing<[u8; ARGON2_KEY_LEN]>, StoreError> {
     let params = Params::new(
         ARGON2_MEMORY_KIB,
         ARGON2_ITERATIONS,
@@ -533,7 +603,10 @@ fn derive_key(passphrase: &str, salt: &[u8; SALT_LEN]) -> Result<Zeroizing<[u8; 
 /// literal (`x'...'`) so SQLCipher does not re-derive a key from it. The hex
 /// string and the pragma statement that embeds it both live in `Zeroizing`
 /// buffers.
-fn key_connection(conn: &Connection, key: &Zeroizing<[u8; ARGON2_KEY_LEN]>) -> Result<(), StoreError> {
+fn key_connection(
+    conn: &Connection,
+    key: &Zeroizing<[u8; ARGON2_KEY_LEN]>,
+) -> Result<(), StoreError> {
     let mut hex = Zeroizing::new(String::with_capacity(ARGON2_KEY_LEN * 2));
     for byte in key.iter() {
         write!(hex, "{byte:02x}").expect("writing to a String cannot fail");
@@ -556,7 +629,9 @@ fn verify_key(conn: &Connection) -> Result<(), StoreError> {
         row.get::<_, i64>(0)
     }) {
         Ok(_) => Ok(()),
-        Err(rusqlite::Error::SqliteFailure(e, _)) if e.code == rusqlite::ErrorCode::NotADatabase => {
+        Err(rusqlite::Error::SqliteFailure(e, _))
+            if e.code == rusqlite::ErrorCode::NotADatabase =>
+        {
             Err(StoreError::WrongPassphrase)
         }
         Err(_) => Err(StoreError::Corrupt),
@@ -746,7 +821,10 @@ mod tests {
 
         let store = Store::open(&path, "pw").unwrap();
         let old = store.message(&[7u8; 16]).unwrap();
-        assert_eq!((old.text.as_str(), old.delivery), ("Bring water.", Delivery::Sent));
+        assert_eq!(
+            (old.text.as_str(), old.delivery),
+            ("Bring water.", Delivery::Sent)
+        );
         assert!(store.waiting().is_empty());
         let new = StoredMessage {
             id: [8u8; 16],

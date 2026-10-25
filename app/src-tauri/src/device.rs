@@ -5,13 +5,15 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use bombechat_core::{Identity, PublicIdentity};
 use bombechat_modem::{AudioIo, Band, CpalAudio, ModemConfig, QuietGate};
 use bombechat_node::{Node, NodeEvent, SoundSwitch, SoundTransport, Transport};
-use bombechat_store::{Channel, Contact, ContactId, Store, StoreError, StoredMessage};
+use bombechat_store::{Channel, Contact, ContactId, Store, StoreError, StoreKey, StoredMessage};
 
-use crate::commands::{is_setting, Lock, Machine, Opened, Unlocking};
+use crate::commands::{is_setting, Lock, Machine, Opened, Unlocking, SETTINGS};
+use crate::keychain::{Keeper, Nowhere};
 
 /// The quiet gate's defaults, as the settings page shows them: send under
 /// 40 dB, two repeats a minute and a half apart.
@@ -21,6 +23,29 @@ const REPEAT_GAP_S: u32 = 90;
 
 /// The settings page's Send under values, in dB, by position.
 const SEND_UNDER_STEPS: [f32; 5] = [30.0, 35.0, 40.0, 45.0, 50.0];
+
+/// The settings page's Delete messages after values, in days, by
+/// position: Never, 1 day, 7 days, 30 days.
+const EXPIRE_DAYS: [Option<u32>; 4] = [None, Some(1), Some(7), Some(30)];
+
+/// How often old messages are looked for while the store is open, by the
+/// pump's monotonic clock.
+const PURGE_EVERY_MS: u64 = 60 * 60 * 1000;
+
+/// The gain Send volume `value_index` (0 to 4, shown 1 to 5) plays at:
+/// 0.2 to 1.0 of full scale.
+pub fn send_gain(value_index: usize) -> f32 {
+    0.2 * (value_index.min(4) + 1) as f32
+}
+
+/// The wall clock, in minutes since the Unix epoch.
+fn wall_min() -> u32 {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    u32::try_from(secs / 60).unwrap_or(u32::MAX)
+}
 
 /// The settings file's name, beside the store. Settings are not secret
 /// (which switch is where, a threshold), so they are kept as plain JSON.
@@ -80,7 +105,12 @@ pub fn tidy_unfinished(path: &Path) {
 /// build it under a staging name, move the salt and then the database
 /// into place, and open it again from there (so SQLite's own files follow
 /// the real name). `name` is the person's own name, kept in the store.
-pub fn create_store(path: &Path, passphrase: &str, name: &str) -> Result<Store, StoreError> {
+/// Returns the store with its key.
+pub fn create_store(
+    path: &Path,
+    passphrase: &str,
+    name: &str,
+) -> Result<(Store, StoreKey), StoreError> {
     tidy_unfinished(path);
     let staged = staging(path);
     let made = Store::create(&staged, passphrase, &Identity::generate(), name);
@@ -93,7 +123,21 @@ pub fn create_store(path: &Path, passphrase: &str, name: &str) -> Result<Store, 
         tidy_unfinished(path);
         return Err(StoreError::Io);
     }
-    Store::open(path, passphrase)
+    open_store(path, passphrase)
+}
+
+/// Open the store at `path` with `passphrase`, and the key it derives.
+fn open_store(path: &Path, passphrase: &str) -> Result<(Store, StoreKey), StoreError> {
+    let key = Store::key_for(path, passphrase)?;
+    Store::open_with_key(path, &key).map(|store| (store, key))
+}
+
+/// What an unlock hands back to [`Machine::finish_unlock`]: the opened
+/// store and its key, kept in memory while the store is open so the lock
+/// can be turned off without asking for the passphrase again.
+struct Unlocked {
+    store: Store,
+    key: StoreKey,
 }
 
 fn store_error(e: StoreError) -> String {
@@ -114,11 +158,22 @@ pub struct Device {
     my_name: Option<String>,
     /// Settings as the person last set them, kept in [`SETTINGS_FILE`]
     /// beside the store: the only record of them, which the page reads
-    /// at load. The Sound switch and Send under are applied to the node;
-    /// the rest are only kept in this plan.
+    /// at load. Each the machine acts on is applied (see
+    /// [`Device::apply`]); a setting never set acts at its default.
     settings: HashMap<String, usize>,
     /// Reported on the first tick, e.g. why there is no sound transport.
     pending: Vec<NodeEvent>,
+    /// Where the store key is kept while Lock with passphrase is off.
+    keeper: Box<dyn Keeper>,
+    /// The open store's key, while it is open: needed to turn the lock
+    /// off. Never leaves the machine except into the keychain.
+    store_key: Option<StoreKey>,
+    /// When to look for old messages to delete next, by the pump's
+    /// clock; none until the first tick after an unlock.
+    next_purge_ms: Option<u64>,
+    /// The wall clock, in minutes: what "Delete messages after" counts
+    /// back from.
+    wall: fn() -> u32,
 }
 
 impl Device {
@@ -182,16 +237,94 @@ impl Device {
             my_name: None,
             settings,
             pending,
+            keeper: Box::new(Nowhere),
+            store_key: None,
+            next_purge_ms: None,
+            wall: wall_min,
         };
-        let kept: Vec<(String, usize)> = device
-            .settings
-            .iter()
-            .map(|(k, v)| (k.clone(), *v))
-            .collect();
-        for (id, value) in kept {
-            device.apply(&id, value);
+        for (id, _, default) in SETTINGS {
+            let value = device.setting(id).unwrap_or(default);
+            device.apply(id, value);
         }
         device
+    }
+
+    /// Keep the store key in `keeper` while Lock with passphrase is off,
+    /// and if it is off now and `keeper` has the key, open the store with
+    /// it straight away, without asking. A kept key that does not open
+    /// the store (it was made again since) is let go, and the passphrase
+    /// is asked for as usual.
+    pub fn with_keeper(mut self, keeper: Box<dyn Keeper>) -> Device {
+        self.keeper = keeper;
+        if self.lock_is_off() && self.store_path.exists() {
+            if let Some(key) = self.keeper.get() {
+                match Store::open_with_key(&self.store_path, &key) {
+                    Ok(store) => self.install(store, key),
+                    Err(e) => {
+                        eprintln!("bombechat: the key kept in the keychain did not open the store ({e}); asking for the passphrase");
+                        let _ = self.keeper.remove();
+                    }
+                }
+            }
+        }
+        self
+    }
+
+    /// Whether Lock with passphrase is off.
+    fn lock_is_off(&self) -> bool {
+        self.setting("lock") == Some(0)
+    }
+
+    /// The store is open: hand it to the node, keep its key while it is
+    /// open (and in the keychain if the lock is off), and delete what is
+    /// older than Delete messages after.
+    fn install(&mut self, store: Store, key: StoreKey) {
+        self.my_name = Some(store.my_name());
+        self.node.unlock(store);
+        self.unlocked = true;
+        if self.lock_is_off() {
+            if let Err(e) = self.keeper.put(&key) {
+                eprintln!("bombechat: {e}");
+            }
+        }
+        self.store_key = Some(key);
+        self.purge_at((self.wall)());
+        self.next_purge_ms = None;
+    }
+
+    /// Delete stored messages older than Delete messages after allows,
+    /// counting back from `now_min` on the wall clock. A clock set back
+    /// only moves the cut-off back, so it never takes a message newer
+    /// than the cut-off; messages are stamped so they never look older
+    /// than ones stored before them (see `bombechat_node`). Nothing while
+    /// locked or at Never.
+    pub fn purge_at(&mut self, now_min: u32) -> usize {
+        let days = self
+            .setting("expire")
+            .or_else(|| default_of("expire"))
+            .and_then(|i| EXPIRE_DAYS.get(i).copied().flatten());
+        match days {
+            Some(days) if self.unlocked => {
+                let cutoff = now_min.saturating_sub(days.saturating_mul(24 * 60));
+                self.node.forget_before(cutoff)
+            }
+            _ => 0,
+        }
+    }
+
+    /// Lock with passphrase: Off keeps the store key in the keychain (only
+    /// while the store is open, which is when the key is here), On lets
+    /// go of it.
+    fn set_lock(&mut self, value_index: usize) -> Result<(), String> {
+        if value_index == 0 {
+            let key = self
+                .store_key
+                .as_ref()
+                .ok_or("Unlock first, then the lock can come off")?;
+            self.keeper.put(key)
+        } else {
+            self.keeper.remove()
+        }
     }
 
     /// A setting's value, as its position on the settings page, if it has
@@ -213,9 +346,26 @@ impl Device {
                     self.node.set_send_under(*db);
                 }
             }
+            "volume" => self.node.set_volume(send_gain(value_index)),
+            "band" => self.node.set_band(if value_index == 0 {
+                Band::NearSilent
+            } else {
+                Band::Audible
+            }),
+            "repeats" => self
+                .node
+                .set_repeats(value_index.min(u8::MAX as usize) as u8),
             _ => {}
         }
     }
+}
+
+/// Setting `id`'s default, as [`SETTINGS`] has it.
+fn default_of(id: &str) -> Option<usize> {
+    SETTINGS
+        .iter()
+        .find(|(name, _, _)| *name == id)
+        .map(|(_, _, default)| *default)
 }
 
 /// Where the settings are kept, beside the store at `store_path`.
@@ -283,13 +433,20 @@ impl Machine for Device {
         0
     }
 
-    fn set_setting(&mut self, id: &str, value_index: usize) {
+    fn set_setting(&mut self, id: &str, value_index: usize) -> Result<(), String> {
+        if id == "lock" {
+            self.set_lock(value_index)?;
+        }
         self.apply(id, value_index);
         if self.settings.insert(id.to_string(), value_index) != Some(value_index) {
             if let Err(e) = save_settings(&settings_path(&self.store_path), &self.settings) {
                 eprintln!("bombechat: settings not saved: {e}");
             }
         }
+        if id == "expire" {
+            self.purge_at((self.wall)());
+        }
+        Ok(())
     }
 
     fn settings(&self) -> HashMap<String, usize> {
@@ -318,8 +475,8 @@ impl Machine for Device {
         self.unlocking = true;
         let path = self.store_path.clone();
         Ok(Box::new(move |passphrase: &str, name: &str| {
-            let store = if !create {
-                Store::open(&path, passphrase)
+            let opened = if !create {
+                open_store(&path, passphrase)
             } else if passphrase.is_empty() {
                 return Err("choose a passphrase".to_string());
             } else if name.is_empty() {
@@ -327,18 +484,19 @@ impl Machine for Device {
             } else {
                 create_store(&path, passphrase, name)
             };
-            store.map(|s| Box::new(s) as Opened).map_err(store_error)
+            opened
+                .map(|(store, key)| Box::new(Unlocked { store, key }) as Opened)
+                .map_err(store_error)
         }))
     }
 
     fn finish_unlock(&mut self, opened: Result<Opened, String>) -> Result<(), String> {
         self.unlocking = false;
-        let store = opened?
-            .downcast::<Store>()
+        let opened = opened?
+            .downcast::<Unlocked>()
             .map_err(|_| "not a store".to_string())?;
-        self.my_name = Some(store.my_name());
-        self.node.unlock(*store);
-        self.unlocked = true;
+        let Unlocked { store, key } = *opened;
+        self.install(store, key);
         Ok(())
     }
 
@@ -346,9 +504,25 @@ impl Machine for Device {
         self.node.rates()
     }
 
+    fn band(&self) -> Option<Band> {
+        self.node.band()
+    }
+
+    /// Ticks the node, and while the store is open deletes old messages
+    /// once an hour.
     fn tick(&mut self, now_ms: u64) -> Vec<NodeEvent> {
         let mut events = std::mem::take(&mut self.pending);
         events.extend(self.node.tick(now_ms));
+        if self.unlocked {
+            match self.next_purge_ms {
+                Some(at) if now_ms < at => {}
+                Some(_) => {
+                    self.purge_at((self.wall)());
+                    self.next_purge_ms = Some(now_ms + PURGE_EVERY_MS);
+                }
+                None => self.next_purge_ms = Some(now_ms + PURGE_EVERY_MS),
+            }
+        }
         events
     }
 }
@@ -357,6 +531,7 @@ impl Machine for Device {
 mod tests {
     use super::*;
     use bombechat_modem::FakeAudio;
+    use bombechat_store::ContactId;
 
     fn sound_states(events: &[NodeEvent]) -> Vec<String> {
         events
@@ -404,7 +579,7 @@ mod tests {
         assert_eq!(heard.starts(), 1, "listening by default, mic opened");
         assert!(heard.is_listening());
 
-        device.set_setting("sound", 0); // Off
+        device.set_setting("sound", 0).unwrap(); // Off
         assert_eq!(heard.stops(), 1, "closed at once, not on the next tick");
         assert!(!heard.is_listening());
 
@@ -415,10 +590,187 @@ mod tests {
             "the channel reports off, not a stale listening"
         );
 
-        device.set_setting("sound", 2); // Listen and send
+        device.set_setting("sound", 2).unwrap(); // Listen and send
         assert!(!heard.is_listening(), "not reopened until the next tick");
         device.tick(2);
         assert_eq!(heard.starts(), 2, "reopened");
         assert!(heard.is_listening());
+    }
+
+    /// An unlocked device over `audio` with its store in `dir`.
+    fn unlocked(dir: &tempfile::TempDir, audio: FakeAudio) -> Device {
+        let mut device = Device::with_audio(dir.path().join("m.db"), Box::new(audio));
+        let work = device.begin_unlock().unwrap();
+        device.finish_unlock(work("correct horse", "Ana")).unwrap();
+        device
+    }
+
+    /// Play the pairing hello across a quiet room for `ms`, and what the
+    /// speaker was handed.
+    fn hello(device: &mut Device, card: &FakeAudio, ms: u64) -> Vec<f32> {
+        device.start_pairing("Ana").unwrap();
+        let mut now = 0;
+        while now <= ms {
+            card.feed(&vec![0.0; 9_600]);
+            device.tick(now);
+            now += 200;
+        }
+        card.played()
+    }
+
+    fn peak(samples: &[f32]) -> f32 {
+        samples.iter().fold(0.0, |m, x| m.max(x.abs()))
+    }
+
+    #[test]
+    fn send_volume_is_the_gain_on_what_plays() {
+        assert_eq!(send_gain(0), 0.2);
+        assert_eq!(send_gain(4), 1.0);
+        let mut peaks = Vec::new();
+        for volume in [0, 2, 4] {
+            let dir = tempfile::TempDir::new().unwrap();
+            let card = FakeAudio::new(48_000);
+            let mut device = unlocked(&dir, card.clone());
+            device.set_setting("volume", volume).unwrap();
+            peaks.push(peak(&hello(&mut device, &card, 2_000)));
+        }
+        let full = peaks[2];
+        assert!(full > 0.1, "something played");
+        assert!(
+            (peaks[0] - 0.2 * full).abs() < 1e-3,
+            "1 is a fifth of 5: {peaks:?}"
+        );
+        assert!(
+            (peaks[1] - 0.6 * full).abs() < 1e-3,
+            "3, the default: {peaks:?}"
+        );
+    }
+
+    #[test]
+    fn a_device_never_set_plays_at_the_default_volume() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let card = FakeAudio::new(48_000);
+        let mut device = unlocked(&dir, card.clone());
+        let default = peak(&hello(&mut device, &card, 2_000));
+        let dir = tempfile::TempDir::new().unwrap();
+        let card = FakeAudio::new(48_000);
+        let mut loud = unlocked(&dir, card.clone());
+        loud.set_setting("volume", 4).unwrap();
+        let full = peak(&hello(&mut loud, &card, 2_000));
+        assert!((default - 0.6 * full).abs() < 1e-3);
+    }
+
+    #[test]
+    fn repeats_is_how_often_each_frame_plays_again() {
+        let mut lengths = Vec::new();
+        for repeats in [0, 1, 3] {
+            let dir = tempfile::TempDir::new().unwrap();
+            let card = FakeAudio::new(48_000);
+            let mut device = unlocked(&dir, card.clone());
+            device.set_setting("repeats", repeats).unwrap();
+            lengths.push(hello(&mut device, &card, 300_000).len());
+        }
+        assert!(lengths[0] > 0);
+        assert_eq!(lengths[1], 2 * lengths[0], "{lengths:?}");
+        assert_eq!(lengths[2], 4 * lengths[0], "{lengths:?}");
+    }
+
+    #[test]
+    fn the_tone_band_moves_the_sound_card_and_a_slow_card_stays_audible() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut device =
+            Device::with_audio(dir.path().join("m.db"), Box::new(FakeAudio::new(48_000)));
+        assert_eq!(device.band(), Some(Band::NearSilent));
+        device.set_setting("band", 1).unwrap();
+        assert_eq!(device.band(), Some(Band::Audible));
+        drop(device);
+        let again = Device::with_audio(dir.path().join("m.db"), Box::new(FakeAudio::new(48_000)));
+        assert_eq!(
+            again.band(),
+            Some(Band::Audible),
+            "kept for the next launch"
+        );
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut slow =
+            Device::with_audio(dir.path().join("m.db"), Box::new(FakeAudio::new(32_000)));
+        slow.set_setting("band", 0).unwrap();
+        assert_eq!(slow.setting("band"), Some(0), "the choice is kept");
+        assert_eq!(
+            slow.band(),
+            Some(Band::Audible),
+            "but the card cannot go higher"
+        );
+    }
+
+    /// A device over a real store holding messages stamped at `at`
+    /// (minutes), unlocked, with Delete messages after at 1 day and its
+    /// wall clock at `now`.
+    fn aging(dir: &tempfile::TempDir, at: &[u32]) -> (Device, ContactId) {
+        let path = dir.path().join("m.db");
+        let store = Store::create(&path, "correct horse", &Identity::generate(), "Ana").unwrap();
+        let c = store
+            .add_contact("Marisol", &Identity::generate().public(), true)
+            .unwrap();
+        for (i, at_min) in at.iter().enumerate() {
+            store
+                .put_message(&StoredMessage {
+                    id: [i as u8 + 1; 16],
+                    contact: c,
+                    outgoing: false,
+                    text: format!("at {at_min}"),
+                    channel: Channel::Sound,
+                    at_min: *at_min,
+                    heard: false,
+                    delivery: bombechat_store::Delivery::Sent,
+                })
+                .unwrap();
+        }
+        drop(store);
+        let mut device = Device::new(path, Vec::new(), Vec::new());
+        device.wall = || 10_000;
+        device.set_setting("expire", 1).unwrap();
+        let work = device.begin_unlock().unwrap();
+        device.finish_unlock(work("correct horse", "")).unwrap();
+        (device, c)
+    }
+
+    fn stamps(device: &Device, c: ContactId) -> Vec<u32> {
+        device.conversation(c).iter().map(|m| m.at_min).collect()
+    }
+
+    #[test]
+    fn old_messages_go_once_an_hour_while_unlocked() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // 1 day is 1440 minutes: at 10000 the cut-off is 8560.
+        let (mut device, c) = aging(&dir, &[8_000, 8_600, 9_000]);
+        assert_eq!(stamps(&device, c), vec![8_600, 9_000], "at unlock");
+
+        device.wall = || 10_100; // cut-off 8660
+        device.tick(0);
+        device.tick(PURGE_EVERY_MS - 1);
+        assert_eq!(stamps(&device, c), vec![8_600, 9_000], "not yet an hour");
+        device.tick(PURGE_EVERY_MS);
+        assert_eq!(stamps(&device, c), vec![9_000], "an hour on");
+    }
+
+    #[test]
+    fn a_clock_set_back_never_deletes_a_message_newer_than_the_cut_off() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (mut device, c) = aging(&dir, &[8_600, 9_000, 9_900, 12_000]);
+        assert_eq!(stamps(&device, c), vec![8_600, 9_000, 9_900, 12_000]);
+
+        // The clock jumps back two days: the cut-off moves back with it, so
+        // nothing newer than it, nor stamped "ahead" by the clock before, goes.
+        device.wall = || 10_000 - 2 * 1440;
+        device.tick(0);
+        device.tick(PURGE_EVERY_MS);
+        assert_eq!(device.purge_at(10_000 - 2 * 1440), 0);
+        assert_eq!(stamps(&device, c), vec![8_600, 9_000, 9_900, 12_000]);
+
+        // Back to the right time: only what is older than its cut-off goes.
+        assert_eq!(device.purge_at(10_100), 1);
+        assert_eq!(stamps(&device, c), vec![9_000, 9_900, 12_000]);
+        assert!(stamps(&device, c).iter().all(|at| *at >= 10_100 - 1440));
     }
 }

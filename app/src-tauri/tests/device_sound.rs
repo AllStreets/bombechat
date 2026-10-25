@@ -96,7 +96,13 @@ impl Bench {
     }
 
     /// The same, in a room at `level`.
-    fn hear_in(&mut self, level: f32, from: &Identity, to: &PublicIdentity, text: &str) -> [u8; 16] {
+    fn hear_in(
+        &mut self,
+        level: f32,
+        from: &Identity,
+        to: &PublicIdentity,
+        text: &str,
+    ) -> [u8; 16] {
         self.run(1, level);
         let now = (std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -308,4 +314,100 @@ fn a_microphone_too_slow_for_either_band_is_reported_unavailable() {
         (kept[0].channel, kept[0].state.as_str()),
         ("sound", "unavailable: microphone sample rate too low")
     );
+}
+
+impl Bench {
+    /// Say the first `frames` frames of a message on `cfg`'s band.
+    fn say(&mut self, cfg: &ModemConfig, env_bytes: &[u8], tag: u16, frames: usize) {
+        for frame in split(env_bytes, tag).into_iter().take(frames) {
+            self.voice.play(modulate(cfg, &frame)).unwrap();
+            self.run(1, 0.0);
+        }
+    }
+
+    fn sound_states(&self) -> Vec<String> {
+        self.events
+            .iter()
+            .filter_map(|e| match e {
+                NodeEvent::ChannelState {
+                    channel: Channel::Sound,
+                    state,
+                } => Some(state.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+fn now_min() -> u32 {
+    (std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        / 60) as u32
+}
+
+#[test]
+fn a_tone_band_change_mid_arrival_fails_it_cleanly_and_the_new_band_works() {
+    let dir = TempDir::new().unwrap();
+    let ana = Identity::generate();
+    let (mut b, _) = bench(&dir, &ana);
+    let me = b.me();
+    let near = ModemConfig::default();
+    let audible = ModemConfig {
+        band: Band::Audible,
+        ..ModemConfig::default()
+    };
+
+    let cut_off = seal_private(
+        &ana,
+        std::slice::from_ref(&me),
+        &"long ".repeat(40),
+        now_min(),
+        60,
+    );
+    b.say(&near, &cut_off.encode(), 0x0c01, 2);
+    assert!(b.sound_states().contains(&"receiving".to_string()));
+    b.events.clear();
+
+    commands::set_setting(&b.shared, "band".into(), 1).unwrap();
+    b.run(2, 0.0);
+    assert_eq!(
+        b.sound_states(),
+        vec!["failed", "listening"],
+        "did not check"
+    );
+    assert!(b.messages().is_empty());
+    assert_eq!(commands::channels(&b.shared)[0].band, Some("audible"));
+
+    // The rest of the old message, still near silent, is not heard at all.
+    let rest = split(&cut_off.encode(), 0x0c01).len();
+    b.say(&near, &cut_off.encode(), 0x0c01, rest);
+    b.run(3, 0.0);
+    assert!(b.messages().is_empty());
+
+    // A message on the audible band is.
+    let next = seal_private(
+        &ana,
+        std::slice::from_ref(&me),
+        "On the audible band.",
+        now_min(),
+        60,
+    );
+    b.say(&audible, &next.encode(), 0x0c02, usize::MAX);
+    b.run(3, 0.0);
+    assert_eq!(b.messages(), vec![next.id]);
+}
+
+#[test]
+fn a_card_too_slow_for_near_silent_shows_the_band_it_is_really_on() {
+    let dir = TempDir::new().unwrap();
+    let d = Device::with_audio(
+        dir.path().join("bombechat.db"),
+        Box::new(FakeAudio::new(32_000)),
+    );
+    let s = Shared::new(Box::new(d));
+    assert_eq!(commands::settings(&s)["band"], 0, "near silent asked for");
+    let view = serde_json::to_value(commands::channels(&s)).unwrap();
+    assert_eq!(view[0]["band"], "audible", "audible is what it is on");
 }

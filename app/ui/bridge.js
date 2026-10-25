@@ -12,7 +12,12 @@
 //   confirmPair(peerHex, name)   [confirm_pair { peerHex, name }]   resolves to the new contact id; name as the person
 //                                corrected it on the card (the hello's name is only a suggestion)
 //   setSetting(id, valueIndex)   [set_setting { id, valueIndex }]  only for a change the person just made: the
-//                                machine keeps every setting and is their only record
+//                                machine keeps every setting and is their only record. Rejects with a sentence to show
+//                                when the machine won't take it, e.g. 'Unlock first, then the lock can come off'
+//   settingNotes()               [setting_notes]                    resolves to { [id]: { note, value? } } for each setting this
+//                                machine can't change: note is what its row says instead ('comes with relay', 'comes with
+//                                light', 'always, on this build', 'Keychain only on macOS'); value the one it is held at,
+//                                absent for a setting that waits for a feature (its plug is parked)
 //   settings()                   [settings]                         resolves to { [id]: valueIndex } for every setting on the
 //                                settings page, as the machine keeps them (defaults for any never set), locked or not.
 //                                Pages render from this at load and never send it back
@@ -30,7 +35,8 @@
 //   channels()                   [channels]                         resolves to [{ channel, state, rate? }]: the last state each
 //                                channel reported, for a page that opened after the event. None reported: listening.
 //                                rate: the payload bytes a second the channel's modem measures (sound has one), for the
-//                                bytes-a-second readout
+//                                bytes-a-second readout. band (sound): 'near silent' or 'audible', the band it is really on
+//                                (a sound card too slow for near silent stays audible, whatever Tone band says)
 //
 // Events (on(name, fn)), as the node's NodeEvent after normalising:
 //   chunk      { tag, index, of, view: { plain, heard, key }, text }
@@ -144,6 +150,7 @@ function tauriBackend() {
     confirmPair: (peerHex, name) => invoke('confirm_pair', { peerHex, name }).then(contactId),
     setSetting: (id, valueIndex) => invoke('set_setting', { id, valueIndex }),
     settings: () => invoke('settings'),
+    settingNotes: () => invoke('setting_notes'),
     unlock: (passphrase, name) => invoke('unlock', name === undefined ? { passphrase } : { passphrase, name }),
     contacts: () => invoke('contacts').then(list => list.map(person)),
     conversation: contactId => invoke('conversation', { contactId }).then(list => list.map(normalise.message)),
@@ -164,6 +171,7 @@ function simulatedBackend() {
     confirmPair: (peerHex, name) => sim.confirmPair(peerHex, name).then(contactId),
     setSetting: (id, valueIndex) => sim.setSetting(id, valueIndex),
     settings: () => sim.settings(),
+    settingNotes: () => sim.settingNotes(),
     unlock: (passphrase, name) => sim.unlock(passphrase, name),
     contacts: () => sim.contacts().then(list => list.map(person)),
     conversation: contactId => sim.conversation(contactId).then(list => list.map(normalise.message)),
@@ -184,6 +192,7 @@ export const bridge = {
   confirmPair: (peerHex, name) => backend.confirmPair(peerHex, name),
   setSetting: (id, valueIndex) => backend.setSetting(id, valueIndex),
   settings: () => backend.settings(),
+  settingNotes: () => backend.settingNotes(),
   unlock: (passphrase, name) => backend.unlock(passphrase, name),
   contacts: () => backend.contacts(),
   conversation: contactId => backend.conversation(contactId),

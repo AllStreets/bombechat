@@ -63,6 +63,9 @@ function tauriStub({ hello, safety, people, talk, afterUnlock, settings }) {
         case 'machine': return Promise.resolve({ name: 'Machine No. 1', key: 'a3f09c1e'.repeat(16), you: 'Ana Lima', held: 0, version: '0.1.0' });
         case 'conversation': return Promise.resolve((talk || {})[args.contactId] || []);
         case 'settings': return settings === 'unread' ? Promise.reject('the machine did not answer') : Promise.resolve(settings || { sound: 2, volume: 2, band: 0, light: 0, flash: 1, machine: 1, machvol: 2, carry: 1, hops: 3, hold: 2, quiet: 2, repeats: 2, lock: 1, expire: 2, inperson: 1 });
+        // as the device answers on this build: relay and light wait for their features, the key check is always on
+        case 'setting_notes': return settings === 'unread' ? Promise.reject('the machine did not answer') : Promise.resolve({ carry: { note: 'comes with relay' }, hops: { note: 'comes with relay' }, hold: { note: 'comes with relay' },
+          light: { note: 'comes with light' }, flash: { note: 'comes with light' }, inperson: { note: 'always, on this build', value: 1 } });
         case 'channels': return Promise.resolve([{ channel: 'sound', state: 'listening', rate: 16.1 }]);
         case 'pair': setTimeout(() => window.__emit('pairOffer', { peer: { sign: Array(32).fill(5), dh: Array(32).fill(6) }, name: hello, safety }), 1200); return Promise.resolve(null);
         case 'confirm_pair': return Promise.resolve(7);
@@ -436,6 +439,49 @@ function measureText() {
       await un.locator('.panel').screenshot({ path: path.join(out, 'settings-unread-panel.png') });
       report.settingsUnread = unread;
       await un.close();
+    }
+    // Machine sound and Machine volume are the machine's settings: the title bar's lever shows what it keeps and the
+    // drums play at its volume; moving the lever sends that one change. The Light switch, whose feature isn't fitted
+    // yet, is taped down at Off, says what it waits for, and turning it sends nothing.
+    for (const where of ['app', 'browser']) {
+      const ms = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 });
+      watch(ms, `machine sound, ${where}`);
+      if (where === 'app') {
+        await ms.addInitScript(tauriStub, { hello: 'Marisol Ortega', safety: '', people: [{ id: 1, name: 'Marisol Ortega', checked: true, safety: '' }],
+          settings: { sound: 2, volume: 2, band: 0, light: 0, flash: 1, machine: 0, machvol: 4, carry: 1, hops: 3, hold: 2, quiet: 2, repeats: 2, lock: 1, expire: 2, inperson: 1 } });
+        await ms.goto(url('still'));
+        await ms.waitForSelector('.unlock input[name=pass]');
+        await ms.fill('.unlock input[name=pass]', 'correct horse');
+        await ms.click('.unlock button');
+      } else {
+        await ms.addInitScript(() => { try { sessionStorage.setItem('bombechat.simulated-machine', JSON.stringify({ machine: 0, machvol: 4 })); } catch (e) {} });
+        await ms.goto(url('still'));
+      }
+      await ms.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
+      await ms.waitForTimeout(300);
+      const sets = () => window.__TAURI__ ? __calls.filter(c => c[0] === 'set_setting').map(c => c[1]) : __sim.settingsSet;
+      const booted = await ms.evaluate(`({ lever: document.getElementById('snd').getAttribute('aria-pressed'), on: __drum.on, gain: __drum.gain, label: document.querySelector('.sndlab').textContent,
+        light: document.getElementById('k2').getAttribute('aria-valuenow'), lightOff: document.getElementById('k2').getAttribute('aria-disabled'), tape: (document.querySelector('.tapedown') || {}).textContent, sets: (${sets})() })`);
+      await ms.locator('.mod:has(#k2)').screenshot({ path: path.join(out, `light-taped-${where}.png`) });
+      await ms.click('#k2', { force: true });
+      await ms.focus('#k2'); await ms.keyboard.press('ArrowRight');
+      await ms.waitForTimeout(400);
+      const light = await ms.evaluate(`({ light: document.getElementById('k2').getAttribute('aria-valuenow'), sets: (${sets})() })`);
+      await ms.click('#snd');
+      await ms.waitForTimeout(200);
+      const flipped = await ms.evaluate(`({ lever: document.getElementById('snd').getAttribute('aria-pressed'), on: __drum.on, sets: (${sets})() })`);
+      const kept = where === 'browser' ? await ms.evaluate(() => import('./bridge.js').then(m => m.bridge.settings())) : null;
+      const none = s => (Array.isArray(s) ? s.length : s) === 0;
+      if (booted.lever !== 'false' || booted.on !== false) problems.push(`${where}: the machine keeps Machine sound off, the lever shows ${JSON.stringify(booted)}`);
+      if (Math.abs(booted.gain - .9) > 1e-6) problems.push(`${where}: Machine volume 5 plays the drums at ${booted.gain}, not 0.9`);
+      if (booted.label !== 'Machine sound') problems.push(`${where}: the lever is labelled ${booted.label}`);
+      if (!none(booted.sets)) problems.push(`${where}: settings sent at load: ${JSON.stringify(booted.sets)}`);
+      if (booted.light !== '0' || booted.lightOff !== 'true' || booted.tape !== 'comes with light') problems.push(`${where}: the Light switch is not taped down at Off: ${JSON.stringify(booted)}`);
+      if (light.light !== '0' || !none(light.sets)) problems.push(`${where}: turning the taped Light switch did something: ${JSON.stringify(light)}`);
+      if (flipped.lever !== 'true' || !flipped.on || (where === 'app' ? JSON.stringify(flipped.sets) !== JSON.stringify([{ id: 'machine', valueIndex: 1 }]) : flipped.sets !== 1 || kept.machine !== 1))
+        problems.push(`${where}: the lever sent ${JSON.stringify(flipped)}, kept ${JSON.stringify(kept)}`);
+      report[`machineSound-${where}`] = { booted, light, flipped };
+      await ms.close();
     }
 
     // pairing by sound on the key check card, in a plain browser (the simulator) and in the app

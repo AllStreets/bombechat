@@ -10,6 +10,7 @@
 
 pub mod commands;
 pub mod device;
+pub mod keychain;
 
 use std::thread;
 use std::time::{Duration, Instant};
@@ -59,6 +60,13 @@ fn set_setting(state: State<'_, Shared>, id: String, value_index: usize) -> Resu
 #[tauri::command]
 fn settings(state: State<'_, Shared>) -> std::collections::BTreeMap<&'static str, usize> {
     commands::settings(&state)
+}
+
+#[tauri::command]
+fn setting_notes(
+    state: State<'_, Shared>,
+) -> std::collections::BTreeMap<&'static str, commands::SettingNote> {
+    commands::setting_notes(&state)
 }
 
 /// Async, so the key derivation (Argon2id, most of a second) runs off the
@@ -116,7 +124,9 @@ pub fn run() {
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
-            let device = Device::with_sound_card(dir.join(STORE_FILE));
+            let store = dir.join(STORE_FILE);
+            let device =
+                Device::with_sound_card(store.clone()).with_keeper(keychain::system(&store));
             app.manage(Shared::new(Box::new(device)));
             let handle = app.handle().clone();
             thread::Builder::new()
@@ -131,6 +141,7 @@ pub fn run() {
             confirm_pair,
             set_setting,
             settings,
+            setting_notes,
             unlock,
             contacts,
             conversation,

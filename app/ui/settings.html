@@ -78,6 +78,18 @@ a.pl svg{display:block}
 .jk[aria-checked="true"] span{color:var(--type-ink)}
 .jk:hover i{box-shadow:0 1px 1px rgba(60,40,10,.4),0 0 0 2px rgba(47,90,75,.35)}
 .jk:focus-visible{outline:1px solid var(--green-ink);outline-offset:2px}
+/* a setting this machine can't change: pencilled on the card in place of its value. Waiting for a feature, its jacks
+   carry blanking caps and its plug is parked; held at a value, its plug stays seated and can't be moved */
+.row .val.pencil{font-size:13.5px;color:#3d3b37;text-shadow:0 0 .6px rgba(53,52,49,.5);transform:rotate(-1.2deg);transform-origin:right center}
+.row.held .jk{cursor:default}
+.row.held .jk:hover i{box-shadow:0 1px 1px rgba(60,40,10,.4),inset 0 0 0 .5px rgba(0,0,0,.4)}
+.row.parked .jacks{position:relative}
+.row.parked .jacks::after{content:"";position:absolute;left:0;top:-3px;height:28px;width:var(--tape,0);
+  background:linear-gradient(#cbbc94,#d8cba6 45%,#c4b48b);box-shadow:0 1px 2px rgba(60,40,10,.4),inset 0 0 0 .5px rgba(90,70,40,.18);transform:rotate(-.5deg);pointer-events:none;
+  clip-path:polygon(0 12%,2% 0,30% 7%,62% 0,98% 6%,100% 0,99% 50%,100% 100%,70% 93%,35% 100%,3% 94%,0 100%,1.5% 50%)}
+.row.parked .jk span{color:#8f8571}
+.row .band{display:block;margin-top:4px;font-family:var(--type);font-size:12.5px;color:#3d3b37;text-shadow:0 0 .6px rgba(53,52,49,.5)}
+.row .band[hidden]{display:none}
 .notfitted{margin-top:8px;padding:10px 12px;border:1px dashed rgba(124,35,29,.5);font-family:var(--type);font-size:12.5px;line-height:1.45;color:#5c3a33;background:rgba(124,35,29,.05)}
 .card-f{border-top:1.5px solid var(--green-ink);padding:8px 22px 12px;display:flex;justify-content:space-between;align-items:baseline;font-family:var(--print);font-size:12px;color:var(--green-ink)}
 .card-f b{font-family:var(--type);font-weight:400;color:var(--type-ink);font-size:13px}
@@ -163,24 +175,31 @@ const byId=Object.fromEntries(SETTINGS.map(s=>[s.id,s]));
 // the machine keeps every setting and is the only record of them: render from it, and send one back only when
 // the person changes it. v above is each one's default. A machine that cannot answer leaves every row saying it was
 // not read, with Sound and Light at Off rather than their most permissive positions.
-function takeKept(kept){const changed=[];for(const s of SETTINGS){const v=kept[s.id];if(Number.isInteger(v)&&v>=0&&v<s.values.length&&(v!==s.v||!s.read)){s.v=v;s.read=true;changed.push(s.id)}}return changed}
+function takeKept(kept){const changed=[];for(const s of SETTINGS){if(s.held)continue;const v=kept[s.id];if(Number.isInteger(v)&&v>=0&&v<s.values.length&&(v!==s.v||!s.read)){s.v=v;s.read=true;changed.push(s.id)}}return changed}
 SETTINGS.forEach(s=>s.read=true);
 try{takeKept(await bridge.settings())}catch(e){SETTINGS.forEach(s=>s.read=false);byId.sound.v=0;byId.light.v=0}
 try{localStorage.removeItem('bombechat.settings')}catch(e){}
-const label=s=>s.read?s.values[s.v]+(s.unit||''):'Not read';
+// the settings this machine can't change, as it says: one waiting for a feature ('comes with relay') has no value and
+// its plug is parked; one held at a value ('always, on this build') keeps its plug seated there. Neither can be patched.
+let NOTES={};try{NOTES=await bridge.settingNotes()||{}}catch(e){}
+for(const s of SETTINGS){const n=NOTES[s.id];if(!n)continue;s.held=n.note;s.parked=!Number.isInteger(n.value);if(!s.parked){s.v=n.value;s.read=true}}
+const label=s=>s.held?s.held:s.read?s.values[s.v]+(s.unit||''):'Not read';
+const seatedAt=s=>s.parked?-1:s.v;
 
 /* ---------- schedule card ---------- */
 const sched=document.getElementById('sched');
 const rows={};
 for(const g of GROUPS){
   const items=SETTINGS.filter(s=>s.g===g);
-  const h=document.createElement('div');h.className='grp';h.innerHTML=`<span>${g}</span><small>${g==='Bluetooth'?'not fitted':items.length+(items.length===1?' plug':' plugs')}</small>`;sched.appendChild(h);
+  const waits=items.length&&items.every(s=>s.parked);
+  const h=document.createElement('div');h.className='grp';h.innerHTML=`<span>${g}</span><small>${g==='Bluetooth'?'not fitted':waits?'plugs parked':items.length+(items.length===1?' plug':' plugs')}</small>`;sched.appendChild(h);
   if(g==='Bluetooth'){const n=document.createElement('div');n.className='notfitted';n.textContent='This build carries no Bluetooth code, so there is nothing here to switch on. The standard build adds discovery and requests to connect from people you have not met.';sched.appendChild(n);continue}
   for(const s of items){
-    const r=document.createElement('div');r.className='row';r.dataset.id=s.id;
-    r.innerHTML=`<div class="hd"><span class="nm" id="nm-${s.id}">${s.name}</span><span class="val">${label(s)}</span></div>
-      <div class="desc">${s.desc}</div>
-      <div class="jacks${s.values.some(v=>v.includes(' '))?' wide':''}" role="radiogroup" aria-labelledby="nm-${s.id}">${s.values.map((v,i)=>`<button class="jk" role="radio" aria-checked="${i===s.v}" tabindex="${i===s.v?0:-1}" data-i="${i}" aria-label="${v}${s.unit||''}"><i></i><span>${v}</span></button>`).join('')}</div>`;
+    const r=document.createElement('div');r.className='row'+(s.held?' held':'')+(s.parked?' parked':'');r.dataset.id=s.id;
+    const off=s.held?' disabled aria-disabled="true"':'';
+    r.innerHTML=`<div class="hd"><span class="nm" id="nm-${s.id}">${s.name}</span><span class="val${s.held?' pencil':''}" id="val-${s.id}">${label(s)}</span></div>
+      ${s.id==='band'?'<span class="band" hidden></span>':''}<div class="desc">${s.desc}</div>
+      <div class="jacks${s.values.some(v=>v.includes(' '))?' wide':''}" role="radiogroup" aria-labelledby="nm-${s.id}"${s.held?` aria-describedby="val-${s.id}" aria-disabled="true"`:''}>${s.values.map((v,i)=>`<button class="jk" role="radio" aria-checked="${i===seatedAt(s)}" tabindex="${i===s.v&&!s.held?0:-1}" data-i="${i}" aria-label="${v}${s.unit||''}"${off}><i></i><span>${v}</span></button>`).join('')}</div>`;
     sched.appendChild(r);rows[s.id]=r;
     r.addEventListener('mouseenter',()=>focusSetting(s.id,'hover'));
     r.addEventListener('mouseleave',()=>focusSetting(null,'hover'));
@@ -193,12 +212,24 @@ for(const g of GROUPS){
         e.preventDefault();setValue(s.id,i,'card');r.querySelectorAll('.jk')[i].focus()})});
   }
 }
+// a parked row's tape runs from its first jack to its last
+function tapeRows(){for(const s of SETTINGS){if(!s.parked)continue;const j=rows[s.id].querySelectorAll('.jk'),a=j[0].querySelector('i'),b=j[j.length-1].querySelector('i');
+  rows[s.id].querySelector('.jacks').style.setProperty('--tape',(b.offsetLeft+b.offsetWidth+8)+'px')}}
+tapeRows();new ResizeObserver(tapeRows).observe(sched);
 function syncRow(id){const s=byId[id],r=rows[id];r.querySelector('.val').textContent=label(s);
-  r.querySelectorAll('.jk').forEach((b,i)=>{b.setAttribute('aria-checked',i===s.v);b.tabIndex=i===s.v?0:-1})}
+  r.querySelectorAll('.jk').forEach((b,i)=>{b.setAttribute('aria-checked',i===seatedAt(s));b.tabIndex=i===s.v&&!s.held?0:-1});if(id==='band')showBand()}
+// Tone band: the band sound is really on. A sound card too slow for near silent stays audible, and the row says so
+let soundBand=null;
+function showBand(){const el=rows.band&&rows.band.querySelector('.band');if(!el)return;const s=byId.band;
+  const short=s.read&&s.v===0&&soundBand==='audible';el.hidden=!short;el.textContent=short?'sending audible: this sound card is too slow for near silent':''}
 const savedEl=document.getElementById('saved');let savedT;
-function setValue(id,i,from){const s=byId[id];if(s.v===i&&s.read){focusSetting(id,'pin');return}s.v=i;s.read=true;syncRow(id);
-  savedEl.textContent=`${s.name}: ${label(s)}`;savedEl.style.opacity=1;clearTimeout(savedT);savedT=setTimeout(()=>savedEl.style.opacity=0,2600);
-  Object.values(rows).forEach(r=>r.classList.remove('active'));rows[id].classList.add('active');bridge.setSetting(id,i);
+function say(text){savedEl.textContent=text;savedEl.style.opacity=1;clearTimeout(savedT);savedT=setTimeout(()=>savedEl.style.opacity=0,text.length>40?5200:2600)}
+// the person moved a plug: send it, and if the machine won't take it, put the plug back and say why
+function change(id,i){const s=byId[id],was={v:s.v,read:s.read};s.v=i;s.read=true;syncRow(id);say(`${s.name}: ${label(s)}`);
+  Object.values(rows).forEach(r=>r.classList.remove('active'));rows[id].classList.add('active');
+  Promise.resolve(bridge.setSetting(id,i)).then(()=>{if(id==='band')bridge.channels().then(list=>list.forEach(onChannel),()=>{})},why=>{if(s.v!==i)return;s.v=was.v;s.read=was.read;syncRow(id);say(String(why&&why.message||why));
+    machine&&(REDUCED?machine.seat(id,seatedAt(s)):machine.move(id,s.v,true))})}
+function setValue(id,i,from){const s=byId[id];if(s.held){focusSetting(id,'pin');return}if(s.v===i&&s.read){focusSetting(id,'pin');return}change(id,i);
   if(from!=='card')rows[id].scrollIntoView({block:'nearest',behavior:REDUCED?'auto':'smooth'});
   machine&&machine.move(id,i);}
 let focusId=null,pinId=null;
@@ -212,12 +243,12 @@ document.getElementById('sched').addEventListener('click',e=>{if(!e.target.close
 
 /* ---------- plug sounds (same rules as the drums: synthesised, low-passed under 7 kHz) ---------- */
 // plug sounds are muted while a message arrives by sound, including one already arriving when this page opened
-let receiving=false;const onChannel=s=>{if(s.channel==='sound')receiving=s.state==='receiving'};
+let receiving=false;const onChannel=s=>{if(s.channel!=='sound')return;receiving=s.state==='receiving';if(s.band&&s.band!==soundBand){soundBand=s.band;showBand()}};
 bridge.on('channel',onChannel);bridge.ready();bridge.channels().then(list=>list.forEach(onChannel));
 const Snd=(()=>{let ctx,out,nb;function ensure(){if(!ctx){ctx=new (window.AudioContext||window.webkitAudioContext)();let node=ctx.createGain();out=node;
   for(let i=0;i<4;i++){const lp=ctx.createBiquadFilter();lp.type='lowpass';lp.frequency.value=7000;lp.Q.value=.6;node.connect(lp);node=lp}node.connect(ctx.destination);
   nb=ctx.createBuffer(1,ctx.sampleRate*.05,ctx.sampleRate);const d=nb.getChannelData(0);for(let i=0;i<d.length;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/d.length,2)}if(ctx.state==='suspended')ctx.resume()}
-  function vol(){return byId.machine.v&&!receiving?(.35+.16*byId.machvol.v):0}
+  function vol(){return byId.machine.read&&byId.machine.v&&!receiving?(.35+.16*byId.machvol.v):0}
   function burst(t,f,q,g,len){const s=ctx.createBufferSource();s.buffer=nb;const bp=ctx.createBiquadFilter();bp.type='bandpass';bp.frequency.value=f;bp.Q.value=q;const ga=ctx.createGain();
     ga.gain.setValueAtTime(0,t);ga.gain.linearRampToValueAtTime(g*vol(),t+.001);ga.gain.exponentialRampToValueAtTime(.0005,t+len);s.connect(bp);bp.connect(ga);ga.connect(out);s.start(t);s.stop(t+len+.02)}
   function thud(t,f,g){const o=ctx.createOscillator();o.frequency.setValueAtTime(f,t);o.frequency.exponentialRampToValueAtTime(f*.45,t+.08);const ga=ctx.createGain();ga.gain.setValueAtTime(0,t);ga.gain.linearRampToValueAtTime(g*vol(),t+.002);ga.gain.exponentialRampToValueAtTime(.0005,t+.1);o.connect(ga);ga.connect(out);o.start(t);o.stop(t+.12)}
@@ -232,6 +263,8 @@ try{machine=await build()}catch(err){console.error(err);document.getElementById(
 
 async function build(){
   await engravingFace();
+  // the tape is pencilled in the typewriter face the card uses: wait for it before drawing any
+  try{await document.fonts.load("40px 'Cutive Mono'")}catch(e){}
   const K=createMachine(view,{still:Q.has('still')});
   const {THREE,renderer,scene,camera,M,cableMat,CABLE_COLORS,bolt,plate,engrave,tex}=K;const {wrinkle,knurl}=tex;
   const lamp=new THREE.SpotLight('#ffe2b8',0,12,Math.PI/6,.85,1.4);lamp.castShadow=false;scene.add(lamp);scene.add(lamp.target);
@@ -298,6 +331,26 @@ async function build(){
   const plugGeo=(()=>{const pts=[[0,-.14],[.036,-.14],[.036,0],[.07,0],[.07,.07],[.092,.08],[.098,.38],[.08,.42],[.06,.44],[.05,.56],[0,.56]].map(([r,y])=>new THREE.Vector2(r,y));const g=new THREE.LatheGeometry(pts,40);g.rotateX(Math.PI/2);return g})();
   const sleeveGeo=new THREE.CylinderGeometry(.071,.071,.07,32,1,true);sleeveGeo.rotateX(Math.PI/2);
   
+  const studGeo=new THREE.CylinderGeometry(.075,.085,.06,24);studGeo.rotateX(Math.PI/2);
+  // pencil on a strip of paper tape: the same buff and the same pencil as the wiring schedule card
+  const TAPE_H=.37,TAPE_PX=150;// world height, and canvas pixels for it
+  const tapeFont=`${Math.round(TAPE_PX*.38)}px 'Cutive Mono','Courier New',monospace`;
+  function tapeWidth(text){const k=document.createElement('canvas').getContext('2d');k.font=tapeFont;return (k.measureText(text).width+TAPE_PX*.7)/TAPE_PX*TAPE_H}
+  function tape(text,x,y,w,id){
+    const c=document.createElement('canvas');c.height=TAPE_PX;c.width=Math.round(w/TAPE_H*TAPE_PX);const k=c.getContext('2d');
+    let sd=[...id].reduce((a,ch)=>a*31+ch.charCodeAt(0),7)%2147483647||1;const r=()=>{sd=(sd*16807)%2147483647;return sd/2147483647};
+    // the strip, torn at both ends, a little lighter at its middle where it lies flat
+    k.beginPath();k.moveTo(6,10);for(let x2=6;x2<c.width-6;x2+=24)k.lineTo(x2,8+r()*4);k.lineTo(c.width-6,9);
+    for(let y2=10;y2<c.height-10;y2+=9)k.lineTo(c.width-4-r()*9,y2);k.lineTo(c.width-6,c.height-9);
+    for(let x2=c.width-6;x2>6;x2-=24)k.lineTo(x2,c.height-8-r()*4);k.lineTo(6,c.height-9);for(let y2=c.height-10;y2>10;y2-=9)k.lineTo(4+r()*9,y2);k.closePath();
+    const g=k.createLinearGradient(0,0,0,c.height);g.addColorStop(0,'#9b8c6b');g.addColorStop(.5,'#ab9d7b');g.addColorStop(1,'#958667');k.fillStyle=g;k.fill();
+    k.save();k.clip();for(let i=0;i<c.width*c.height/30;i++){k.fillStyle=`rgba(${r()<.5?'90,70,40':'255,250,235'},${.05+r()*.05})`;k.fillRect(r()*c.width,r()*c.height,1+r()*2,1)}k.restore();
+    k.font=tapeFont;k.textAlign='center';k.textBaseline='middle';k.fillStyle='#2b2926';k.shadowColor='rgba(43,41,38,.6)';k.shadowBlur=1.4;
+    k.save();k.translate(c.width/2,c.height*.53);k.rotate(-.012);k.fillText(text,0,0);k.restore();
+    const t=new THREE.CanvasTexture(c);t.colorSpace=THREE.SRGBColorSpace;t.anisotropy=8;
+    const m=new THREE.Mesh(new THREE.PlaneGeometry(w,TAPE_H),new THREE.MeshStandardMaterial({map:t,transparent:true,roughness:.92,metalness:0,alphaTest:.5}));
+    m.position.set(x,y,.105);m.rotation.z=(r()-.5)*.03;m.castShadow=true;m.receiveShadow=true;m.userData={id};scene.add(m);tapes.push(m);return m}
+  const tapes=[];
   const LAYOUT={left:{x:-8.9,groups:['Sound','Light','Bluetooth','Machine']},right:{x:.55,groups:['Passing on','Quiet sending','Privacy']}};
   const ROWH=.74,TOP=.75;
   const plugs={};const jackMeshes=[];
@@ -314,16 +367,23 @@ async function build(){
           const nut=new THREE.Mesh(nutGeo,M.brassDull);nut.position.set(x,y,.02);nut.castShadow=true;nut.receiveShadow=true;scene.add(nut);
           const ring=new THREE.Mesh(jackGeo,M.brass);ring.position.set(x,y,.05);ring.castShadow=true;scene.add(ring);
           const hole=new THREE.Mesh(holeGeo,M.hole);hole.position.set(x,y,.045);scene.add(hole);
-          const hit=new THREE.Mesh(new THREE.CircleGeometry(.24,12),new THREE.MeshBasicMaterial({visible:false}));hit.position.set(x,y,.06);hit.userData={id:s.id,i};scene.add(hit);jackMeshes.push(hit);
-          engrave(v.toUpperCase(),x,y+.225,.1,'#b3ab95');jacks.push(p)});
+          // a setting the machine can't change has no jack to patch into
+          if(!s.held){const hit=new THREE.Mesh(new THREE.CircleGeometry(.24,12),new THREE.MeshBasicMaterial({visible:false}));hit.position.set(x,y,.06);hit.userData={id:s.id,i};scene.add(hit);jackMeshes.push(hit)}
+          engrave(v.toUpperCase(),x,y+.225,.1,s.parked?'#7d7768':'#b3ab95');jacks.push(p)});
         const src=new THREE.Vector3(side.x+2.75,y,0);engrave('FROM',src.x,y+.225,.088,'#958f80');
+        // waiting for a feature: a strip of tape pencilled with what it waits for across the jacks, and the plug parked
+        // on a stud beside its FROM socket. Held at a value: the plug stays seated, the tape beside it says why.
+        let park=null;
+        if(s.parked){const a=jacks[0].x-.24,b=Math.max(jacks[jacks.length-1].x+.24,a+tapeWidth(s.held));tape(s.held,(a+b)/2,y-.005,b-a,s.id);
+          park=new THREE.Vector3(src.x+.4,y-.02,0);const stud=new THREE.Mesh(studGeo,M.steel);stud.position.set(park.x,park.y,.03);stud.castShadow=true;scene.add(stud)}
+        else if(s.held){const x=jacks[jacks.length-1].x+.34;const w=tapeWidth(s.held);tape(s.held,x+w/2,y-.005,w,s.id)}
         const sn=new THREE.Mesh(nutGeo,M.brassDull);sn.position.set(src.x,src.y,.02);scene.add(sn);const sr=new THREE.Mesh(jackGeo,M.brass);sr.position.set(src.x,src.y,.05);scene.add(sr);
         const color=CABLE_COLORS[(SETTINGS.indexOf(s)*3)%CABLE_COLORS.length];
         const mat=cableMat(color);mat.userData.base=new THREE.Color(color);
         const head=new THREE.Group();const body=new THREE.Mesh(plugGeo,M.bakelite);body.castShadow=true;const sl=new THREE.Mesh(sleeveGeo,M.brass);sl.position.z=.035;head.add(body,sl);
         const headSrc=head.clone();headSrc.position.copy(src);scene.add(headSrc);
         head.userData={id:s.id};body.userData={id:s.id,plug:true};scene.add(head);
-        const P={s,jacks,src,nameX:side.x,head,mat,mesh:null,end:jacks[s.v].clone(),lift:0,liftT:0,anim:null,dim:0,dimT:0,seed:rnd()};
+        const P={s,jacks,src,park,nameX:side.x,head,mat,mesh:null,end:(park||jacks[s.v]).clone(),lift:0,liftT:0,anim:null,dim:0,dimT:0,rest:s.parked?.45:0,seed:rnd()};
         plugs[s.id]=P;y-=ROWH}
       y-=.18}}
 
@@ -354,11 +414,11 @@ async function build(){
     const tw=tag.offsetWidth/2+10;tag.style.left=Math.max(tw,Math.min(view.clientWidth-tw,(v.x*.5+.5)*view.clientWidth))+'px';tag.style.top=(-v.y*.5+.5)*view.clientHeight-14+'px';tag.textContent=`${byId[focusId].name}: ${label(byId[focusId])}`}
 
   /* ---------- moving a plug: pull, carry, seat ---------- */
-  function move(id,i){const P=plugs[id];focusSetting(id,'pin');const from=P.end.clone(),to=P.jacks[i].clone();
+  function move(id,i){const P=plugs[id];if(P.s.held)return;focusSetting(id,'pin');const from=P.end.clone(),to=P.jacks[i].clone();
     if(REDUCED){P.end.copy(to);P.lift=0;rebuild(P);Snd.seat();return}
     P.anim={t0:performance.now(),from,to,pulled:false,seated:false};Snd.pull()}
   // put a plug straight into a jack, quietly: the machine's record moved it, not the person
-  function seat(id,i){const P=plugs[id];P.anim=null;P.end.copy(P.jacks[i]);P.lift=0;rebuild(P)}
+  function seat(id,i){const P=plugs[id];P.anim=null;P.end.copy(i<0&&P.park?P.park:P.jacks[i]);P.lift=0;rebuild(P)}
   function stepAnim(P,now){const a=P.anim;const t=(now-a.t0)/1000;const PULL=.18,CARRY=.42,SEAT=.16;
     if(t<PULL){const k=t/PULL;P.lift=.45*easeOut(k)}
     else if(t<PULL+CARRY){const k=easeInOut((t-PULL)/CARRY);P.end.copy(a.from).lerp(a.to,k);P.lift=.45+.35*Math.sin(Math.PI*k)}
@@ -370,11 +430,12 @@ async function build(){
   /* ---------- direct manipulation on the machine ---------- */
   const ray=new THREE.Raycaster(),ptr=new THREE.Vector2();const plane=new THREE.Plane(new THREE.Vector3(0,0,1),-.5);let drag=null,hoverId=null;
   function pick(e,list){const r=renderer.domElement.getBoundingClientRect();ptr.set((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1);ray.setFromCamera(ptr,camera);return ray.intersectObjects(list,true)[0]}
-  const plugBodies=()=>Object.values(plugs).map(P=>P.head);
+  const plugBodies=()=>Object.values(plugs).filter(P=>!P.s.held).map(P=>P.head);
   renderer.domElement.addEventListener('pointermove',e=>{
     if(drag){const r=renderer.domElement.getBoundingClientRect();ptr.set((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1);ray.setFromCamera(ptr,camera);const hitP=new THREE.Vector3();if(ray.ray.intersectPlane(plane,hitP)){
       const P=plugs[drag.id];const x=Math.max(P.jacks[0].x,Math.min(P.jacks[P.jacks.length-1].x,hitP.x));P.end.set(x,P.jacks[0].y,0);P.lift=.5;rebuild(P)}return}
-    const h=pick(e,plugBodies())||pick(e,jackMeshes);const id=h?(h.object.userData.id||h.object.parent.userData.id):null;
+    const h=pick(e,plugBodies())||pick(e,jackMeshes);const look=h||pick(e,[...tapes,...Object.values(plugs).filter(P=>P.s.held).map(P=>P.head)]);
+    const id=look?(look.object.userData.id||look.object.parent.userData.id):null;
     view.classList.toggle('grab',!!h);if(id!==hoverId){hoverId=id;if(id)focusSetting(id,'hover');else focusSetting(null,'hover')}});
   renderer.domElement.addEventListener('pointerdown',e=>{const h=pick(e,plugBodies());
     if(h){const id=h.object.userData.id||h.object.parent.userData.id;drag={id};view.classList.add('grabbing');renderer.domElement.setPointerCapture(e.pointerId);focusSetting(id,'pin');Snd.arm();Snd.pull();hideHint();return}
@@ -383,7 +444,7 @@ async function build(){
     hoverId=null;fullView()});
   renderer.domElement.addEventListener('pointerup',e=>{if(!drag)return;const P=plugs[drag.id];let best=0,bd=1e9;P.jacks.forEach((p,i)=>{const d=Math.abs(p.x-P.end.x);if(d<bd){bd=d;best=i}});
     const s=byId[drag.id];view.classList.remove('grabbing');const id=drag.id;drag=null;
-    P.anim={t0:performance.now()-180,from:P.end.clone(),to:P.jacks[best].clone()};if(s.v!==best||!s.read){s.v=best;s.read=true;syncRow(id);bridge.setSetting(id,best);savedEl.textContent=`${s.name}: ${label(s)}`;savedEl.style.opacity=1;clearTimeout(savedT);savedT=setTimeout(()=>savedEl.style.opacity=0,2600);Object.values(rows).forEach(r=>r.classList.remove('active'));rows[id].classList.add('active');rows[id].scrollIntoView({block:'nearest',behavior:'smooth'})}});
+    P.anim={t0:performance.now()-180,from:P.end.clone(),to:P.jacks[best].clone()};if(s.v!==best||!s.read){change(id,best);rows[id].scrollIntoView({block:'nearest',behavior:'smooth'})}});
   view.addEventListener('pointermove',e=>{const r=view.getBoundingClientRect();parT.x=(e.clientX-r.left)/r.width-.5;parT.y=(e.clientY-r.top)/r.height-.5});
   view.addEventListener('pointerleave',()=>{parT.x=parT.y=0;if(!drag&&hoverId){hoverId=null;focusSetting(null,'hover')}});
   const hint=document.getElementById('hint');function hideHint(){}
@@ -396,7 +457,7 @@ async function build(){
     for(const P of Object.values(plugs)){
       if(P.anim)stepAnim(P,now);
       else if(Math.abs(P.lift-P.liftT)>.002&&!(drag&&drag.id===P.s.id)){P.lift+=(P.liftT-P.lift)*(REDUCED?1:1-Math.exp(-dt*8));rebuild(P)}
-      P.dim+=(P.dimT-P.dim)*(REDUCED?1:1-Math.exp(-dt*6));tmpC.copy(P.mat.userData.base).multiplyScalar(1-.55*P.dim);P.mat.color.copy(tmpC);P.mat.sheen=.6*(1-P.dim*.7)}
+      P.dim+=(Math.max(P.dimT,P.rest)-P.dim)*(REDUCED?1:1-Math.exp(-dt*6));tmpC.copy(P.mat.userData.base).multiplyScalar(1-.55*P.dim);P.mat.color.copy(tmpC);P.mat.sheen=.6*(1-P.dim*.7)}
     decorDimNow+=(decorDim-decorDimNow)*(REDUCED?1:1-Math.exp(-dt*5));
     decor.forEach(m=>{if(!m.material.userData.base)m.material.userData.base=m.material.color.clone();m.material.color.copy(m.material.userData.base).multiplyScalar(1-.5*decorDimNow)});
     if(focusId){const P=plugs[focusId];lamp.position.set(P.head.position.x-1.5,P.head.position.y+2.5,4);lamp.target.position.copy(P.head.position);lamp.intensity+=(9-lamp.intensity)*(1-Math.exp(-dt*4))}else lamp.intensity*=Math.exp(-dt*4);
@@ -407,7 +468,7 @@ async function build(){
 
   function toScreen(v3){const v=v3.clone().project(camera);const r=renderer.domElement.getBoundingClientRect();return {x:r.left+(v.x*.5+.5)*r.width,y:r.top+(-v.y*.5+.5)*r.height}}
   const screen=id=>{const P=plugs[id];const h=P.head.position.clone();h.z+=.35;return {plug:toScreen(h),first:toScreen(P.jacks[0].clone().setZ(.3))}};
-  return {focus,move,seat,plugs,camera,screen,get ready(){return frames>2},endOf:id=>{const P=plugs[id];return {x:P.end.x,jack:P.jacks.findIndex(j=>Math.abs(j.x-P.end.x)<1e-3&&Math.abs(j.y-P.end.y)<1e-3),lift:P.lift}}};
+  return {focus,move,seat,plugs,camera,screen,get ready(){return frames>2},endOf:id=>{const P=plugs[id];return {x:P.end.x,jack:P.jacks.findIndex(j=>Math.abs(j.x-P.end.x)<1e-3&&Math.abs(j.y-P.end.y)<1e-3),lift:P.lift,parked:!!P.park&&P.end.distanceTo(P.park)<1e-3,dim:P.dim}}};
 }
 
 /* arriving from the front: finish the turn the front started */
@@ -417,7 +478,7 @@ try{if(sessionStorage.getItem('bombechat-turn')==='front-to-back'&&!REDUCED){ses
 // back here by history (bfcache): the settings may have moved on the front, so read them again from the machine
 // and show them, sending nothing
 addEventListener('pageshow',e=>{if(!e.persisted)return;bridge.settings().then(kept=>{for(const id of takeKept(kept)){syncRow(id);machine&&machine.seat(id,byId[id].v)}},()=>{})});
-window.__bc={screen:id=>machine.screen(id),focused:()=>focusId,get:id=>byId[id].v,set:(id,i)=>setValue(id,i,'test'),focus:id=>focusSetting(id,'pin'),end:id=>machine&&machine.endOf(id),settings:SETTINGS.map(s=>s.id)};
+window.__bc={screen:id=>machine.screen(id),focused:()=>focusId,get:id=>byId[id].v,held:()=>Object.fromEntries(SETTINGS.filter(s=>s.held).map(s=>[s.id,{note:s.held,parked:!!s.parked}])),set:(id,i)=>setValue(id,i,'test'),focus:id=>focusSetting(id,'pin'),end:id=>machine&&machine.endOf(id),settings:SETTINGS.map(s=>s.id)};
 if(Q.has('focus'))focusSetting(Q.get('focus'),'pin');
 document.getElementById('back').addEventListener('click',e=>{if(REDUCED)return;e.preventDefault();const href=e.currentTarget.href;try{sessionStorage.setItem('bombechat-turn','back-to-front')}catch(_){}document.body.animate([{transform:'perspective(1600px) rotateY(0deg)',opacity:1},{transform:'perspective(1600px) rotateY(-80deg)',opacity:0}],{duration:420,easing:'cubic-bezier(.5,0,.75,0)'}).onfinish=()=>location.href=href});
 </script>

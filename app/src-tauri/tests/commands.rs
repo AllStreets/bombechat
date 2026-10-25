@@ -23,6 +23,8 @@ struct Calls {
     settings: Vec<(String, usize)>,
     /// What the fake's settings file holds, as `settings` reads it back.
     saved: HashMap<String, usize>,
+    /// When set, every setting is refused with this.
+    refuse: Option<String>,
     passphrases: Arc<Mutex<Vec<String>>>,
     /// The name each unlock was given.
     names: Arc<Mutex<Vec<String>>>,
@@ -137,7 +139,10 @@ impl Machine for Fake {
     fn held_for_others(&self) -> usize {
         3
     }
-    fn set_setting(&mut self, id: &str, value_index: usize) {
+    fn set_setting(&mut self, id: &str, value_index: usize) -> Result<(), String> {
+        if self.calls.lock().unwrap().refuse.is_some() {
+            return Err(self.calls.lock().unwrap().refuse.clone().unwrap());
+        }
         self.calls
             .lock()
             .unwrap()
@@ -148,6 +153,7 @@ impl Machine for Fake {
             .unwrap()
             .saved
             .insert(id.to_string(), value_index);
+        Ok(())
     }
     fn settings(&self) -> HashMap<String, usize> {
         self.calls.lock().unwrap().saved.clone()
@@ -612,10 +618,18 @@ fn a_tick_that_keeps_panicking_is_reported_once_in_a_while() {
         .lock()
         .unwrap()
         .extend([None, None, None, Some(vec![NodeEvent::RoomDb(39.0)])]);
-    assert_eq!(commands::tick(&r.shared, 20).len(), 1, "the first is reported");
+    assert_eq!(
+        commands::tick(&r.shared, 20).len(),
+        1,
+        "the first is reported"
+    );
     assert!(commands::tick(&r.shared, 40).is_empty(), "the next is not");
     assert!(commands::tick(&r.shared, 60).is_empty());
-    assert_eq!(commands::tick(&r.shared, 80).len(), 1, "and a good tick still is");
+    assert_eq!(
+        commands::tick(&r.shared, 80).len(),
+        1,
+        "and a good tick still is"
+    );
 }
 
 #[test]
@@ -771,4 +785,132 @@ fn every_command_name_is_registered_with_tauri() {
     registered.sort_unstable();
     names.sort_unstable();
     assert_eq!(registered, names);
+}
+
+#[test]
+fn settings_that_wait_for_relay_or_light_are_refused_and_say_what_they_wait_for() {
+    let (m, calls) = fake(Lock::Unlocked);
+    for (id, name, note) in commands::COMING {
+        let why = commands::set_setting(&m, id.into(), 0).unwrap_err();
+        assert_eq!(why, format!("{name} {note}"));
+        assert!(why.starts_with(char::is_uppercase), "{why}: a sentence");
+        assert!(note == "comes with relay" || note == "comes with light");
+    }
+    assert!(
+        calls.lock().unwrap().settings.is_empty(),
+        "none reached the machine"
+    );
+
+    let notes = serde_json::to_value(commands::setting_notes(&m)).unwrap();
+    for id in ["carry", "hops", "hold"] {
+        assert_eq!(notes[id], json!({ "note": "comes with relay" }), "{id}");
+    }
+    for id in ["light", "flash"] {
+        assert_eq!(notes[id], json!({ "note": "comes with light" }), "{id}");
+    }
+}
+
+#[test]
+fn a_value_an_older_build_kept_for_a_waiting_setting_is_not_reported_as_working() {
+    let (m, calls) = fake(Lock::Unlocked);
+    {
+        let mut c = calls.lock().unwrap();
+        c.saved.insert("carry".into(), 0);
+        c.saved.insert("hops".into(), 6);
+        c.saved.insert("light".into(), 2);
+        c.saved.insert("inperson".into(), 0);
+    }
+    let all = commands::settings(&m);
+    assert_eq!(
+        (all["carry"], all["hops"], all["light"]),
+        (1, 3, 0),
+        "their defaults"
+    );
+    assert_eq!(all["inperson"], 1, "always on");
+}
+
+#[test]
+fn new_contacts_always_need_a_key_check_on_this_build() {
+    let (m, calls) = fake(Lock::Unlocked);
+    assert_eq!(
+        commands::set_setting(&m, "inperson".into(), 0),
+        Err("On this build every new contact needs a key check".to_string())
+    );
+    assert_eq!(
+        commands::set_setting(&m, "inperson".into(), 1),
+        Err("On this build every new contact needs a key check".to_string())
+    );
+    assert!(calls.lock().unwrap().settings.is_empty());
+    assert_eq!(
+        serde_json::to_value(commands::setting_notes(&m)).unwrap()["inperson"],
+        json!({ "note": "always, on this build", "value": 1 })
+    );
+}
+
+#[test]
+fn the_lock_can_come_off_only_where_there_is_a_keychain() {
+    let (m, calls) = fake(Lock::Unlocked);
+    let notes = serde_json::to_value(commands::setting_notes(&m)).unwrap();
+    if cfg!(target_os = "macos") {
+        assert_eq!(commands::set_setting(&m, "lock".into(), 0), Ok(()));
+        assert_eq!(
+            calls.lock().unwrap().settings,
+            vec![("lock".to_string(), 0)]
+        );
+        assert!(notes.get("lock").is_none());
+        assert_eq!(commands::settings(&m)["lock"], 0);
+    } else {
+        assert_eq!(
+            commands::set_setting(&m, "lock".into(), 0),
+            Err("The Keychain is only on macOS, so the lock stays on".to_string())
+        );
+        assert_eq!(
+            notes["lock"],
+            json!({ "note": "Keychain only on macOS", "value": 1 })
+        );
+        assert_eq!(commands::settings(&m)["lock"], 1);
+    }
+}
+
+#[test]
+fn a_setting_the_machine_refuses_comes_back_as_the_reason() {
+    let (m, calls) = fake(Lock::Locked);
+    calls.lock().unwrap().refuse = Some("Unlock first, then the lock can come off".into());
+    assert_eq!(
+        commands::set_setting(&m, "volume".into(), 1),
+        Err("Unlock first, then the lock can come off".to_string())
+    );
+}
+
+#[test]
+fn the_simulator_holds_the_same_settings_with_the_same_notes() {
+    let sim = include_str!("../../ui/simulator.js");
+    let line = sim
+        .lines()
+        .find(|l| l.starts_with("const NOTES = {"))
+        .expect("simulator.js has NOTES");
+    let (m, _) = fake(Lock::Unlocked);
+    let mut want: Vec<String> = commands::setting_notes(&m)
+        .iter()
+        .filter(|(id, _)| **id != "lock")
+        .map(|(id, n)| match n.value {
+            Some(v) => format!("{id}:{{note:'{}',value:{v}}}", n.note),
+            None => format!("{id}:{{note:'{}'}}", n.note),
+        })
+        .collect();
+    want.sort();
+    let body = line
+        .trim_start_matches("const NOTES = {")
+        .trim_end_matches("};")
+        .replace(' ', "");
+    let mut have: Vec<String> = body
+        .split("},")
+        .map(|e| {
+            let e = e.trim_end_matches('}');
+            format!("{e}}}")
+        })
+        .collect();
+    have.sort();
+    let want: Vec<String> = want.iter().map(|w| w.replace(' ', "")).collect();
+    assert_eq!(have, want);
 }

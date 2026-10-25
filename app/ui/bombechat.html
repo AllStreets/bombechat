@@ -85,6 +85,13 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
 .bat[aria-pressed="false"] .lever{transform:rotate(-30deg)}
 .bat:focus-visible{outline:1.5px solid var(--amber);outline-offset:4px}
 .sndlab{cursor:pointer}
+/* a switch whose feature isn't fitted yet is taped down at Off, the tape pencilled with what it waits for */
+.mod{position:relative}
+.taped .knob{cursor:default}
+.taped .knob .cap{opacity:.92}
+.tapedown{position:absolute;left:50%;top:41%;z-index:2;transform:translate(-22%,-50%) rotate(-7deg);pointer-events:none;filter:drop-shadow(0 1px 1.5px rgba(0,0,0,.7))}
+.tapedown b{display:block;width:7.2em;text-align:center;font-weight:400;font-family:var(--type);font-size:12.5px;line-height:1.2;color:#2b2926;text-shadow:0 0 .6px rgba(43,41,38,.55);padding:5px 6px 4px;
+  background:linear-gradient(#cbbc94,#d8cba6 45%,#c4b48b);clip-path:polygon(0 8%,3% 0,97% 4%,100% 0,98% 50%,100% 100%,96% 94%,4% 100%,0 92%,2% 50%)}
 
 /* drum bank */
 .bank{--dr:clamp(66px,min((100vw - 160px) / 12 - 8px,(100vh - 616px) / 3.24),128px);position:relative;z-index:1;margin:12px 16px 0;border-radius:3px;background:linear-gradient(#171816,#111210);box-shadow:inset 0 0 0 1px #000,inset 0 1px 0 rgba(255,255,255,.04),inset 0 10px 30px rgba(0,0,0,.4);padding:8px 18px 0 14px}
@@ -328,8 +335,8 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
   <header class="top">
     <span class="maker">Bombechat<small>airgapped build</small></span>
     <div class="rt">
-      <button class="bat" id="snd" aria-pressed="true" aria-label="Drum sound" title="The click of the drums as they turn. Click anywhere first to allow sound."><span class="lever"></span></button>
-      <label class="pl sndlab" for="snd">Drum sound</label>
+      <button class="bat" id="snd" aria-pressed="true" aria-label="Machine sound" title="The click of the drums as they turn and the plugs on the back panel. Click anywhere first to allow sound."><span class="lever"></span></button>
+      <label class="pl sndlab" for="snd">Machine sound</label>
       <span class="sep"></span>
       <span class="jewel" id="topjewel" aria-hidden="true"></span><span class="pl" id="toplisten">Listening by sound</span>
       <span class="pl" title="This build has no Bluetooth code in it, so there is no radio to switch on.">No radio fitted</span>
@@ -466,7 +473,9 @@ const ME=bridge.simulated?null:await bridge.machine();
 // the settings as the machine keeps them: its record is the only one, and this page never sends them back
 // if it cannot answer, the switches show Off and say they were not read: never the most permissive position
 let KEPT_READ=true;
-const KEPT=await bridge.settings().catch(()=>{KEPT_READ=false;return {sound:0,light:0}});
+const KEPT=await bridge.settings().catch(()=>{KEPT_READ=false;return {sound:0,light:0,machine:0}});
+// the settings this machine can't change yet: Light comes with light, so its switch is taped down at Off
+const NOTES=await bridge.settingNotes().catch(()=>({}));
 try{localStorage.removeItem('bombechat.settings')}catch(e){}
 // true while the page replays what happened before it opened: nothing animates
 let booting=true;
@@ -641,10 +650,13 @@ function drawKnob(id){const el=document.getElementById(id),k=KNOBS[id];let fl=''
   el.innerHTML=`<svg viewBox="-69 -51 138 96" aria-hidden="true"><defs><radialGradient id="kb${id}" cx="40%" cy="30%" r="80%"><stop offset="0" stop-color="#3b3935"/><stop offset=".6" stop-color="#1a1917"/><stop offset="1" stop-color="#0a0a09"/></radialGradient></defs>
   ${marks}<circle class="body" r="26" cy="3" fill="#000" opacity=".6"/><circle r="25.5" fill="url(#kb${id})"/>
   <g class="cap" style="transform:rotate(${ANG[k.pos]}deg)">${fl}<circle r="17" fill="#1d1c1a" stroke="rgba(0,0,0,.75)"/><circle r="17" fill="none" stroke="rgba(255,255,255,.07)" transform="translate(0,-.7)"/><rect x="-1.5" y="-24" width="3" height="12.5" rx="1.1" fill="#e9e3d2"/></g></svg>`;
-  el.setAttribute('aria-valuenow',k.pos);el.setAttribute('aria-valuetext',k.labels[k.pos].toLowerCase());el.title=k.read?`${k.name}: ${k.say[k.pos]}. Click or use the arrow keys to turn.`:`${k.name}: not read from the machine, shown at off. Click or use the arrow keys to turn.`}
+  el.setAttribute('aria-valuenow',k.pos);el.setAttribute('aria-valuetext',k.labels[k.pos].toLowerCase());el.title=k.held?`${k.name}: ${k.held}. Taped at ${k.labels[k.pos].toLowerCase()} until then.`:k.read?`${k.name}: ${k.say[k.pos]}. Click or use the arrow keys to turn.`:`${k.name}: not read from the machine, shown at off. Click or use the arrow keys to turn.`}
 // the switches and the back panel's Sound and Light rows are the same two settings, kept by the machine
 for(const k of Object.values(KNOBS)){const v=KEPT[k.setting];if(v>=0&&v<=2)k.pos=v;k.read=KEPT_READ}
-function turnKnob(id,pos){const k=KNOBS[id];pos=Math.max(0,Math.min(2,pos));if(pos===k.pos&&k.read)return;k.pos=pos;k.read=true;
+for(const [id,k] of Object.entries(KNOBS)){const n=NOTES[k.setting];if(!n)continue;k.held=n.note;k.pos=Number.isInteger(n.value)?n.value:0;k.read=true;
+  const el=document.getElementById(id),mod=el.closest('.mod');mod.classList.add('taped');el.setAttribute('aria-disabled','true');
+  const t=document.createElement('span');t.className='tapedown';t.id=id+'-tape';t.appendChild(document.createElement('b')).textContent=n.note;mod.appendChild(t);el.setAttribute('aria-describedby',t.id)}
+function turnKnob(id,pos){const k=KNOBS[id];if(k.held)return;pos=Math.max(0,Math.min(2,pos));if(pos===k.pos&&k.read)return;k.pos=pos;k.read=true;
   const cap=document.querySelector(`#${id} .cap`);cap.style.transform=`rotate(${ANG[pos]}deg)`;setTimeout(()=>drawKnob(id),RM.matches?0:330);
   Drum.spin(2,0.7);bridge.setSetting(k.setting,pos);applyChannels()}
 ['k1','k2'].forEach(id=>{drawKnob(id);const el=document.getElementById(id);
@@ -755,14 +767,14 @@ if(bridge.simulated)(function(){const svg=document.getElementById('menusvg');
    the 17.6 to 19.8 kHz band Bombechat listens on, and it is silent while a message
    is arriving by sound: the drums still turn, but the microphone hears nothing of them. */
 const Drum=(()=>{
-  const DUR=0.95;let ctx=null,out=null,noise=null,on=true;
+  const DUR=0.95;let ctx=null,out=null,noise=null,on=true,level=null,gain=0.9;
   function build(c){
     const comp=c.createDynamicsCompressor();comp.threshold.value=-20;comp.ratio.value=6;comp.attack.value=0.002;comp.release.value=0.12;
     let node=comp;for(let i=0;i<4;i++){const lp=c.createBiquadFilter();lp.type='lowpass';lp.frequency.value=7000;lp.Q.value=0.6;node.connect(lp);node=lp}
     const g=c.createGain();g.gain.value=0.9;node.connect(g);g.connect(c.destination);
     const b=c.createBuffer(1,Math.floor(c.sampleRate*0.04),c.sampleRate);const d=b.getChannelData(0);
     for(let i=0;i<d.length;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/d.length,2);
-    return {out:comp,noise:b};
+    return {out:comp,noise:b,level:g};
   }
   function click(c,o,nb,t,pitch,gain){
     const src=c.createBufferSource();src.buffer=nb;src.playbackRate.value=pitch;
@@ -785,7 +797,7 @@ const Drum=(()=>{
     clunk(c,o,nb,t0+DUR*(n>2?0.9:0.15),pitch);
     return clicks+1;
   }
-  function ensure(){if(!ctx){ctx=new (window.AudioContext||window.webkitAudioContext)();const b=build(ctx);out=b.out;noise=b.noise}if(ctx.state==='suspended')ctx.resume();}
+  function ensure(){if(!ctx){ctx=new (window.AudioContext||window.webkitAudioContext)();const b=build(ctx);out=b.out;noise=b.noise;level=b.level;level.gain.value=gain}if(ctx.state==='suspended')ctx.resume();}
   return {
     receiving:false,calls:0,sounds:0,
     // returns how many sounds it scheduled: none while receiving, switched off, or not yet allowed to play
@@ -793,13 +805,23 @@ const Drum=(()=>{
     arm(){if(on)ensure()},
     set(v){on=v;if(v)ensure()},
     get on(){return on},
+    // Machine volume: the gain after the low-pass filters, 1 to 5 as the plugs on the back panel use it, 5 as loud as ever
+    volume(v){gain=0.9*(.35+.16*v)/.99;if(ctx&&level)level.gain.value=gain},
+    get gain(){return gain},
     get running(){return !!ctx&&ctx.state==='running'},
     async render(n,pitch){const c=new OfflineAudioContext(1,48000*1.4,48000);const b=build(c);schedule(c,b.out,b.noise,0.05,n,pitch);return {buf:await c.startRendering(),n}}
   };
 })();
 addEventListener('pointerdown',()=>Drum.arm(),{once:true});
 addEventListener('keydown',()=>Drum.arm(),{once:true});
-document.getElementById('snd').addEventListener('click',e=>{const b=e.currentTarget;const v=b.getAttribute('aria-pressed')!=='true';b.setAttribute('aria-pressed',v);Drum.set(v)});
+// Machine sound and Machine volume are the machine's settings, the same two the back panel's Machine rows patch: the
+// lever shows what the machine keeps (off if it could not say), and moving it is a change the person made, so it is sent
+const sndLever=document.getElementById('snd');
+function machineSound(){const on=KEPT_READ&&KEPT.machine===1;sndLever.setAttribute('aria-pressed',on);Drum.set(on);
+  const v=KEPT.machvol;Drum.volume(Number.isInteger(v)&&v>=0&&v<=4?v:2)}
+machineSound();
+sndLever.addEventListener('click',()=>{const v=sndLever.getAttribute('aria-pressed')!=='true';sndLever.setAttribute('aria-pressed',v);Drum.set(v);
+  const was=KEPT.machine;KEPT.machine=v?1:0;Promise.resolve(bridge.setSetting('machine',KEPT.machine)).catch(()=>{KEPT.machine=was;machineSound()})});
 
 /* ---------- settings: turn the machine round ---------- */
 document.getElementById('settings').addEventListener('click',e=>{
@@ -810,7 +832,7 @@ document.getElementById('settings').addEventListener('click',e=>{
   setTimeout(()=>{location.href=href},650)});
 // back from the settings page by history: the switches may have moved there, so read them again from the machine
 addEventListener('pageshow',e=>{if(e.persisted){document.body.classList.remove('turning');document.getElementById('app').classList.remove('turning');
-  bridge.settings().then(k=>{Object.assign(KEPT,k);for(const [id,kn] of Object.entries(KNOBS)){const v=k[kn.setting];if(v>=0&&v<=2&&(v!==kn.pos||!kn.read)){kn.pos=v;kn.read=true;drawKnob(id)}}
+  bridge.settings().then(k=>{Object.assign(KEPT,k);KEPT_READ=true;machineSound();for(const [id,kn] of Object.entries(KNOBS)){if(kn.held)continue;const v=k[kn.setting];if(v>=0&&v<=2&&(v!==kn.pos||!kn.read)){kn.pos=v;kn.read=true;drawKnob(id)}}
     applyChannels();drawOutbox();vuTitle();outbox.forEach(status)},()=>{})}});
 
 /* ---------- ?audiotest: render one drum turn offline and report what it contains ---------- */
@@ -832,7 +854,7 @@ if(Q.has('audiotest'))(async()=>{
 const mirror={plain:document.getElementById('mirror-plain'),heard:document.getElementById('mirror-heard'),key:document.getElementById('mirror-key')};
 const rowText=r=>cells.slice(r*12,r*12+12).map(c=>c.wl.textContent).join('');
 window.__bank={rows:()=>({plain:rowText(0),heard:rowText(1),key:rowText(2)}),frame:()=>current&&{plain:current.plain,heard:current.heard,key:current.key,no:current.no},cells,ready:false,gl:false};
-window.__drum={spin:(n,p)=>Drum.spin(n,p),get receiving(){return Drum.receiving},get running(){return Drum.running},get calls(){return Drum.calls},get sounds(){return Drum.sounds}};
+window.__drum={spin:(n,p)=>Drum.spin(n,p),get on(){return Drum.on},get gain(){return Drum.gain},get receiving(){return Drum.receiving},get running(){return Drum.running},get calls(){return Drum.calls},get sounds(){return Drum.sounds}};
 function syncMirror(){const r=window.__bank.rows();if(mirror.plain.textContent!==r.plain)mirror.plain.textContent=r.plain.replace(/X/g,' ');mirror.heard.textContent=r.heard;mirror.key.textContent=r.key}
 
 /* ---------- the app: this machine and its contacts, nothing from the mockups ----------
