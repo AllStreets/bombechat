@@ -338,8 +338,39 @@ const url = q => 'http://127.0.0.1:4811/' + path.relative(ROOTDIR, page) + (q ? 
     lockNotice = { shown, after };
     await ctx.close();
   }
+  // a held press: on a row not yet opened, pressing a jack and holding it 60, 120 or 200 ms before letting go still
+  // plugs that jack (the row's description must not open under the pointer and push the jacks away mid-press)
+  // (the app's interface only: the frozen mockup keeps the old behaviour)
+  const heldPress = {};
+  for (const ms of APP ? [60, 120, 200] : []) {
+    const hp = await open(vp, 'still');
+    const row = '.row[data-id="machvol"]';
+    await hp.evaluate(r => document.querySelector(r).scrollIntoView({ block: 'center' }), row);
+    await hp.waitForTimeout(200);
+    const was = await hp.evaluate(() => window.__bc.get('machvol'));
+    const to = was === 0 ? 1 : 0;
+    const jb = await hp.locator(`${row} .jk[data-i="${to}"] i`).boundingBox();
+    await hp.mouse.move(jb.x + jb.width / 2, jb.y + jb.height / 2);
+    await hp.mouse.down(); await hp.waitForTimeout(ms); await hp.mouse.up();
+    await hp.waitForTimeout(400);
+    const now = await hp.evaluate(() => window.__bc.get('machvol'));
+    heldPress[ms] = { was, now };
+    if (now !== to) problems.push(`a press held ${ms} ms on a jack of an unopened row missed it: ${JSON.stringify({ was, now, to })}`);
+    await hp.context().close();
+  }
+  // keyboard focus still opens a row's description, as before
+  if (APP) {
+    const kp = await open(vp, 'still');
+    await kp.focus('.row[data-id="machvol"] .jk[aria-checked="true"]');
+    await kp.keyboard.press('Shift+Tab'); await kp.keyboard.press('Tab');
+    await kp.waitForTimeout(400);
+    const opened = await kp.evaluate(() => { const r = document.querySelector('.row[data-id="machvol"]'); return { focus: r.classList.contains('focus'), desc: r.querySelector('.desc').getBoundingClientRect().height }; });
+    heldPress.keyboard = opened;
+    if (!opened.focus || opened.desc < 10) problems.push(`keyboard focus no longer opens the row's description: ${JSON.stringify(opened)}`);
+    await kp.context().close();
+  }
   await browser.close();
-  console.log(JSON.stringify({ out, fps, results, keyboard: [before, after], atBoot, history, refused, band, lockNotice, problems }, null, 2));
+  console.log(JSON.stringify({ out, fps, results, keyboard: [before, after], atBoot, history, refused, band, lockNotice, heldPress, problems }, null, 2));
   server.close();
   process.exit(problems.length ? 1 : 0);
 })();

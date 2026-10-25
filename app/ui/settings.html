@@ -205,7 +205,9 @@ for(const g of GROUPS){
     sched.appendChild(r);rows[s.id]=r;
     r.addEventListener('mouseenter',()=>focusSetting(s.id,'hover'));
     r.addEventListener('mouseleave',()=>focusSetting(null,'hover'));
-    r.addEventListener('focusin',()=>{r.classList.add('focus');focusSetting(s.id,'focus')});
+    // the description opens on keyboard focus only: a press of the mouse focuses the jack too, and a description opening
+    // then would push the jacks down under the pointer before it lets go (a click lands, and opens it, as .active)
+    r.addEventListener('focusin',e=>{if(keyboardFocus(e.target))r.classList.add('focus');focusSetting(s.id,'focus')});
     r.addEventListener('focusout',()=>{r.classList.remove('focus')});
     r.querySelectorAll('.jk').forEach(b=>{
       b.addEventListener('click',()=>setValue(s.id,+b.dataset.i,'card'));
@@ -214,6 +216,7 @@ for(const g of GROUPS){
         e.preventDefault();setValue(s.id,i,'card');r.querySelectorAll('.jk')[i].focus()})});
   }
 }
+function keyboardFocus(el){try{return el.matches(':focus-visible')}catch(e){return true}}
 // a parked row's tape runs from its first jack to its last
 function tapeRows(){for(const s of SETTINGS){if(!s.parked)continue;const j=rows[s.id].querySelectorAll('.jk'),a=j[0].querySelector('i'),b=j[j.length-1].querySelector('i');
   rows[s.id].querySelector('.jacks').style.setProperty('--tape',(b.offsetLeft+b.offsetWidth+8)+'px')}}
