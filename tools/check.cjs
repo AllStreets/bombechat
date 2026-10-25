@@ -533,7 +533,9 @@ function measureText() {
       await uf.goto(url('still'));
       await uf.waitForSelector('.unlock input[name=who]');
       await uf.evaluate(() => document.fonts.ready);
-      const crop = async st => { const r = await uf.locator('.unlock .stand').boundingBox(); await uf.screenshot({ path: path.join(out, `unlock-${w}-${st}.png`), clip: { x: r.x - 12, y: r.y - 12, width: r.width + 24, height: r.height + 24 } }); };
+      // crops wait for everything but the key's turning wheels to come to rest
+      const settle = pg => pg.evaluate(() => Promise.all(document.getAnimations().filter(a => a.effect && a.effect.getComputedTiming().iterations !== Infinity).map(a => a.finished.catch(() => {}))));
+      const crop = async st => { await settle(uf); const r = await uf.locator('.unlock .stand').boundingBox(); await uf.screenshot({ path: path.join(out, `unlock-${w}-${st}.png`), clip: { x: r.x - 12, y: r.y - 12, width: r.width + 24, height: r.height + 24 } }); };
       const state = () => uf.evaluate(() => {
         const f = document.querySelector('.unlock'), e = f && f.querySelector('.err'), bad = f && f.querySelector('.row.bad input');
         const labels = f ? [...f.querySelectorAll('input')].map(i => i.labels.length ? i.labels[0].textContent.trim() : '') : [];
@@ -555,10 +557,18 @@ function measureText() {
       check(JSON.stringify(order) === JSON.stringify(['who', 'pass', 'again', 'Lock and open']), 'Tab order', order);
       await uf.focus('.unlock input[name=who]');
       await crop('firstrun');
-      // Enter with no name: refused under the name
+      // Enter with no name: refused under the name, and refused again (said again) on a second Enter
+      const turnAt = () => uf.evaluate(() => ['.turn .jewel', '.turn .odo'].map(q => Math.round(document.querySelector('.unlock ' + q).getBoundingClientRect().left)));
+      const restAt = await turnAt();
+      await uf.evaluate(() => { window.__said = []; new MutationObserver(() => { const e = document.querySelector('.unlock .err'); if (e && e.textContent) window.__said.push(e.textContent); }).observe(document.querySelector('.unlock .card'), { childList: true, subtree: true, characterData: true }); });
+      await uf.keyboard.press('Enter');
       await uf.keyboard.press('Enter');
       st = await state();
       check(st.err === 'Write your name.' && st.bad === 'who' && st.alert === 'alert' && st.invalid === 'true' && st.focus === 'who', 'no name should be refused under the name', st);
+      const said = await uf.evaluate(() => window.__said);
+      check(said.length === 2 && said.every(t => t === 'Write your name.'), 'the same refusal twice should be said twice', said);
+      const errShown = await uf.evaluate(() => { const e = document.querySelector('.unlock .err'); return getComputedStyle(e).display; });
+      check(errShown !== 'none', 'the refusal region should stay rendered', errShown);
       await crop('no-name');
       await uf.keyboard.type('Ana Lima'); await uf.keyboard.press('Enter');
       st = await state();
@@ -573,6 +583,8 @@ function measureText() {
       await uf.waitForTimeout(450);
       st = await state();
       check(st.working && st.status === 'Locking' && st.err === '' && st.turning === 'wheel', 'the key should be worked out with the stamp down', st);
+      const workAt = await turnAt();
+      check(JSON.stringify(workAt) === JSON.stringify(restAt), 'the lamp and counter moved when the plate changed', { restAt, workAt });
       await crop('locking');
       await uf.waitForFunction(() => !document.querySelector('.unlock'), null, { timeout: 10000 });
       const sent = await uf.evaluate(() => __calls.filter(c => c[0] === 'unlock').map(c => c[1]));
@@ -587,12 +599,15 @@ function measureText() {
       await lr.goto(url('still'));
       await lr.waitForSelector('.unlock input[name=pass]');
       await lr.evaluate(() => document.fonts.ready);
-      const lcrop = async st2 => { const r = await lr.locator('.unlock .stand').boundingBox(); await lr.screenshot({ path: path.join(out, `unlock-${w}-${st2}.png`), clip: { x: r.x - 12, y: r.y - 12, width: r.width + 24, height: r.height + 24 } }); };
-      const later = await lr.evaluate(() => ({ fields: [...document.querySelectorAll('.unlock input')].map(i => i.name), focus: document.activeElement.name, head: document.querySelector('.unlock h2').textContent }));
-      if (JSON.stringify(later) !== JSON.stringify({ fields: ['pass'], focus: 'pass', head: 'Unlocking' })) problems.push(`unlock form ${w}: a later run should ask the passphrase once: ${JSON.stringify(later)}`);
+      const lcrop = async st2 => { await settle(lr); const r = await lr.locator('.unlock .stand').boundingBox(); await lr.screenshot({ path: path.join(out, `unlock-${w}-${st2}.png`), clip: { x: r.x - 12, y: r.y - 12, width: r.width + 24, height: r.height + 24 } }); };
+      const later = await lr.evaluate(() => ({ fields: [...document.querySelectorAll('.unlock input')].map(i => i.name), focus: document.activeElement.name, head: document.querySelector('.unlock h2').textContent,
+        numbered: !!document.querySelector('.unlock ol') }));
+      if (JSON.stringify(later) !== JSON.stringify({ fields: ['pass'], focus: 'pass', head: 'Unlock', numbered: false })) problems.push(`unlock form ${w}: a later run should ask the passphrase once: ${JSON.stringify(later)}`);
       await lcrop('unlock');
       await lr.keyboard.type('wrong horse'); await lr.keyboard.press('Enter');
       await lr.waitForTimeout(300);
+      const opening = await lr.evaluate(() => document.querySelector('.unlock h2').textContent);
+      if (opening !== 'Unlocking') problems.push(`unlock form ${w}: the heading while working is ${opening}`);
       await lcrop('opening');
       await lr.waitForFunction(() => !document.querySelector('.unlock.working'), null, { timeout: 10000 });
       const wrongShown = await lr.evaluate(() => ({ err: document.querySelector('.unlock .err').textContent, bad: (document.querySelector('.unlock .row.bad input') || {}).name, focus: document.activeElement.name,

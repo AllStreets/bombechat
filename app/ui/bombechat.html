@@ -50,24 +50,27 @@ body:has(>.unlock){perspective:none;overflow:hidden;height:100vh}
 /* each field a row of the form: printed label left of a green rule, the typing on the right */
 .unlock .row{position:relative;display:grid;grid-template-columns:118px minmax(0,1fr);border-bottom:1px solid var(--green-ink);min-height:50px}
 .unlock .row label{font-family:var(--print);font-size:13px;line-height:1.25;color:var(--green-ink);padding:8px 10px 8px 0;border-right:1px solid rgba(47,90,75,.5);cursor:text}
-.unlock .row label small{display:block;font-size:12px;color:#4f6f61;margin-top:2px}
+.unlock .row label small{display:block;font-size:12px;color:#3f5f53;margin-top:2px}
 .unlock .row .f{display:flex;flex-direction:column;justify-content:flex-end;padding-left:12px;min-width:0}
 .unlock .ln{position:relative;display:block}
 .unlock input{all:unset;box-sizing:border-box;display:block;width:100%;font-family:var(--type);font-size:15px;line-height:20px;color:#2a2620;text-shadow:0 0 .7px rgba(42,38,32,.6);caret-color:#1c1a16;padding:14px 0 6px;letter-spacing:.02em}
 .unlock input[type=password]{letter-spacing:.16em}
 .unlock input:disabled{color:#5c5446}
 /* the row being typed in: the drum's index mark points at its line, and its rule is inked twice as heavy */
-.unlock .ln::before{content:"";position:absolute;left:-12px;bottom:10px;width:0;height:0;border-top:4.5px solid transparent;border-bottom:4.5px solid transparent;border-left:7px solid var(--green-ink);opacity:0;transition:opacity .12s}
+.unlock .ln::before{content:"";position:absolute;left:-12px;bottom:10px;width:0;height:0;border-top:4.5px solid transparent;border-bottom:4.5px solid transparent;border-left:7px solid var(--green-ink);opacity:0}
 .unlock .row:focus-within .ln::before{opacity:1}
 .unlock .row:focus-within::after{content:"";position:absolute;left:0;right:0;bottom:-2px;height:1px;background:var(--green-ink)}
 .unlock .row.bad:focus-within{border-bottom-color:#8a2a22}
 .unlock .row.bad:focus-within::after{background:#8a2a22}
 .unlock input::selection{background:rgba(47,90,75,.16);color:#1c1a16}
 /* a field the machine refused: its label in red ink, the reason typed under it in red */
-.unlock .row.bad label{color:#8a2a22}
+.unlock .row.bad label,.unlock .row.bad label small{color:#8a2a22}
 .unlock .row.bad .ln::before{border-left-color:#8a2a22}
-.unlock .err{font-family:var(--type);font-size:12.5px;line-height:1.3;color:#8a2a22;padding:0 0 7px}
-.unlock .err:empty{display:none}
+/* the reason is printed, not typed: set in the form's face under a dotted red line that marks where the typing ends */
+.unlock .row.bad .ln{border-bottom:1px dotted rgba(138,42,34,.75)}
+.unlock .err{font-family:var(--print);font-size:12.5px;line-height:1.3;color:#8a2a22}
+.unlock .err:not(:empty){padding:5px 0 7px}
+.unlock .ins{font-family:var(--print);font-size:12.5px;line-height:1.45;color:var(--green-ink)}
 .unlock .ft{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:16px;align-items:end;padding-top:11px}
 .unlock ol{list-style:none;font-family:var(--print);font-size:12.5px;line-height:1.45;color:var(--green-ink)}
 .unlock ol li{display:grid;grid-template-columns:17px 1fr}
@@ -80,6 +83,8 @@ body:has(>.unlock){perspective:none;overflow:hidden;height:100vh}
    run through the alphabet like the drums, stopping one after another when the store is open */
 .unlock .turn{display:flex;align-items:center;gap:10px;opacity:.55;transition:opacity .2s}
 .unlock .turn .jewel{width:10px;height:10px}
+/* the plate is cut wide enough for its longest words, so nothing beside it moves when they change */
+.unlock .turn .pl{width:172px;justify-content:center}
 .unlock.working .turn{opacity:1}
 .unlock .turn .odo i{overflow:hidden;position:relative}
 .unlock .turn .odo i span{position:absolute;left:0;right:0;top:0;display:flex;flex-direction:column;align-items:center}
@@ -509,11 +514,11 @@ function askPassphrase(first){return new Promise(done=>{
   f.innerHTML=`<div class="stand">
     <span class="maker" aria-hidden="true">Bombechat<small>airgapped build</small></span>
     <div class="card" role="dialog" aria-modal="true" aria-labelledby="unlock-h">
-      <div class="rh"><h2 id="unlock-h">${first?'Registration':'Unlocking'}</h2><span>For this laptop</span></div>
+      <div class="rh"><h2 id="unlock-h">${first?'Registration':'Unlock'}</h2><span>For this laptop</span></div>
       ${first?row('who','Your name','as people you pair with see it','text','name'):''}
       ${row('pass','Passphrase','','password',first?'new-password':'current-password')}
       ${first?row('again','Again','to check it','password','new-password'):''}
-      <div class="ft"><ol>${first?'<li><span>1.</span>The passphrase locks the contacts and messages on this laptop.</li><li><span>2.</span>Nobody can recover it for you.</li>':'<li><span>1.</span>The passphrase chosen at registration.</li>'}</ol>
+      <div class="ft">${first?'<ol><li><span>1.</span>The passphrase locks the contacts and messages on this laptop.</li><li><span>2.</span>Nobody can recover it for you.</li></ol>':'<p class="ins">Write the passphrase chosen at registration.</p>'}
         <button class="rs" type="submit">${first?'Lock and open':'Open'}</button></div>
       <p class="err" id="unlock-err" role="alert"></p>
       <p class="sr" role="status" aria-live="polite"></p>
@@ -529,9 +534,11 @@ function askPassphrase(first){return new Promise(done=>{
   const refuse=(field,why)=>{clear();
     const r=field.closest('.row');r.classList.add('bad');r.querySelector('.f').appendChild(err);
     field.setAttribute('aria-invalid','true');field.setAttribute('aria-describedby','unlock-err');
-    err.textContent=why;field.focus();if(field.type==='password')field.select()};
+    // cleared, then written after: the same reason a second time is still a change, and is said again
+    queueMicrotask(()=>{err.textContent=why});field.focus();if(field.type==='password')field.select()};
   const working=on=>{f.classList.toggle('working',on);jewel.classList.toggle('off',!on);
     plate.textContent=on?'Working out the key':'Key';
+    if(!first)f.querySelector('h2').textContent=on?'Unlocking':'Unlock';
     if(on)btn.setAttribute('aria-disabled','true');else btn.removeAttribute('aria-disabled');
     for(const i of f.querySelectorAll('input'))i.readOnly=on;
     said.textContent=on?(first?'Locking':'Opening'):''};
