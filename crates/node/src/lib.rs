@@ -71,7 +71,7 @@ use bombechat_core::{
     Identity, Kind, Opened, PublicIdentity, CHUNK, MAX_ENVELOPE,
 };
 use bombechat_modem::{split, Event, Reassembler};
-use bombechat_store::{Channel, Contact, ContactId, Store, StoredMessage};
+use bombechat_store::{Channel, Contact, ContactId, Delivery, Store, StoredMessage};
 use rand_core::{OsRng, RngCore};
 
 pub use sound::{SoundTransport, MAX_QUEUED_ENVELOPES, QUEUE_FULL};
@@ -486,6 +486,7 @@ impl Node {
             channel,
             at_min: now,
             heard: false,
+            delivery: Delivery::Sent,
         };
         if store.put_message(&stored).is_err() {
             return NOT_SENT;
@@ -862,6 +863,7 @@ impl Node {
             channel: self.channel(ti),
             at_min: now,
             heard: false,
+            delivery: Delivery::Sent,
         };
         if store.put_message(&message).is_err() {
             return;

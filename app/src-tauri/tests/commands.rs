@@ -10,7 +10,7 @@ use std::time::Duration;
 use bombechat_app::commands::{self, bridge_event, Lock, Machine, Opened, Shared, Unlocking};
 use bombechat_core::{safety_number, ChunkView, PublicIdentity};
 use bombechat_node::{NodeEvent, OutboxState, NOT_SENT, NOT_STORED};
-use bombechat_store::{Channel, Contact, ContactId, StoredMessage};
+use bombechat_store::{Channel, Contact, ContactId, Delivery, StoredMessage};
 use serde_json::json;
 
 /// What the fake was asked to do.
@@ -75,6 +75,7 @@ fn stored(text: &str) -> StoredMessage {
         channel: Channel::Sound,
         at_min: 29_000_000,
         heard: false,
+        delivery: Delivery::Sent,
     }
 }
 
@@ -507,6 +508,7 @@ fn node_events_become_the_bridge_events_with_the_payloads_bridge_js_expects() {
         channel: Channel::Sound,
         at_min: 29_000_000,
         heard: false,
+        delivery: Delivery::Sent,
     });
     assert_eq!(
         bridge_event(&message),

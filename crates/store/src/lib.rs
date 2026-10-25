@@ -52,8 +52,26 @@ CREATE TABLE messages (
     text TEXT NOT NULL,
     channel INTEGER NOT NULL,
     at_min INTEGER NOT NULL,
-    heard INTEGER NOT NULL
+    heard INTEGER NOT NULL,
+    delivery INTEGER NOT NULL DEFAULT 1,
+    envelope BLOB
 );
+PRAGMA user_version = 1;
+";
+
+/// The schema version [`SCHEMA`] makes, kept in `PRAGMA user_version`.
+/// Version 0 is the first schema, before messages kept their delivery.
+const SCHEMA_VERSION: i64 = 1;
+
+/// Brings a version 0 store up to version 1: outgoing messages gain a
+/// delivery state and, while waiting, their sealed envelope. Rows from
+/// before are taken as sent, as the store showed them then.
+const MIGRATE_TO_1: &str = "
+BEGIN;
+ALTER TABLE messages ADD COLUMN delivery INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE messages ADD COLUMN envelope BLOB;
+PRAGMA user_version = 1;
+COMMIT;
 ";
 
 /// The transport a message traveled over.
@@ -83,6 +101,45 @@ impl Channel {
     }
 }
 
+/// How far an outgoing message got. Messages received are stored as
+/// [`Delivery::Sent`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Delivery {
+    /// Queued to go out, not yet finished playing.
+    Waiting,
+    /// Every frame went out.
+    Sent,
+    /// It will not go out.
+    Failed,
+}
+
+impl Delivery {
+    fn to_i64(self) -> i64 {
+        match self {
+            Delivery::Waiting => 0,
+            Delivery::Sent => 1,
+            Delivery::Failed => 2,
+        }
+    }
+
+    fn from_i64(v: i64) -> Delivery {
+        match v {
+            0 => Delivery::Waiting,
+            2 => Delivery::Failed,
+            _ => Delivery::Sent,
+        }
+    }
+
+    /// As the interface names it: "waiting", "sent" or "failed".
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Delivery::Waiting => "waiting",
+            Delivery::Sent => "sent",
+            Delivery::Failed => "failed",
+        }
+    }
+}
+
 /// A contact's local row identifier. Stable for the lifetime of the store.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ContactId(pub i64);
@@ -107,6 +164,7 @@ pub struct StoredMessage {
     pub channel: Channel,
     pub at_min: u32,
     pub heard: bool,
+    pub delivery: Delivery,
 }
 
 /// Errors returned by [`Store`] operations.
@@ -197,6 +255,7 @@ impl Store {
         key_connection(&conn, &key)?;
         verify_key(&conn)?;
         verify_identity_present(&conn)?;
+        migrate(&conn)?;
 
         Ok(Store {
             conn: Mutex::new(conn),
@@ -272,17 +331,32 @@ impl Store {
 
     /// Insert or update (by id) a message.
     pub fn put_message(&self, m: &StoredMessage) -> Result<(), StoreError> {
+        self.put(m, None)
+    }
+
+    /// Insert or update (by id) an outgoing message with the sealed
+    /// envelope that carries it, kept while it is [`Delivery::Waiting`] so
+    /// it can be queued again after a restart ([`Store::waiting`]).
+    pub fn put_outgoing(&self, m: &StoredMessage, envelope: &[u8]) -> Result<(), StoreError> {
+        self.put(m, Some(envelope))
+    }
+
+    fn put(&self, m: &StoredMessage, envelope: Option<&[u8]>) -> Result<(), StoreError> {
         let conn = self.conn.lock().expect("store mutex poisoned");
+        let envelope = envelope.filter(|_| m.delivery == Delivery::Waiting);
         conn.execute(
-            "INSERT INTO messages (id, contact_id, outgoing, text, channel, at_min, heard)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "INSERT INTO messages
+                 (id, contact_id, outgoing, text, channel, at_min, heard, delivery, envelope)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(id) DO UPDATE SET
                  contact_id = excluded.contact_id,
                  outgoing = excluded.outgoing,
                  text = excluded.text,
                  channel = excluded.channel,
                  at_min = excluded.at_min,
-                 heard = excluded.heard",
+                 heard = excluded.heard,
+                 delivery = excluded.delivery,
+                 envelope = excluded.envelope",
             params![
                 m.id.as_slice(),
                 m.contact.0,
@@ -291,10 +365,51 @@ impl Store {
                 m.channel.to_i64(),
                 m.at_min,
                 m.heard as i64,
+                m.delivery.to_i64(),
+                envelope,
             ],
         )
         .map_err(|_| StoreError::Corrupt)?;
         Ok(())
+    }
+
+    /// Record how far a message's delivery got. Once it is no longer
+    /// waiting its envelope is let go. Unknown ids are ignored.
+    pub fn set_delivery(&self, id: &[u8; 16], delivery: Delivery) -> Result<(), StoreError> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        conn.execute(
+            "UPDATE messages SET delivery = ?1,
+                 envelope = CASE WHEN ?1 = 0 THEN envelope ELSE NULL END
+             WHERE id = ?2",
+            params![delivery.to_i64(), id.as_slice()],
+        )
+        .map_err(|_| StoreError::Corrupt)?;
+        Ok(())
+    }
+
+    /// Outgoing messages still waiting to go out, oldest first, each with
+    /// the sealed envelope that carries it.
+    pub fn waiting(&self) -> Vec<(StoredMessage, Vec<u8>)> {
+        let ids: Vec<(Vec<u8>, Vec<u8>)> = {
+            let conn = self.conn.lock().expect("store mutex poisoned");
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, envelope FROM messages
+                     WHERE outgoing = 1 AND delivery = 0 AND envelope IS NOT NULL
+                     ORDER BY rowid",
+                )
+                .expect("preparing waiting query");
+            let rows = stmt
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .expect("querying waiting");
+            rows.map(|r| r.expect("reading waiting row")).collect()
+        };
+        ids.into_iter()
+            .filter_map(|(id, envelope)| {
+                let id: [u8; 16] = id.try_into().ok()?;
+                Some((self.message(&id)?, envelope))
+            })
+            .collect()
     }
 
     /// All messages exchanged with `c`, in the order they were first stored.
@@ -302,7 +417,7 @@ impl Store {
         let conn = self.conn.lock().expect("store mutex poisoned");
         let mut stmt = conn
             .prepare(
-                "SELECT id, contact_id, outgoing, text, channel, at_min, heard
+                "SELECT id, contact_id, outgoing, text, channel, at_min, heard, delivery
                  FROM messages WHERE contact_id = ?1 ORDER BY rowid",
             )
             .expect("preparing conversation query");
@@ -312,6 +427,7 @@ impl Store {
                 let outgoing: i64 = row.get(2)?;
                 let channel: i64 = row.get(4)?;
                 let heard: i64 = row.get(6)?;
+                let delivery: i64 = row.get(7)?;
                 Ok((
                     id,
                     row.get::<_, i64>(1)?,
@@ -320,12 +436,13 @@ impl Store {
                     channel,
                     row.get::<_, u32>(5)?,
                     heard,
+                    delivery,
                 ))
             })
             .expect("querying conversation");
 
         rows.map(|r| r.expect("reading message row"))
-            .map(|(id, contact, outgoing, text, channel, at_min, heard)| StoredMessage {
+            .map(|(id, contact, outgoing, text, channel, at_min, heard, delivery)| StoredMessage {
                 id: id.try_into().expect("message id is 16 bytes"),
                 contact: ContactId(contact),
                 outgoing: outgoing != 0,
@@ -333,6 +450,7 @@ impl Store {
                 channel: Channel::from_i64(channel).expect("valid channel"),
                 at_min,
                 heard: heard != 0,
+                delivery: Delivery::from_i64(delivery),
             })
             .collect()
     }
@@ -458,6 +576,22 @@ fn verify_identity_present(conn: &Connection) -> Result<(), StoreError> {
     row.map(|_| ()).ok_or(StoreError::Corrupt)
 }
 
+/// Bring a store made by an earlier version of this crate up to
+/// [`SCHEMA_VERSION`], in one transaction.
+fn migrate(conn: &Connection) -> Result<(), StoreError> {
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(|_| StoreError::Corrupt)?;
+    if version > SCHEMA_VERSION {
+        return Err(StoreError::Corrupt);
+    }
+    if version < 1 && conn.execute_batch(MIGRATE_TO_1).is_err() {
+        let _ = conn.execute_batch("ROLLBACK;");
+        return Err(StoreError::Corrupt);
+    }
+    Ok(())
+}
+
 /// Open an already-existing database file for read/write without SQLite's
 /// implicit `CREATE`, so a missing file reliably surfaces as
 /// [`StoreError::Io`] instead of silently starting a new, empty, unkeyed
@@ -567,5 +701,64 @@ impl Drop for CreateGuard {
             let _ = std::fs::remove_file(&self.db_path);
             let _ = std::fs::remove_file(&self.salt_path);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The first schema, as stores made before delivery states have it.
+    const SCHEMA_0: &str = "
+    CREATE TABLE identity (id INTEGER PRIMARY KEY CHECK (id = 0), secret BLOB NOT NULL, name TEXT NOT NULL);
+    CREATE TABLE contacts (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, sign BLOB NOT NULL,
+        dh BLOB NOT NULL, checked INTEGER NOT NULL);
+    CREATE TABLE messages (id BLOB PRIMARY KEY, contact_id INTEGER NOT NULL REFERENCES contacts(id),
+        outgoing INTEGER NOT NULL, text TEXT NOT NULL, channel INTEGER NOT NULL, at_min INTEGER NOT NULL,
+        heard INTEGER NOT NULL);
+    ";
+
+    #[test]
+    fn a_store_from_before_delivery_states_opens_and_takes_its_messages_as_sent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("old.db");
+        let me = Identity::generate();
+        let them = Identity::generate().public();
+        {
+            let salt = random_salt();
+            write_salt_sidecar(&path, &salt).unwrap();
+            create_private_db_file(&path).unwrap();
+            let conn = open_existing(&path).unwrap();
+            key_connection(&conn, &derive_key("pw", &salt).unwrap()).unwrap();
+            conn.execute_batch(SCHEMA_0).unwrap();
+            store_identity(&conn, &me, "me").unwrap();
+            conn.execute(
+                "INSERT INTO contacts (name, sign, dh, checked) VALUES ('Marisol', ?1, ?2, 1)",
+                params![them.sign.as_slice(), them.dh.as_slice()],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO messages VALUES (?1, 1, 1, 'Bring water.', 0, 5, 0)",
+                params![[7u8; 16].as_slice()],
+            )
+            .unwrap();
+        }
+
+        let store = Store::open(&path, "pw").unwrap();
+        let old = store.message(&[7u8; 16]).unwrap();
+        assert_eq!((old.text.as_str(), old.delivery), ("Bring water.", Delivery::Sent));
+        assert!(store.waiting().is_empty());
+        let new = StoredMessage {
+            id: [8u8; 16],
+            delivery: Delivery::Waiting,
+            ..old
+        };
+        store.put_outgoing(&new, b"sealed").unwrap();
+        assert_eq!(store.waiting(), vec![(new, b"sealed".to_vec())]);
+        drop(store);
+
+        // Opening it again does not migrate twice.
+        let store = Store::open(&path, "pw").unwrap();
+        assert_eq!(store.waiting().len(), 1);
     }
 }

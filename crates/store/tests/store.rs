@@ -1,5 +1,5 @@
 use bombechat_core::{Identity, PublicIdentity};
-use bombechat_store::{Channel, Contact, Store, StoreError, StoredMessage};
+use bombechat_store::{Channel, Contact, Delivery, Store, StoreError, StoredMessage};
 use tempfile::tempdir;
 
 fn marisol() -> PublicIdentity {
@@ -42,6 +42,7 @@ fn nothing_readable_on_disk() {
             channel: Channel::Sound,
             at_min: 1,
             heard: false,
+            delivery: Delivery::Sent,
         })
         .unwrap();
 
@@ -128,6 +129,7 @@ fn reopen_keeps_contacts_and_messages() {
                 channel: Channel::Sound,
                 at_min: 1,
                 heard: false,
+                delivery: Delivery::Sent,
             })
             .unwrap();
         store
@@ -139,6 +141,7 @@ fn reopen_keeps_contacts_and_messages() {
                 channel: Channel::Light,
                 at_min: 2,
                 heard: true,
+                delivery: Delivery::Sent,
             })
             .unwrap();
         contact
@@ -188,6 +191,7 @@ fn has_message_and_mark_heard() {
             channel: Channel::Bluetooth,
             at_min: 3,
             heard: false,
+            delivery: Delivery::Sent,
         })
         .unwrap();
     assert!(store.has_message(&id));
@@ -215,6 +219,7 @@ fn put_message_with_existing_id_upserts() {
             channel: Channel::Sound,
             at_min: 1,
             heard: false,
+            delivery: Delivery::Sent,
         })
         .unwrap();
     store
@@ -226,6 +231,7 @@ fn put_message_with_existing_id_upserts() {
             channel: Channel::Sound,
             at_min: 1,
             heard: true,
+            delivery: Delivery::Sent,
         })
         .unwrap();
 
@@ -366,8 +372,40 @@ fn message_by_id() {
         channel: Channel::Sound,
         at_min: 7,
         heard: false,
+        delivery: Delivery::Sent,
     };
     store.put_message(&m).unwrap();
     assert_eq!(store.message(&[3u8; 16]), Some(m));
     assert_eq!(store.message(&[4u8; 16]), None);
+}
+
+#[test]
+fn an_outgoing_message_keeps_where_its_delivery_got_to() {
+    let d = tempdir().unwrap();
+    let path = d.path().join("b.db");
+    let store = Store::create(&path, "pw", &Identity::generate(), "me").unwrap();
+    let c = store.add_contact("Marisol", &marisol(), true).unwrap();
+    let m = StoredMessage {
+        id: [5u8; 16],
+        contact: c,
+        outgoing: true,
+        text: "Bring water.".into(),
+        channel: Channel::Sound,
+        at_min: 3,
+        heard: false,
+        delivery: Delivery::Waiting,
+    };
+    store.put_outgoing(&m, b"sealed envelope").unwrap();
+    assert_eq!(store.waiting(), vec![(m.clone(), b"sealed envelope".to_vec())]);
+    drop(store);
+
+    let store = Store::open(&path, "pw").unwrap();
+    assert_eq!(store.waiting().len(), 1, "still waiting after a restart");
+    assert_eq!(store.conversation(c)[0].delivery, Delivery::Waiting);
+    store.set_delivery(&[5u8; 16], Delivery::Sent).unwrap();
+    assert!(store.waiting().is_empty());
+    assert_eq!(store.message(&[5u8; 16]).unwrap().delivery, Delivery::Sent);
+    store.set_delivery(&[5u8; 16], Delivery::Failed).unwrap();
+    assert_eq!(store.message(&[5u8; 16]).unwrap().delivery, Delivery::Failed);
+    assert_eq!(Delivery::Failed.as_str(), "failed");
 }
