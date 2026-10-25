@@ -24,4 +24,4 @@ pub use decode::{read, read_within, ReadOutcome, Reader, DEFAULT_BUDGET};
 #[cfg(feature = "fake-camera")]
 pub use fake::FakeCamera;
 pub use fountain::{encode, Collector, Encoder, LightEvent};
-pub use render::{geometry, read_clean, render, Geometry};
+pub use render::{geometry, grid_bits, read_clean, render, render_bits, Geometry};

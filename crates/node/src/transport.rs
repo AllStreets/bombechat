@@ -33,6 +33,30 @@ pub enum TransportEvent {
     /// it (a full queue) or could not play it. Reported once, instead of
     /// [`TransportEvent::Sent`].
     Dropped(u16),
+    /// The envelope under this tag stopped going out part way, and will
+    /// carry on when the carrier may send again (for light, the screen
+    /// was cleared). [`TransportEvent::Playing`] follows when it does.
+    Waiting(u16),
+    /// Part of the envelope under this tag has arrived, but none of its
+    /// frames can be handed over yet (light collects whole envelopes).
+    /// Reported once, until it completes (as [`TransportEvent::Frame`]s)
+    /// or is given up ([`TransportEvent::Abandoned`]).
+    Arriving(u16),
+    /// The envelope under this tag, reported arriving, stopped arriving
+    /// and was given up.
+    Abandoned(u16),
+    /// Light: put this code frame on screen now, in place of the last.
+    /// `bits` is the whole grid of preset `spec` (0 slow, 1 normal, 2
+    /// fast), packed as `bombechat_light::grid_bits` packs it; `index`
+    /// counts the frames of envelope `tag` shown so far.
+    Display {
+        tag: u16,
+        index: u32,
+        spec: u8,
+        bits: Vec<u8>,
+    },
+    /// Light: clear the screen; nothing is being shown.
+    DisplayStopped,
 }
 
 /// A carrier for on-air frames.
@@ -63,6 +87,11 @@ pub trait Transport: Send {
     /// Whether frames may go out. Off, queued frames wait (they are not
     /// dropped) until it is on again. On by default.
     fn set_sending(&mut self, _on: bool) {}
+
+    /// Everyone the envelope under `tag` was for reports having it: stop
+    /// sending it. A carrier that keeps sending until told (light) reports
+    /// it [`TransportEvent::Sent`]; others ignore this.
+    fn delivered(&mut self, _tag: u16) {}
 
     /// For sound: play only while the room is quieter than `db`.
     fn set_send_under(&mut self, _db: f32) {}

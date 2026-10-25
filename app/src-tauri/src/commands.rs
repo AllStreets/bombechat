@@ -670,5 +670,17 @@ pub fn bridge_event(e: &NodeEvent) -> (&'static str, Value) {
             "outbox",
             json!({ "id": id.to_vec(), "state": state.as_str() }),
         ),
+        // Light code frames for the flashing view (wired into the page in
+        // Plan 2 Task 5): public code bits only, never key material.
+        NodeEvent::Display {
+            tag,
+            bits,
+            spec_id,
+            index,
+        } => (
+            "display",
+            json!({ "tag": tag, "bits": bits, "spec": spec_id, "index": index }),
+        ),
+        NodeEvent::DisplayStopped => ("displayStopped", Value::Null),
     }
 }

@@ -52,6 +52,12 @@ impl FakeCamera {
         }
     }
 
+    /// Add `picture` to the end of the script, for a test that makes
+    /// pictures as it goes (a screen another node is drawing on).
+    pub fn add(&self, picture: GrayImage) {
+        lock(&self.pictures).push_back(picture);
+    }
+
     /// Show the next picture to the running sink. False, showing nothing,
     /// if the camera is not running or the script has run out. A picture
     /// shown while stopped is not used up.

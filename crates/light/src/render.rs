@@ -3,7 +3,9 @@
 //! [`render`] draws the grid described in [`crate::code`] inside its
 //! light quiet zone, square, `px` pixels a side. Cells are whole pixels;
 //! any pixels left over are split evenly into extra quiet zone, so the
-//! grid stays centred. [`read_clean`] is the exact inverse for an image
+//! grid stays centred. [`grid_bits`] packs the same grid for a page
+//! that draws it itself, and [`render_bits`] draws such packed bits.
+//! [`read_clean`] is the exact inverse for an image
 //! straight out of [`render`]; reading a camera picture is the detector's
 //! job.
 
@@ -58,6 +60,20 @@ pub fn geometry(spec: &CodeSpec, px: u32) -> Geometry {
 /// Panics if `spec` is not a preset, `frame` is not exactly
 /// `spec.frame_bytes()` long, or `px` is too small (see [`geometry`]).
 pub fn render(spec: &CodeSpec, frame: &[u8], px: u32) -> GrayImage {
+    render_bits(spec, &grid_bits(spec, frame), px)
+}
+
+/// The whole grid `frame` is drawn as, packed for whoever draws it: one
+/// bit a cell, dark 1, row-major from the top left, most significant bit
+/// first, `cells * cells` bits rounded up to whole bytes (the spare bits
+/// of the last byte are 0). Balance cells are filled in, so drawing these
+/// bits is all there is to drawing the frame; [`render_bits`] does it.
+///
+/// # Panics
+///
+/// Panics if `spec` is not a preset or `frame` is not exactly
+/// `spec.frame_bytes()` long.
+pub fn grid_bits(spec: &CodeSpec, frame: &[u8]) -> Vec<u8> {
     assert!(spec.is_valid(), "{spec:?} is not a light code preset");
     assert_eq!(
         frame.len(),
@@ -66,11 +82,34 @@ pub fn render(spec: &CodeSpec, frame: &[u8], px: u32) -> GrayImage {
         frame.len(),
         spec.frame_bytes()
     );
-    let g = geometry(spec, px);
     let grid = Layout::new(spec).grid(frame);
-    let n = spec.cells as usize;
-    let mut img = GrayImage::from_pixel(px, px, Luma([LIGHT]));
+    let mut bits = vec![0u8; grid.len().div_ceil(8)];
     for (i, _) in grid.iter().enumerate().filter(|(_, &dark)| dark) {
+        bits[i / 8] |= 0x80 >> (i % 8);
+    }
+    bits
+}
+
+/// Draw a grid packed by [`grid_bits`] as a square image `px` pixels a
+/// side.
+///
+/// # Panics
+///
+/// Panics if `spec` is not a preset, `bits` is not exactly the
+/// [`grid_bits`] length for it, or `px` is too small (see [`geometry`]).
+pub fn render_bits(spec: &CodeSpec, bits: &[u8], px: u32) -> GrayImage {
+    assert!(spec.is_valid(), "{spec:?} is not a light code preset");
+    let n = spec.cells as usize;
+    assert_eq!(
+        bits.len(),
+        (n * n).div_ceil(8),
+        "{} bytes of grid bits, this spec draws {}",
+        bits.len(),
+        (n * n).div_ceil(8)
+    );
+    let g = geometry(spec, px);
+    let mut img = GrayImage::from_pixel(px, px, Luma([LIGHT]));
+    for i in (0..n * n).filter(|i| bits[i / 8] & (0x80 >> (i % 8)) != 0) {
         let x0 = g.origin + (i % n) as u32 * g.cell_px;
         let y0 = g.origin + (i / n) as u32 * g.cell_px;
         for y in y0..y0 + g.cell_px {
@@ -104,4 +143,25 @@ pub fn read_clean(spec: &CodeSpec, img: &GrayImage) -> Vec<u8> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fountain::encode;
+
+    #[test]
+    fn grid_bits_are_the_layout_grid_packed_and_draw_back_to_the_frame() {
+        for spec in CodeSpec::presets() {
+            let frame = encode(&spec, &[7; 500], 3).next_frame();
+            let bits = grid_bits(&spec, &frame);
+            let grid = Layout::new(&spec).grid(&frame);
+            assert_eq!(bits.len(), grid.len().div_ceil(8));
+            for (i, dark) in grid.iter().enumerate() {
+                assert_eq!(bits[i / 8] & (0x80 >> (i % 8)) != 0, *dark, "cell {i}");
+            }
+            let img = render_bits(&spec, &bits, 400);
+            assert_eq!(read_clean(&spec, &img), frame);
+        }
+    }
 }
