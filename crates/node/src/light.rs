@@ -34,7 +34,7 @@
 //! current when it goes on screen ([`Transport::set_preset`]).
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
@@ -144,6 +144,9 @@ struct Shared {
     /// Whether the page wants the eyepiece. Off by default: nothing the
     /// camera sees leaves the reader unless asked for.
     eyepiece: AtomicBool,
+    /// The least time between two eyepiece pictures, in ms; 0 means
+    /// [`EYEPIECE_GAP`] (a test may set another).
+    eyepiece_gap_ms: AtomicU64,
 }
 
 /// A handle on a [`LightTransport`]'s reader, which stays usable after
@@ -272,8 +275,12 @@ fn work(
             Job::Read(start, picture) => {
                 let outcome = reader.read(&picture);
                 let _ = out.send(Report::Read(start, outcome));
+                let gap = match shared.eyepiece_gap_ms.load(Ordering::Relaxed) {
+                    0 => EYEPIECE_GAP,
+                    ms => Duration::from_millis(ms),
+                };
                 if shared.eyepiece.load(Ordering::Relaxed)
-                    && eyepiece_at.is_none_or(|at| at.elapsed() >= EYEPIECE_GAP)
+                    && eyepiece_at.is_none_or(|at| at.elapsed() >= gap)
                 {
                     eyepiece_at = Some(Instant::now());
                     let _ = out.send(Report::Eyepiece(start, eyepiece(&picture)));
@@ -484,6 +491,14 @@ impl LightTransport {
             sending: true,
             now_ms: 0,
         }
+    }
+
+    /// For tests: the least time between two eyepiece pictures.
+    #[cfg(test)]
+    fn set_eyepiece_gap(&self, gap: Duration) {
+        self.shared
+            .eyepiece_gap_ms
+            .store((gap.as_millis() as u64).max(1), Ordering::Relaxed);
     }
 
     /// A handle on the reader, for waiting until it has caught up.
@@ -1298,6 +1313,8 @@ mod tests {
         });
         let cam = FakeCamera::new(vec![picture.clone(); 4]);
         let mut t = transport(&cam);
+        // so long that only the first picture asked for can make one
+        t.set_eyepiece_gap(Duration::from_secs(3600));
         t.poll(0);
         settle(&t);
         cam.show_next();
@@ -1326,11 +1343,29 @@ mod tests {
         assert_eq!(pixels[1], 20);
         assert_eq!(pixels[63], 220);
 
-        t.set_eyepiece(false);
-        thread::sleep(EYEPIECE_GAP);
         cam.show_next();
         settle(&t);
-        assert!(eyepieces(t.poll(80)).is_empty(), "hidden: none");
+        assert!(
+            eyepieces(t.poll(60)).is_empty(),
+            "none again until the gap has passed"
+        );
+    }
+
+    #[test]
+    fn a_hidden_eyepiece_gets_no_picture() {
+        let cam = FakeCamera::new(vec![GrayImage::new(64, 48); 2]);
+        let mut t = transport(&cam);
+        t.poll(0);
+        settle(&t);
+        t.set_eyepiece(true);
+        t.set_eyepiece(false);
+        cam.show_next();
+        settle(&t);
+        assert!(eyepieces(t.poll(20)).is_empty(), "hidden: none");
+        t.set_eyepiece(true);
+        cam.show_next();
+        settle(&t);
+        assert_eq!(eyepieces(t.poll(40)).len(), 1, "shown again: one");
     }
 
     #[test]

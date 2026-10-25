@@ -20,6 +20,8 @@
   --engr:'Bombechat Engraving','Caslon fallback',serif;
   --print:'Libre Caslon Text','Caslon fallback',Georgia,serif;
   --type:'Cutive Mono','Cutive fallback','Courier New',monospace;
+  /* the wrinkle finish of the enamel, laid over it */
+  --noise:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .5  0 0 0 0 .5  0 0 0 0 .5  0 0 0 .55 0'/></filter><rect width='240' height='240' filter='url(%23n)'/></svg>");
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html{background:#121311;color-scheme:dark}
@@ -37,7 +39,7 @@ button{font:inherit;color:inherit}
 body:has(>.unlock){perspective:none;overflow:hidden;height:100vh}
 .unlock{position:fixed;inset:0;z-index:20;display:grid;place-items:center;overflow:auto;padding:24px 16px;background:var(--enamel)}
 .unlock::before{content:"";position:fixed;inset:0;pointer-events:none;opacity:.55;mix-blend-mode:overlay;
-  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .5  0 0 0 0 .5  0 0 0 0 .5  0 0 0 .55 0'/></filter><rect width='240' height='240' filter='url(%23n)'/></svg>")}
+  background-image:var(--noise)}
 .unlock .stand{position:relative;display:grid;justify-items:center;gap:22px;padding:14px 18px 6px}
 .unlock .maker{font-size:15px}
 .unlock .card{width:min(452px,calc(100vw - 32px));background:var(--buff);color:var(--type-ink);border-radius:1px;padding:17px 0 14px;transform:rotate(-.25deg);
@@ -101,7 +103,7 @@ body:has(>.unlock){perspective:none;overflow:hidden;height:100vh}
 .app{position:relative;min-height:100vh;min-width:980px;display:grid;grid-template-rows:auto auto minmax(410px,1fr);background:var(--enamel);
   transform-origin:50% 50vh;backface-visibility:hidden;transition:transform .65s cubic-bezier(.55,.05,.35,1),filter .65s}
 .app::before{content:"";position:absolute;inset:0;pointer-events:none;opacity:.55;mix-blend-mode:overlay;z-index:0;
-  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .5  0 0 0 0 .5  0 0 0 0 .5  0 0 0 .55 0'/></filter><rect width='240' height='240' filter='url(%23n)'/></svg>")}
+  background-image:var(--noise)}
 .app.turning{transform:rotateY(180deg);filter:brightness(.5)}
 body.turning{background:#0c0c0b}
 /* the machine's back, seen for the second half of the turn */
@@ -149,7 +151,7 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
 .taped .knob{cursor:default}
 .taped .knob .cap{opacity:.92}
 .tapedown{position:absolute;left:50%;top:41%;z-index:2;transform:translate(-22%,-50%) rotate(-7deg);pointer-events:none;filter:drop-shadow(0 1px 1.5px rgba(0,0,0,.7))}
-.tapedown b{display:block;width:7.2em;text-align:center;font-weight:400;font-family:var(--type);font-size:12.5px;line-height:1.2;color:#2b2926;text-shadow:0 0 .6px rgba(43,41,38,.55);padding:5px 6px 4px;
+.tapedown b,.lightnote b{display:block;width:7.2em;text-align:center;font-weight:400;font-family:var(--type);font-size:12.5px;line-height:1.2;color:#2b2926;text-shadow:0 0 .6px rgba(43,41,38,.55);padding:5px 6px 4px;
   background:linear-gradient(#cbbc94,#d8cba6 45%,#c4b48b);clip-path:polygon(0 8%,3% 0,97% 4%,100% 0,98% 50%,100% 100%,96% 94%,4% 100%,0 92%,2% 50%)}
 
 /* drum bank */
@@ -389,7 +391,7 @@ body:has(.lamp:not([hidden])){perspective:none}
   background:linear-gradient(#8f8b80,#8d887a);box-shadow:inset 0 0 0 1px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.16),0 10px 24px rgba(0,0,0,.55),0 2px 3px rgba(0,0,0,.5)}
 .lamp[hidden]{display:none}
 .lamp::before{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;opacity:.3;mix-blend-mode:overlay;
-  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .5  0 0 0 0 .5  0 0 0 0 .5  0 0 0 .55 0'/></filter><rect width='240' height='240' filter='url(%23n)'/></svg>")}
+  background-image:var(--noise)}
 .lamp>*{position:relative}
 .deck.flashing .sheet{visibility:hidden}
 .lamp-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px}
@@ -410,21 +412,23 @@ body:has(.lamp:not([hidden])){perspective:none}
 
 /* the Light switch's eyepiece: a brass ring round a small lens showing what the camera sees, in grey, while Light
    reads. Pressed, a brass shutter closes over it and the machine sends no picture at all */
-.eyepiece{all:unset;box-sizing:border-box;position:absolute;right:7px;top:7px;z-index:1;width:40px;height:40px;border-radius:50%;padding:5px;cursor:pointer;
+.eyepiece{all:unset;box-sizing:border-box;position:absolute;right:8px;top:8px;z-index:1;width:34px;height:34px;border-radius:50%;padding:4px;cursor:pointer;
   background:radial-gradient(circle at 38% 32%,#f0dcae,#b8955c 55%,#6e5631);box-shadow:0 0 0 1px #000,0 2px 3px rgba(0,0,0,.6)}
-.eyepiece canvas{display:block;width:30px;height:30px;border-radius:50%;object-fit:cover;background:#0d0d0c}
-.eyepiece::after{content:"";position:absolute;inset:5px;border-radius:50%;box-shadow:inset 0 1px 3px rgba(0,0,0,.85),inset 0 0 0 1px rgba(0,0,0,.6);pointer-events:none}
-.eyepiece .shutter{position:absolute;inset:5px;border-radius:50%;opacity:0;transition:opacity .2s;
+.eyepiece canvas{display:block;width:26px;height:26px;border-radius:50%;object-fit:cover;background:#0d0d0c}
+.eyepiece::after{content:"";position:absolute;inset:4px;border-radius:50%;box-shadow:inset 0 1px 3px rgba(0,0,0,.85),inset 0 0 0 1px rgba(0,0,0,.6);pointer-events:none}
+.eyepiece .shutter{position:absolute;inset:4px;border-radius:50%;opacity:0;transition:opacity .2s;
   background:linear-gradient(135deg,transparent 46%,#2a2925 46%,#2a2925 54%,transparent 54%),radial-gradient(circle at 38% 32%,#d9d5ca,#8f8b80 60%,#4c4a44)}
 .eyepiece.shut .shutter{opacity:1}
 .eyepiece.dark canvas{visibility:hidden}
-.eyepiece:hover{box-shadow:0 0 0 1px #000,0 0 0 2px rgba(231,166,60,.55),0 2px 3px rgba(0,0,0,.6)}
-.eyepiece:focus-visible{outline:1.5px solid var(--amber);outline-offset:3px}
-/* what the camera has to say (it sees a code it can't read; it is unavailable), typed on a strip of tape by the eyepiece */
-.lightnote{position:absolute;right:3px;top:52px;z-index:2;max-width:calc(100% - 8px);transform:rotate(-3deg);pointer-events:none;filter:drop-shadow(0 1px 1.5px rgba(0,0,0,.7))}
+.eyepiece:hover{filter:brightness(1.08)}
+.eyepiece:focus-visible{outline:1.5px solid var(--amber);outline-offset:2px}
+/* what the camera has to say (it sees a code it can't read; it is unavailable), typed on a strip of tape stuck under
+   the Light switch's tile, in the gap above the meter, so it covers none of the switch */
+.lightnote{position:absolute;left:50%;top:calc(100% + 2px);z-index:2;transform:translateX(-50%) rotate(-.8deg);pointer-events:none;filter:drop-shadow(0 1px 1.5px rgba(0,0,0,.7))}
 .lightnote:has(b:empty){display:none}
-.lightnote b{display:block;width:8.4em;max-width:100%;font-weight:400;font-family:var(--type);font-size:12.5px;line-height:1.2;color:#2b2926;text-shadow:0 0 .6px rgba(43,41,38,.55);padding:5px 7px 4px;
-  background:linear-gradient(#cbbc94,#d8cba6 45%,#c4b48b);clip-path:polygon(0 6%,3% 0,97% 4%,100% 0,98% 50%,100% 100%,96% 95%,4% 100%,0 94%,2% 50%)}
+.lightnote b{width:auto;white-space:nowrap;padding:4px 10px 3px}
+/* room under the switches for that tape */
+.mods{margin-bottom:16px}
 
 /* short laptop screens: tighten the panel, not the type */
 @media (max-height:880px){
@@ -653,6 +657,7 @@ const ME=bridge.simulated?null:await bridge.machine();
 const SELF=ME||await bridge.machine().catch(()=>null);
 const MY_FP=SELF&&/^[0-9a-f]{4}/i.test(SELF.key||'')?SELF.key.slice(0,4).toUpperCase():'';
 const MAX_BROADCAST=SELF&&Number.isInteger(SELF.broadcast_max)?SELF.broadcast_max:null;
+const MAX_REPLY=SELF&&Number.isInteger(SELF.reply_max)?SELF.reply_max:null;
 // the settings as the machine keeps them: its record is the only one, and this page never sends them back
 // if it cannot answer, the switches show Off and say they were not read: never the most permissive position
 let KEPT_READ=true;
@@ -823,10 +828,13 @@ bridge.on('message',m=>{
 // a send the Sound switch refused says why: 'not sent: sound is set to listen only'
 let refusedWhy=null;
 // a switch's refusal, on either channel, goes with the outbox failure that follows it
+// a message arriving on either channel quiets the drums, as one arriving by sound always has
+const receivingOn={sound:false,light:false};
 function onChannel(s){if(/^not sent: /.test(s.state))refusedWhy=s.state;
   if(s.state==='failed'&&arrival&&arrival.how===s.channel)failArrival(arrival);
-  if(s.channel==='light'){lightSays(s.state);return}
-  if(s.channel!=='sound')return;Drum.receiving=s.state==='receiving'}
+  if(!(s.channel in receivingOn))return;
+  receivingOn[s.channel]=s.state==='receiving';Drum.receiving=receivingOn.sound||receivingOn.light;
+  if(s.channel==='light')lightSays(s.state)}
 bridge.on('channel',onChannel);
 
 /* ---------- channels ---------- */
@@ -860,14 +868,15 @@ for(const [id,k] of Object.entries(KNOBS)){const n=NOTES[k.setting];if(!n)contin
 // settings page does
 const saidEl=document.getElementById('said');let saidT;
 function say(text){saidEl.textContent=text;saidEl.title=text;saidEl.style.opacity=1;clearTimeout(saidT);saidT=setTimeout(()=>saidEl.style.opacity=0,text.length>40?5200:2600)}
-function turnKnob(id,pos){const k=KNOBS[id];if(k.held)return;pos=Math.max(0,Math.min(2,pos));if(pos===k.pos&&k.read)return;const was={pos:k.pos,read:k.read};k.pos=pos;k.read=true;
+// resolves true once the machine has taken the turn, or to why it would not
+function turnKnob(id,pos,again){const k=KNOBS[id];if(k.held)return Promise.resolve(`${k.name}: ${k.held}`);pos=Math.max(0,Math.min(2,pos));if(pos===k.pos&&k.read&&!again)return Promise.resolve(true);const was={pos:k.pos,read:k.read};k.pos=pos;k.read=true;
   // turned back to Read and flash: what Escape stopped may show again
   if(id==='k2'&&pos===2)Lamp.stopped=false;
   const cap=document.querySelector(`#${id} .cap`);cap.style.transform=`rotate(${ANG[pos]}deg)`;setTimeout(()=>drawKnob(id),RM.matches?0:330);
   Drum.spin(2,0.7);
-  Promise.resolve(bridge.setSetting(k.setting,pos)).catch(why=>{if(k.pos!==pos)return;k.pos=was.pos;k.read=was.read;drawKnob(id);applyChannels();
-    const t=String(why&&why.message||why);say(t.charAt(0).toUpperCase()+t.slice(1))});
-  applyChannels()}
+  const taken=Promise.resolve(bridge.setSetting(k.setting,pos)).then(()=>true,why=>{const t=String(why&&why.message||why);if(k.pos!==pos)return t;k.pos=was.pos;k.read=was.read;drawKnob(id);applyChannels();
+    say(t.charAt(0).toUpperCase()+t.slice(1));return t});
+  applyChannels();return taken}
 ['k1','k2'].forEach(id=>{drawKnob(id);const el=document.getElementById(id);
   el.addEventListener('click',()=>turnKnob(id,(KNOBS[id].pos+1)%3));
   el.addEventListener('keydown',e=>{const d={ArrowRight:1,ArrowUp:1,ArrowLeft:-1,ArrowDown:-1}[e.key];if(e.key==='Home')turnKnob(id,0);else if(e.key==='End')turnKnob(id,2);else if(d)turnKnob(id,KNOBS[id].pos+d);else return;e.preventDefault()})});
@@ -947,7 +956,9 @@ function send(how){const text=reply.value.trim();
   if(how==='light'&&btn.getAttribute('aria-disabled')==='true'){refuse(`${lightRefusal()}. Turn it to Read and flash to send by light`,flashBtn);flashBtn.focus();return}
   if(btn.getAttribute('aria-disabled')==='true'){nudge(btn);btn.focus();return}
   if(!text){reply.focus();return}
-  if(how==='light'){Lamp.stopped=false;Lamp.for=CONTACT.id?CONTACT.short:null}
+  const n=new TextEncoder().encode(text).length;
+  if(MAX_REPLY!=null&&n>MAX_REPLY){refuse(`Too long to send: ${n} bytes, at most ${MAX_REPLY}`,btn);return}
+  if(how==='light'){Lamp.stopped=false;Lamp.next=CONTACT.id?CONTACT.short:null}
   const ent=entry(bridge.now(),how);ent.classList.add('mine');const what=ent.querySelector('.what');what.append(el('div','typed',text),el('div','state'));
   grow(()=>put(ent),true);
   reply.value='';fit();if(pubnote.classList.contains('refused'))pinned(()=>pubnote.classList.remove('refused'));
@@ -978,7 +989,7 @@ function broadcast(text,how='sound'){if(broadcasting)return;
   if(!text){refuse('Write the notice first',btn);reply.focus();return}
   const n=new TextEncoder().encode(text).length;
   if(MAX_BROADCAST!=null&&n>MAX_BROADCAST){refuse(`Too long to broadcast: ${n} bytes, at most ${MAX_BROADCAST}`,btn);return}
-  if(how==='light'){Lamp.stopped=false;Lamp.for=null}
+  if(how==='light'){Lamp.stopped=false;Lamp.next=null}
   // the line clears and the toggle springs back at once; a notice the machine refuses comes back to the line
   broadcasting=true;const was=reply.value;reply.value='';setPublic(false);
   bridge.broadcast(text,how).then(id=>{broadcasting=false;onSheet.add(id);
@@ -1236,7 +1247,8 @@ const LAMP_CELLS=[48,56,64],LAMP_QUIET=3;
 // the still moment before the first frame; the grey of a half-dark grid (linear luminance 0.5)
 const READY_MS=Q.has('ready')?+Q.get('ready'):1200,LAMP_GREY='#bcbcbc';
 // closed, ready (still) or flashing; for: whose camera to hold it up to (a name, or null for anyone's)
-const Lamp={state:'closed',tag:null,spec:1,bits:null,index:-1,shown:0,readyT:null,stopped:false,for:null,refocus:false};
+// next: whose camera the next message to go on screen is for (set by a send from this page); for: the one showing
+const Lamp={state:'closed',tag:null,spec:1,bits:null,index:-1,shown:0,readyT:null,stopped:false,stopping:false,for:null,next:null,refocus:false,rateSpec:null};
 const odoDigits=(el,n,w)=>{el.innerHTML=String(Math.max(0,Math.min(10**w-1,Math.round(n)))).padStart(w,'0').split('').map(d=>`<i>${d}</i>`).join('')};
 // the canvas, sized to the bezel's opening in whole device pixels and placed on whole device pixels
 // the lamp's span: the sheet's column, and the card's when it stands beside the sheet (the wide layout)
@@ -1262,31 +1274,38 @@ function lampPaint(){const px=lampCv.width,n=LAMP_CELLS[Lamp.spec],cell=Math.flo
   for(let i=0;i<n*n;i++)if(b[i>>3]&(128>>(i&7)))k.fillRect(o+(i%n)*cell,o+((i/n)|0)*cell,cell,cell)}
 function lampCaption(){const who=Lamp.for?`${Lamp.for}'s`:'their';
   lampSay.firstChild.nodeValue=`Hold this screen up to ${who} camera.`;
-  lampSay.querySelector('small').textContent=Lamp.state==='ready'?'ready, Escape stops it':'flashing, Escape stops it'}
+  lampSay.querySelector('small').textContent=Lamp.refused?Lamp.refused:Lamp.state==='ready'?'ready, Escape stops it':'flashing, Escape stops it'}
+// the readout: the bytes a second this Flash speed shows, as the machine reckons it, read again when the speed changes
+function lampRate(){bridge.channels().then(list=>{const l=list.find(c=>c.channel==='light');const rd=document.getElementById('lamprd');
+  rd.hidden=!(l&&l.rate>0);if(l&&l.rate>0){odoDigits(document.getElementById('lamprate'),l.rate,4);
+    rd.title=`${Math.round(l.rate)} bytes a second at this Flash speed, coding included: what a camera reading every frame takes in`}},()=>{})}
 function lampOpen(){Lamp.state='ready';Lamp.shown=0;
   Lamp.refocus=sheetEl.contains(document.activeElement)||document.activeElement===document.body;
   lampEl.hidden=false;deckEl.classList.add('flashing');sheetEl.inert=true;
   document.getElementById('lampjewel').classList.add('off');odoDigits(document.getElementById('lampn'),0,3);lampCaption();
-  bridge.channels().then(list=>{const l=list.find(c=>c.channel==='light');const rd=document.getElementById('lamprd');
-    rd.hidden=!(l&&l.rate>0);if(l&&l.rate>0){odoDigits(document.getElementById('lamprate'),l.rate,4);rd.title=`${Math.round(l.rate)} bytes of message a second at this Flash speed`}},()=>{});
   lampFit();if(Lamp.refocus)lampStop.focus({preventScroll:true});
   clearTimeout(Lamp.readyT);Lamp.readyT=setTimeout(()=>{if(Lamp.state!=='ready')return;Lamp.state='flashing';lampFrame()},READY_MS)}
 function lampFrame(){if(Lamp.state!=='flashing')return;lampPaint();
   odoDigits(document.getElementById('lampn'),Lamp.shown,3);document.getElementById('lampjewel').classList.remove('off');lampCaption()}
-function lampClose(){clearTimeout(Lamp.readyT);if(Lamp.state==='closed')return;Lamp.state='closed';Lamp.bits=null;Lamp.tag=null;
+function lampClose(){clearTimeout(Lamp.readyT);if(Lamp.state==='closed')return;Lamp.state='closed';Lamp.bits=null;Lamp.tag=null;Lamp.for=null;Lamp.refused='';Lamp.rateSpec=null;
   const back=lampEl.contains(document.activeElement)||Lamp.refocus;
   lampEl.hidden=true;deckEl.classList.remove('flashing');sheetEl.inert=false;
   if(back)reply.focus({preventScroll:true})}
 bridge.on('display',d=>{
   // stopped with Escape: nothing shows again until the machine says the screen is clear
   if(Lamp.stopped||!(d.spec in LAMP_CELLS)||d.bits.length!==Math.ceil(LAMP_CELLS[d.spec]**2/8))return;
-  if(d.tag!==Lamp.tag){Lamp.tag=d.tag;Lamp.shown=0}
+  // a new message on screen: it is for whoever the page last sent one by light to, if anyone, else for any camera
+  if(d.tag!==Lamp.tag){Lamp.tag=d.tag;Lamp.shown=0;Lamp.for=Lamp.next;Lamp.next=null}
   Lamp.spec=d.spec;Lamp.bits=d.bits;Lamp.index=d.index;Lamp.shown=d.index+1;
+  if(d.spec!==Lamp.rateSpec){Lamp.rateSpec=d.spec;lampRate()}
   if(Lamp.state==='closed')lampOpen();else lampFrame()});
 bridge.on('displayStopped',()=>{Lamp.stopped=false;lampClose()});
-function stopFlashing(){if(Lamp.state==='closed')return;Lamp.stopped=true;lampClose();
-  if(KNOBS.k2.pos===2)turnKnob('k2',1);
-  say('Flashing stopped. Light is at Read, and the message waits.')}
+// the lamp goes, and the page says so, only once the machine has taken the switch's turn to Read; refused, the lamp
+// stays up (the machine is still flashing) and says why on its card
+async function stopFlashing(){if(Lamp.state==='closed'||Lamp.stopping)return;Lamp.stopping=true;
+  const taken=await turnKnob('k2',1,true);Lamp.stopping=false;
+  if(taken===true){if(Lamp.state!=='closed'){Lamp.stopped=true;lampClose()}say('Flashing stopped. Light is at Read, and the message waits.');return}
+  if(Lamp.state!=='closed'){Lamp.refused=`Not stopped. ${sentence(taken)}`;lampCaption()}}
 lampStop.addEventListener('click',stopFlashing);
 addEventListener('keydown',e=>{if(e.key==='Escape'&&Lamp.state!=='closed'){e.preventDefault();stopFlashing()}});
 

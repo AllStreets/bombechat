@@ -81,6 +81,8 @@ const LIGHT_TILT = 'seeing a code: tilt or dim the screen';
 const EYEPIECE_W = 64, EYEPIECE_H = 48, EYEPIECE_MS = 250;
 // the longest broadcast, in UTF-8 bytes of text, as the node's MAX_BROADCAST (an envelope less its header and signing)
 const MAX_BROADCAST = 3939;
+// the longest reply, in UTF-8 bytes of text, as the node's max_private_text(1)
+const REPLY_MAX = 2814;
 const PAIR_MS = 2400;
 // this machine's public identity, sign key then dh key, made up but seeded so its fingerprint is always C41D
 const SELF_KEY = 'c41d' + Array.from({ length: 62 }, ((r) => () => r().toString(16).padStart(2, '0'))(seeded(4242))).join('');
@@ -343,7 +345,7 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
     // this machine's own notices, kept across reloads; the heard ones arrive as history, as the mockups showed them
     broadcasts: () => Promise.resolve(keptNotices()),
     // you are Teodor here: his key signs your broadcasts
-    machine: () => Promise.resolve({ name: 'Machine No. 1', key: SELF_KEY, you: 'Teodor Vance', held: 6, version: '0.4', broadcast_max: MAX_BROADCAST }),
+    machine: () => Promise.resolve({ name: 'Machine No. 1', key: SELF_KEY, you: 'Teodor Vance', held: 6, version: '0.4', broadcast_max: MAX_BROADCAST, reply_max: REPLY_MAX }),
     channels: () => Promise.resolve([{ channel: 'Sound', state: soundState || 'listening', rate: RATE, band: settings.band ? 'audible' : 'near silent' },
       { channel: 'Light', state: lightState || lightAt(), rate: LIGHT_RATES[settings.flash] }]),
     test,

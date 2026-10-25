@@ -489,6 +489,18 @@ fn private_envelope_len(recipients: usize, text_len: usize) -> usize {
         + AEAD_TAG * inner.div_ceil(CHUNK)
 }
 
+/// The longest text a private message to `recipients` people can carry,
+/// in UTF-8 bytes: longer does not fit one envelope, and [`Node::send`]
+/// refuses it. The page is told this for one recipient (a reply) so it
+/// can say so before asking.
+pub fn max_private_text(recipients: usize) -> usize {
+    let mut len = MAX_ENVELOPE;
+    while len > 0 && private_envelope_len(recipients, len) > MAX_ENVELOPE {
+        len -= 1;
+    }
+    len
+}
+
 /// Whether an X25519 public key is a low-order point. Sealing to one
 /// would expose the content key, so `seal_private` refuses (panics).
 fn low_order(dh: &[u8; 32]) -> bool {
@@ -3325,5 +3337,18 @@ mod tests {
         assert_eq!(resent, vec![id], "by light");
         assert!(sound.sent.lock().unwrap().is_empty(), "not by sound");
         assert_eq!(node.broadcasts()[0].channel, Channel::Light);
+    }
+}
+
+#[cfg(test)]
+mod reply_max_tests {
+    use super::*;
+
+    #[test]
+    fn the_longest_reply_is_the_most_one_envelope_holds() {
+        let max = max_private_text(1);
+        assert!(private_envelope_len(1, max) <= MAX_ENVELOPE);
+        assert!(private_envelope_len(1, max + 1) > MAX_ENVELOPE);
+        assert!(max_private_text(2) < max);
     }
 }

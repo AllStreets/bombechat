@@ -9,7 +9,9 @@ use std::time::Duration;
 
 use bombechat_app::commands::{self, bridge_event, Lock, Machine, Opened, Shared, Unlocking};
 use bombechat_core::{safety_number, ChunkView, PublicIdentity};
-use bombechat_node::{NodeEvent, OutboxState, MAX_BROADCAST, NOT_SENT, NOT_STORED};
+use bombechat_node::{
+    max_private_text, NodeEvent, OutboxState, MAX_BROADCAST, NOT_SENT, NOT_STORED,
+};
 use bombechat_store::{Channel, Contact, ContactId, Delivery, StoredBroadcast, StoredMessage};
 use serde_json::json;
 
@@ -653,7 +655,7 @@ fn machine_is_named_machine_no_1_with_its_public_key() {
         view,
         json!({ "name": "Machine No. 1", "key": "01".repeat(32) + &"02".repeat(32),
                 "you": "Ana Lima", "held": 3, "version": env!("CARGO_PKG_VERSION"),
-                "broadcast_max": MAX_BROADCAST })
+                "broadcast_max": MAX_BROADCAST, "reply_max": max_private_text(1) })
     );
     let (fresh, _) = fake(Lock::NoStore);
     assert!(commands::machine(&fresh).is_err());
@@ -1192,4 +1194,16 @@ fn the_page_and_the_simulator_know_the_cameras_hint_as_the_node_says_it() {
             .any(|l| l.starts_with("const TILT_OR_DIM=") && l.contains(&tilt)),
         "bombechat.html TILT_OR_DIM"
     );
+}
+
+#[test]
+fn the_simulator_knows_the_longest_reply_as_the_node_does() {
+    let sim = include_str!("../../ui/simulator.js");
+    assert!(
+        sim.lines()
+            .any(|l| l == format!("const REPLY_MAX = {};", max_private_text(1))),
+        "simulator.js REPLY_MAX"
+    );
+    let check = include_str!("../../../tools/check.cjs");
+    assert!(check.contains(&format!("reply_max: {}", max_private_text(1))));
 }

@@ -96,13 +96,7 @@ impl Bench {
     }
 
     /// The same, in a room at `level`.
-    fn hear_in(
-        &mut self,
-        level: f32,
-        from: &Identity,
-        to: &PublicIdentity,
-        text: &str,
-    ) -> [u8; 16] {
+    fn hear_in(&mut self, level: f32, from: &Identity, to: &PublicIdentity, text: &str) -> [u8; 16] {
         self.run(1, level);
         let now = (std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

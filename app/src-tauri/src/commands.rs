@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use bombechat_core::{safety_number, PublicIdentity};
 use bombechat_modem::Band;
-use bombechat_node::{NodeEvent, MAX_BROADCAST, NOT_SENT, NOT_STORED};
+use bombechat_node::{max_private_text, NodeEvent, MAX_BROADCAST, NOT_SENT, NOT_STORED};
 use bombechat_store::{Channel, Contact, ContactId, StoredBroadcast, StoredMessage};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -318,6 +318,9 @@ pub struct MachineView {
     pub version: &'static str,
     /// The longest broadcast, in UTF-8 bytes of text.
     pub broadcast_max: usize,
+    /// The longest reply (a private message to one person), in UTF-8
+    /// bytes of text.
+    pub reply_max: usize,
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -580,6 +583,7 @@ pub fn machine(s: &Shared) -> Result<MachineView, String> {
         held: machine.held_for_others(),
         version: env!("CARGO_PKG_VERSION"),
         broadcast_max: MAX_BROADCAST,
+        reply_max: max_private_text(1),
     })
 }
 

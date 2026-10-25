@@ -80,7 +80,7 @@ function tauriStub({ hello, safety, people, talk, afterUnlock, settings, broadca
         case 'unlock': return new Promise(r => setTimeout(r, unlockMs)).then(() => {
           if (refusals > 0) { refusals--; return Promise.reject(wrongWhy); }
           unlocked = true; for (const [name, payload] of afterUnlock || []) window.__emit(name, payload); return null; });
-        case 'machine': return Promise.resolve({ name: 'Machine No. 1', key: 'a3f09c1e'.repeat(16), you: 'Ana Lima', held: 0, version: '0.1.0', broadcast_max: broadcastMax });
+        case 'machine': return Promise.resolve({ name: 'Machine No. 1', key: 'a3f09c1e'.repeat(16), you: 'Ana Lima', held: 0, version: '0.1.0', broadcast_max: broadcastMax, reply_max: 2814 });
         case 'conversation': return Promise.resolve((talk || {})[args.contactId] || []);
         case 'settings': return settings === 'unread' ? Promise.reject('the machine did not answer') : Promise.resolve(settings || { sound: 2, volume: 2, band: 0, light: 0, flash: 1, machine: 1, machvol: 2, carry: 1, hops: 3, hold: 2, quiet: 2, repeats: 2, lock: 1, expire: 0, inperson: 1 });
         // as the device answers on this build: relay waits for its feature, the key check is always on
@@ -1046,7 +1046,12 @@ function measureText() {
         await emit(lp, 'channel', { channel: 'light', state: TILT }); await paint(lp);
         const hint = await lp.evaluate(view);
         if (hint.note !== 'Tilt or dim the screen.') problems.push(`${tag}: the hint reads ${JSON.stringify(hint.note)}`);
-        await shot('hint', '.mod:has(#k2)');
+        // the tape covers nothing: not the switch, its engravings, plates or jewels, the eyepiece, nor the meter and slips
+        const covers = await lp.evaluate(() => { const n = document.querySelector('#lightnote b').getBoundingClientRect();
+          const hit = r => r.width && n.left < r.right && n.right > r.left && n.top < r.bottom && n.bottom > r.top;
+          return [...document.querySelectorAll('.mod .knob, .mod .pl, .mod .jewel, .mod .blank, #eyepiece, .vu, .outbox .slip, .row3 > *')].filter(e => hit(e.getBoundingClientRect())).map(e => e.id || e.className); });
+        if (covers.length) problems.push(`${tag}: the hint tape covers ${covers.join(', ')}`);
+        await lp.screenshot({ path: path.join(out, `light-${w}-hint.png`), clip: await lp.evaluate(() => { const a = document.querySelector('.mods').getBoundingClientRect(), b = document.querySelector('.row2').getBoundingClientRect(); return { x: a.left - 4, y: a.top - 4, width: a.width + 8, height: b.bottom - a.top + 8 }; }) });
         await emit(lp, 'channel', { channel: 'light', state: 'listening' });
         if ((await lp.evaluate(view)).note) problems.push(`${tag}: the hint stayed after the camera read on`);
         // at Read, Flash is refused for a notice and for a reply, in sentence case, and nothing is asked of the machine
@@ -1059,6 +1064,21 @@ function measureText() {
           problems.push(`${tag}: Flash at Read was not refused as it should be: ${JSON.stringify([refusedNotice.pubnote, refusedReply.pubnote, refusedReply.sends])}`);
         // the eyepiece's shutter: shut, the machine is asked for no picture; open again, it is
         if (w === 1440) {
+          // Escape the machine refuses (the setting can't be saved): the lamp stays up, says why, and the switch stays
+          const rp = await browser.newPage({ viewport: { width: w, height: h }, deviceScaleFactor: 2 });
+          watch(rp, `${tag} escape refused`);
+          await rp.addInitScript(tauriStub, { hello: 'Marisol Ortega', safety: '', people: [{ id: 1, name: 'Marisol Ortega', checked: true, safety: '' }], refuseSetting: 'the setting was not saved: disk full',
+            settings: { sound: 2, volume: 2, band: 0, light: 2, flash: 1, machine: 1, machvol: 2, carry: 1, hops: 3, hold: 2, quiet: 2, repeats: 2, lock: 1, expire: 0, inperson: 1 } });
+          await rp.goto(url('still&ready=0'));
+          await rp.waitForSelector('.unlock input[name=pass]'); await rp.fill('.unlock input[name=pass]', 'correct horse'); await rp.click('.unlock button');
+          await rp.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
+          await emit(rp, 'display', frame(1, 0)); await paint(rp); await rp.waitForTimeout(50);
+          await rp.keyboard.press('Escape'); await rp.waitForTimeout(300);
+          const held = await rp.evaluate(view);
+          if (!held.shown || held.light !== '2' || held.say !== 'Hold this screen up to their camera. Not stopped. The setting was not saved: disk full.' || /Flashing stopped/.test(held.said)) problems.push(`${tag}: a refused Escape: ${JSON.stringify(held)}`);
+          await rp.locator('.lamp').screenshot({ path: path.join(out, `light-${w}-stop-refused.png`) });
+          r.escapeRefused = held.say;
+          await rp.close();
           await lp.click('#eyepiece'); await paint(lp);
           const shut = await lp.evaluate(() => ({ on: __calls.filter(c => c[0] === 'eyepiece').map(c => c[1].on).pop(), shut: document.getElementById('eyepiece').getAttribute('aria-checked'), kept: localStorage.getItem('bombechat.eyepiece') }));
           await lp.locator('.mod:has(#k2)').screenshot({ path: path.join(out, `light-${w}-shut.png`) });
@@ -1069,6 +1089,8 @@ function measureText() {
           const said = 'Meet by the north door.', bytes = [...Buffer.from(said)];
           const plain = [...Array(68).fill(0), ...bytes, ...Array(64).fill(0)];
           await emit(lp, 'channel', { channel: 'light', state: 'receiving' });
+          const quiet = await lp.evaluate(() => __drum.receiving);
+          if (!quiet) problems.push(`${tag}: a message arriving by light did not quiet the drums as one by sound does`);
           await emit(lp, 'chunk', { tag: 0x0c0d, index: 0, of: 1, channel: 'light', view: { plain, heard: plain.map(b => b ^ 3), key: plain.map(() => 3) } });
           await emit(lp, 'message', { id: Array(16).fill(0x31), contact: 1, outgoing: false, text: said, channel: 'light', at_min: 29_000_100, heard: false, state: 'sent' });
           await emit(lp, 'channel', { channel: 'light', state: 'listening' });
@@ -1087,7 +1109,8 @@ function measureText() {
       // more of the maximum where the darker state is below 0.80; no more than three in any one second over any area as
       // large as about a quarter of the central field of view. Here the view is the lamp's box; each window is a quarter
       // of its width by a quarter of its height (a sixteenth of it), stepped by an eighth, so 49 windows. 120 consecutive
-      // frames: the still field, 118 code frames, and the sheet back, at the preset's rate (every frame one 1/fps step).
+      // frames: the sheet, the still field as the lamp opens, 117 code frames, and the sheet back, at the preset's rate
+      // (every frame one 1/fps step).
       report.photosensitivity = {};
       for (const spec of [1, 2]) {
         const fps = [6, 10, 15][spec];
@@ -1095,10 +1118,13 @@ function measureText() {
         const caps = [];
         let box = null;
         const cap = async () => caps.push((await lp.screenshot({ clip: box })).toString('base64'));
-        await emit(lp, 'display', frame(spec, 0)); await paint(lp);
-        box = await lp.locator('.lamp').boundingBox(); await cap();
+        // where the lamp will stand: open it once, then let it close, and start from the sheet
+        await emit(lp, 'display', frame(spec, 0, 1)); await paint(lp);
+        box = await lp.locator('.lamp').boundingBox();
+        await emit(lp, 'displayStopped', { tag: 1 }); await paint(lp); await cap();
+        await emit(lp, 'display', frame(spec, 0)); await paint(lp); await cap();
         await lp.waitForTimeout(350);
-        for (let i = 1; i <= 118; i++) { await emit(lp, 'display', frame(spec, i)); await paint(lp); await cap(); }
+        for (let i = 1; i <= 117; i++) { await emit(lp, 'display', frame(spec, i)); await paint(lp); await cap(); }
         await emit(lp, 'displayStopped', { tag: 4660 }); await paint(lp); await cap();
         const m = await lp.evaluate(async ([caps, fps]) => {
           const lin = c => { c /= 255; return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
@@ -1125,7 +1151,7 @@ function measureText() {
             for (let t = 1; t < L.length; t++) {
               const d = Math.abs(L[t] - L[t - 1]);
               if (d > worst) { worst = d; worstAt = { window: wi, frame: t }; }
-              if (t > 1 && t < L.length - 1 && d > worstFrames) worstFrames = d;
+              if (t > 2 && t < L.length - 1 && d > worstFrames) worstFrames = d;
             }
             // transitions: a change of 0.1 or more from the last extreme, the darker side under 0.8
             let ext = L[0], dir = 0; const tr = [];
@@ -1168,6 +1194,9 @@ function measureText() {
         const after = await bp.evaluate(() => ({ shown: !document.getElementById('lamp').hidden, stamp: ([...document.querySelectorAll('#log .ent.mine')].pop().querySelector('.stamp') || {}).textContent }));
         if (!opened.shown || opened.say !== "Hold this screen up to Marisol's camera." || opened.how !== 'light' || during.state !== 'flashing on screen' || !(during.frames > 3) || after.shown || !/^seen by Marisol/.test(after.stamp || ''))
           problems.push(`browser: Flash did not send a reply by light: ${JSON.stringify({ opened, during, after })}`);
+        await bp.fill('#reply', 'x'.repeat(2815)); await bp.click('#flash'); await bp.waitForTimeout(150);
+        const longReply = await bp.evaluate(() => ({ note: document.getElementById('pubnote').textContent, kept: document.getElementById('reply').value.length }));
+        if (longReply.note !== 'Too long to send: 2815 bytes, at most 2814.' || longReply.kept !== 2815) problems.push(`browser: a reply too long for light: ${JSON.stringify(longReply)}`);
         await bp.click('#mode'); await bp.fill('#reply', 'x'.repeat(3940)); await bp.click('#flash'); await bp.waitForTimeout(150);
         const long = await bp.evaluate(() => document.getElementById('pubnote').textContent);
         if (long !== 'Too long to broadcast: 3940 bytes, at most 3939.') problems.push(`browser: a notice too long for light: ${long}`);
