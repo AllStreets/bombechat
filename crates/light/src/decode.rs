@@ -57,8 +57,9 @@ const MAX_CANDIDATES: usize = 16;
 /// Most grid fits (one triple at one grid size) tried in one picture.
 const MAX_ATTEMPTS: usize = 12;
 
-/// Pictures wider than this are shrunk by a whole factor before reading.
-const MAX_WIDTH: u32 = 1280;
+/// Pictures whose longer side is over this are shrunk by a whole factor
+/// before reading.
+const MAX_SIDE: u32 = 1280;
 
 /// Side of the window, in cells, a cell's threshold is the mean of.
 const THRESHOLD_WINDOW: usize = 9;
@@ -75,17 +76,19 @@ pub enum ReadOutcome {
 }
 
 /// Read every light code in `image`, a grey camera picture of any size.
-/// A picture wider than 1280 pixels is first shrunk by the smallest whole
-/// factor that brings it to 1280 or under (averaging each square of
-/// pixels), so a 4K picture costs about what a 720p one does; codes in
+/// A picture whose longer side is over 1280 pixels is first shrunk by the
+/// smallest whole factor that brings that side to 1280 or under
+/// (averaging each square of pixels), so a 4K picture, landscape or
+/// portrait, costs about what a 720p one does; codes in
 /// it must then still have cells of about 3 pixels or more after
 /// shrinking. Never panics.
 pub fn read(image: &GrayImage) -> ReadOutcome {
     if image.width() < 32 || image.height() < 32 {
         return ReadOutcome::NoCode;
     }
-    if image.width() > MAX_WIDTH {
-        return read(&shrink(image, image.width().div_ceil(MAX_WIDTH)));
+    let side = image.width().max(image.height());
+    if side > MAX_SIDE {
+        return read(&shrink(image, side.div_ceil(MAX_SIDE)));
     }
     let pic = Picture::new(image);
     let finders = find_finders(&pic);

@@ -16,10 +16,12 @@
 //! the ratio, with a little credit for rows agreeing, and the best 256
 //! are kept wherever in the picture they are.
 //!
-//! The work is bounded for any picture: each half of a crossing stops at three
-//! times the length of the row pattern that set it off, and at most
-//! [`CONFIRMS_PER_ROW`] hits per row are checked, which only periodic
-//! textures (stripes, blinds, checkerboards) ever reach.
+//! The work is bounded for any picture: each half of a crossing stops at
+//! three times the length of the row pattern that set it off; a periodic
+//! stretch of a row (stripes, blinds), which gives the same hit every few
+//! runs, is checked once; and at most [`CONFIRMS_PER_ROW`] hits per row
+//! are checked, spread evenly across the row, so clutter on one side
+//! cannot hide a code on the other.
 //!
 //! # Perspective
 //!
@@ -53,11 +55,16 @@ const ROW_STEP: usize = 2;
 /// Most finder candidates kept from one picture: the best by quality.
 const MAX_FINDERS: usize = 256;
 
-/// Most row hits checked at full resolution per scanned row. A real
-/// finder gives one hit per row it crosses, so this only bites on
-/// periodic textures (stripes, blinds, checkerboards), and it bounds the
-/// work per picture at about this times the rows scanned.
+/// Most row hits checked at full resolution per scanned row, after each
+/// periodic stretch has been counted once. A real finder gives one hit
+/// per row it crosses; this bounds the work per picture at about this
+/// times the rows scanned, and when a row of clutter has more, an even
+/// spread across the row is checked.
 const CONFIRMS_PER_ROW: usize = 12;
+
+/// Hits at most this many runs apart with the same run lengths (within a
+/// pixel or a fifth) are one periodic stretch.
+const PERIOD_RUNS: usize = 6;
 
 /// A crossing may run to this many times the length of the row pattern
 /// that triggered it; a real finder's crossings differ by perspective
@@ -199,6 +206,7 @@ impl Finder {
 pub(crate) fn find_finders(pic: &Picture) -> Vec<Finder> {
     let mut found: Vec<Finder> = Vec::new();
     let mut runs: Vec<(usize, usize, bool)> = Vec::with_capacity(pic.w / 2);
+    let mut hits: Vec<(usize, usize)> = Vec::new();
     for y in (ROW_STEP / 2..pic.h).step_by(ROW_STEP) {
         runs.clear();
         let row = &pic.dark[y * pic.w..(y + 1) * pic.w];
@@ -211,7 +219,12 @@ pub(crate) fn find_finders(pic: &Picture) -> Vec<Finder> {
         }
         runs.push((start, pic.w - start, row[start]));
 
-        let mut confirms = 0;
+        // Row hits worth confirming. A periodic texture (stripes, blinds)
+        // gives a hit every few runs with the same run lengths; such a
+        // stretch counts once, by its first hit, so it cannot crowd out a
+        // finder further along the row.
+        hits.clear();
+        let mut last: Option<(usize, [usize; 5])> = None;
         for i in 0..runs.len().saturating_sub(4) {
             if !runs[i].2 {
                 continue;
@@ -226,13 +239,27 @@ pub(crate) fn find_finders(pic: &Picture) -> Vec<Finder> {
             if ratio_error(&lens).is_none() {
                 continue;
             }
-            if confirms == CONFIRMS_PER_ROW {
-                break;
+            let repeats = last.is_some_and(|(j, prev)| {
+                i - j <= PERIOD_RUNS
+                    && lens
+                        .iter()
+                        .zip(prev)
+                        .all(|(&a, b)| a.abs_diff(b) <= 1 + b / 5)
+            });
+            last = Some((i, lens));
+            if !repeats {
+                hits.push((
+                    runs[i + 2].0 + runs[i + 2].1 / 2,
+                    lens.iter().sum::<usize>(),
+                ));
             }
-            confirms += 1;
-            let cx = runs[i + 2].0 + runs[i + 2].1 / 2;
-            let reach = CROSS_REACH * lens.iter().sum::<usize>();
-            if let Some(f) = confirm(pic, cx, y, reach) {
+        }
+        // If clutter still leaves more than the budget, confirm an even
+        // spread across the row rather than the leftmost few.
+        let take = hits.len().min(CONFIRMS_PER_ROW);
+        for k in 0..take {
+            let (cx, total) = hits[k * hits.len() / take];
+            if let Some(f) = confirm(pic, cx, y, CROSS_REACH * total) {
                 merge(&mut found, f);
             }
         }

@@ -418,6 +418,9 @@ fn table(results: &[(usize, usize, Tally)]) -> String {
     let conds = conditions();
     let mut s = String::from("| condition | slow | normal | fast |\n|---|---|---|---|\n");
     for (c, cond) in conds.iter().enumerate() {
+        if !results.iter().any(|r| r.1 == c) {
+            continue;
+        }
         s += &format!("| {} |", cond.name);
         for p in 0..3 {
             let Some(t) = results.iter().find(|r| r.0 == p && r.1 == c).map(|r| r.2) else {
@@ -798,7 +801,7 @@ fn codes_with_garbage_bytes_are_unreadable() {
     assert_eq!(read(&img), ReadOutcome::Unreadable);
 }
 
-/// Pictures wider than 1280 px are read at reduced size.
+/// Pictures over 1280 px on their longer side are read at reduced size.
 #[test]
 fn a_4k_picture_reads() {
     for (name, spec) in presets() {
@@ -825,6 +828,88 @@ fn a_4k_picture_reads() {
             4,
         );
         assert_eq!(read(&img), ReadOutcome::Frames(vec![frame]), "{name}");
+    }
+}
+
+#[test]
+fn a_portrait_4k_picture_reads() {
+    let spec = CodeSpec::normal();
+    let mut rng = Noise::new(99);
+    let frame = some_frame(&spec, &mut rng);
+    let cam = Camera {
+        width: 2160,
+        height: 3840,
+        blur: 1.5,
+        ..Camera::default()
+    };
+    let pose = Pose {
+        scale: 0.3,
+        ..Pose::default()
+    };
+    let img = shoot(&[code(&spec, &frame, pose)], &cam, 8);
+    assert_eq!(read(&img), ReadOutcome::Frames(vec![frame]));
+}
+
+/// Where a texture goes beside a code, and where the code goes.
+#[derive(Debug, Clone, Copy)]
+enum Side {
+    Left,
+    Right,
+    Above,
+}
+
+/// A 1280x720 picture of `frame`'s code with a texture filling the space
+/// on one side of it, and the frame.
+fn code_beside(spec: &CodeSpec, frame: &[u8], texture: &GrayImage, side: Side) -> GrayImage {
+    type Region = fn(u32, u32) -> bool;
+    let (centre, inside): ((f64, f64), Region) = match side {
+        Side::Left => ((0.72, 0.5), |x, _| x < 512),
+        Side::Right => ((0.28, 0.5), |x, _| x >= 768),
+        Side::Above => ((0.5, 0.68), |_, y| y < 250),
+    };
+    let pose = Pose {
+        scale: 0.5,
+        centre,
+        ..Pose::default()
+    };
+    let base = shoot(&[code(spec, frame, pose)], &Camera::default(), 9);
+    GrayImage::from_fn(1280, 720, |x, y| {
+        if inside(x, y) {
+            *texture.get_pixel(x, y)
+        } else {
+            *base.get_pixel(x, y)
+        }
+    })
+}
+
+/// The textures that look most like finder rows, by name.
+fn finder_like_textures() -> Vec<(&'static str, GrayImage)> {
+    vec![
+        ("stripes 2px", finder_stripes(1280, 720, 2)),
+        ("stripes 3px", finder_stripes(1280, 720, 3)),
+        ("diagonal stripes 2px", diagonal_stripes(1280, 720, 2)),
+        ("blinds", blinds(1280, 720)),
+        ("checkerboard 3px", checkerboard(1280, 720, 3)),
+    ]
+}
+
+/// A finder-like texture on the same rows or columns as a code never
+/// hides it.
+#[test]
+fn a_code_beside_finder_like_textures_reads() {
+    for (name, spec) in presets() {
+        let mut rng = Noise::new(100);
+        let frame = some_frame(&spec, &mut rng);
+        for (texture, img) in finder_like_textures() {
+            for side in [Side::Left, Side::Right, Side::Above] {
+                let picture = code_beside(&spec, &frame, &img, side);
+                assert_eq!(
+                    read(&picture),
+                    ReadOutcome::Frames(vec![frame.clone()]),
+                    "{name}, {texture} {side:?}"
+                );
+            }
+        }
     }
 }
 
@@ -1258,8 +1343,47 @@ fn decode_time_per_frame() {
         "four garbage codes".into(),
         shoot(&garbage_codes(4, &mut rng), &Camera::default(), 400),
     ));
+    for (_, spec) in presets() {
+        let frame = some_frame(&spec, &mut rng);
+        for (texture, img) in finder_like_textures() {
+            for side in [Side::Left, Side::Right, Side::Above] {
+                pictures.push((
+                    "code beside texture",
+                    format!("{} code, {texture} {side:?}", spec.cells),
+                    code_beside(&spec, &frame, &img, side),
+                ));
+            }
+        }
+    }
+    let portrait = Camera {
+        width: 2160,
+        height: 3840,
+        blur: 1.5,
+        ..Camera::default()
+    };
+    pictures.push((
+        "4K portrait",
+        "4K portrait".into(),
+        finder_stripes(2160, 3840, 2),
+    ));
     let spec = CodeSpec::normal();
     let frame = some_frame(&spec, &mut rng);
+    pictures.push((
+        "4K portrait",
+        "4K portrait code".into(),
+        shoot(
+            &[code(
+                &spec,
+                &frame,
+                Pose {
+                    scale: 0.3,
+                    ..Pose::default()
+                },
+            )],
+            &portrait,
+            402,
+        ),
+    ));
     let cam4k = Camera {
         width: 3840,
         height: 2160,
