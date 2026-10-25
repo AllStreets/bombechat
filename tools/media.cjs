@@ -1,10 +1,10 @@
 // Renders the README's pictures from the app itself, headless, on the GPU:
-//   node tools/media.cjs [logo] [banner] [shots] [demo] [settings]     (all of them when none is named)
-// Writes to docs/media/. Every picture is a page of this repository served by
+//   node tools/media.cjs [icon] [logo] [banner] [shots] [demo] [settings]     (all of them when none is named)
+// Writes to docs/media/, and the app icon to app/src-tauri/icons/. Every picture is a page of this repository served by
 // tools/serve.cjs (the browser simulator for the front, a stand-in for the
 // Tauri shell for the first run); nothing on the screen is captured.
 // Needs Google Chrome (Playwright's channel 'chrome', for Metal) and ffmpeg for the GIFs, and gifsicle to make
-// the settings clip small enough.
+// the settings clip small enough. The icon needs python3 with Pillow, and macOS's iconutil for icon.icns.
 const path = require('path');
 const fs = require('fs');
 const { execFileSync } = require('child_process');
@@ -82,6 +82,7 @@ function virtualClock() {
   const ctx = (w, h, scale = 2) => browser.newContext({ viewport: { width: w, height: h }, deviceScaleFactor: scale, reducedMotion: 'no-preference' });
   const errors = p => p.on('pageerror', e => console.error('page error:', e.message));
   try {
+    if (doing('icon')) await icon();
     if (doing('logo')) { await logo(); await logoSvg(); }
     if (doing('banner')) await banner();
     if (doing('shots')) await shots();
@@ -115,6 +116,53 @@ for name in sys.argv[2:]:
 `;
     const names = fs.readdirSync(OUT).filter(n => n.endsWith('.png') && n !== 'logo.png');// the logo stays as rendered
     try { execFileSync('python3', ['-c', py, OUT, ...names], { stdio: 'inherit' }); } catch (e) { console.warn('PNGs left as rendered:', e.message); }
+  }
+  // The app icon: one drum off the bank seated on an enamel plate, on Apple's grid (an 824 px plate in a 1024 px
+  // canvas). It is rendered in four cuts, each for the sizes it reads at: the whole drum from 128 px up; without the
+  // tick marks and with a heavier ring at 48 and 64; at 32 without the ring, with a bigger window and a plain hub; at
+  // 16 without the hub too. Each size is scaled down from its cut's 1024 px render. Writes the PNGs tauri.conf.json
+  // lists (and the 64 px one tauri icon makes), icon.icns through iconutil, and icon.ico.
+  async function icon() {
+    const dir = path.join(ROOT, 'app', 'src-tauri', 'icons'), tmp = path.join(ROOT, 'checks', 'media', 'icon');
+    fs.rmSync(tmp, { recursive: true, force: true }); fs.mkdirSync(tmp, { recursive: true });
+    for (const cut of [0, 1, 2, 3]) {
+      const c = await ctx(1024, 1024, 2);
+      const p = await c.newPage(); errors(p);
+      await p.goto(at(`tools/media/drum.html?rim=7a2a22&letter=B&turn=1&icon&simple=${cut}`));
+      await p.waitForFunction(() => window.__drum && window.__drum.ready, null, { timeout: 30000 });
+      const png = await p.evaluate(() => window.__icon());
+      fs.writeFileSync(path.join(tmp, `cut${cut}.png`), Buffer.from(png.split(',')[1], 'base64'));
+      await c.close();
+    }
+    const cutFor = px => px <= 16 ? 3 : px <= 32 ? 2 : px <= 64 ? 1 : 0;
+    const iconset = path.join(tmp, 'icon.iconset'); fs.mkdirSync(iconset);
+    const jobs = [[1024, path.join(dir, 'icon.png')], [32, path.join(dir, '32x32.png')], [64, path.join(dir, '64x64.png')],
+      [128, path.join(dir, '128x128.png')], [256, path.join(dir, '128x128@2x.png')]];
+    for (const pt of [16, 32, 128, 256, 512]) for (const k of [1, 2]) jobs.push([pt * k, path.join(iconset, `icon_${pt}x${pt}${k === 2 ? '@2x' : ''}.png`)]);
+    const ico = [16, 24, 32, 48, 64, 128, 256]; for (const px of ico) jobs.push([px, path.join(tmp, `ico${px}.png`)]);
+    // Lanczos from the 1024 px render, then at 32 px and under a light unsharp mask to bring back the edges the
+    // scaling softens
+    const py = `
+import sys, json
+from PIL import Image, ImageFilter
+cuts = {}
+for px, cut, out in json.loads(sys.argv[2]):
+    src = cuts.get(cut) or cuts.setdefault(cut, Image.open(sys.argv[1] + '/cut%d.png' % cut).convert('RGBA'))
+    im = src if px == src.width else src.resize((px, px), Image.LANCZOS, reducing_gap=3.0)
+    if px <= 32: im = im.filter(ImageFilter.UnsharpMask(radius=0.6, percent=60, threshold=1))
+    im.save(out, optimize=True)
+`;
+    execFileSync('python3', ['-c', py, tmp, JSON.stringify(jobs.map(([px, out]) => [px, cutFor(px), out]))], { stdio: 'inherit' });
+    execFileSync('iconutil', ['-c', 'icns', iconset, '-o', path.join(dir, 'icon.icns')]);
+    // icon.ico: PNG entries, one per size, each from its own cut
+    const pngs = ico.map(px => fs.readFileSync(path.join(tmp, `ico${px}.png`)));
+    const head = Buffer.alloc(6 + 16 * ico.length); head.writeUInt16LE(1, 2); head.writeUInt16LE(ico.length, 4);
+    let off = head.length;
+    ico.forEach((px, i) => { const e = 6 + 16 * i; head[e] = px & 255; head[e + 1] = px & 255; head.writeUInt16LE(1, e + 4); head.writeUInt16LE(32, e + 6);
+      head.writeUInt32LE(pngs[i].length, e + 8); head.writeUInt32LE(off, e + 12); off += pngs[i].length; });
+    fs.writeFileSync(path.join(dir, 'icon.ico'), Buffer.concat([head, ...pngs]));
+    for (const f of ['icon.png', '32x32.png', '64x64.png', '128x128.png', '128x128@2x.png', 'icon.icns', 'icon.ico'])
+      console.log(f, (fs.statSync(path.join(dir, f)).size / 1024).toFixed(0), 'KB');
   }
   // one drum, face on, cut out round
   async function logo() {
@@ -163,7 +211,7 @@ for name in sys.argv[2:]:
 <radialGradient id="face" cx="40%" cy="30%" r="80%"><stop offset="0" stop-color="#3a3530"/><stop offset=".65" stop-color="#1d1a17"/><stop offset="1" stop-color="#0d0c0a"/></radialGradient>
 <linearGradient id="rim" x1="0" y1="0" x2=".35" y2="1"><stop offset="0" stop-color="#b34a3d"/><stop offset=".5" stop-color="#8e3328"/><stop offset="1" stop-color="#5e1f18"/></linearGradient>
 <linearGradient id="bevel" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".22"/><stop offset=".5" stop-color="#fff" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".35"/></linearGradient>
-<radialGradient id="hub" cx="35%" cy="28%" r="80%"><stop offset="0" stop-color="#fff3d2"/><stop offset=".25" stop-color="#e2be78"/><stop offset=".65" stop-color="#9a7232"/><stop offset="1" stop-color="#4a3414"/></radialGradient>
+<radialGradient id="hub" cx="35%" cy="28%" r="80%"><stop offset="0" stop-color="#f6f5f1"/><stop offset=".25" stop-color="#c9c7c0"/><stop offset=".65" stop-color="#7f7d77"/><stop offset="1" stop-color="#34332f"/></radialGradient>
 <linearGradient id="tab" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ddd4bb"/><stop offset=".22" stop-color="#ece4cd"/><stop offset="1" stop-color="#e6ddc4"/></linearGradient>
 </defs>
 <circle r="42" fill="url(#rim)"/><circle r="42" fill="url(#bevel)"/>

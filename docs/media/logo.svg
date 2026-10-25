@@ -6,7 +6,7 @@
 <radialGradient id="face" cx="40%" cy="30%" r="80%"><stop offset="0" stop-color="#3a3530"/><stop offset=".65" stop-color="#1d1a17"/><stop offset="1" stop-color="#0d0c0a"/></radialGradient>
 <linearGradient id="rim" x1="0" y1="0" x2=".35" y2="1"><stop offset="0" stop-color="#b34a3d"/><stop offset=".5" stop-color="#8e3328"/><stop offset="1" stop-color="#5e1f18"/></linearGradient>
 <linearGradient id="bevel" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".22"/><stop offset=".5" stop-color="#fff" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".35"/></linearGradient>
-<radialGradient id="hub" cx="35%" cy="28%" r="80%"><stop offset="0" stop-color="#fff3d2"/><stop offset=".25" stop-color="#e2be78"/><stop offset=".65" stop-color="#9a7232"/><stop offset="1" stop-color="#4a3414"/></radialGradient>
+<radialGradient id="hub" cx="35%" cy="28%" r="80%"><stop offset="0" stop-color="#f6f5f1"/><stop offset=".25" stop-color="#c9c7c0"/><stop offset=".65" stop-color="#7f7d77"/><stop offset="1" stop-color="#34332f"/></radialGradient>
 <linearGradient id="tab" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ddd4bb"/><stop offset=".22" stop-color="#ece4cd"/><stop offset="1" stop-color="#e6ddc4"/></linearGradient>
 </defs>
 <circle r="42" fill="url(#rim)"/><circle r="42" fill="url(#bevel)"/>
