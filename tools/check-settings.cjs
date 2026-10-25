@@ -13,8 +13,8 @@ const out = path.join(ROOTDIR, 'checks', path.relative(ROOTDIR, path.dirname(pag
 fs.rmSync(out, { recursive: true, force: true });
 fs.mkdirSync(out, { recursive: true });
 const { start } = require('./serve.cjs');
-// what the device's setting_notes answers on this build (a Mac): relay and light wait, the key check is always on
-const NOTES = { carry: { note: 'comes with relay' }, hops: { note: 'comes with relay' }, hold: { note: 'comes with relay' }, light: { note: 'comes with light' }, flash: { note: 'comes with light' }, inperson: { note: 'always, on this build', value: 1 } };
+// what the device's setting_notes answers on this build (a Mac): relay waits, the key check is always on
+const NOTES = { carry: { note: 'comes with relay' }, hops: { note: 'comes with relay' }, hold: { note: 'comes with relay' }, inperson: { note: 'always, on this build', value: 1 } };
 const url = q => 'http://127.0.0.1:4811/' + path.relative(ROOTDIR, page) + (q ? '?' + q : '');
 (async () => {
   const server = await start(4811);
@@ -79,10 +79,13 @@ const url = q => 'http://127.0.0.1:4811/' + path.relative(ROOTDIR, page) + (q ? 
   if (await p.evaluate(() => window.__bc.focused())) problems.push('Full view plate did not return to the full view');
   // every setting: set each value and confirm the plug lands in that jack. A setting the machine can't change can't be
   // patched: its row names what it waits for, its jacks are disabled, clicking one or dragging its plug sends nothing,
-  // and its plug stays where it is (parked, for one waiting for relay or light)
+  // and its plug stays where it is (parked, for one waiting for relay). The Light switch and Flash speed are live
   const ids = await p.evaluate(() => window.__bc.settings);
   const held = APP ? await p.evaluate(() => window.__bc.held()) : {};
-  const WAITS = { carry: 'comes with relay', hops: 'comes with relay', hold: 'comes with relay', light: 'comes with light', flash: 'comes with light', inperson: 'always, on this build' };
+  const WAITS = { carry: 'comes with relay', hops: 'comes with relay', hold: 'comes with relay', inperson: 'always, on this build' };
+  for (const id of ['light', 'flash']) if (held[id] || !ids.includes(id)) problems.push(`${id} is not a live row: ${JSON.stringify(held[id])}`);
+  const untaped = await p.evaluate(() => ['light', 'flash'].map(id => { const r = document.querySelector(`.row[data-id="${id}"]`); return r.classList.contains('held') || r.classList.contains('parked') || [...r.querySelectorAll('.jk')].some(b => b.disabled) ? id : null; }).filter(Boolean));
+  if (untaped.length) problems.push(`still taped on the card: ${untaped.join(', ')}`);
   const results = {};
   for (const id of ids) {
     const n = await p.evaluate(id => document.querySelectorAll(`.row[data-id="${id}"] .jk`).length, id);
@@ -154,6 +157,13 @@ const url = q => 'http://127.0.0.1:4811/' + path.relative(ROOTDIR, page) + (q ? 
       await w.waitForTimeout(1600);
       await w.screenshot({ path: path.join(out, `x2-${width}-panel-${id}.png`), clip: viewBox });
     }
+    // a focused plug's tag stands clear of the row above: Flash speed's never covers the Light switch's jacks
+    {
+      await w.evaluate(() => window.__bc.focus('flash'));
+      await w.waitForTimeout(1600);
+      const clear = await w.evaluate(() => ({ tag: window.__bc.tag(), above: window.__bc.rowBand('light'), row: window.__bc.rowBand('flash') }));
+      if (!clear.tag.on || clear.tag.top < clear.above.bottom || clear.tag.bottom > clear.row.top) problems.push(`${width}: the Flash speed tag overlaps a row of jacks: ${JSON.stringify(clear)}`);
+    }
     await w.context().close();
   }
   // narrow
@@ -169,16 +179,16 @@ const url = q => 'http://127.0.0.1:4811/' + path.relative(ROOTDIR, page) + (q ? 
     const tag = `${where}, localStorage ${stale ? 'stale' : 'cleared'}`;
     const ctx = await browser.newContext({ viewport: vp, deviceScaleFactor: 2 });
     await ctx.addInitScript(stale => { try { localStorage.clear(); if (stale) localStorage.setItem('bombechat.settings', JSON.stringify({ sound: 2, hops: 0, quiet: 0 })); } catch (e) {} }, stale);
-    // every setting as the machine keeps it; the ones it can't change (relay, light, the key check) come as the device
+    // every setting as the machine keeps it; the ones it can't change (relay, the key check) come as the device
     // reports them, and the page shows those from setting_notes, not from these values
-    const all = { sound: 1, volume: 2, band: 0, light: 0, flash: 1, machine: 1, machvol: 2, carry: 1, hops: 6, hold: 2, quiet: 4, repeats: 2, lock: 1, expire: 3, inperson: 1 };
+    const all = { sound: 1, volume: 2, band: 0, light: 1, flash: 2, machine: 1, machvol: 2, carry: 1, hops: 6, hold: 2, quiet: 4, repeats: 2, lock: 1, expire: 3, inperson: 1 };
     const kept = Object.fromEntries(Object.entries(all).filter(([id]) => !(id in NOTES)));
     if (where === 'app') await ctx.addInitScript(({ kept, notes }) => {
       window.__calls = [];
       window.__TAURI__ = { event: { listen: () => Promise.resolve(() => {}) }, core: { invoke: (cmd, args) => { window.__calls.push([cmd, args]);
         return Promise.resolve(cmd === 'settings' ? kept : cmd === 'setting_notes' ? notes : cmd === 'channels' ? [{ channel: 'sound', state: 'listening', rate: 16.1, band: 'near silent' }] : null); } } };
     }, { kept: all, notes: NOTES });
-    else await ctx.addInitScript(kept => { try { sessionStorage.setItem('bombechat.simulated-machine', JSON.stringify(kept)); } catch (e) {} }, { sound: 1, hops: 6, quiet: 4, expire: 3 });
+    else await ctx.addInitScript(kept => { try { sessionStorage.setItem('bombechat.simulated-machine', JSON.stringify(kept)); } catch (e) {} }, { sound: 1, light: 1, flash: 2, hops: 6, quiet: 4, expire: 3 });
     const sp = await ctx.newPage();
     sp.on('pageerror', e => problems.push(`${tag}: page error: ` + e.message));
     sp.on('console', m => m.type() === 'error' && problems.push(`${tag}: console: ` + m.text()));
@@ -328,8 +338,39 @@ const url = q => 'http://127.0.0.1:4811/' + path.relative(ROOTDIR, page) + (q ? 
     lockNotice = { shown, after };
     await ctx.close();
   }
+  // a held press: on a row not yet opened, pressing a jack and holding it 60, 120 or 200 ms before letting go still
+  // plugs that jack (the row's description must not open under the pointer and push the jacks away mid-press)
+  // (the app's interface only: the frozen mockup keeps the old behaviour)
+  const heldPress = {};
+  for (const ms of APP ? [60, 120, 200] : []) {
+    const hp = await open(vp, 'still');
+    const row = '.row[data-id="machvol"]';
+    await hp.evaluate(r => document.querySelector(r).scrollIntoView({ block: 'center' }), row);
+    await hp.waitForTimeout(200);
+    const was = await hp.evaluate(() => window.__bc.get('machvol'));
+    const to = was === 0 ? 1 : 0;
+    const jb = await hp.locator(`${row} .jk[data-i="${to}"] i`).boundingBox();
+    await hp.mouse.move(jb.x + jb.width / 2, jb.y + jb.height / 2);
+    await hp.mouse.down(); await hp.waitForTimeout(ms); await hp.mouse.up();
+    await hp.waitForTimeout(400);
+    const now = await hp.evaluate(() => window.__bc.get('machvol'));
+    heldPress[ms] = { was, now };
+    if (now !== to) problems.push(`a press held ${ms} ms on a jack of an unopened row missed it: ${JSON.stringify({ was, now, to })}`);
+    await hp.context().close();
+  }
+  // keyboard focus still opens a row's description, as before
+  if (APP) {
+    const kp = await open(vp, 'still');
+    await kp.focus('.row[data-id="machvol"] .jk[aria-checked="true"]');
+    await kp.keyboard.press('Shift+Tab'); await kp.keyboard.press('Tab');
+    await kp.waitForTimeout(400);
+    const opened = await kp.evaluate(() => { const r = document.querySelector('.row[data-id="machvol"]'); return { focus: r.classList.contains('focus'), desc: r.querySelector('.desc').getBoundingClientRect().height }; });
+    heldPress.keyboard = opened;
+    if (!opened.focus || opened.desc < 10) problems.push(`keyboard focus no longer opens the row's description: ${JSON.stringify(opened)}`);
+    await kp.context().close();
+  }
   await browser.close();
-  console.log(JSON.stringify({ out, fps, results, keyboard: [before, after], atBoot, history, refused, band, lockNotice, problems }, null, 2));
+  console.log(JSON.stringify({ out, fps, results, keyboard: [before, after], atBoot, history, refused, band, lockNotice, heldPress, problems }, null, 2));
   server.close();
   process.exit(problems.length ? 1 : 0);
 })();

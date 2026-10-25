@@ -63,7 +63,7 @@ const PARTS = { top: '.top', bank: '.bank', sheet: '.sheet', compose: '.compose'
 // would; `refuseBroadcast` is a reason the machine gives for refusing every broadcast.
 // Unlocking: `keychain` opens the store before the page asks (the Lock Off launch); `unlockMs` is how long
 // working out the key takes (0 if not given); the first `wrong` unlocks are refused as 'wrong passphrase'.
-function tauriStub({ hello, safety, people, talk, afterUnlock, settings, broadcastMax = 3939, kept = [], refuseBroadcast, keychain, unlockMs = 0, wrong = 0, wrongWhy = 'wrong passphrase', refuseSetting }) {
+function tauriStub({ hello, safety, pairOfferMs = 1200, people, talk, afterUnlock, settings, broadcastMax = 3939, kept = [], refuseBroadcast, keychain, unlockMs = 0, wrong = 0, wrongWhy = 'wrong passphrase', refuseSetting, sendId }) {
   let unlocked = !!keychain, refusals = wrong;
   const KEPT = 'stub.notices';
   const notices = () => JSON.parse(sessionStorage.getItem(KEPT) || 'null') || kept;
@@ -72,6 +72,8 @@ function tauriStub({ hello, safety, people, talk, afterUnlock, settings, broadca
   const listeners = {};
   window.__calls = [];
   window.__emit = (name, payload) => (listeners[name] || []).forEach(f => f({ payload }));
+  // a setting moved elsewhere (on the settings page): what the machine answers from now on
+  window.__moveSetting = (id, value) => { if (settings && typeof settings === 'object') settings[id] = value; };
   window.__TAURI__ = {
     event: { listen: (name, f) => { (listeners[name] = listeners[name] || []).push(f); return Promise.resolve(() => {}); } },
     core: { invoke: (cmd, args) => { window.__calls.push([cmd, args]);
@@ -80,17 +82,29 @@ function tauriStub({ hello, safety, people, talk, afterUnlock, settings, broadca
         case 'unlock': return new Promise(r => setTimeout(r, unlockMs)).then(() => {
           if (refusals > 0) { refusals--; return Promise.reject(wrongWhy); }
           unlocked = true; for (const [name, payload] of afterUnlock || []) window.__emit(name, payload); return null; });
-        case 'machine': return Promise.resolve({ name: 'Machine No. 1', key: 'a3f09c1e'.repeat(16), you: 'Ana Lima', held: 0, version: '0.1.0', broadcast_max: broadcastMax });
+        case 'machine': return Promise.resolve({ name: 'Machine No. 1', key: 'a3f09c1e'.repeat(16), you: 'Ana Lima', held: 0, version: '0.1.0', broadcast_max: broadcastMax, reply_max: 2814 });
         case 'conversation': return Promise.resolve((talk || {})[args.contactId] || []);
         case 'settings': return settings === 'unread' ? Promise.reject('the machine did not answer') : Promise.resolve(settings || { sound: 2, volume: 2, band: 0, light: 0, flash: 1, machine: 1, machvol: 2, carry: 1, hops: 3, hold: 2, quiet: 2, repeats: 2, lock: 1, expire: 0, inperson: 1 });
-        // as the device answers on this build: relay and light wait for their features, the key check is always on
+        // as the device answers on this build: relay waits for its feature, the key check is always on
         case 'setting_notes': return settings === 'unread' ? Promise.reject('the machine did not answer') : Promise.resolve({ carry: { note: 'comes with relay' }, hops: { note: 'comes with relay' }, hold: { note: 'comes with relay' },
-          light: { note: 'comes with light' }, flash: { note: 'comes with light' }, inperson: { note: 'always, on this build', value: 1 } });
-        case 'channels': return Promise.resolve([{ channel: 'sound', state: 'listening', rate: 16.1 }]);
-        case 'pair': setTimeout(() => window.__emit('pairOffer', { peer: { sign: Array(32).fill(5), dh: Array(32).fill(6) }, name: hello, safety }), 1200); return Promise.resolve(null);
+          inperson: { note: 'always, on this build', value: 1 } });
+        case 'channels': return Promise.resolve([{ channel: 'sound', state: 'listening', rate: 16.1 }, { channel: 'light', state: 'off', rate: 2290 }]);
+        case 'stop_pairing': return Promise.resolve(null);
+        case 'eyepiece': return Promise.resolve(null);
+        // refused as the node refuses it when the channel's switch won't send; pairOfferMs null: no hello comes by itself
+        case 'pair': {
+          const light = (settings && settings !== 'unread' ? settings.light : 0);
+          if (args.channel === 'light' && light < 2) return Promise.reject(light === 0 ? 'not sent: light is off' : 'not sent: light is set to read only');
+          if (pairOfferMs !== null) setTimeout(() => window.__emit('pairOffer', { peer: { sign: Array(32).fill(5), dh: Array(32).fill(6) }, name: hello, safety, channel: args.channel === 'light' ? 'Light' : 'Sound' }), pairOfferMs);
+          return Promise.resolve(null);
+        }
         case 'confirm_pair': return Promise.resolve(7);
-        case 'set_setting': return refuseSetting ? Promise.reject(refuseSetting) : Promise.resolve(null);
-        case 'send': return Promise.reject('not sent');
+        // refused as the device refuses a save that fails: left as it was, except Light turned down, which the
+        // machine keeps for the session (Escape always stops) and its settings then answer
+        case 'set_setting': if (!refuseSetting) return Promise.resolve(null);
+          if (args.id === 'light' && settings && typeof settings === 'object' && args.valueIndex < settings.light) settings.light = args.valueIndex;
+          return Promise.reject(refuseSetting);
+        case 'send': return sendId ? Promise.resolve(sendId) : Promise.reject('not sent');
         // as the broadcast command answers; an accepted one waits, plays and is sent, as the node reports it
         case 'broadcast': {
           if (refuseBroadcast) return Promise.reject(refuseBroadcast);
@@ -503,8 +517,9 @@ function measureText() {
       await kr.close();
     }
     // Machine sound and Machine volume are the machine's settings: the title bar's lever shows what it keeps and the
-    // drums play at its volume; moving the lever sends that one change. The Light switch, whose feature isn't fitted
-    // yet, is taped down at Off, says what it waits for, and turning it sends nothing.
+    // drums play at its volume; moving the lever sends that one change. The Light switch is live: no tape, it boots at
+    // the machine's Off, and each turn sends that one change. At Read and flash, a notice by light reaches the page as
+    // display frames (the Normal grid, 56 cells a side) and then displayStopped for the same tag.
     for (const where of ['app', 'browser']) {
       const ms = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 });
       watch(ms, `machine sound, ${where}`);
@@ -524,25 +539,44 @@ function measureText() {
       const sets = () => window.__TAURI__ ? __calls.filter(c => c[0] === 'set_setting').map(c => c[1]) : __sim.settingsSet;
       const booted = await ms.evaluate(`({ lever: document.getElementById('snd').getAttribute('aria-pressed'), on: __drum.on, gain: __drum.gain, label: document.querySelector('.sndlab').textContent,
         light: document.getElementById('k2').getAttribute('aria-valuenow'), lightOff: document.getElementById('k2').getAttribute('aria-disabled'), tape: (document.querySelector('.tapedown') || {}).textContent, sets: (${sets})() })`);
-      await ms.locator('.mod:has(#k2)').screenshot({ path: path.join(out, `light-taped-${where}.png`) });
+      await ms.locator('.mod:has(#k2)').screenshot({ path: path.join(out, `light-live-${where}.png`) });
       await ms.click('#k2', { force: true });
       await ms.focus('#k2'); await ms.keyboard.press('ArrowRight');
       await ms.waitForTimeout(400);
-      const light = await ms.evaluate(`({ light: document.getElementById('k2').getAttribute('aria-valuenow'), sets: (${sets})() })`);
+      const light = await ms.evaluate(`({ light: document.getElementById('k2').getAttribute('aria-valuenow'), flash: document.getElementById('flash').getAttribute('aria-disabled'), sets: (${sets})() })`);
+      await ms.locator('.mod:has(#k2)').screenshot({ path: path.join(out, `light-flash-${where}.png`) });
+      // the frames a notice by light hands the page, through the bridge as the page gets them
+      const shown = await ms.evaluate(where === 'app'
+        ? () => import('./bridge.js').then(({ bridge }) => { const got = { frames: [], stopped: [] };
+            bridge.on('display', d => got.frames.push(d)); bridge.on('displayStopped', d => got.stopped.push(d));
+            window.__emit('display', { tag: 9, bits: Array(392).fill(165), spec: 1, index: 0 }); window.__emit('displayStopped', { tag: 9 });
+            return got; })
+        : () => import('./bridge.js').then(async ({ bridge }) => { const got = { frames: [], stopped: [] };
+            bridge.on('display', d => got.frames.push(d)); bridge.on('displayStopped', d => got.stopped.push(d));
+            await bridge.broadcast('Water at the church.', 'light'); await new Promise(r => setTimeout(r, 5800));
+            const light = (await bridge.channels()).find(c => c.channel === 'light');
+            return { ...got, rate: light && light.rate }; }));
+      const lightSets = where === 'app' ? light.sets.length : light.sets;
       await ms.click('#snd');
       await ms.waitForTimeout(200);
       const flipped = await ms.evaluate(`({ lever: document.getElementById('snd').getAttribute('aria-pressed'), on: __drum.on, sets: (${sets})() })`);
+      if (where === 'app') flipped.sets = flipped.sets.slice(lightSets); else flipped.sets -= lightSets;
       const kept = where === 'browser' ? await ms.evaluate(() => import('./bridge.js').then(m => m.bridge.settings())) : null;
       const none = s => (Array.isArray(s) ? s.length : s) === 0;
       if (booted.lever !== 'false' || booted.on !== false) problems.push(`${where}: the machine keeps Machine sound off, the lever shows ${JSON.stringify(booted)}`);
       if (Math.abs(booted.gain - .9) > 1e-6) problems.push(`${where}: Machine volume 5 plays the drums at ${booted.gain}, not 0.9`);
       if (booted.label !== 'Machine sound') problems.push(`${where}: the lever is labelled ${booted.label}`);
       if (!none(booted.sets)) problems.push(`${where}: settings sent at load: ${JSON.stringify(booted.sets)}`);
-      if (booted.light !== '0' || booted.lightOff !== 'true' || booted.tape !== 'comes with light') problems.push(`${where}: the Light switch is not taped down at Off: ${JSON.stringify(booted)}`);
-      if (light.light !== '0' || !none(light.sets)) problems.push(`${where}: turning the taped Light switch did something: ${JSON.stringify(light)}`);
+      if (booted.light !== '0' || booted.lightOff === 'true' || booted.tape !== undefined) problems.push(`${where}: the Light switch is not live at Off: ${JSON.stringify(booted)}`);
+      if (light.light !== '2' || light.flash !== 'false' || (where === 'app' ? JSON.stringify(light.sets) !== JSON.stringify([{ id: 'light', valueIndex: 1 }, { id: 'light', valueIndex: 2 }]) : light.sets !== 2 || kept.light !== 2))
+        problems.push(`${where}: turning the Light switch twice did not reach Read and flash: ${JSON.stringify(light)}, kept ${JSON.stringify(kept)}`);
+      const frames = shown.frames, tag = frames.length && frames[0].tag;
+      if (!frames.length || frames.some(f => f.tag !== tag || f.bits.length !== 392 || f.spec !== 1) || frames.some((f, i) => f.index !== i)
+        || JSON.stringify(shown.stopped) !== JSON.stringify([{ tag }]) || (where === 'browser' && (frames.length !== 52 || shown.rate !== 2290)))
+        problems.push(`${where}: a notice by light did not reach the page as frames: ${frames.length} frames, first ${JSON.stringify(frames[0] && { ...frames[0], bits: frames[0].bits.length })}, stopped ${JSON.stringify(shown.stopped)}, rate ${shown.rate}`);
       if (flipped.lever !== 'true' || !flipped.on || (where === 'app' ? JSON.stringify(flipped.sets) !== JSON.stringify([{ id: 'machine', valueIndex: 1 }]) : flipped.sets !== 1 || kept.machine !== 1))
         problems.push(`${where}: the lever sent ${JSON.stringify(flipped)}, kept ${JSON.stringify(kept)}`);
-      report[`machineSound-${where}`] = { booted, light, flipped };
+      report[`machineSound-${where}`] = { booted, light, flipped, frames: shown.frames.length };
       await ms.close();
     }
 
@@ -729,7 +763,7 @@ function measureText() {
         const heldNote = await pr.evaluate(() => document.querySelector('.menu .note').textContent);
         await pr.waitForTimeout(1900);
         const lapsed = await pr.evaluate(() => document.querySelector('.menu .note').textContent);
-        if (heldNote !== 'Teodor Vance said hello. Press Pair by sound to answer.' || /said hello/.test(lapsed)) problems.push(`${tag}: a held hello's note: ${JSON.stringify({ heldNote, lapsed })}`);
+        if (heldNote !== 'Teodor Vance said hello by sound. Press Pair by sound to answer.' || /said hello/.test(lapsed)) problems.push(`${tag}: a held hello's note: ${JSON.stringify({ heldNote, lapsed })}`);
       }
       await pr.click('#pairbtn');
       await pr.waitForTimeout(300);
@@ -769,6 +803,11 @@ function measureText() {
       if (refused.state !== 'refused' || refused.note !== 'Not added. Nothing was kept.' || refused.groups.length || refused.stamp || refused.oldStamp || refused.yes || refused.pairBtn !== 'Pair by sound' || !/not added/.test(refused.pencil)) problems.push(`${tag}: Doesn't match did not leave a clean card: ${JSON.stringify(refused)}`);
       if (JSON.stringify(after) !== JSON.stringify(added)) problems.push(`${tag}: Doesn't match changed the contacts: ${JSON.stringify(added)} to ${JSON.stringify(after)}`);
       await shot('refused');
+      if (where === 'app') {
+        // Pair by sound asks for sound only, and Doesn't match ends the pairing in the machine
+        const asked = await pr.evaluate(() => ({ pairs: __calls.filter(c => c[0] === 'pair').map(c => c[1]), stops: __calls.filter(c => c[0] === 'stop_pairing').length }));
+        if (asked.pairs.length !== 2 || asked.pairs.some(a => JSON.stringify(a) !== '{"channel":"sound"}') || asked.stops < 1) problems.push(`${tag}: pairing by sound asked the machine ${JSON.stringify(asked)}`);
+      }
       report.pairing[tag] = { listening: listening.state, offered: { name: offered.name, groupPx: offered.groupPx, gridAt: offered.gridAt }, matched: { stamp: matched.stamp, gridAt: matched.gridAt, who: matched.who }, refused: refused.note, contacts: after };
       await pr.close();
     }
@@ -850,10 +889,10 @@ function measureText() {
       await bp.fill('#reply', TEXT);
       const composing = await bp.evaluate(line);
       if (composing.refused || composing.note !== explained) problems.push(`${tag}: writing again did not clear the refusal: ${JSON.stringify(composing)}`);
-      // Flash never sends a notice as a private reply
+      // Flash sends a notice by light, never as a private reply; with Light off it is refused, saying why
       await bp.click('#flash', { force: true }); await bp.waitForTimeout(150);
       const flashed = await bp.evaluate(line);
-      if (flashed.note !== 'A public notice goes by sound only. Use Send by sound.' || flashed.box !== TEXT || flashed.replies !== composing.replies || (flashed.calls && flashed.calls.length)) problems.push(`${tag}: Flash did not refuse a notice: ${JSON.stringify(flashed)}`);
+      if (flashed.note !== 'Light is off. Turn it to Read and flash to broadcast by light.' || flashed.box !== TEXT || flashed.replies !== composing.replies || (flashed.calls && flashed.calls.length)) problems.push(`${tag}: Flash did not refuse a notice: ${JSON.stringify(flashed)}`);
       await bp.fill('#reply', TEXT);
       await shot('composing');
       await bp.focus('#reply'); await bp.keyboard.press('Enter'); await bp.waitForTimeout(400);
@@ -927,6 +966,476 @@ function measureText() {
       if (stub) await bp.locator('.sheet').screenshot({ path: path.join(out, 'broadcast-app-1440-refused-by-machine.png') });
       report.broadcast[tag] = r.note;
       await bp.close();
+    }
+
+    // Light: the flashing view, the Light switch's eyepiece and note, and Flash, on the app path (window.__TAURI__
+    // stubbed, the node's events emitted as it emits them) at 1024, 1440 and 1728, with 2x crops (light-<w>-<state>.png):
+    // idle; ready (the still field before the first frame); flashing, with the frames shown and the rate the machine
+    // reports; Escape stopping it at once by turning the Light switch to Read, and frames after that not shown; reading,
+    // with what the camera sees in the eyepiece; the camera's hint typed by the eyepiece; Flash refused at Read in
+    // sentence case. The frames are the core's own (crates/light/examples/page_frames.rs), and a screenshot of the
+    // flashing view read back with the camera's decoder gives exactly the frame's bytes, at every width and preset.
+    // Then the photosensitivity check: 120 consecutive frames of the view, from the still field to the sheet coming
+    // back, measured over sliding windows a sixteenth of the view each, against WCAG 2.3.1's general flash threshold.
+    {
+      const { execFileSync } = require('child_process');
+      const example = args => execFileSync('cargo', ['run', '-q', '-p', 'bombechat-light', '--example', 'page_frames', '--', ...args], { cwd: ROOTDIR, encoding: 'utf8', maxBuffer: 1 << 28 });
+      const CODE = [0, 1, 2].map(preset => JSON.parse(example(['frames', String(preset), '120', '4660'])));
+      const readBack = files => example(['read', ...files]).trim().split('\n').map(l => JSON.parse(l));
+      const TILT = 'seeing a code: tilt or dim the screen';
+      const openLight = async (w, h, light, { dpr = 2, q = 'still&ready=400', stub = {} } = {}) => {
+        const lp = await browser.newPage({ viewport: { width: w, height: h }, deviceScaleFactor: dpr });
+        watch(lp, `light ${w}`);
+        await lp.addInitScript(tauriStub, { hello: 'Marisol Ortega', safety: '', people: [{ id: 1, name: 'Marisol Ortega', checked: true, safety: '' }],
+          settings: { sound: 2, volume: 2, band: 0, light, flash: 1, machine: 1, machvol: 2, carry: 1, hops: 3, hold: 2, quiet: 2, repeats: 2, lock: 1, expire: 0, inperson: 1 }, ...stub });
+        await lp.goto(url(q));
+        await lp.waitForSelector('.unlock input[name=pass]');
+        await lp.fill('.unlock input[name=pass]', 'correct horse');
+        await lp.click('.unlock button');
+        await lp.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
+        await lp.evaluate(() => document.fonts.ready);
+        await lp.waitForTimeout(200);
+        return lp;
+      };
+      const emit = (lp, name, payload) => lp.evaluate(([n, p]) => window.__emit(n, p), [name, payload]);
+      const frame = (spec, i, tag = 4660) => ({ tag, bits: CODE[spec].frames[i].bits, spec, index: i });
+      // a frame of this machine's pairing hello, as the node marks it
+      const helloFrame = (spec, i, tag) => ({ ...frame(spec, i, tag), hello: true });
+      const paint = lp => lp.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))));
+      const view = () => { const l = document.getElementById('lamp'), c = document.getElementById('lampcode'), k = c.getContext('2d');
+        const mid = k.getImageData(c.width >> 1, c.height >> 1, 1, 1).data[0];
+        return { shown: !l.hidden, sheet: getComputedStyle(document.querySelector('.sheet')).visibility, say: document.getElementById('lampsay').innerText.replace(/\s+/g, ' ').trim(),
+          frames: document.getElementById('lampn').textContent, rate: document.getElementById('lamprate').textContent, mid,
+          light: document.getElementById('k2').getAttribute('aria-valuenow'), said: document.getElementById('said').textContent, title: document.getElementById('said').title,
+          saidClip: { scroll: document.getElementById('said').scrollWidth, client: document.getElementById('said').clientWidth },
+          sets: __calls.filter(c => c[0] === 'set_setting').map(c => c[1]), eyepiece: __calls.filter(c => c[0] === 'eyepiece').map(c => c[1].on),
+          code: { css: parseFloat(c.style.width), px: c.width, vh: innerHeight, dpr: devicePixelRatio, cell: Math.floor(c.width / ([48, 56, 64][1] + 6)) },
+          note: document.querySelector('#lightnote b').textContent, pubnote: document.getElementById('pubnote').textContent,
+          sends: __calls.filter(c => c[0] === 'send' || c[0] === 'broadcast').length };
+      };
+      report.light = {};
+      for (const [w, h] of [[1024, 768], [1440, 900], [1728, 1117]]) {
+        const tag = `light ${w}`, r = report.light[w] = {};
+        const lp = await openLight(w, h, 2);
+        const shot = async (st, sel) => lp.locator(sel).screenshot({ path: path.join(out, `light-${w}-${st}.png`) });
+        await shot('idle', '.deck');
+        const idle = await lp.evaluate(view);
+        if (idle.shown || !idle.eyepiece.length || idle.eyepiece[idle.eyepiece.length - 1] !== true) problems.push(`${tag}: idle at Read and flash: ${JSON.stringify(idle)}`);
+        // the first frame opens the lamp still: the plain grey field, no frame yet
+        await emit(lp, 'display', frame(1, 0)); await paint(lp);
+        const ready = await lp.evaluate(view);
+        if (!ready.shown || ready.sheet !== 'hidden' || ready.mid !== 0xbc || ready.say !== 'Hold this screen up to their camera. ready, Escape stops it' || ready.frames !== '000') problems.push(`${tag}: the lamp did not open still: ${JSON.stringify(ready)}`);
+        r.small = await lp.evaluate(`(${measureText.toString()})()`);
+        if (r.small.length) problems.push(`${tag}: text under 12px in the flashing view: ${r.small.join('; ')}`);
+        await shot('ready', '.lamp');
+        await lp.waitForTimeout(450);
+        for (let i = 1; i <= 5; i++) { await emit(lp, 'display', frame(1, i)); await paint(lp); }
+        const flashing = await lp.evaluate(view);
+        if (flashing.frames !== '006' || flashing.rate !== '2290' || flashing.say !== 'Hold this screen up to their camera. flashing, Escape stops it') problems.push(`${tag}: the flashing view reads ${JSON.stringify(flashing)}`);
+        await shot('flashing', '.lamp');
+        // a code legible at arm's length: at least 60% of the window's height, and 12 cm on a 13-inch 1440x900 screen
+        // (about 50 points a centimetre), in whole device pixels
+        r.code = flashing.code;
+        if (flashing.code.css < 0.6 * h || (w === 1440 && flashing.code.css < 604) || flashing.code.px !== Math.round(flashing.code.css * 2)) problems.push(`${tag}: the code is ${JSON.stringify(flashing.code)}, wanted at least ${Math.ceil(0.6 * h)} px${w === 1440 ? ' and 604 px (12 cm)' : ''} in whole device pixels`);
+        // what is drawn is what the core means: the camera's decoder reads the frame's bytes back off a screenshot, for
+        // each preset (every preset, at every width)
+        const files = [], want = [];
+        for (const spec of [0, 1, 2]) {
+          await emit(lp, 'display', frame(spec, 7)); await paint(lp);
+          const f = path.join(out, `light-${w}-decode-${spec}.png`);
+          await lp.locator('.lamp').screenshot({ path: f }); files.push(f); want.push(CODE[spec].frames[7].frame);
+        }
+        const got = readBack(files);
+        r.decoded = got.map((g, i) => Array.isArray(g) && g.includes(want[i]));
+        got.forEach((g, i) => { if (!r.decoded[i]) problems.push(`${tag}: the decoder read ${JSON.stringify(g).slice(0, 80)} off ${path.basename(files[i])}, not the frame drawn`); });
+        // Escape: gone at once, the Light switch turned to Read, and nothing more shown
+        await lp.keyboard.press('Escape'); await paint(lp);
+        const gone = await lp.evaluate(() => document.getElementById('lamp').hidden);
+        await emit(lp, 'display', frame(1, 8)); await lp.waitForTimeout(400);
+        const stopped = await lp.evaluate(view);
+        if (!gone || stopped.shown || stopped.sheet !== 'visible' || stopped.light !== '1' || JSON.stringify(stopped.sets) !== JSON.stringify([{ id: 'light', valueIndex: 1 }]) || stopped.said !== 'Flashing stopped. Light is at Read, and the message waits.')
+          problems.push(`${tag}: Escape did not stop flashing: ${JSON.stringify(stopped)}`);
+        await emit(lp, 'displayStopped', { tag: 4660 }); await paint(lp);
+        // reading: what the camera sees, small and grey, in the eyepiece
+        const pic = Array.from({ length: 64 * 48 }, (_, i) => { const x = i % 64, y = (i / 64) | 0; return Math.min(255, 50 + y * 2 + (x > 40 && y < 22 ? 130 : 0) + (Math.hypot(x - 22, y - 26) < 11 ? -40 : 0)); });
+        await emit(lp, 'eyepiece', { width: 64, height: 48, pixels: pic }); await paint(lp);
+        const reading = await lp.evaluate(() => { const c = document.querySelector('#eyepiece canvas'), d = c.getContext('2d').getImageData(50, 10, 1, 1).data; return { px: d[0], dark: document.getElementById('eyepiece').classList.contains('dark') }; });
+        if (reading.dark || reading.px !== pic[10 * 64 + 50]) problems.push(`${tag}: the eyepiece does not show what the camera sees: ${JSON.stringify(reading)}`);
+        await shot('reading', '.mod:has(#k2)');
+        // the camera's hint, typed by the eyepiece, then gone
+        await emit(lp, 'channel', { channel: 'light', state: TILT }); await paint(lp);
+        const hint = await lp.evaluate(view);
+        if (hint.note !== 'Tilt or dim the screen.') problems.push(`${tag}: the hint reads ${JSON.stringify(hint.note)}`);
+        // the tape covers nothing: not the switch, its engravings, plates or jewels, the eyepiece, nor the meter and slips
+        const covers = await lp.evaluate(() => { const n = document.querySelector('#lightnote b').getBoundingClientRect();
+          const hit = r => r.width && n.left < r.right && n.right > r.left && n.top < r.bottom && n.bottom > r.top;
+          return [...document.querySelectorAll('.mod .knob, .mod .pl, .mod .jewel, .mod .blank, #eyepiece, .vu, .outbox .slip, .row3 > *')].filter(e => hit(e.getBoundingClientRect())).map(e => e.id || e.className); });
+        if (covers.length) problems.push(`${tag}: the hint tape covers ${covers.join(', ')}`);
+        await lp.screenshot({ path: path.join(out, `light-${w}-hint.png`), clip: await lp.evaluate(() => { const a = document.querySelector('.mods').getBoundingClientRect(), b = document.querySelector('.row2').getBoundingClientRect(); return { x: a.left - 4, y: a.top - 4, width: a.width + 8, height: b.bottom - a.top + 8 }; }) });
+        await emit(lp, 'channel', { channel: 'light', state: 'listening' });
+        if ((await lp.evaluate(view)).note) problems.push(`${tag}: the hint stayed after the camera read on`);
+        // at Read, Flash is refused for a notice and for a reply, in sentence case, and nothing is asked of the machine
+        await lp.click('#mode'); await lp.fill('#reply', 'Road north is open.'); await lp.click('#flash', { force: true }); await paint(lp);
+        const refusedNotice = await lp.evaluate(view);
+        await shot('refusal', '.sheet');
+        await lp.click('#mode'); await lp.fill('#reply', 'On my way.'); await lp.click('#flash', { force: true }); await paint(lp);
+        const refusedReply = await lp.evaluate(view);
+        if (refusedNotice.pubnote !== 'Light is set to read only. Turn it to Read and flash to broadcast by light.' || refusedReply.pubnote !== 'Light is set to read only. Turn it to Read and flash to send by light.' || refusedReply.sends)
+          problems.push(`${tag}: Flash at Read was not refused as it should be: ${JSON.stringify([refusedNotice.pubnote, refusedReply.pubnote, refusedReply.sends])}`);
+        {
+          // Escape when the setting can't be saved: the machine stops flashing all the same (Light is at Read for this
+          // session), so the lamp goes, the switch is at Read, and the page says the setting wasn't kept
+          const rp = await browser.newPage({ viewport: { width: w, height: h }, deviceScaleFactor: 2 });
+          watch(rp, `${tag} escape refused`);
+          await rp.addInitScript(tauriStub, { hello: 'Marisol Ortega', safety: '', people: [{ id: 1, name: 'Marisol Ortega', checked: true, safety: '' }], refuseSetting: 'the setting was not saved: disk full',
+            settings: { sound: 2, volume: 2, band: 0, light: 2, flash: 1, machine: 1, machvol: 2, carry: 1, hops: 3, hold: 2, quiet: 2, repeats: 2, lock: 1, expire: 0, inperson: 1 } });
+          await rp.goto(url('still&ready=0'));
+          await rp.waitForSelector('.unlock input[name=pass]'); await rp.fill('.unlock input[name=pass]', 'correct horse'); await rp.click('.unlock button');
+          await rp.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
+          await emit(rp, 'display', frame(1, 0)); await paint(rp); await rp.waitForTimeout(50);
+          // the knob is redrawn when its turn has played (330 ms): wait for it rather than a guess at the time
+          await rp.keyboard.press('Escape'); await rp.waitForFunction(() => document.getElementById('k2').getAttribute('aria-valuenow') === '1', null, { timeout: 5000 }).catch(() => {});
+          const held = await rp.evaluate(view);
+          await emit(rp, 'display', frame(1, 1)); await paint(rp);
+          const after = await rp.evaluate(view);
+          if (held.shown || after.light !== '1' || held.said !== 'Flashing stopped, but not saved.' || after.shown
+            || held.title !== 'Flashing stopped. Light is at Read for now. The setting was not saved: disk full. So Light goes back to Read and flash next time.')
+            problems.push(`${tag}: Escape when the setting can't be saved: ${JSON.stringify({ held, after })}`);
+          // the top bar never cuts its sentence short
+          if (held.saidClip.scroll > held.saidClip.client) problems.push(`${tag}: the top bar clips the failed-save sentence: ${JSON.stringify(held.saidClip)}`);
+          await rp.locator('.top').screenshot({ path: path.join(out, `light-${w}-stop-unsaved.png`) });
+          // turning the Light switch down by hand when it can't be saved: the same short sentence, the full one in its title
+          await rp.focus('#k2'); await rp.keyboard.press('Home'); await rp.waitForFunction(() => document.getElementById('k2').getAttribute('aria-valuenow') === '0', null, { timeout: 5000 }).catch(() => {});
+          const knob = await rp.evaluate(view);
+          if (knob.light !== '0' || knob.said !== 'Light at Off, not saved.' || knob.saidClip.scroll > knob.saidClip.client
+            || knob.title !== 'Light is at Off for now. The setting was not saved: disk full. So it goes back to Read next time.')
+            problems.push(`${tag}: turning Light down when it can't be saved: ${JSON.stringify(knob)}`);
+          r.escapeUnsaved = { said: held.said, clip: held.saidClip };
+          await rp.close();
+        }
+        // the eyepiece's shutter: shut, the machine is asked for no picture; open again, it is
+        if (w === 1440) {
+          await lp.click('#eyepiece'); await paint(lp);
+          const shut = await lp.evaluate(() => ({ on: __calls.filter(c => c[0] === 'eyepiece').map(c => c[1].on).pop(), shut: document.getElementById('eyepiece').getAttribute('aria-checked'), kept: localStorage.getItem('bombechat.eyepiece') }));
+          await lp.locator('.mod:has(#k2)').screenshot({ path: path.join(out, `light-${w}-shut.png`) });
+          await lp.click('#eyepiece'); await paint(lp);
+          const open = await lp.evaluate(() => ({ on: __calls.filter(c => c[0] === 'eyepiece').map(c => c[1].on).pop(), kept: localStorage.getItem('bombechat.eyepiece') }));
+          if (shut.on !== false || shut.shut !== 'false' || shut.kept !== 'shut' || open.on !== true || open.kept !== null) problems.push(`${tag}: the eyepiece's shutter: ${JSON.stringify({ shut, open })}`);
+          // leaving the page lets go of the eyepiece; back from the back/forward cache, it is asked for again
+          const lastEye = () => lp.evaluate(() => __calls.filter(c => c[0] === 'eyepiece').map(c => c[1].on).pop());
+          await lp.evaluate(() => dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true })));
+          const hid = await lastEye();
+          await lp.evaluate(() => dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })));
+          const back = await lastEye();
+          if (hid !== false || back !== true) problems.push(`${tag}: the eyepiece on pagehide and pageshow: ${JSON.stringify({ hid, back })}`);
+          // a message by light lands on the drums and the sheet as one by sound does, its margin saying light
+          const said = 'Meet by the north door.', bytes = [...Buffer.from(said)];
+          const plain = [...Array(68).fill(0), ...bytes, ...Array(64).fill(0)];
+          await emit(lp, 'channel', { channel: 'light', state: 'receiving' });
+          const quiet = await lp.evaluate(() => __drum.receiving);
+          if (!quiet) problems.push(`${tag}: a message arriving by light did not quiet the drums as one by sound does`);
+          await emit(lp, 'chunk', { tag: 0x0c0d, index: 0, of: 1, channel: 'light', view: { plain, heard: plain.map(b => b ^ 3), key: plain.map(() => 3) } });
+          await emit(lp, 'message', { id: Array(16).fill(0x31), contact: 1, outgoing: false, text: said, channel: 'light', at_min: 29_000_100, heard: false, state: 'sent' });
+          await emit(lp, 'channel', { channel: 'light', state: 'listening' });
+          await lp.waitForTimeout(3200);
+          const landed = await lp.evaluate(t => { const ents = [...document.querySelectorAll('#log .ent')].filter(e => [...e.querySelectorAll('.strip')].map(s => s.textContent).join(' ') === t);
+            return { copies: ents.length, how: ents[0] && ents[0].querySelector('.when span').textContent, provisional: document.querySelectorAll('#log .provisional').length, drums: !!__bank.frame() }; }, said);
+          if (landed.copies !== 1 || landed.how !== 'light' || landed.provisional || !landed.drums) problems.push(`${tag}: a message by light did not land as one by sound does: ${JSON.stringify(landed)}`);
+          await lp.locator('.sheet').screenshot({ path: path.join(out, `light-${w}-arrived.png`) });
+          r.landed = landed;
+        }
+        Object.assign(r, { ready: ready.mid, flashing: flashing.frames, stopped: stopped.light, hint: hint.note, refused: refusedNotice.pubnote });
+        await lp.close();
+      }
+
+      // Pairing by light on the key check card, on the app path (the node's events emitted as it emits them, its frames
+      // the core's own) and in a plain browser (the simulator shows the hello and hears Teodor's), at 1024, 1440 and
+      // 1728, with 2x crops (card-<path>-<w>-light-<state>.png, light-pair-<path>-<w>-<state>.png): the card at rest with
+      // both stamps; Pair by light asks for light only and the lamp shows your hello, saying to hold the screens face to
+      // face; their hello in, the card takes the offer under the lamp, the machine is told to finish, and the lamp closes
+      // when the screen clears, focus on Matched, add; Matched, add stamps the card "by light". Then (app, 1440): Escape
+      // ends the pairing (stop_pairing, the switch untouched, a late frame of the hello not shown); Doesn't match ends it;
+      // three minutes (shortened) end it; at Read it is refused on the card in sentence case with nothing asked.
+      report.lightPairing = {};
+      const SAFETY = '90817 26354 55102 83746 19283 74650 31415 92653 58979 32384 62643 38327';
+      const pairCard = () => { const m = document.querySelector('.menu'), l = document.getElementById('lamp');
+        return { state: m.dataset.pair, who: m.querySelector('h2 span').textContent, note: m.querySelector('.note').textContent,
+          pencil: (m.querySelector('#pencil:not([hidden])') || { innerText: '' }).innerText.replace(/\s+/g, ' ').trim(),
+          stamps: [...m.querySelectorAll('.pairact .rs')].filter(b => !b.hidden).map(b => b.textContent),
+          stamp: (m.querySelector('.gstmp') || { innerText: '' }).innerText.replace(/\s+/g, ' ').trim(),
+          groups: [...m.querySelectorAll('.sn li')].map(li => li.textContent), gridAt: (g => g ? Math.round((g.getBoundingClientRect().top - m.getBoundingClientRect().top) * 2) / 2 : null)(m.querySelector('.sn')),
+          lamp: !l.hidden, plate: l.querySelector('.lamp-head .pl.screw').textContent, say: document.getElementById('lampsay').innerText.replace(/\s+/g, ' ').trim(),
+          focus: document.activeElement && document.activeElement.id, light: document.getElementById('k2').getAttribute('aria-valuenow'),
+          calls: window.__calls ? __calls.filter(c => /pair|set_setting/.test(c[0])).map(c => c[1] ? `${c[0]} ${JSON.stringify(c[1])}` : c[0]) : [] }; };
+      for (const where of ['app', 'browser']) for (const [w, h] of [[1024, 768], [1440, 900], [1728, 1117]]) {
+        const tag = `light pairing ${where} ${w}`, r = report.lightPairing[`${where} ${w}`] = {};
+        let lp;
+        if (where === 'app') lp = await openLight(w, h, 2, { stub: { pairOfferMs: null } });
+        else {
+          lp = await browser.newPage({ viewport: { width: w, height: h }, deviceScaleFactor: 2 });
+          watch(lp, tag);
+          await lp.addInitScript(() => sessionStorage.setItem('bombechat.simulated-machine', JSON.stringify({ light: 2 })));
+          await lp.goto(url('still&ready=300'));
+          await lp.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
+          await lp.evaluate(() => document.fonts.ready);
+        }
+        const st = () => lp.evaluate(pairCard);
+        const cardShot = n => lp.locator('.menu').screenshot({ path: path.join(out, `card-${where}-${w}-light-${n}.png`) });
+        const rest = await st();
+        if (JSON.stringify(rest.stamps) !== '["Pair by sound","Pair by light"]') problems.push(`${tag}: the card's stamps at rest: ${JSON.stringify(rest.stamps)}`);
+        await cardShot('rest');
+        await lp.click('#pairlight');
+        // the card reading, before the first frame of the hello reaches the lamp (at 1440 and 1728 the lamp then covers
+        // the card, so this is the card's only moment in view there; the browser's simulator flashes at once)
+        if (where === 'app') { await paint(lp); await cardShot('reading'); }
+        if (where === 'app') { for (let i = 0; i <= 3; i++) { await emit(lp, 'display', helloFrame(1, i, 0x4e1)); await paint(lp); } await lp.waitForTimeout(450); for (let i = 4; i <= 6; i++) { await emit(lp, 'display', helloFrame(1, i, 0x4e1)); await paint(lp); } }
+        else await lp.waitForTimeout(1100);
+        const reading = await st();
+        if (reading.state !== 'reading' || reading.who !== 'pairing by light' || !reading.lamp || reading.plate !== 'Pairing by light' || reading.say !== 'Hold your screens face to face. reading theirs, Escape stops it' || !/reading for a hello/.test(reading.pencil))
+          problems.push(`${tag}: Pair by light did not show the hello: ${JSON.stringify(reading)}`);
+        if (where === 'app' && JSON.stringify(reading.calls) !== '["pair {\\"channel\\":\\"light\\"}"]') problems.push(`${tag}: Pair by light asked the machine ${JSON.stringify(reading.calls)}`);
+        r.small = await lp.evaluate(`(${measureText.toString()})()`);
+        if (r.small.length) problems.push(`${tag}: text under 12px while pairing by light: ${r.small.join('; ')}`);
+        await lp.locator('.lamp').screenshot({ path: path.join(out, `light-pair-${where}-${w}-reading.png`) });
+        if (where === 'browser' && w === 1024) await cardShot('reading');
+        // their hello is in: the card has the offer under the lamp, and the lamp shows yours to the end of its window
+        if (where === 'app') { await emit(lp, 'pairOffer', { peer: { sign: Array(32).fill(5), dh: Array(32).fill(6) }, name: 'Marisol Ortega', safety: SAFETY, channel: 'Light' }); await paint(lp); }
+        else await lp.waitForFunction(() => document.querySelector('.menu').dataset.pair === 'offer', null, { timeout: 8000 }).catch(() => {});
+        const finishing = await st();
+        if (finishing.state !== 'offer' || !finishing.lamp || finishing.say !== 'Their key is read. Yours finishes showing. Escape stops it') problems.push(`${tag}: the offer did not wait under the lamp for the hello to finish: ${JSON.stringify(finishing)}`);
+        if (where === 'app' && !finishing.calls.includes('finish_pairing')) problems.push(`${tag}: the machine was not told to finish: ${JSON.stringify(finishing.calls)}`);
+        await lp.locator('.lamp').screenshot({ path: path.join(out, `light-pair-${where}-${w}-finishing.png`) });
+        if (where === 'app') { await emit(lp, 'displayStopped', { tag: 0x4e1 }); await paint(lp); }
+        else await lp.waitForFunction(() => document.getElementById('lamp').hidden, null, { timeout: 8000 }).catch(() => {});
+        await lp.waitForTimeout(150);
+        const offered = await st();
+        if (offered.lamp || offered.state !== 'offer' || offered.who !== 'pairing by light' || offered.groups.length !== 12 || offered.focus !== 'pairyes' || offered.note !== 'Compare these with theirs, out loud or side by side.')
+          problems.push(`${tag}: the lamp did not close on the offer: ${JSON.stringify(offered)}`);
+        await cardShot('offer');
+        await lp.click('#pairyes'); await lp.waitForTimeout(500);
+        const matched = await st();
+        if (matched.state !== '' || !/^Matched \d+ [A-Z][a-z]{2}$/.test(matched.stamp) || matched.note !== 'Checked in person, by light.' || Math.abs(matched.gridAt - offered.gridAt) > 1 || matched.lamp || matched.focus !== 'pairlight')
+          problems.push(`${tag}: Matched, add after pairing by light: ${JSON.stringify(matched)}`);
+        await cardShot('matched');
+        Object.assign(r, { reading: reading.say, finishing: finishing.say, offered: offered.state, matched: matched.note });
+        if (where === 'app' && w === 1440) {
+          // Escape ends the pairing, not the switch, and a frame of the hello still on its way is not shown
+          const before = (await st()).calls.length;
+          await lp.click('#pairlight'); await paint(lp);
+          await emit(lp, 'display', helloFrame(1, 0, 0x4e2)); await lp.waitForTimeout(500); await emit(lp, 'display', helloFrame(1, 1, 0x4e2)); await paint(lp);
+          await lp.keyboard.press('Escape'); await paint(lp);
+          await emit(lp, 'display', helloFrame(1, 2, 0x4e2)); await lp.waitForTimeout(300);
+          const esc = await st();
+          if (esc.lamp || esc.state !== '' || esc.note !== 'Pairing by light stopped. Nothing was kept.' || esc.light !== '2' || JSON.stringify(esc.calls.slice(before)) !== '["pair {\\"channel\\":\\"light\\"}","stop_pairing"]' || esc.focus !== 'pairlight')
+            problems.push(`${tag}: Escape did not end the pairing by light: ${JSON.stringify(esc)}`);
+          await emit(lp, 'displayStopped', { tag: 0x4e2 });
+          // Doesn't match ends it
+          const before2 = (await st()).calls.length;
+          await lp.click('#pairlight'); await paint(lp);
+          await emit(lp, 'display', helloFrame(1, 0, 0x4e3)); await lp.waitForTimeout(500);
+          await emit(lp, 'pairOffer', { peer: { sign: Array(32).fill(7), dh: Array(32).fill(8) }, name: 'Someone Else', safety: SAFETY, channel: 'Light' }); await paint(lp);
+          await emit(lp, 'display', helloFrame(1, 1, 0x4e3)); await paint(lp);
+          await lp.keyboard.press('Escape'); await paint(lp);
+          const escOffer = await st();
+          if (escOffer.lamp || escOffer.state !== 'offer' || escOffer.focus !== 'pairyes') problems.push(`${tag}: Escape while the hello finished did not leave the offer: ${JSON.stringify(escOffer)}`);
+          await lp.click('#pairno'); await paint(lp);
+          const declined = await st();
+          if (declined.state !== 'refused' || declined.lamp || declined.focus !== 'pairlight' || JSON.stringify(declined.calls.slice(before2)) !== '["pair {\\"channel\\":\\"light\\"}","finish_pairing","stop_pairing","stop_pairing"]')
+            problems.push(`${tag}: Doesn't match after pairing by light: ${JSON.stringify(declined)}`);
+          r.escape = esc.note;
+          // a message by light on the lamp while pairing keeps its own caption, and Escape stops it the Task 6 way (Light
+          // to Read), which ends the pairing too: the card rests and says so. The hello's frames after it are let go
+          // only by their own tag, never the message's
+          await lp.click('#pairlight'); await paint(lp);
+          await emit(lp, 'display', helloFrame(1, 0, 0x4e5)); await lp.waitForTimeout(500);
+          await emit(lp, 'display', frame(1, 0, 0x4e6)); await lp.waitForTimeout(450); await emit(lp, 'display', frame(1, 1, 0x4e6)); await paint(lp);
+          const mixed = await st();
+          if (!mixed.lamp || mixed.plate !== 'Flashing by light' || mixed.say !== 'Hold this screen up to their camera. flashing, Escape stops it' || mixed.state !== 'reading')
+            problems.push(`${tag}: a message by light during pairing does not keep its own lamp: ${JSON.stringify(mixed)}`);
+          await lp.locator('.lamp').screenshot({ path: path.join(out, 'light-pair-app-1440-message.png') });
+          // (the knob's reading settles once its turn has drawn, 330 ms)
+          await lp.keyboard.press('Escape'); await lp.waitForTimeout(600);
+          const msgEsc = await st();
+          if (msgEsc.lamp || msgEsc.light !== '1' || !msgEsc.calls.includes('set_setting {"id":"light","valueIndex":1}') || msgEsc.state !== '' || msgEsc.note !== 'Pairing by light stopped. Light is at Read, and nothing was kept.')
+            problems.push(`${tag}: Escape on a message during pairing: ${JSON.stringify(msgEsc)}`);
+          await emit(lp, 'displayStopped', { tag: 0x4e6 });
+          r.messageDuringPairing = { plate: mixed.plate, escape: msgEsc.note };
+          // Light moved off Read and flash on the settings page while the hello finishes, focus on the lamp's Stop key:
+          // back on the front, the lamp closes, the offer stays, and focus goes to Matched, add (not lost with the lamp)
+          await lp.focus('#k2'); await lp.keyboard.press('End'); await lp.waitForTimeout(600);
+          await lp.click('#pairlight'); await paint(lp);
+          await emit(lp, 'display', helloFrame(1, 0, 0x4e7)); await lp.waitForTimeout(500);
+          await emit(lp, 'pairOffer', { peer: { sign: Array(32).fill(9), dh: Array(32).fill(10) }, name: 'Marisol Ortega', safety: SAFETY, channel: 'Light' }); await paint(lp);
+          await emit(lp, 'display', helloFrame(1, 1, 0x4e7)); await paint(lp);
+          await lp.focus('#lampstop');
+          const beforeMove = await st();
+          await lp.evaluate(() => { window.__moveSetting('light', 1); dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })); });
+          await lp.waitForTimeout(600);
+          const moved = await st();
+          if (!beforeMove.lamp || beforeMove.focus !== 'lampstop' || moved.lamp || moved.state !== 'offer' || moved.light !== '1' || moved.focus !== 'pairyes')
+            problems.push(`${tag}: Light moved off Read and flash while the hello finished: ${JSON.stringify({ before: { lamp: beforeMove.lamp, focus: beforeMove.focus }, moved })}`);
+          await emit(lp, 'displayStopped', { tag: 0x4e7 });
+          r.lightMovedWhileFinishing = { state: moved.state, focus: moved.focus };
+        }
+        await lp.close();
+      }
+      {
+        // three minutes, shortened to 1.5 s: the pairing ends, the screen clears, and the card says so
+        const tag = 'light pairing cap 1440';
+        const lp = await openLight(1440, 900, 2, { q: 'still&ready=300&paircap=1500', stub: { pairOfferMs: null } });
+        await lp.click('#pairlight'); await paint(lp);
+        await emit(lp, 'display', helloFrame(1, 0, 0x4e4)); await lp.waitForTimeout(1700);
+        await emit(lp, 'display', helloFrame(1, 1, 0x4e4)); await paint(lp);
+        const capped = await lp.evaluate(pairCard);
+        if (capped.lamp || capped.state !== '' || capped.note !== 'Pairing by light ended after three minutes. Nothing was kept.' || !capped.calls.includes('stop_pairing')) problems.push(`${tag}: the cap did not end it: ${JSON.stringify(capped)}`);
+        await lp.locator('.menu').screenshot({ path: path.join(out, 'card-app-1440-light-capped.png') });
+        await lp.close();
+        // at Read: refused on the card, nothing asked of the machine
+        const rp = await openLight(1440, 900, 1);
+        await rp.click('#pairlight'); await paint(rp);
+        const refused = await rp.evaluate(pairCard);
+        if (refused.lamp || refused.note !== 'Light is set to read only. Turn it to Read and flash to pair by light.' || refused.calls.some(c => /^pair/.test(c))) problems.push(`light pairing at Read: ${JSON.stringify(refused)}`);
+        await rp.locator('.menu').screenshot({ path: path.join(out, 'card-app-1440-light-refused.png') });
+        await rp.close();
+        // browser: Escape ends the simulator's hello too
+        const bp = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 });
+        watch(bp, 'light pairing browser escape');
+        await bp.addInitScript(() => sessionStorage.setItem('bombechat.simulated-machine', JSON.stringify({ light: 2 })));
+        await bp.goto(url('still&ready=300&paircap=60000'));
+        await bp.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
+        await bp.click('#pairlight'); await bp.waitForTimeout(900);
+        const up = await bp.evaluate(pairCard);
+        await bp.keyboard.press('Escape'); await bp.waitForTimeout(800);
+        const esc = await bp.evaluate(pairCard);
+        if (!up.lamp || esc.lamp || esc.state !== '' || esc.note !== 'Pairing by light stopped. Nothing was kept.' || esc.light !== '2') problems.push(`light pairing browser: Escape: ${JSON.stringify({ up: up.lamp, esc })}`);
+        await bp.close();
+        report.lightPairing.cap = capped.note; report.lightPairing.refused = refused.note;
+      }
+
+      // the lamp names whose camera only for the message it belongs to: a receipt that goes on screen before a sent
+      // message is for any camera, and the message, once the machine says it is playing, is for Marisol's
+      {
+        const np = await openLight(1440, 900, 2, { stub: { sendId: 'c0ffee'.repeat(5) + 'ab' } });
+        await np.fill('#reply', 'On my way.'); await np.click('#flash'); await np.waitForTimeout(100);
+        await emit(np, 'display', frame(1, 0, 21)); await paint(np);
+        const receipt = (await np.evaluate(view)).say;
+        await emit(np, 'displayStopped', { tag: 21 }); await paint(np);
+        await emit(np, 'outbox', { id: 'c0ffee'.repeat(5) + 'ab', state: 'playing' });
+        await emit(np, 'display', frame(1, 0, 22)); await paint(np);
+        const message = (await np.evaluate(view)).say;
+        await emit(np, 'displayStopped', { tag: 22 }); await paint(np);
+        if (!/^Hold this screen up to their camera\./.test(receipt) || !/^Hold this screen up to Marisol's camera\./.test(message))
+          problems.push(`the lamp's caption went to the wrong message: ${JSON.stringify({ receipt, message })}`);
+        report.lampCaption = { receipt, message };
+        await np.close();
+      }
+
+      // Photosensitivity. WCAG 2.3.1, general flash: a flash is a pair of opposing changes in relative luminance of 10% or
+      // more of the maximum where the darker state is below 0.80; no more than three in any one second over any area as
+      // large as about a quarter of the central field of view. Here the view is the lamp's box; each window is a quarter
+      // of its width by a quarter of its height (a sixteenth of it), stepped by an eighth, so 49 windows. 120 consecutive
+      // frames: the sheet, the still field as the lamp opens, 117 code frames, and the sheet back, at the preset's rate
+      // (every frame one 1/fps step).
+      report.photosensitivity = {};
+      for (const spec of [0, 1, 2]) {
+        const fps = [6, 10, 15][spec];
+        const lp = await openLight(1440, 900, 2, { dpr: 1, q: 'still&ready=300' });
+        const caps = [];
+        let box = null;
+        const cap = async () => caps.push((await lp.screenshot({ clip: box })).toString('base64'));
+        // where the lamp will stand: open it once, then let it close, and start from the sheet
+        await emit(lp, 'display', frame(spec, 0, 1)); await paint(lp);
+        box = await lp.locator('.lamp').boundingBox();
+        await emit(lp, 'displayStopped', { tag: 1 }); await paint(lp); await cap();
+        await emit(lp, 'display', frame(spec, 0)); await paint(lp); await cap();
+        await lp.waitForTimeout(350);
+        for (let i = 1; i <= 117; i++) { await emit(lp, 'display', frame(spec, i)); await paint(lp); await cap(); }
+        await emit(lp, 'displayStopped', { tag: 4660 }); await paint(lp); await cap();
+        const m = await lp.evaluate(async ([caps, fps]) => {
+          const lin = c => { c /= 255; return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
+          const LUT = Array.from({ length: 256 }, (_, i) => lin(i));
+          const series = [];
+          let W = 0, H = 0;
+          for (const b64 of caps) {
+            const bmp = await createImageBitmap(await (await fetch('data:image/png;base64,' + b64)).blob());
+            W = bmp.width; H = bmp.height;
+            const c = new OffscreenCanvas(W, H), k = c.getContext('2d'); k.drawImage(bmp, 0, 0);
+            const d = k.getImageData(0, 0, W, H).data, Y = new Float64Array(W * H);
+            for (let i = 0; i < W * H; i++) Y[i] = 0.2126 * LUT[d[i * 4]] + 0.7152 * LUT[d[i * 4 + 1]] + 0.0722 * LUT[d[i * 4 + 2]];
+            const ww = Math.floor(W / 4), wh = Math.floor(H / 4), means = [];
+            for (let gy = 0; gy < 7; gy++) for (let gx = 0; gx < 7; gx++) {
+              const x0 = Math.floor(gx * W / 8), y0 = Math.floor(gy * H / 8);
+              let s = 0; for (let y = y0; y < y0 + wh; y++) for (let x = x0; x < x0 + ww; x++) s += Y[y * W + x];
+              means.push(s / (ww * wh));
+            }
+            series.push(means);
+          }
+          let worst = 0, worstFrames = 0, worstAt = null, flashes = 0;
+          for (let wi = 0; wi < 49; wi++) {
+            const L = series.map(m => m[wi]);
+            for (let t = 1; t < L.length; t++) {
+              const d = Math.abs(L[t] - L[t - 1]);
+              if (d > worst) { worst = d; worstAt = { window: wi, frame: t }; }
+              if (t > 2 && t < L.length - 1 && d > worstFrames) worstFrames = d;
+            }
+            // transitions: a change of 0.1 or more from the last extreme, the darker side under 0.8
+            let ext = L[0], dir = 0; const tr = [];
+            for (let t = 1; t < L.length; t++) {
+              const v = L[t];
+              if ((dir === 1 && v >= ext) || (dir === -1 && v <= ext)) { ext = v; continue; }
+              if (Math.abs(v - ext) >= 0.1 && Math.min(v, ext) < 0.8) { dir = Math.sign(v - ext); ext = v; tr.push(t); }
+            }
+            for (let t0 = 0; t0 < L.length; t0++) flashes = Math.max(flashes, Math.floor(tr.filter(t => t >= t0 && t < t0 + fps).length / 2));
+          }
+          return { size: [W, H], captures: series.length, worstChange: +worst.toFixed(4), worstAt, worstBetweenCodeFrames: +worstFrames.toFixed(4), flashesPerSecond: flashes };
+        }, [caps, fps]);
+        report.photosensitivity[['slow', 'normal', 'fast'][spec]] = m;
+        if (m.captures !== 120 || m.flashesPerSecond > 3) problems.push(`photosensitivity (${['slow', 'normal', 'fast'][spec]}): ${JSON.stringify(m)}`);
+        // the code frames themselves stay far under the 10% a single change may be
+        if (m.worstBetweenCodeFrames >= 0.1) problems.push(`photosensitivity (${['slow', 'normal', 'fast'][spec]}): one code frame to the next changes a window by ${m.worstBetweenCodeFrames}`);
+        await lp.close();
+      }
+
+      // Flash in the browser (the simulator) at Read and flash: a reply goes by light, the lamp shows it for Marisol's
+      // camera, still first, and the sheet comes back when it is sent; a notice goes by light too, signed; a notice too
+      // long is refused; a message by light lands with its margin saying light; the eyepiece shows the simulated camera
+      {
+        const bp = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 });
+        watch(bp, 'light browser');
+        await bp.addInitScript(() => { try { sessionStorage.setItem('bombechat.simulated-machine', JSON.stringify({ light: 2 })); sessionStorage.removeItem('bombechat.simulated-notices'); } catch (e) {} });
+        await bp.goto(url('still'));
+        await bp.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
+        await bp.waitForTimeout(300);
+        const eye = await bp.evaluate(() => { const c = document.querySelector('#eyepiece canvas'); return { dark: document.getElementById('eyepiece').classList.contains('dark'), px: c.getContext('2d').getImageData(52, 12, 1, 1).data[0] }; });
+        if (eye.dark || eye.px < 100) problems.push(`browser: the eyepiece shows no simulated camera: ${JSON.stringify(eye)}`);
+        await bp.fill('#reply', 'Meet at the library at noon.'); await bp.click('#flash');
+        await bp.waitForTimeout(250);
+        const opened = await bp.evaluate(() => ({ shown: !document.getElementById('lamp').hidden, say: document.getElementById('lampsay').firstChild.nodeValue, how: [...document.querySelectorAll('#log .ent.mine')].pop().querySelector('.when span').textContent }));
+        await bp.waitForTimeout(1500);
+        const during = await bp.evaluate(() => ({ state: [...document.querySelectorAll('#log .ent.mine')].pop().querySelector('.state').textContent, frames: +document.getElementById('lampn').textContent }));
+        await bp.locator('.deck').screenshot({ path: path.join(out, 'light-browser-1440-flashing.png') });
+        await bp.waitForFunction(() => document.getElementById('lamp').hidden, null, { timeout: 8000 }).catch(() => {});
+        await bp.waitForTimeout(300);
+        const after = await bp.evaluate(() => ({ shown: !document.getElementById('lamp').hidden, stamp: ([...document.querySelectorAll('#log .ent.mine')].pop().querySelector('.stamp') || {}).textContent }));
+        if (!opened.shown || opened.say !== "Hold this screen up to Marisol's camera." || opened.how !== 'light' || during.state !== 'flashing on screen' || !(during.frames > 3) || after.shown || !/^seen by Marisol/.test(after.stamp || ''))
+          problems.push(`browser: Flash did not send a reply by light: ${JSON.stringify({ opened, during, after })}`);
+        await bp.fill('#reply', 'x'.repeat(2815)); await bp.click('#flash'); await bp.waitForTimeout(150);
+        const longReply = await bp.evaluate(() => ({ note: document.getElementById('pubnote').textContent, kept: document.getElementById('reply').value.length }));
+        if (longReply.note !== 'Too long to send: 2815 bytes, at most 2814.' || longReply.kept !== 2815) problems.push(`browser: a reply too long for light: ${JSON.stringify(longReply)}`);
+        await bp.click('#mode'); await bp.fill('#reply', 'x'.repeat(3940)); await bp.click('#flash'); await bp.waitForTimeout(150);
+        const long = await bp.evaluate(() => document.getElementById('pubnote').textContent);
+        if (long !== 'Too long to broadcast: 3940 bytes, at most 3939.') problems.push(`browser: a notice too long for light: ${long}`);
+        await bp.fill('#reply', 'Water at the church.'); await bp.click('#flash');
+        await bp.waitForFunction(() => [...document.querySelectorAll('#log .ent.public.mine')].some(e => /sent to anyone in range/.test(e.querySelector('.state').textContent)), null, { timeout: 9000 }).catch(() => {});
+        const notice = await bp.evaluate(() => { const e = [...document.querySelectorAll('#log .ent.public.mine')].pop(); return e && { text: e.querySelector('.typed').textContent, state: e.querySelector('.state').textContent }; });
+        if (!notice || notice.text !== 'Water at the church.' || notice.state !== 'signed C41D, sent to anyone in range') problems.push(`browser: a notice by light: ${JSON.stringify(notice)}`);
+        await bp.evaluate(() => __sim.arrive('Meet by the north door.', { channel: 'light' }));
+        await bp.waitForTimeout(3200);
+        const arrived = await bp.evaluate(() => { const e = [...document.querySelectorAll('#log .ent')].pop(); return { how: e.querySelector('.when span').textContent, text: [...e.querySelectorAll('.strip')].map(s => s.textContent).join(' ') }; });
+        if (arrived.how !== 'light' || arrived.text !== 'Meet by the north door.') problems.push(`browser: a message by light: ${JSON.stringify(arrived)}`);
+        report.light.browser = { opened, during, after, notice, arrived };
+        await bp.close();
+      }
     }
   }
 

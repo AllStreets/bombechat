@@ -1,0 +1,76 @@
+[package]
+name = "bombechat-light"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bombechat-core = { path = "../core" }
+crc32fast = "1"
+# Only the in-memory buffer types (GrayImage); no codecs, no I/O.
+image = { version = "0.25", default-features = false }
+raptorq = "2"
+reed-solomon = "0.2"
+
+# The camera, through AVFoundation only: no default features, just the
+# capture classes, CoreMedia sample buffers and CoreVideo pixel buffers.
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+dispatch2 = { version = "0.3", default-features = false, features = ["std", "objc2"] }
+objc2 = "0.6"
+objc2-av-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "block2",
+    "dispatch2",
+    "objc2-core-media",
+    "objc2-core-video",
+    "AVCaptureDevice",
+    "AVCaptureInput",
+    "AVCaptureOutputBase",
+    "AVCaptureSession",
+    "AVCaptureSessionPreset",
+    "AVCaptureVideoDataOutput",
+    "AVMediaFormat",
+] }
+objc2-core-media = { version = "0.3", default-features = false, features = [
+    "std",
+    "objc2-core-video",
+    "CMSampleBuffer",
+] }
+objc2-core-video = { version = "0.3", default-features = false, features = [
+    "std",
+    "CVBase",
+    "CVBuffer",
+    "CVImageBuffer",
+    "CVPixelBuffer",
+    "CVReturn",
+] }
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSDictionary",
+    "NSError",
+    "NSObject",
+    "NSString",
+    "NSValue",
+] }
+
+[features]
+default = []
+# FakeCamera (src/fake.rs), for this crate's tests and the app's.
+fake-camera = []
+
+[dev-dependencies]
+# Self dev-dependency so integration tests get `fake-camera` without it
+# ever being on by default (and so it is absent from the airgapped
+# dependency tree, which only follows normal edges; see
+# tools/check-airgapped.sh).
+bombechat-light = { path = ".", features = ["fake-camera"] }
+# PNG only for the checked-in test pictures.
+image = { version = "0.25", default-features = false, features = ["png"] }
+proptest = "1"
+rand = "0.8"
+
+# The measuring tool (see the example's header). Its tests run the
+# self-test under `cargo test`. Examples are never part of the app.
+[[example]]
+name = "measure"
+test = true

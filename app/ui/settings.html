@@ -102,7 +102,7 @@ a.pl svg{display:block}
   font-family:var(--type);font-size:13px;color:#1c1a16;background:linear-gradient(#efe6cc,#dccfab);padding:5px 10px 4px 18px;border-radius:2px;
   box-shadow:0 4px 12px rgba(0,0,0,.55),inset 0 0 0 1px rgba(110,86,49,.45);white-space:nowrap}
 .tag::before{content:"";position:absolute;left:6px;top:50%;width:6px;height:6px;margin-top:-3px;border-radius:50%;background:#0b0b0a;box-shadow:0 0 0 1.5px var(--brass)}
-.tag::after{content:"";position:absolute;left:50%;bottom:-26px;width:1px;height:26px;background:rgba(236,230,214,.55)}
+.tag::after{content:"";position:absolute;left:50%;top:100%;width:1px;height:var(--lead,26px);background:rgba(236,230,214,.55)}
 .tag.on{opacity:1}
 .fullview[hidden]{display:none!important}
 .fullview{position:absolute!important;left:16px;top:12px;z-index:3}
@@ -205,7 +205,9 @@ for(const g of GROUPS){
     sched.appendChild(r);rows[s.id]=r;
     r.addEventListener('mouseenter',()=>focusSetting(s.id,'hover'));
     r.addEventListener('mouseleave',()=>focusSetting(null,'hover'));
-    r.addEventListener('focusin',()=>{r.classList.add('focus');focusSetting(s.id,'focus')});
+    // the description opens on keyboard focus only: a press of the mouse focuses the jack too, and a description opening
+    // then would push the jacks down under the pointer before it lets go (a click lands, and opens it, as .active)
+    r.addEventListener('focusin',e=>{if(keyboardFocus(e.target))r.classList.add('focus');focusSetting(s.id,'focus')});
     r.addEventListener('focusout',()=>{r.classList.remove('focus')});
     r.querySelectorAll('.jk').forEach(b=>{
       b.addEventListener('click',()=>setValue(s.id,+b.dataset.i,'card'));
@@ -214,6 +216,7 @@ for(const g of GROUPS){
         e.preventDefault();setValue(s.id,i,'card');r.querySelectorAll('.jk')[i].focus()})});
   }
 }
+function keyboardFocus(el){try{return el.matches(':focus-visible')}catch(e){return true}}
 // a parked row's tape runs from its first jack to its last
 function tapeRows(){for(const s of SETTINGS){if(!s.parked)continue;const j=rows[s.id].querySelectorAll('.jk'),a=j[0].querySelector('i'),b=j[j.length-1].querySelector('i');
   rows[s.id].querySelector('.jacks').style.setProperty('--tape',(b.offsetLeft+b.offsetWidth+8)+'px')}}
@@ -364,7 +367,7 @@ async function build(){
       for(const s of SETTINGS.filter(q=>q.g===g)){
         {const e=engrave(s.name.toUpperCase(),0,y-.01,.12,'#ddd5c0');e.geometry.computeBoundingBox();const w=e.geometry.boundingBox.max.x-e.geometry.boundingBox.min.x;e.position.x=side.x+w/2+.02}
         // jacks sit .74 apart, or as far apart as their longest engraved value needs
-        const n=s.values.length,x0=side.x+3.55,span=4.9,step=Math.min(span/n,Math.max(.74,...s.values.map(v=>valueWidth(v.toUpperCase())+.16)));const jacks=[];
+        const n=s.values.length,x0=side.x+3.55,span=4.9,widths=s.values.map(v=>valueWidth(v.toUpperCase())),step=Math.min(span/n,Math.max(.74,...widths.map(w=>w+.16)));const jacks=[];
         s.values.forEach((v,i)=>{const x=x0+i*step,p=new THREE.Vector3(x,y,0);
           const nut=new THREE.Mesh(nutGeo,M.brassDull);nut.position.set(x,y,.02);nut.castShadow=true;nut.receiveShadow=true;scene.add(nut);
           const ring=new THREE.Mesh(jackGeo,M.brass);ring.position.set(x,y,.05);ring.castShadow=true;scene.add(ring);
@@ -375,10 +378,11 @@ async function build(){
         const src=new THREE.Vector3(side.x+2.75,y,0);engrave('FROM',src.x,y+.225,.088,'#958f80');
         // waiting for a feature: a strip of tape pencilled with what it waits for across the jacks, and the plug parked
         // on a stud beside its FROM socket. Held at a value: the plug stays seated, the tape beside it says why.
-        let park=null,reach=null;
-        if(s.parked){const a=jacks[0].x-.24,b=Math.max(jacks[jacks.length-1].x+.24,a+tapeWidth(s.held));tape(s.held,(a+b)/2,y-.005,b-a,s.id);
+        // where the row's last engraved value ends, so a view of the row never cuts it off
+        let park=null,reach=x0+(n-1)*step+widths[n-1]/2;
+        if(s.parked){const a=jacks[0].x-.24,b=Math.max(jacks[jacks.length-1].x+.24,a+tapeWidth(s.held));tape(s.held,(a+b)/2,y-.005,b-a,s.id);reach=Math.max(reach,b);
           park=new THREE.Vector3(src.x+.4,y-.02,0);const stud=new THREE.Mesh(studGeo,M.steel);stud.position.set(park.x,park.y,.03);stud.castShadow=true;scene.add(stud)}
-        else if(s.held){const x=jacks[jacks.length-1].x+.34;const w=tapeWidth(s.held);tape(s.held,x+w/2,y-.005,w,s.id);reach=x+w}
+        else if(s.held){const x=jacks[jacks.length-1].x+.34;const w=tapeWidth(s.held);tape(s.held,x+w/2,y-.005,w,s.id);reach=Math.max(reach,x+w)}
         const sn=new THREE.Mesh(nutGeo,M.brassDull);sn.position.set(src.x,src.y,.02);scene.add(sn);const sr=new THREE.Mesh(jackGeo,M.brass);sr.position.set(src.x,src.y,.05);scene.add(sr);
         const color=CABLE_COLORS[(SETTINGS.indexOf(s)*3)%CABLE_COLORS.length];
         const mat=cableMat(color);mat.userData.base=new THREE.Color(color);
@@ -401,7 +405,10 @@ async function build(){
   function fitDist(w,h){const fov=camera.fov*Math.PI/180;return Math.max(h/2/Math.tan(fov/2),w/2/Math.tan(fov/2)/camera.aspect)}
   function overview(){const d=fitDist(PW-.3,12.5);lookT.set(0,-.4,0);posT.set(.7,-1.0,d)}
   // the row from its name to its last jack, or to the end of the tape beside it
-  function frameRow(id){const P=plugs[id];const a=P.src,right=Math.max(P.jacks[P.jacks.length-1].x,P.reach||-Infinity);const cx=(P.nameX+right)/2,w=Math.abs(right-P.nameX)+1.4;
+  // a focused row is framed with the rows of its group beside it in full: the view reaches as far right as any of them
+  function frameRow(id){const P=plugs[id];const a=P.src;
+    const right=Math.max(...Object.values(plugs).filter(Q=>Q.s.g===P.s.g).map(Q=>Math.max(Q.jacks[Q.jacks.length-1].x,Q.reach)));
+    const cx=(P.nameX+right)/2,w=Math.abs(right-P.nameX)+1.4;
     lookT.set(cx,a.y-.15,0);posT.set(cx+.3,a.y+.55,fitDist(w,3.8))}
   function resize(){const w=view.clientWidth,h=view.clientHeight;renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix();composer.setSize(w,h);if(!focusId)overview()}
   const composer=K.makeComposer({ao:!Q.has('noao')});
@@ -415,8 +422,15 @@ async function build(){
     // row above
     if(id){frameRow(id);tag.textContent=tagText(id);tag.classList.toggle('on',!byId[id].held);lamp.intensity=0}else{overview();tag.classList.remove('on')}}
   let decorDim=0,decorDimNow=0;
-  function updateTag(){if(!focusId){return}const P=plugs[focusId];const v=P.head.position.clone();v.z+=.6;v.y+=.42;v.project(camera);
-    const tw=tag.offsetWidth/2+10;tag.style.left=Math.max(tw,Math.min(view.clientWidth-tw,(v.x*.5+.5)*view.clientWidth))+'px';tag.style.top=(-v.y*.5+.5)*view.clientHeight-14+'px';tag.textContent=tagText(focusId)}
+  // the tag stands in the gap between the plug's row and the row above: its foot just over the row's engraved values,
+  // its pointer reaching down to the plug, so it never covers the jacks of the row above, however narrow the view
+  const toPx=v=>{v.project(camera);return {x:(v.x*.5+.5)*view.clientWidth,y:(-v.y*.5+.5)*view.clientHeight}};
+  function updateTag(){if(!focusId){return}const P=plugs[focusId],y=P.jacks[0].y;
+    // the gap runs from the foot of the row above's jacks to the top of this row's engraved values: the tag sits in its middle
+    const x=P.head.position.x,above=toPx(new THREE.Vector3(x,y+ROWH-.135,.05)).y,values=toPx(new THREE.Vector3(x,y+.28,.05)),plug=toPx(new THREE.Vector3(x,y+.1,.3+P.lift));
+    const foot={x:values.x,y:Math.min(values.y-1,(above+values.y)/2+tag.offsetHeight/2)};
+    const tw=tag.offsetWidth/2+10;tag.style.left=Math.max(tw,Math.min(view.clientWidth-tw,foot.x))+'px';tag.style.top=foot.y+'px';
+    tag.style.setProperty('--lead',Math.max(6,plug.y-foot.y+2)+'px');tag.textContent=tagText(focusId)}
   // what the tag beside a focused plug says: the setting and its value
   const tagText=id=>`${byId[id].name}: ${label(byId[id])}`;
 
@@ -475,9 +489,11 @@ async function build(){
 
   function toScreen(v3){const v=v3.clone().project(camera);const r=renderer.domElement.getBoundingClientRect();return {x:r.left+(v.x*.5+.5)*r.width,y:r.top+(-v.y*.5+.5)*r.height}}
   const screen=id=>{const P=plugs[id];const h=P.head.position.clone();h.z+=.35;return {plug:toScreen(h),first:toScreen(P.jacks[0].clone().setZ(.3))}};
+  // where a row's jack rings run on screen, top to bottom
+  const rowBand=id=>{const P=plugs[id],a=toPx(new THREE.Vector3(P.jacks[0].x,P.jacks[0].y+.135,.05)),b=toPx(new THREE.Vector3(P.jacks[0].x,P.jacks[0].y-.135,.05));const r=renderer.domElement.getBoundingClientRect();return {top:r.top+a.y,bottom:r.top+b.y}};
   // for the README's clip: where a point of the panel lands on the screen, and where a row's parts are on the panel
   const at=(x,y,z)=>toScreen(new THREE.Vector3(x,y,z)),row=id=>{const P=plugs[id];return {name:P.nameX,y:P.src.y,jacks:P.jacks.map(j=>j.x)}};
-  return {focus,move,seat,plugs,camera,screen,at,row,get ready(){return frames>2},endOf:id=>{const P=plugs[id];return {x:P.end.x,jack:P.jacks.findIndex(j=>Math.abs(j.x-P.end.x)<1e-3&&Math.abs(j.y-P.end.y)<1e-3),lift:P.lift,parked:!!P.park&&P.end.distanceTo(P.park)<1e-3,dim:P.dim}}};
+  return {focus,move,seat,plugs,camera,screen,at,row,rowBand,get ready(){return frames>2},endOf:id=>{const P=plugs[id];return {x:P.end.x,jack:P.jacks.findIndex(j=>Math.abs(j.x-P.end.x)<1e-3&&Math.abs(j.y-P.end.y)<1e-3),lift:P.lift,parked:!!P.park&&P.end.distanceTo(P.park)<1e-3,dim:P.dim}}};
 }
 
 /* arriving from the front: finish the turn the front started */
@@ -487,7 +503,7 @@ try{if(sessionStorage.getItem('bombechat-turn')==='front-to-back'&&!REDUCED){ses
 // back here by history (bfcache): the settings may have moved on the front, so read them again from the machine
 // and show them, sending nothing
 addEventListener('pageshow',e=>{if(!e.persisted)return;bridge.settings().then(kept=>{for(const id of takeKept(kept)){syncRow(id);machine&&machine.seat(id,byId[id].v)}},()=>{})});
-window.__bc={screen:id=>machine.screen(id),focused:()=>focusId,get:id=>byId[id].v,held:()=>Object.fromEntries(SETTINGS.filter(s=>s.held).map(s=>[s.id,{note:s.held,parked:!!s.parked}])),set:(id,i)=>setValue(id,i,'test'),focus:id=>focusSetting(id,'pin'),at:(x,y,z)=>machine.at(x,y,z),row:id=>machine.row(id),end:id=>machine&&machine.endOf(id),settings:SETTINGS.map(s=>s.id)};
+window.__bc={screen:id=>machine.screen(id),rowBand:id=>machine.rowBand(id),tag:()=>{const r=document.getElementById('tag').getBoundingClientRect();return {top:r.top,bottom:r.bottom,on:document.getElementById('tag').classList.contains('on')}},focused:()=>focusId,get:id=>byId[id].v,held:()=>Object.fromEntries(SETTINGS.filter(s=>s.held).map(s=>[s.id,{note:s.held,parked:!!s.parked}])),set:(id,i)=>setValue(id,i,'test'),focus:id=>focusSetting(id,'pin'),at:(x,y,z)=>machine.at(x,y,z),row:id=>machine.row(id),end:id=>machine&&machine.endOf(id),settings:SETTINGS.map(s=>s.id)};
 if(Q.has('focus'))focusSetting(Q.get('focus'),'pin');
 document.getElementById('back').addEventListener('click',e=>{if(REDUCED)return;e.preventDefault();const href=e.currentTarget.href;try{sessionStorage.setItem('bombechat-turn','back-to-front')}catch(_){}document.body.animate([{transform:'perspective(1600px) rotateY(0deg)',opacity:1},{transform:'perspective(1600px) rotateY(-80deg)',opacity:0}],{duration:420,easing:'cubic-bezier(.5,0,.75,0)'}).onfinish=()=>location.href=href});
 </script>

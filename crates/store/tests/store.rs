@@ -179,7 +179,9 @@ fn has_message_and_mark_heard() {
     let path = d.path().join("b.db");
     let me = Identity::generate();
     let store = Store::create(&path, "correct horse", &me, "Kitchen laptop").unwrap();
-    let contact = store.add_contact("Marisol Ortega", &marisol(), false).unwrap();
+    let contact = store
+        .add_contact("Marisol Ortega", &marisol(), false)
+        .unwrap();
 
     let id = [5u8; 16];
     assert!(!store.has_message(&id));
@@ -209,7 +211,9 @@ fn put_message_with_existing_id_upserts() {
     let path = d.path().join("b.db");
     let me = Identity::generate();
     let store = Store::create(&path, "correct horse", &me, "Kitchen laptop").unwrap();
-    let contact = store.add_contact("Marisol Ortega", &marisol(), false).unwrap();
+    let contact = store
+        .add_contact("Marisol Ortega", &marisol(), false)
+        .unwrap();
 
     let id = [7u8; 16];
     store
@@ -278,7 +282,13 @@ fn open_on_a_nonexistent_path_is_io_error() {
 fn open_with_a_missing_sidecar_is_io_error() {
     let d = tempdir().unwrap();
     let path = d.path().join("b.db");
-    Store::create(&path, "correct horse", &Identity::generate(), "Kitchen laptop").unwrap();
+    Store::create(
+        &path,
+        "correct horse",
+        &Identity::generate(),
+        "Kitchen laptop",
+    )
+    .unwrap();
 
     let mut sidecar = path.as_os_str().to_owned();
     sidecar.push(".salt");
@@ -294,7 +304,13 @@ fn open_with_a_missing_sidecar_is_io_error() {
 fn open_with_a_short_sidecar_is_corrupt() {
     let d = tempdir().unwrap();
     let path = d.path().join("b.db");
-    Store::create(&path, "correct horse", &Identity::generate(), "Kitchen laptop").unwrap();
+    Store::create(
+        &path,
+        "correct horse",
+        &Identity::generate(),
+        "Kitchen laptop",
+    )
+    .unwrap();
 
     let mut sidecar = path.as_os_str().to_owned();
     sidecar.push(".salt");
@@ -331,7 +347,13 @@ fn files_are_created_private_on_unix() {
         use std::os::unix::fs::PermissionsExt;
         let d = tempdir().unwrap();
         let path = d.path().join("b.db");
-        Store::create(&path, "correct horse", &Identity::generate(), "Kitchen laptop").unwrap();
+        Store::create(
+            &path,
+            "correct horse",
+            &Identity::generate(),
+            "Kitchen laptop",
+        )
+        .unwrap();
 
         let db_mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(db_mode, 0o600, "db file mode was {:o}", db_mode);
@@ -350,8 +372,7 @@ fn files_are_created_private_on_unix() {
 #[test]
 fn set_checked_updates_the_contact() {
     let d = tempdir().unwrap();
-    let store =
-        Store::create(&d.path().join("b.db"), "pw", &Identity::generate(), "me").unwrap();
+    let store = Store::create(&d.path().join("b.db"), "pw", &Identity::generate(), "me").unwrap();
     let c = store.add_contact("Marisol", &marisol(), false).unwrap();
     assert!(!store.contacts()[0].checked);
     store.set_checked(c, true).unwrap();
@@ -363,8 +384,7 @@ fn set_checked_updates_the_contact() {
 #[test]
 fn message_by_id() {
     let d = tempdir().unwrap();
-    let store =
-        Store::create(&d.path().join("b.db"), "pw", &Identity::generate(), "me").unwrap();
+    let store = Store::create(&d.path().join("b.db"), "pw", &Identity::generate(), "me").unwrap();
     let c = store.add_contact("Marisol", &marisol(), true).unwrap();
     let m = StoredMessage {
         id: [3u8; 16],
@@ -398,7 +418,10 @@ fn an_outgoing_message_keeps_where_its_delivery_got_to() {
         delivery: Delivery::Waiting,
     };
     store.put_outgoing(&m, b"sealed envelope").unwrap();
-    assert_eq!(store.waiting(), vec![(m.clone(), b"sealed envelope".to_vec())]);
+    assert_eq!(
+        store.waiting(),
+        vec![(m.clone(), b"sealed envelope".to_vec())]
+    );
     drop(store);
 
     let store = Store::open(&path, "pw").unwrap();
@@ -408,7 +431,10 @@ fn an_outgoing_message_keeps_where_its_delivery_got_to() {
     assert!(store.waiting().is_empty());
     assert_eq!(store.message(&[5u8; 16]).unwrap().delivery, Delivery::Sent);
     store.set_delivery(&[5u8; 16], Delivery::Failed).unwrap();
-    assert_eq!(store.message(&[5u8; 16]).unwrap().delivery, Delivery::Failed);
+    assert_eq!(
+        store.message(&[5u8; 16]).unwrap().delivery,
+        Delivery::Failed
+    );
     assert_eq!(Delivery::Failed.as_str(), "failed");
 }
 
@@ -460,25 +486,55 @@ fn forgetting_erases_only_what_has_been_kept_longer_than_the_running_time_allowe
     let c = store.add_contact("Marisol", &marisol(), true).unwrap();
     // at_min (the wall clock's minute) plays no part: these are all over the place
     store.set_age(1_000);
-    store.put_message(&message(1, c, 9_999_999, false, Delivery::Sent)).unwrap();
+    store
+        .put_message(&message(1, c, 9_999_999, false, Delivery::Sent))
+        .unwrap();
     store.set_age(5_000);
-    store.put_message(&message(2, c, 1, true, Delivery::Sent)).unwrap();
-    store.put_outgoing(&message(3, c, 1, true, Delivery::Waiting), b"sealed").unwrap();
+    store
+        .put_message(&message(2, c, 1, true, Delivery::Sent))
+        .unwrap();
+    store
+        .put_outgoing(&message(3, c, 1, true, Delivery::Waiting), b"sealed")
+        .unwrap();
     store.set_age(9_000);
-    store.put_message(&message(4, c, 500, false, Delivery::Sent)).unwrap();
+    store
+        .put_message(&message(4, c, 500, false, Delivery::Sent))
+        .unwrap();
 
-    assert_eq!(store.forget_older_than(9_000, 10_000).unwrap(), 0, "younger than the age itself");
-    assert_eq!(store.forget_older_than(9_000, 4_000).unwrap(), 1, "kept 8000 of 4000");
+    assert_eq!(
+        store.forget_older_than(9_000, 10_000).unwrap(),
+        0,
+        "younger than the age itself"
+    );
+    assert_eq!(
+        store.forget_older_than(9_000, 4_000).unwrap(),
+        1,
+        "kept 8000 of 4000"
+    );
     let left: Vec<u8> = store.conversation(c).iter().map(|m| m.id[0]).collect();
-    assert_eq!(left, vec![2, 3, 4], "kept exactly 4000 is not longer than 4000");
-    assert_eq!(store.forget_older_than(9_001, 4_000).unwrap(), 1, "now it is");
+    assert_eq!(
+        left,
+        vec![2, 3, 4],
+        "kept exactly 4000 is not longer than 4000"
+    );
+    assert_eq!(
+        store.forget_older_than(9_001, 4_000).unwrap(),
+        1,
+        "now it is"
+    );
     assert_eq!(store.waiting().len(), 1, "still waiting to go out: kept");
     store.set_delivery(&[3; 16], Delivery::Sent).unwrap();
-    assert_eq!(store.forget_older_than(9_001, 4_000).unwrap(), 1, "gone, so it can go");
+    assert_eq!(
+        store.forget_older_than(9_001, 4_000).unwrap(),
+        1,
+        "gone, so it can go"
+    );
 
     // updating a stored message keeps the age it was first stored at
     store.set_age(20_000);
-    store.put_message(&message(4, c, 500, false, Delivery::Sent)).unwrap();
+    store
+        .put_message(&message(4, c, 500, false, Delivery::Sent))
+        .unwrap();
     assert_eq!(store.forget_older_than(13_001, 4_000).unwrap(), 1);
 }
 
@@ -487,8 +543,14 @@ fn messages_stored_before_ages_were_kept_take_the_age_they_are_found_at() {
     let d = tempdir().unwrap();
     let store = Store::create(&d.path().join("b.db"), "pw", &Identity::generate(), "me").unwrap();
     let c = store.add_contact("Marisol", &marisol(), true).unwrap();
-    store.put_message(&message(1, c, 1, false, Delivery::Sent)).unwrap(); // no age set yet
-    assert_eq!(store.forget_older_than(u64::MAX, 0).unwrap(), 0, "no age: never erased");
+    store
+        .put_message(&message(1, c, 1, false, Delivery::Sent))
+        .unwrap(); // no age set yet
+    assert_eq!(
+        store.forget_older_than(u64::MAX, 0).unwrap(),
+        0,
+        "no age: never erased"
+    );
     assert_eq!(store.adopt_unaged(50_000).unwrap(), 1);
     assert_eq!(store.adopt_unaged(90_000).unwrap(), 0, "adopted once");
     assert_eq!(store.forget_older_than(60_000, 10_000).unwrap(), 0);
@@ -505,6 +567,7 @@ fn notice(id: u8, outgoing: bool, delivery: Delivery) -> StoredBroadcast {
         text: format!("notice {id}"),
         at_min: 100 + id as u32,
         delivery,
+        channel: Channel::Sound,
     }
 }
 
@@ -513,7 +576,10 @@ fn broadcasts_sent_and_heard_are_kept_across_a_reopen_in_order() {
     let d = tempdir().unwrap();
     let path = d.path().join("b.db");
     let me = Identity::generate();
-    let (sent, heard) = (notice(1, true, Delivery::Waiting), notice(2, false, Delivery::Sent));
+    let (sent, heard) = (
+        notice(1, true, Delivery::Waiting),
+        notice(2, false, Delivery::Sent),
+    );
     {
         let store = Store::create(&path, "pw", &me, "me").unwrap();
         store.put_broadcast(&sent, Some(b"sealed")).unwrap();
@@ -527,7 +593,10 @@ fn broadcasts_sent_and_heard_are_kept_across_a_reopen_in_order() {
     assert_eq!(store.waiting_broadcasts(), vec![(sent, b"sealed".to_vec())]);
 
     store.set_delivery(&[1; 16], Delivery::Sent).unwrap();
-    assert!(store.waiting_broadcasts().is_empty(), "its envelope let go once sent");
+    assert!(
+        store.waiting_broadcasts().is_empty(),
+        "its envelope let go once sent"
+    );
     assert_eq!(store.broadcasts()[0].delivery, Delivery::Sent);
     store.set_delivery(&[1; 16], Delivery::Failed).unwrap();
     assert_eq!(store.broadcasts()[0].delivery, Delivery::Failed);
@@ -537,17 +606,31 @@ fn broadcasts_sent_and_heard_are_kept_across_a_reopen_in_order() {
 fn broadcasts_are_forgotten_as_messages_are_but_never_while_waiting() {
     let d = tempdir().unwrap();
     let store = Store::create(&d.path().join("b.db"), "pw", &Identity::generate(), "me").unwrap();
-    store.put_broadcast(&notice(9, false, Delivery::Sent), None).unwrap(); // no age yet
+    store
+        .put_broadcast(&notice(9, false, Delivery::Sent), None)
+        .unwrap(); // no age yet
     assert_eq!(store.adopt_unaged(500).unwrap(), 1);
     store.set_age(1_000);
-    store.put_broadcast(&notice(1, false, Delivery::Sent), None).unwrap();
-    store.put_broadcast(&notice(2, true, Delivery::Waiting), Some(b"sealed")).unwrap();
+    store
+        .put_broadcast(&notice(1, false, Delivery::Sent), None)
+        .unwrap();
+    store
+        .put_broadcast(&notice(2, true, Delivery::Waiting), Some(b"sealed"))
+        .unwrap();
     store.set_age(9_000);
-    store.put_broadcast(&notice(3, true, Delivery::Sent), None).unwrap();
+    store
+        .put_broadcast(&notice(3, true, Delivery::Sent), None)
+        .unwrap();
     // heard again: still the age it was first kept at
-    store.put_broadcast(&notice(1, false, Delivery::Sent), None).unwrap();
+    store
+        .put_broadcast(&notice(1, false, Delivery::Sent), None)
+        .unwrap();
 
-    assert_eq!(store.forget_older_than(9_000, 4_000).unwrap(), 2, "9 and 1, not the waiting 2");
+    assert_eq!(
+        store.forget_older_than(9_000, 4_000).unwrap(),
+        2,
+        "9 and 1, not the waiting 2"
+    );
     let left: Vec<u8> = store.broadcasts().iter().map(|b| b.id[0]).collect();
     assert_eq!(left, vec![2, 3]);
     store.set_delivery(&[2; 16], Delivery::Sent).unwrap();

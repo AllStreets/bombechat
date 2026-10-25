@@ -101,9 +101,9 @@ export function createMachine(container, { still = false, background = '#0d0d0c'
     return b;
   }
   // a traffolyte plate: black (or red) with the text engraved through to white
-  function plate(text, x, y, { w = null, h = .26, red = false, size = 56, align = 'center', z = .013 } = {}) {
+  function plate(text, x, y, { w = null, h = .26, red = false, size = 56, align = 'center', z = .013, pad = 0 } = {}) { // pad: room each side for screws, in units of the type size
     const c = document.createElement('canvas'); const ctx = c.getContext('2d'); setEngraving(ctx, size); const tw = ctx.measureText(text).width;
-    c.width = Math.ceil(tw + size * 1.2); c.height = Math.ceil(size * 1.5); const k = c.getContext('2d');
+    c.width = Math.ceil(tw + size * (1.2 + 2 * pad)); c.height = Math.ceil(size * 1.5); const k = c.getContext('2d');
     const g = k.createLinearGradient(0, 0, 0, c.height); g.addColorStop(0, red ? '#8a2a22' : '#191918'); g.addColorStop(1, red ? '#6d1e18' : '#0b0b0a'); k.fillStyle = g; k.fillRect(0, 0, c.width, c.height);
     setEngraving(k, size); k.fillStyle = red ? '#f2e7da' : '#e9e2cf'; k.textBaseline = 'middle'; k.textAlign = 'center'; engraveText(k, text, c.width / 2, c.height * .54, size, .045);
     const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8;

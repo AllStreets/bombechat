@@ -10,7 +10,12 @@
 //
 // Pairing: pair() hears Teodor say hello 2.4 s later (a pairOffer with a made-up
 // key and a seeded safety number); confirmPair adds him to contacts() under the
-// name as the page corrected it.
+// name as the page corrected it. pair('light') also shows this machine's hello as
+// the node does: display frames at the Flash speed until stopPairing or
+// confirmPair, the end of the window showing when finishPairing is called, Light
+// leaving Read and flash, or three minutes (?paircap=ms shortens it). Its frames
+// say hello; offers say the channel they came in on. Refused, as the node refuses it, when
+// the channel's switch won't send.
 //
 // Settings: the simulated machine keeps them as the device keeps settings.json,
 // apart from the page's own storage: in memory, carried between the front and
@@ -18,6 +23,14 @@
 // beside the store; clearing the page's localStorage leaves it alone).
 // settings() answers every setting the settings page has, defaults for the rest; settingNotes() the ones it can't
 // change, which setSetting refuses with the device's sentence.
+//
+// Light: a send or notice by light at Read and flash is shown as the node shows one: display frames at the Flash
+// speed's rate (synthetic bits, the size of that preset's grid) for at least four seconds after the page's still
+// moment, then displayStopped, then sent. At Read or Off it is refused as the node refuses it. Turning Light down mid-flash clears the screen and the
+// send waits; turning it back to Read and flash carries on.
+//
+// The eyepiece: while asked for and Light reads, a made-up grey room (a window, a desk, someone moving) four times a
+// second, 64 by 48, as the camera's would come.
 //
 // Query parameters: ?f=N starts the incoming message at chunk N (0 based),
 // ?still holds everything where it lands (no room meter, no further chunks).
@@ -32,11 +45,11 @@ const DEFAULTS = { sound: 2, volume: 2, band: 0, light: 0, flash: 1, machine: 1,
 // how many values each has; like the device, a value outside these is refused, and dropped if found kept
 const COUNTS = { sound: 3, volume: 5, band: 2, light: 3, flash: 3, machine: 2, machvol: 5, carry: 2, hops: 7, hold: 5, quiet: 5, repeats: 4, lock: 2, expire: 4, inperson: 2 };
 const isSetting = (id, v) => id in COUNTS && Number.isInteger(v) && v >= 0 && v < COUNTS[id];
-// the settings this machine can't change, as the device's setting_notes: relay and light wait for their features, and
-// on the airgapped build every contact is checked in person. The simulated machine is a Mac, so its lock can come off
-const NOTES = { carry: { note: 'comes with relay' }, hops: { note: 'comes with relay' }, hold: { note: 'comes with relay' }, light: { note: 'comes with light' }, flash: { note: 'comes with light' }, inperson: { note: 'always, on this build', value: 1 } };
+// the settings this machine can't change, as the device's setting_notes: relay waits for its feature, and on the
+// airgapped build every contact is checked in person. The simulated machine is a Mac, so its lock can come off
+const NOTES = { carry: { note: 'comes with relay' }, hops: { note: 'comes with relay' }, hold: { note: 'comes with relay' }, inperson: { note: 'always, on this build', value: 1 } };
 // what set_setting says for each, as the device says it
-const REFUSED = { carry: 'Carry for others comes with relay', hops: 'Hop limit comes with relay', hold: 'Hold for comes with relay', light: 'Light switch comes with light', flash: 'Flash speed comes with light', inperson: 'On this build every new contact needs a key check' };
+const REFUSED = { carry: 'Carry for others comes with relay', hops: 'Hop limit comes with relay', hold: 'Hold for comes with relay', inperson: 'On this build every new contact needs a key check' };
 const MACHINE_SETTINGS = 'bombechat.simulated-machine';
 function keptSettings() {
   let kept = {};
@@ -58,9 +71,28 @@ function keepNotice(n) {
 function keepSettings(settings) { try { sessionStorage.setItem(MACHINE_SETTINGS, JSON.stringify(settings)); } catch (e) {} }
 // bytes of message a second over sound, as the modem measures it at its defaults (crates/modem measured_rate)
 const RATE = 16.1;
+// light, by Flash speed (Slow, Normal, Fast), as the light transport's rate and code presets have them: bytes a second,
+// cells a side, frames a second (crates/light CodeSpec)
+const LIGHT_RATES = [948, 2290, 4680];
+const LIGHT_CELLS = [48, 56, 64];
+const LIGHT_FPS = [6, 10, 15];
+// the shortest an envelope is shown, as the light transport's HUMAN_FLOOR_MS
+const LIGHT_FLOOR_MS = 4000;
+// the page's still moment (its READY_MS), which the node adds each time the screen lights from clear, as STILL_MS
+const LIGHT_STILL_MS = 1200;
+// the light refusals and states, as the node's
+const LIGHT_SAYS = ['not sent: light is off', 'not sent: light is set to read only'];
+// a code in view the camera cannot read, as the node's TILT_OR_DIM
+const LIGHT_TILT = 'seeing a code: tilt or dim the screen';
+// the eyepiece, as the light transport's: 64 pixels wide, about four a second
+const EYEPIECE_W = 64, EYEPIECE_H = 48, EYEPIECE_MS = 250;
 // the longest broadcast, in UTF-8 bytes of text, as the node's MAX_BROADCAST (an envelope less its header and signing)
 const MAX_BROADCAST = 3939;
+// the longest reply, in UTF-8 bytes of text, as the node's max_private_text(1)
+const REPLY_MAX = 2814;
 const PAIR_MS = 2400;
+// how long pairing stays in progress at most, as the node's PAIRING_CAP_MS
+const PAIRING_CAP_MS = 180000;
 // this machine's public identity, sign key then dh key, made up but seeded so its fingerprint is always C41D
 const SELF_KEY = 'c41d' + Array.from({ length: 62 }, ((r) => () => r().toString(16).padStart(2, '0'))(seeded(4242))).join('');
 const at = (h, m) => Math.floor(new Date(2026, 9, 24, h, m).getTime() / 60000);
@@ -104,6 +136,7 @@ function history(emit, setClock) {
 
 export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
   const still = query.has('still');
+  const pairCap = query.has('paircap') ? +query.get('paircap') : PAIRING_CAP_MS;
   const incoming = chunked(sealedInner(SHOWN, at(9, 14), 1931), 1931);
   const NC = incoming.length;
   let c = query.has('f') ? Math.max(0, Math.min(NC - 1, +query.get('f') || 0)) : 1;
@@ -117,12 +150,15 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
 
   let soundState = null;// the last state the sound channel reported, for channels()
   const sound = state => { soundState = state; emit('channel', { channel: 'Sound', state }); };
+  let lightState = null;// likewise for light
+  const light = state => { lightState = state; emit('channel', { channel: 'Light', state }); };
+  const lightAt = () => settings.light === 0 ? 'off' : 'listening';
   const outbox = (m, state, first) => {
     if (m.kept) keepNotice({ ...m.kept, state: state === 'playing' ? 'waiting' : state });
     emit('outbox', first ? { id: m.id, state, text: m.text, public: !!m.public } : { id: m.id, state });
   };
   function land(n) {
-    emit('chunk', { tag: TAG, index: n, of: NC, view: incoming[n] });
+    emit('chunk', { tag: TAG, index: n, of: NC, view: incoming[n], channel: 'Sound' });
     if (n === NC - 1) finish();
   }
   function finish() {
@@ -155,12 +191,90 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
     later(() => { outbox(m, 'sent'); if (!m.public) emit('heard', { id: m.id, by: MARISOL }); }, 1960);
   }
 
+  // light: one envelope on screen at a time, its frames paced at the Flash speed it went on screen at
+  const flashes = [];
+  let flashing = null;// { m, spec, shown, window, lit, announced, heard }
+  let flashT = null;
+  // whether a code is on screen (between a display and its displayStopped)
+  let screenLit = false;
+  const cleared = tag => { screenLit = false; emit('displayStopped', { tag }); };
+  // the pairing hello on show by light, if any: a flash with no message, shown window after window
+  let hello = null, helloCap = null;
+  const lightWindow = spec => Math.ceil(LIGHT_FLOOR_MS * LIGHT_FPS[spec] / 1000);
+  // the hello stops showing at once: off the queue, or off the screen
+  function endHello() {
+    clearTimeout(helloCap);
+    const h = hello; hello = null;
+    if (!h) return;
+    const i = flashes.indexOf(h); if (i >= 0) flashes.splice(i, 1);
+    if (flashing === h) { flashing = null; if (h.lit) cleared(h.tag); }
+  }
+  const frameBits = (spec, tag, index) => { const r = seeded((tag << 12) ^ index ^ (spec << 28)); return Array.from({ length: Math.ceil(LIGHT_CELLS[spec] ** 2 / 8) }, r); };
+  function flashTick() {
+    if (!flashing) { flashing = flashes.shift() || null; if (flashing) { flashing.spec = settings.flash; if (!flashing.hello) flashing.window = lightWindow(flashing.spec); } }
+    const f = flashing;
+    if (!f) { flashT = null; return; }
+    if (settings.light < 2) {
+      // Light turned down: the screen clears and the send waits, carrying on where it stopped
+      if (f.lit) { f.lit = false; cleared(f.tag); }
+      if (f.announced && f.m) { f.announced = false; outbox(f.m, 'waiting'); }
+      flashT = later(flashTick, 200); return;
+    }
+    if (!f.announced && f.m) { f.announced = true; outbox(f.m, 'playing'); }
+    // lighting a clear screen: the page stands still first, so the frames it hides are added to the window
+    if (!screenLit && !f.hello) f.window += Math.ceil(LIGHT_STILL_MS * LIGHT_FPS[f.spec] / 1000);
+    screenLit = true;
+    emit('display', { tag: f.tag, bits: frameBits(f.spec, f.tag, f.shown), spec: f.spec, index: f.shown, hello: !!f.hello });
+    f.lit = true; f.shown += 1;
+    if (f.shown >= f.window) {
+      flashing = null;
+      if (f.hello) { if (hello === f) { hello = null; clearTimeout(helloCap); } later(() => { if (!flashing) cleared(f.tag); }, 1000 / LIGHT_FPS[f.spec]); }
+      else later(() => { if (!flashing) cleared(f.tag); outbox(f.m, 'sent'); if (f.heard) emit('heard', { id: f.m.id, by: MARISOL }); }, 1000 / LIGHT_FPS[f.spec]);
+    }
+    flashT = later(flashTick, 1000 / LIGHT_FPS[f.spec]);
+  }
+  function flash(m, heard) {
+    flashes.push({ m, tag: Math.floor(Math.random() * 65536), shown: 0, lit: false, announced: false, heard });
+    later(() => outbox(m, 'waiting'));
+    if (!flashT) flashT = later(flashTick, 0);
+  }
+  // the eyepiece: a grey room, the light from a window on the right, a desk below, someone leaning across it
+  let eyeOn = false, eyeT = null, eyeN = 0;
+  const noise = seeded(6406);
+  const grain = Array.from({ length: EYEPIECE_W * EYEPIECE_H }, () => noise() % 13 - 6);
+  function eyeFrame() {
+    const t = eyeN++ / 4, px = new Array(EYEPIECE_W * EYEPIECE_H);
+    const cx = 22 + 9 * Math.sin(t / 3), cy = 23 + 2 * Math.sin(t / 2);
+    for (let y = 0; y < EYEPIECE_H; y++) for (let x = 0; x < EYEPIECE_W; x++) {
+      let v = 64 + 50 * y / EYEPIECE_H + 60 * Math.max(0, (x - 38) / 26);
+      if (x > 44 && x < 60 && y > 5 && y < 25) v = 196;
+      if (y > 34) v = 46 + (y - 34) * 2;
+      const d = ((x - cx) / 10) ** 2 + ((y - cy) / 13) ** 2;
+      if (d < 1) v = v * .45 + 18;
+      px[y * EYEPIECE_W + x] = Math.max(0, Math.min(255, Math.round(v + grain[y * EYEPIECE_W + x])));
+    }
+    return px;
+  }
+  // one picture now, and (unless held still) one every 250 ms after, while asked for and Light reads
+  function eyeTick() {
+    eyeT = null;
+    if (!eyeOn || settings.light === 0) return;
+    emit('eyepiece', { width: EYEPIECE_W, height: EYEPIECE_H, pixels: eyeFrame() });
+    if (!still) eyeT = later(eyeTick, EYEPIECE_MS);
+  }
+  const eyeWake = () => { if (!eyeT) eyeT = later(eyeTick, 0); };
+
+  // refused by the Light switch, as the node refuses a send: the channel says why, the outbox fails, then the state
+  function refuseLight(m) { later(() => { light(LIGHT_SAYS[settings.light]); outbox(m, 'failed'); light(lightAt()); }); }
+
   function start() {
     if (started) return; started = true;
     history(emit, setClock);
     for (const m of queue) outbox(m, 'waiting', true);
     // a notice of this machine's still waiting when the page last closed goes again, as the node queues it on unlock
-    for (const k of keptNotices().filter(k => k.state === 'waiting')) { const m = { id: k.id, text: k.text, public: true, kept: k }; queue.push(m); outbox(m, 'waiting'); }
+    // on the channel it was sent on, as the node keeps it
+    for (const k of keptNotices().filter(k => k.state === 'waiting')) { const m = { id: k.id, text: k.text, public: true, kept: k };
+      if (k.channel === 'light') { if (settings.light < 2) refuseLight(m); else flash(m, false); } else { queue.push(m); outbox(m, 'waiting'); } }
     setClock(9, 14);
     if (settings.sound > 0) { sound('receiving'); for (let i = 0; i <= c; i++) land(i); }
     setClock(9, 15);
@@ -182,17 +296,22 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
       paused = true;
       const plain = utf8(text), r = seeded(77), key = plain.map(() => r());
       sound('receiving');
-      emit('chunk', { tag: ++testTag, index: 0, of: 1, view: { plain, key, heard: plain.map((p, i) => p ^ key[i]) } });
+      emit('chunk', { tag: ++testTag, index: 0, of: 1, view: { plain, key, heard: plain.map((p, i) => p ^ key[i]) }, channel: 'Sound' });
       if (end) sound('listening');
     },
-    // a whole sealed message from Marisol, chunk by chunk at once; `complete` false leaves it hanging
-    arrive(text, { complete = true, contact = MARISOL } = {}) {
+    // a whole sealed message from Marisol, chunk by chunk at once; `complete` false leaves it hanging. By light it
+    // arrives as the light transport hands one over: whole, so every chunk at once
+    arrive(text, { complete = true, contact = MARISOL, channel = 'sound' } = {}) {
       paused = true;
       const tag = ++testTag, parts = chunked(sealedInner(text, clock / 60000, tag), tag);
-      sound('receiving');
-      parts.forEach((view, index) => emit('chunk', { tag, index, of: parts.length, view }));
-      if (complete) { emit('message', { id: bytes(16), contact, outgoing: false, text, channel: 'Sound', at_min: Math.floor(clock / 60000), heard: false }); sound('listening'); }
+      const by = channel === 'light' ? light : sound, Channel = channel === 'light' ? 'Light' : 'Sound';
+      by('receiving');
+      parts.forEach((view, index) => emit('chunk', { tag, index, of: parts.length, view, channel: Channel }));
+      if (complete) { emit('message', { id: bytes(16), contact, outgoing: false, text, channel: Channel, at_min: Math.floor(clock / 60000), heard: false }); by(channel === 'light' ? lightAt() : 'listening'); }
     },
+    // the camera sees a code it cannot read, then it gives way
+    tiltOrDim() { light(LIGHT_TILT); },
+    lightState(state) { light(state || lightAt()); },
     fail() { sound('failed'); },
     receiving(on) { sound(on ? 'receiving' : 'listening'); },
     pause() { paused = true; },
@@ -206,27 +325,52 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
     send(contactIds, text, channel) {
       const m = { id: bytes(16), text };
       clock += 60000;
-      if (channel === 'light') {
-        later(() => outbox(m, 'playing'));
-        later(() => { outbox(m, 'sent'); emit('heard', { id: m.id, by: MARISOL }); }, 1500);
-      } else { queue.push(m); later(() => outbox(m, 'waiting')); }
+      if (channel === 'light') { if (settings.light < 2) refuseLight(m); else flash(m, true); }
+      else { queue.push(m); later(() => outbox(m, 'waiting')); }
       return Promise.resolve(m.id);
     },
-    // refused as the broadcast command refuses; at Listen or Off, as the node does: the channel says why, then the outbox fails
-    broadcast(text) {
+    // refused as the broadcast command refuses; at Listen or Off (light: Read or Off), as the node does: the channel
+    // says why, then the outbox fails
+    broadcast(text, channel = 'sound') {
+      if (channel !== 'sound' && channel !== 'light') return Promise.reject(`no such channel: ${channel}`);
       if (!text.trim()) return Promise.reject('Write the notice first');
       const n = utf8(text).length;
       if (n > MAX_BROADCAST) return Promise.reject(`Too long to broadcast: ${n} bytes, at most ${MAX_BROADCAST}`);
       const m = { id: bytes(16), text, public: true };
       clock += 60000;
-      m.kept = { id: m.id, outgoing: true, signer: SELF_KEY.slice(0, 64), text, verified: true, hops: 0, at_min: Math.floor(clock / 60000), state: 'waiting' };
+      m.kept = { id: m.id, outgoing: true, signer: SELF_KEY.slice(0, 64), text, verified: true, hops: 0, at_min: Math.floor(clock / 60000), state: 'waiting', channel };
       keepNotice(m.kept);
-      if (settings.sound < 2) later(() => { sound(settings.sound === 0 ? 'not sent: sound is off' : 'not sent: sound is set to listen only'); outbox(m, 'failed'); sound(settings.sound === 0 ? 'off' : 'listening'); });
+      if (channel === 'light') { if (settings.light < 2) refuseLight(m); else flash(m, false); }
+      else if (settings.sound < 2) later(() => { sound(settings.sound === 0 ? 'not sent: sound is off' : 'not sent: sound is set to listen only'); outbox(m, 'failed'); sound(settings.sound === 0 ? 'off' : 'listening'); });
       else { queue.push(m); later(() => outbox(m, 'waiting')); }
       return Promise.resolve(m.id);
     },
-    pair() { later(() => emit('pairOffer', { peer: signer(0x2c, 0x91), name: 'Teodor Vance', safety }), PAIR_MS); return Promise.resolve(); },
+    pair(channel = 'sound') {
+      if (channel === 'light') {
+        if (settings.light < 2) { const why = LIGHT_SAYS[settings.light]; later(() => { light(why); light(lightAt()); }); return Promise.reject(why); }
+        endHello();
+        const h = hello = { hello: true, tag: Math.floor(Math.random() * 65536), shown: 0, lit: false, announced: true, window: Infinity };
+        flashes.push(h);
+        if (!flashT) flashT = later(flashTick, 0);
+        helloCap = later(() => { if (hello === h) endHello(); }, pairCap);
+        later(() => { if (hello === h) emit('pairOffer', { peer: signer(0x2c, 0x91), name: 'Teodor Vance', safety, channel: 'Light' }); }, PAIR_MS);
+        return Promise.resolve();
+      }
+      if (channel !== 'sound') return Promise.reject(`no such channel: ${channel}`);
+      if (settings.sound < 2) { const why = settings.sound === 0 ? 'not sent: sound is off' : 'not sent: sound is set to listen only'; later(() => { sound(why); sound(settings.sound === 0 ? 'off' : 'listening'); }); return Promise.reject(why); }
+      later(() => emit('pairOffer', { peer: signer(0x2c, 0x91), name: 'Teodor Vance', safety, channel: 'Sound' }), PAIR_MS);
+      return Promise.resolve();
+    },
+    stopPairing() { endHello(); return Promise.resolve(); },
+    // their hello is in: the one on show finishes its window (the whole first one if it has not started), then clears
+    finishPairing() {
+      const h = hello;
+      if (h) { const win = lightWindow(flashing === h ? h.spec : settings.flash); h.window = Math.ceil(Math.max(1, h.shown) / win) * win; }
+      return Promise.resolve();
+    },
+    eyepiece(on) { eyeOn = on; eyeWake(); return Promise.resolve(); },
     confirmPair(peerHex, name) {
+      endHello();
       if (!people.some(p => p.id === TEODOR)) people.push({ id: TEODOR, name, checked: true, safety });
       return Promise.resolve(TEODOR);
     },
@@ -235,7 +379,12 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
       if (!(id in COUNTS)) return Promise.reject(`no such setting: ${id}`);
       if (!isSetting(id, valueIndex)) return Promise.reject(`no value ${valueIndex} for ${id}`);
       if (REFUSED[id]) return Promise.reject(REFUSED[id]);
+      const was = settings[id];
       settings[id] = valueIndex; keepSettings(settings);
+      // the light channel says when its camera closes or opens, as the node does on its next tick
+      if (id === 'light' && (was === 0) !== (valueIndex === 0)) { later(() => light(lightAt())); eyeWake(); }
+      // pairing by light ends when Light leaves Read and flash, as the node ends it
+      if (id === 'light' && valueIndex < 2) endHello();
       return Promise.resolve();
     },
     // read from the record each time, as the device answers from its own: another page may have changed it
@@ -248,8 +397,9 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
     // this machine's own notices, kept across reloads; the heard ones arrive as history, as the mockups showed them
     broadcasts: () => Promise.resolve(keptNotices()),
     // you are Teodor here: his key signs your broadcasts
-    machine: () => Promise.resolve({ name: 'Machine No. 1', key: SELF_KEY, you: 'Teodor Vance', held: 6, version: '0.4', broadcast_max: MAX_BROADCAST }),
-    channels: () => Promise.resolve([{ channel: 'Sound', state: soundState || 'listening', rate: RATE, band: settings.band ? 'audible' : 'near silent' }]),
+    machine: () => Promise.resolve({ name: 'Machine No. 1', key: SELF_KEY, you: 'Teodor Vance', held: 6, version: '0.4', broadcast_max: MAX_BROADCAST, reply_max: REPLY_MAX }),
+    channels: () => Promise.resolve([{ channel: 'Sound', state: soundState || 'listening', rate: RATE, band: settings.band ? 'audible' : 'near silent' },
+      { channel: 'Light', state: lightState || lightAt(), rate: LIGHT_RATES[settings.flash] }]),
     test,
   };
 }

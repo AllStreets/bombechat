@@ -244,6 +244,14 @@ impl Reassembler {
             .retain(|_, &mut completed_ms| now_ms.saturating_sub(completed_ms) <= EXPIRY_MS);
     }
 
+    /// Forget `tag` entirely, completed or part way: its frames are
+    /// collected afresh, for a message that arrived but would not open
+    /// and whose carrier will hand it over again.
+    pub fn forget(&mut self, tag: u16) {
+        self.partials.remove(&tag);
+        self.completed.remove(&tag);
+    }
+
     /// The contiguous bytes received so far for `tag`, from frame 0
     /// onward, so a caller can decrypt chunks as they land rather than
     /// waiting for the whole message. `None` if `tag` has no message in

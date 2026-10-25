@@ -20,6 +20,8 @@
   --engr:'Bombechat Engraving','Caslon fallback',serif;
   --print:'Libre Caslon Text','Caslon fallback',Georgia,serif;
   --type:'Cutive Mono','Cutive fallback','Courier New',monospace;
+  /* the wrinkle finish of the enamel, laid over it */
+  --noise:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .5  0 0 0 0 .5  0 0 0 0 .5  0 0 0 .55 0'/></filter><rect width='240' height='240' filter='url(%23n)'/></svg>");
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html{background:#121311;color-scheme:dark}
@@ -37,7 +39,7 @@ button{font:inherit;color:inherit}
 body:has(>.unlock){perspective:none;overflow:hidden;height:100vh}
 .unlock{position:fixed;inset:0;z-index:20;display:grid;place-items:center;overflow:auto;padding:24px 16px;background:var(--enamel)}
 .unlock::before{content:"";position:fixed;inset:0;pointer-events:none;opacity:.55;mix-blend-mode:overlay;
-  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .5  0 0 0 0 .5  0 0 0 0 .5  0 0 0 .55 0'/></filter><rect width='240' height='240' filter='url(%23n)'/></svg>")}
+  background-image:var(--noise)}
 .unlock .stand{position:relative;display:grid;justify-items:center;gap:22px;padding:14px 18px 6px}
 .unlock .maker{font-size:15px}
 .unlock .card{width:min(452px,calc(100vw - 32px));background:var(--buff);color:var(--type-ink);border-radius:1px;padding:17px 0 14px;transform:rotate(-.25deg);
@@ -101,7 +103,7 @@ body:has(>.unlock){perspective:none;overflow:hidden;height:100vh}
 .app{position:relative;min-height:100vh;min-width:980px;display:grid;grid-template-rows:auto auto minmax(410px,1fr);background:var(--enamel);
   transform-origin:50% 50vh;backface-visibility:hidden;transition:transform .65s cubic-bezier(.55,.05,.35,1),filter .65s}
 .app::before{content:"";position:absolute;inset:0;pointer-events:none;opacity:.55;mix-blend-mode:overlay;z-index:0;
-  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .5  0 0 0 0 .5  0 0 0 0 .5  0 0 0 .55 0'/></filter><rect width='240' height='240' filter='url(%23n)'/></svg>")}
+  background-image:var(--noise)}
 .app.turning{transform:rotateY(180deg);filter:brightness(.5)}
 body.turning{background:#0c0c0b}
 /* the machine's back, seen for the second half of the turn */
@@ -149,7 +151,7 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
 .taped .knob{cursor:default}
 .taped .knob .cap{opacity:.92}
 .tapedown{position:absolute;left:50%;top:41%;z-index:2;transform:translate(-22%,-50%) rotate(-7deg);pointer-events:none;filter:drop-shadow(0 1px 1.5px rgba(0,0,0,.7))}
-.tapedown b{display:block;width:7.2em;text-align:center;font-weight:400;font-family:var(--type);font-size:12.5px;line-height:1.2;color:#2b2926;text-shadow:0 0 .6px rgba(43,41,38,.55);padding:5px 6px 4px;
+.tapedown b,.lightnote b{display:block;width:7.2em;text-align:center;font-weight:400;font-family:var(--type);font-size:12.5px;line-height:1.2;color:#2b2926;text-shadow:0 0 .6px rgba(43,41,38,.55);padding:5px 6px 4px;
   background:linear-gradient(#cbbc94,#d8cba6 45%,#c4b48b);clip-path:polygon(0 8%,3% 0,97% 4%,100% 0,98% 50%,100% 100%,96% 94%,4% 100%,0 92%,2% 50%)}
 
 /* drum bank */
@@ -313,9 +315,15 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
 .rs[disabled]{cursor:default;opacity:.4}
 .rs.ok{--ink:var(--violet);border-style:double;border-width:3px;padding:3px 9px 2px}
 .rs.no{--ink:#8a2a22;--tilt:1.5deg}
+.rs.light{--tilt:1.2deg}
 .pairact{display:flex;gap:10px 16px;align-items:flex-end;min-height:33px;margin-top:10px;margin-bottom:6px;padding-left:2px;position:relative;z-index:1}
-.pairact .ptlab{margin:0 auto 4px 0}
-.menu[data-pair=offer] .pairact .ptlab{display:none}
+/* two stamps leave no room beside them: the tape's label goes under them, just over the tape it names */
+.pairact{flex-wrap:wrap;justify-content:flex-end}
+.pairact .ptlab{order:9;flex:1 0 100%;margin:2px 0 0}
+/* every stamp the same height, so the row (and the number above it) stays put as the stamps change */
+.pairact .rs{box-sizing:border-box;min-height:28px}
+/* hidden on an offer, its line kept, so the number sits in the same place from the offer to the stamped card */
+.menu[data-pair=offer] .pairact .ptlab{visibility:hidden}
 .rs[hidden]{display:none}
 /* two lines kept for the note under the number, so offer and match share one layout */
 .menu.gridded .fpwrap{min-height:38px}
@@ -378,6 +386,56 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
 .holder span small{display:block;font-size:12px;color:#625a49;margin-top:1px}
 .counter{display:flex;align-items:center;gap:10px}
 
+/* the flashing view: while the machine flashes by light, the message sheet's place holds a signal lamp. The code
+   sits in a brass bezel on mid-grey enamel, so it never fills the screen and its surround never changes. The
+   canvas is drawn pixel for pixel as the light crate's renderer draws a frame, and is never turned or scaled. */
+/* it is a temporary mode, so it takes the sheet's column (and the key check card's, when that stands beside it) from
+   just under the title bar to the foot of the window, over the drums, which recede under it: the code is then a good
+   size for a camera at arm's length. Fixed to the window, so it never scrolls or moves while it shows */
+body:has(.lamp:not([hidden])){perspective:none}
+.lamp{position:fixed;left:16px;top:58px;bottom:16px;width:min(980px,calc(100vw - 32px));z-index:4;display:grid;grid-template-rows:auto minmax(0,1fr) auto;gap:12px;min-height:0;padding:12px 16px 14px;border-radius:3px;
+  background:linear-gradient(#8f8b80,#8d887a);box-shadow:inset 0 0 0 1px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.16),0 10px 24px rgba(0,0,0,.55),0 2px 3px rgba(0,0,0,.5)}
+.lamp[hidden]{display:none}
+.lamp::before{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;opacity:.3;mix-blend-mode:overlay;
+  background-image:var(--noise)}
+.lamp>*{position:relative}
+.deck.flashing .sheet{visibility:hidden}
+.lamp-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px}
+#lampnrd{margin-left:auto}
+.lamp-mid{display:grid;place-items:center;min-height:0}
+/* the bezel: turned brass, screwed to the enamel at its corners, with a dark lip round the glass */
+.bezel{position:relative;padding:14px;border-radius:2px;background:linear-gradient(145deg,#f0dcae,#b8955c 38%,#6e5631);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.35),inset 0 -1px 0 rgba(0,0,0,.35),0 0 0 1px rgba(0,0,0,.55),0 3px 6px rgba(0,0,0,.45)}
+.bezel::before{content:"";position:absolute;inset:11px;border-radius:1px;box-shadow:0 0 0 1px rgba(0,0,0,.5),inset 0 0 0 3px #2b2a26}
+.bezel>i{position:absolute;width:6px;height:6px;border-radius:50%;
+  background:linear-gradient(135deg,transparent 44%,#2a2925 44%,#2a2925 58%,transparent 58%),radial-gradient(circle at 35% 30%,#d9d5ca,#8f8b80 60%,#4c4a44);box-shadow:0 .5px 0 #000,0 0 0 .5px rgba(0,0,0,.6)}
+.bezel>i:nth-of-type(1){left:4px;top:4px}.bezel>i:nth-of-type(2){right:4px;top:4px;transform:rotate(70deg)}
+.bezel>i:nth-of-type(3){left:4px;bottom:4px;transform:rotate(-40deg)}.bezel>i:nth-of-type(4){right:4px;bottom:4px;transform:rotate(25deg)}
+.bezel canvas{display:block;position:relative;background:#fff}
+.lamp-foot{display:flex;align-items:center;gap:14px}
+.lamp-foot .holder{flex:1 1 auto}
+.lamp-foot .holder span{white-space:normal}
+
+/* the Light switch's eyepiece: a brass ring round a small lens showing what the camera sees, in grey, while Light
+   reads. Pressed, a brass shutter closes over it and the machine sends no picture at all */
+.eyepiece{all:unset;box-sizing:border-box;position:absolute;right:8px;top:8px;z-index:1;width:34px;height:34px;border-radius:50%;padding:4px;cursor:pointer;
+  background:radial-gradient(circle at 38% 32%,#f0dcae,#b8955c 55%,#6e5631);box-shadow:0 0 0 1px #000,0 2px 3px rgba(0,0,0,.6)}
+.eyepiece canvas{display:block;width:26px;height:26px;border-radius:50%;object-fit:cover;background:#0d0d0c}
+.eyepiece::after{content:"";position:absolute;inset:4px;border-radius:50%;box-shadow:inset 0 1px 3px rgba(0,0,0,.85),inset 0 0 0 1px rgba(0,0,0,.6);pointer-events:none}
+.eyepiece .shutter{position:absolute;inset:4px;border-radius:50%;opacity:0;transition:opacity .2s;
+  background:linear-gradient(135deg,transparent 46%,#2a2925 46%,#2a2925 54%,transparent 54%),radial-gradient(circle at 38% 32%,#d9d5ca,#8f8b80 60%,#4c4a44)}
+.eyepiece.shut .shutter{opacity:1}
+.eyepiece.dark canvas{visibility:hidden}
+.eyepiece:hover{filter:brightness(1.08)}
+.eyepiece:focus-visible{outline:1.5px solid var(--amber);outline-offset:2px}
+/* what the camera has to say (it sees a code it can't read; it is unavailable), typed on a strip of tape stuck under
+   the Light switch's tile, in the gap above the meter, so it covers none of the switch */
+.lightnote{position:absolute;left:50%;top:calc(100% + 2px);z-index:2;transform:translateX(-50%) rotate(-.8deg);pointer-events:none;filter:drop-shadow(0 1px 1.5px rgba(0,0,0,.7))}
+.lightnote:has(b:empty){display:none}
+.lightnote b{width:auto;white-space:nowrap;padding:4px 10px 3px}
+/* room under the switches for that tape */
+.mods{margin-bottom:16px}
+
 /* short laptop screens: tighten the panel, not the type */
 @media (max-height:880px){
   .mod{padding:8px 4px 10px;gap:4px}
@@ -394,6 +452,7 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
   .ent.fresh,.stamp.new{animation:none}
   .cur,.state.live::after,.ears path{animation:none}
   .menu .stmp.new div,.gstmp.new{animation:none}
+  .eyepiece .shutter{transition:none}
   .unlock.working .turn .odo i span,.unlock .rs[aria-disabled="true"]{animation:none}
 }
 </style>
@@ -463,6 +522,19 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
       </div>
     </article>
 
+    <section class="lamp" id="lamp" aria-label="Flashing by light" hidden>
+      <div class="lamp-head">
+        <span class="pl screw">Flashing by light</span>
+        <span class="rd" id="lampnrd" title="Frames of this message shown so far"><span class="pl">Frames shown</span><span class="odo" id="lampn"><i>0</i><i>0</i><i>0</i></span></span>
+        <span class="rd" id="lamprd" title="Bytes of message a second at this Flash speed"><span class="pl">Bytes a second</span><span class="odo" id="lamprate"><i>0</i><i>0</i><i>0</i><i>0</i></span></span>
+      </div>
+      <div class="lamp-mid"><div class="bezel"><i></i><i></i><i></i><i></i><canvas id="lampcode" width="300" height="300" role="img" aria-label="The message as a light code"></canvas></div></div>
+      <div class="lamp-foot">
+        <span class="holder"><span id="lampsay" role="status" aria-live="polite">Hold this screen up to their camera.<small>ready, Escape stops it</small></span></span>
+        <button type="button" class="key pb" id="lampstop" title="Stops flashing. Escape does the same. Light turns to Read, and the message waits until it is back at Read and flash."><span class="jewel off" id="lampjewel" aria-hidden="true"></span>Stop</button>
+      </div>
+    </section>
+
     <aside class="menu" aria-label="Key check with Marisol">
       <span class="pin" aria-hidden="true"></span>
       <h2>Key check <span>menu 7, Marisol</span></h2>
@@ -474,14 +546,16 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
         </table>
         <div class="note" aria-live="polite">Checked in person, by light.</div>
       </div>
-      <div class="pairact" id="pairact"><div class="ptlab">Your key, punched</div><button type="button" class="rs pair" id="pairbtn" title="Plays a hello with your name and key once the room is quiet, and listens for theirs">Pair by sound</button><button type="button" class="rs ok" id="pairyes" hidden>Matched, add</button><button type="button" class="rs no" id="pairno" hidden>Doesn't match</button></div>
+      <div class="pairact" id="pairact"><div class="ptlab">Your key, punched</div><button type="button" class="rs pair" id="pairbtn" title="Plays a hello with your name and key once the room is quiet, and listens for theirs">Pair by sound</button><button type="button" class="rs pair light" id="pairlight" title="Shows a hello with your name and key as a light code, and reads theirs with the camera. Light must be at Read and flash.">Pair by light</button><button type="button" class="rs ok" id="pairyes" hidden>Matched, add</button><button type="button" class="rs no" id="pairno" hidden>Doesn't match</button></div>
       <div class="ptape" id="ptape" role="img" aria-label="Your key as punched tape, for pairing in person by camera"></div>
     </aside>
 
     <section class="panel" aria-label="Channels and stations">
       <div class="mods">
         <div class="mod"><span class="jewel" id="j1" aria-hidden="true"></span><button class="knob" id="k1" role="slider" aria-label="Sound" aria-valuemin="0" aria-valuemax="2"></button><span class="pl screw">Sound</span></div>
-        <div class="mod"><span class="jewel off" id="j2" aria-hidden="true"></span><button class="knob" id="k2" role="slider" aria-label="Light" aria-valuemin="0" aria-valuemax="2"></button><span class="pl screw">Light</span></div>
+        <div class="mod"><span class="jewel off" id="j2" aria-hidden="true"></span><button class="knob" id="k2" role="slider" aria-label="Light" aria-valuemin="0" aria-valuemax="2"></button><span class="pl screw">Light</span>
+          <button type="button" class="eyepiece dark" id="eyepiece" role="switch" aria-checked="true" aria-label="Camera eyepiece"><canvas width="64" height="48"></canvas><span class="shutter" aria-hidden="true"></span></button>
+          <span class="lightnote" id="lightnote" role="status" aria-live="polite"><b></b></span></div>
         <div class="mod" title="The airgapped build ships without Bluetooth. Nothing here can be switched on."><span class="jewel off" style="opacity:.25" aria-hidden="true"></span><div class="blank"><b>Bluetooth</b><i style="left:6px;top:6px"></i><i style="right:6px;top:6px"></i><i style="left:6px;bottom:6px"></i><i style="right:6px;bottom:6px"></i></div><span class="pl red">Not fitted</span></div>
       </div>
       <div class="row2">
@@ -589,11 +663,12 @@ const ME=bridge.simulated?null:await bridge.machine();
 const SELF=ME||await bridge.machine().catch(()=>null);
 const MY_FP=SELF&&/^[0-9a-f]{4}/i.test(SELF.key||'')?SELF.key.slice(0,4).toUpperCase():'';
 const MAX_BROADCAST=SELF&&Number.isInteger(SELF.broadcast_max)?SELF.broadcast_max:null;
+const MAX_REPLY=SELF&&Number.isInteger(SELF.reply_max)?SELF.reply_max:null;
 // the settings as the machine keeps them: its record is the only one, and this page never sends them back
 // if it cannot answer, the switches show Off and say they were not read: never the most permissive position
 let KEPT_READ=true;
 const KEPT=await bridge.settings().catch(()=>{KEPT_READ=false;return {sound:0,light:0,machine:0}});
-// the settings this machine can't change yet: Light comes with light, so its switch is taped down at Off
+// the settings this machine can't change: a switch held by one is taped down, the tape saying why
 const NOTES=await bridge.settingNotes().catch(()=>({}));
 try{localStorage.removeItem('bombechat.settings')}catch(e){}
 // true while the page replays what happened before it opened: nothing animates
@@ -690,6 +765,7 @@ function tape(what,text,cls='strip',before=null){const lines=text.split('\n').fl
 const shortName=id=>{const p=PEOPLE.find(x=>x.id===id);return p?p.short:CONTACT.short};
 function stamp(what,how,ms,by){const s=el('div',booting?'stamp':'stamp new',`${how==='light'?'seen':'heard'} by ${shortName(by)}${ms==null?'':', '+hhmm(ms)}`);what.appendChild(s)}
 const sent=new Map();// message id -> {ent,how}
+const lightTo=new Map();// message id -> the name of whose camera it flashes for, for a message sent by light from this page
 // every message on the sheet, by id: one the store already showed (say, heard while locked
 // and loaded on unlock) is not drawn again when its events arrive after
 const onSheet=new Set();
@@ -697,7 +773,7 @@ const hopsWord=n=>['no hops','one hop','two hops','three hops','four hops','five
 
 function onMessage(m){
   if(onSheet.has(m.id))return;
-  if(!m.outgoing&&m.channel==='sound'&&!m.via&&arrival&&arrival.ent)return;// it finishes a provisional entry: see below
+  if(!m.outgoing&&!m.via&&arrival&&arrival.ent&&m.channel===arrival.how)return;// it finishes a provisional entry: see below
   if(m.contact!==CONTACT.id)return;// another person's sheet
   onSheet.add(m.id);
   const how=m.via?'relay':m.channel;const ent=entry(m.at_min*60000,how);const what=ent.querySelector('.what');
@@ -713,9 +789,9 @@ bridge.on('message',onMessage);
 // as it happens or replayed from the store; each once, by id
 function drawNotice(b){if(b.id){if(onSheet.has(b.id))return;onSheet.add(b.id)}
   const ent=entry(b.at_min!=null?b.at_min*60000:bridge.now(),'public');const what=ent.querySelector('.what');
-  if(b.outgoing){ent.classList.add('mine','public');what.append(el('div','typed',b.text),el('div','state'));sent.set(b.id,{ent,how:'sound'});
-    const it=outItem(b.id);Object.assign(it,{text:b.text,ent,how:'sound',public:true});
-    if(b.state==='waiting')setOut(it,it.state||'waiting');else{outbox.delete(b.id);status({state:b.state||'sent',ent,how:'sound',public:true})}}
+  if(b.outgoing){const how=b.channel==='light'?'light':'sound';ent.classList.add('mine','public');what.append(el('div','typed',b.text),el('div','state'));sent.set(b.id,{ent,how});
+    const it=outItem(b.id);Object.assign(it,{text:b.text,ent,how,public:true});
+    if(b.state==='waiting')setOut(it,it.state||'waiting');else{outbox.delete(b.id);status({state:b.state||'sent',ent,how,public:true})}}
   else{tape(what,b.text);
     // from someone not checked in person: unverified, with the key that signed it
     what.appendChild(el('div','state',`signed ${b.signer.slice(0,4).toUpperCase()}${b.verified?'':', unverified'}${b.hops?', '+hopsWord(b.hops):''}`))}
@@ -730,8 +806,8 @@ bridge.on('heard',h=>{const s=sent.get(h.id);if(!s||s.ent.querySelector('.stamp'
    is marked as not yet checked. The message event (from this sheet's contact)
    replaces it with the real entry; a failure, or no chunk for 30 s, strikes it through. */
 const STALL=Q.has('stall')?+Q.get('stall'):30000;
-function arrivingEntry(){const ent=entry(bridge.now(),'sound');ent.classList.add('arriving');
-  ent.querySelector('.what').append(el('div','strip provisional feed'),el('div','state live','arriving by sound, not yet checked'));
+function arrivingEntry(how){const ent=entry(bridge.now(),how);ent.classList.add('arriving');
+  ent.querySelector('.what').append(el('div','strip provisional feed'),el('div','state live',`arriving by ${how}, not yet checked`));
   grow(()=>put(ent));return ent}
 function provisionalTape(a,text){const what=a.ent.querySelector('.what'),note=what.querySelector('.state');
   what.querySelectorAll('.strip').forEach(s=>s.remove());
@@ -742,7 +818,7 @@ function failArrival(a){if(!a||!a.ent)return;clearTimeout(a.stallT);const ent=a.
   grow(()=>{ent.classList.remove('arriving');ent.classList.add('failed');ent.querySelectorAll('.cur').forEach(c=>c.remove());
     const note=ent.querySelector('.state');note.classList.remove('live');note.textContent='did not check'})}
 bridge.on('chunk',c=>{const v=c.view,fpc=Math.max(1,Math.ceil(v.plain.length/W));
-  if(!arrival||arrival.tag!==c.tag||c.index===0){failArrival(arrival);arrival={tag:c.tag,fpc,ent:arrivingEntry(),text:''}}
+  if(!arrival||arrival.tag!==c.tag||c.index===0){failArrival(arrival);arrival={tag:c.tag,fpc,how:c.channel,ent:arrivingEntry(c.channel),text:''}}
   const base=c.index*arrival.fpc,total=c.index===c.of-1?base+fpc:c.of*arrival.fpc;
   for(let i=0;i<fpc;i++){const s=i*W;frames.push({plain:pad(v.plain.slice(s,s+W)),heard:pad(v.heard.slice(s,s+W)),key:pad(v.key.slice(s,s+W)),no:base+i,total,index:c.index,of:c.of})}
   const a=arrival;
@@ -750,7 +826,7 @@ bridge.on('chunk',c=>{const v=c.view,fpc=Math.max(1,Math.ceil(v.plain.length/W))
   pump()});
 // the message the chunks were spelling: the provisional tape gives way to the real entry
 bridge.on('message',m=>{
-  if(m.outgoing||m.channel!=='sound'||m.via||!arrival||!arrival.ent)return;
+  if(m.outgoing||m.via||!arrival||!arrival.ent||m.channel!==arrival.how)return;
   const a=arrival,ent=a.ent;a.ent=null;clearTimeout(a.stallT);
   // another person's, or already on the sheet: the provisional tape goes
   if(m.contact!==CONTACT.id||onSheet.has(m.id)){grow(()=>ent.remove());return}
@@ -758,8 +834,14 @@ bridge.on('message',m=>{
   whenDrumsRest(()=>grow(()=>{ent.classList.remove('arriving');const what=ent.querySelector('.what');what.textContent='';tape(what,m.text)}))});
 // a send the Sound switch refused says why: 'not sent: sound is set to listen only'
 let refusedWhy=null;
-function onChannel(s){if(s.channel!=='sound')return;Drum.receiving=s.state==='receiving';if(s.state==='failed')failArrival(arrival);
-  if(/^not sent: /.test(s.state))refusedWhy=s.state}
+// a switch's refusal, on either channel, goes with the outbox failure that follows it
+// a message arriving on either channel quiets the drums, as one arriving by sound always has
+const receivingOn={sound:false,light:false};
+function onChannel(s){if(/^not sent: /.test(s.state))refusedWhy=s.state;
+  if(s.state==='failed'&&arrival&&arrival.how===s.channel)failArrival(arrival);
+  if(!(s.channel in receivingOn))return;
+  receivingOn[s.channel]=s.state==='receiving';Drum.receiving=receivingOn.sound||receivingOn.light;
+  if(s.channel==='light')lightSays(s.state)}
 bridge.on('channel',onChannel);
 
 /* ---------- channels ---------- */
@@ -792,13 +874,22 @@ for(const [id,k] of Object.entries(KNOBS)){const n=NOTES[k.setting];if(!n)contin
 // the machine won't take a turn (the setting could not be saved): the knob goes back and the top bar says why, as the
 // settings page does
 const saidEl=document.getElementById('said');let saidT;
-function say(text){saidEl.textContent=text;saidEl.title=text;saidEl.style.opacity=1;clearTimeout(saidT);saidT=setTimeout(()=>saidEl.style.opacity=0,text.length>40?5200:2600)}
-function turnKnob(id,pos){const k=KNOBS[id];if(k.held)return;pos=Math.max(0,Math.min(2,pos));if(pos===k.pos&&k.read)return;const was={pos:k.pos,read:k.read};k.pos=pos;k.read=true;
+function say(text,full=text){saidEl.textContent=text;saidEl.title=full;saidEl.style.opacity=1;clearTimeout(saidT);saidT=setTimeout(()=>saidEl.style.opacity=0,text.length>40?5200:2600)}
+// resolves true once the machine has taken the turn, or to why it would not
+function turnKnob(id,pos,again){const k=KNOBS[id];if(k.held)return Promise.resolve(`${k.name}: ${k.held}`);pos=Math.max(0,Math.min(2,pos));if(pos===k.pos&&k.read&&!again)return Promise.resolve(true);const was={pos:k.pos,read:k.read};k.pos=pos;k.read=true;
+  // turned back to Read and flash: what Escape stopped may show again
+  if(id==='k2'&&pos===2)Lamp.stopped=false;
   const cap=document.querySelector(`#${id} .cap`);cap.style.transform=`rotate(${ANG[pos]}deg)`;setTimeout(()=>drawKnob(id),RM.matches?0:330);
   Drum.spin(2,0.7);
-  Promise.resolve(bridge.setSetting(k.setting,pos)).catch(why=>{if(k.pos!==pos)return;k.pos=was.pos;k.read=was.read;drawKnob(id);applyChannels();
-    const t=String(why&&why.message||why);say(t.charAt(0).toUpperCase()+t.slice(1))});
-  applyChannels()}
+  // Light taken off Read and flash: the machine ends a pairing by light, and so does the card
+  // refused: back to where the machine keeps it. Light turned down is the exception the machine makes: it stays down
+  // for this session even when it can't be saved (so Escape always stops), and the machine's settings say so
+  const back=t=>{if(k.pos!==pos)return t;k.pos=was.pos;k.read=was.read;drawKnob(id);applyChannels();say(t.charAt(0).toUpperCase()+t.slice(1));return t};
+  const taken=Promise.resolve(bridge.setSetting(k.setting,pos)).then(()=>{if(id==='k2'&&pos<2)lightLeftFlash();return true},why=>{const t=String(why&&why.message||why);
+    if(!(id==='k2'&&pos<was.pos))return back(t);
+    return Promise.resolve(bridge.settings()).then(m=>{if(!m||m.light!==pos)return back(t);if(k.pos!==pos)return t;
+      lightLeftFlash();say(`Light at ${k.labels[pos]}, not saved.`,`Light is at ${k.labels[pos]} for now. ${sentence(t)} So it goes back to ${k.labels[was.pos]} next time.`);return {unsaved:t}},()=>back(t))});
+  applyChannels();return taken}
 ['k1','k2'].forEach(id=>{drawKnob(id);const el=document.getElementById(id);
   el.addEventListener('click',()=>turnKnob(id,(KNOBS[id].pos+1)%3));
   el.addEventListener('keydown',e=>{const d={ArrowRight:1,ArrowUp:1,ArrowLeft:-1,ArrowDown:-1}[e.key];if(e.key==='Home')turnKnob(id,0);else if(e.key==='End')turnKnob(id,2);else if(d)turnKnob(id,KNOBS[id].pos+d);else return;e.preventDefault()})});
@@ -810,7 +901,8 @@ function applyChannels(){const s=KNOBS.k1.pos,l=KNOBS.k2.pos;
   sendBtn.setAttribute('aria-disabled',s<2);document.getElementById('sendlamp').classList.toggle('off',s<2);
   sendBtn.title=s<2?`Sound is set to ${KNOBS.k1.labels[s].toLowerCase()}. Turn it to Listen and send to play replies.`:'Plays the message through the speaker. Enter does the same.';
   flashBtn.setAttribute('aria-disabled',l<2);
-  flashBtn.title=l<2?'Light is not set to Read and flash. Turn the Light switch to Read and flash to send this way.':`Flashes the message on screen. Hold it up to ${CONTACT.short}'s camera.`}
+  flashBtn.title=l<2?'Light is not set to Read and flash. Turn the Light switch to Read and flash to send this way.':PUBLIC?'Flashes the notice on screen, for any camera held up to it.':`Flashes the message on screen. Hold it up to ${CONTACT.short}'s camera.`;
+  showEyepiece();outbox.forEach(status);drawOutbox()}
 
 /* ---------- room meter and the quiet rule ---------- */
 // in the app the room is unknown until the microphone measures it
@@ -842,11 +934,11 @@ const esc=s=>s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&qu
 function outItem(id){let it=outbox.get(id);if(!it){it={id,text:'',public:false,state:null,ent:null,how:'sound',leaving:false};outbox.set(id,it)}return it}
 function drawOutbox(){const q=[...outbox.values()].filter(m=>m.text&&(m.state==='waiting'||m.leaving));
   if(!q.length){outboxEl.innerHTML='<div class="slip empty">Nothing waiting to send.</div>';return}
-  outboxEl.innerHTML=q.slice(0,2).map(m=>`<div class="slip${m.leaving?' gone':''}" data-id="${m.id}">${esc(m.text)}<small>${m.public?'public, ':''}sends once under ${sendUnder()} dB</small></div>`).join('')+(q.length>2?`<div class="slip empty">and ${q.length-2} more</div>`:'')}
+  outboxEl.innerHTML=q.slice(0,2).map(m=>`<div class="slip${m.leaving?' gone':''}" data-id="${m.id}">${esc(m.text)}<small>${m.public?'public, ':''}${m.how==='light'?(KNOBS.k2.pos<2?'flashes at Read and flash':'flashes next'):`sends once under ${sendUnder()} dB`}</small></div>`).join('')+(q.length>2?`<div class="slip empty">and ${q.length-2} more</div>`:'')}
 function status(it){const st=it.ent&&it.ent.querySelector('.state');if(!st)return;
   st.classList.toggle('live',it.state==='playing');
   if(it.ent)it.ent.classList.toggle('failed',it.state==='failed');
-  const said=it.state==='waiting'?(room==null?'waiting for quiet':room<sendUnder()?'playing next':`waiting for quiet, the room is at ${Math.round(room)} dB`)
+  const said=it.state==='waiting'?(it.how==='light'?(KNOBS.k2.pos<2?'waiting for Read and flash':'flashing next'):room==null?'waiting for quiet':room<sendUnder()?'playing next':`waiting for quiet, the room is at ${Math.round(room)} dB`)
     :it.state==='playing'?(it.how==='light'?'flashing on screen':'playing by sound'):it.state==='sent'?(it.public?'sent to anyone in range':'sent, not heard yet'):it.state==='failed'?sentence(it.why||'not sent'):'';
   // a public notice carries the key it is signed with, as the public entries heard on the sheet do
   st.textContent=it.public&&it.state!=='failed'?[signedBy(),said].filter(Boolean).join(', '):said}
@@ -858,7 +950,11 @@ function setOut(it,state){const was=it.state;it.state=state;status(it);
 // the reason the switch gave goes with the failure it caused (the channel event comes first);
 // cleared on every outbox event, failed or not, so a stale reason never attaches to a later,
 // unrelated failure
-bridge.on('outbox',o=>{const it=outItem(o.id);if(o.text&&!it.text){it.text=o.text;it.public=!!o.public}
+bridge.on('outbox',o=>{const it=outItem(o.id);
+  // a message going on screen by light names whose camera to hold it up to: the node reports it playing just before
+  // its first frame. Anything else that goes on screen (a receipt, a notice) is for any camera
+  if(o.state==='playing')Lamp.next=lightTo.has(o.id)?lightTo.get(o.id):null;
+  if(o.state==='sent'||o.state==='failed')lightTo.delete(o.id);if(o.text&&!it.text){it.text=o.text;it.public=!!o.public}
   if(o.state==='failed'&&refusedWhy)it.why=refusedWhy;
   refusedWhy=null;setOut(it,o.state)});
 const nowtime=document.getElementById('nowtime');
@@ -868,17 +964,22 @@ function fit(){pinned(()=>{reply.style.height='auto';reply.style.height=Math.min
 reply.addEventListener('input',()=>{fit();if(pubnote.classList.contains('refused'))explain()});
 reply.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();send('sound')}});
 form.addEventListener('submit',e=>{e.preventDefault();send('sound')});
-flashBtn.addEventListener('click',()=>{if(PUBLIC){refuse('A public notice goes by sound only. Use Send by sound',flashBtn);return}send('light')});
+flashBtn.addEventListener('click',()=>send('light'));
 function nudge(btn){btn.animate([{transform:'translateX(0)'},{transform:'translateX(-3px)'},{transform:'translateX(3px)'},{transform:'translateX(0)'}],{duration:220});}
 function send(how){const text=reply.value.trim();
-  if(PUBLIC&&how==='sound'){broadcast(text);return}
+  if(PUBLIC){broadcast(text,how);return}
   const btn=how==='sound'?sendBtn:flashBtn;
+  // the Light switch won't flash it: say why under the line, as a notice's refusal is said, and keep what was written
+  if(how==='light'&&btn.getAttribute('aria-disabled')==='true'){refuse(`${lightRefusal()}. Turn it to Read and flash to send by light`,flashBtn);flashBtn.focus();return}
   if(btn.getAttribute('aria-disabled')==='true'){nudge(btn);btn.focus();return}
   if(!text){reply.focus();return}
+  const n=new TextEncoder().encode(text).length;
+  if(MAX_REPLY!=null&&n>MAX_REPLY){refuse(`Too long to send: ${n} bytes, at most ${MAX_REPLY}`,btn);return}
+  if(how==='light')Lamp.stopped=false;
   const ent=entry(bridge.now(),how);ent.classList.add('mine');const what=ent.querySelector('.what');what.append(el('div','typed',text),el('div','state'));
   grow(()=>put(ent),true);
-  reply.value='';fit();
-  bridge.send([CONTACT.id],text,how).then(id=>{sent.set(id,{ent,how});
+  reply.value='';fit();if(pubnote.classList.contains('refused'))pinned(()=>pubnote.classList.remove('refused'));
+  bridge.send([CONTACT.id],text,how).then(id=>{sent.set(id,{ent,how});if(how==='light'&&CONTACT.id)lightTo.set(id,CONTACT.short);
     if(finished.has(id)){status({state:finished.get(id),why:finishedWhy.get(id),ent,how});tick();return}
     const it=outItem(id);Object.assign(it,{text,ent,how});
     if(it.state)setOut(it,it.state);tick()},
@@ -892,26 +993,30 @@ function send(how){const text=reply.value.trim();
 const modeSw=document.getElementById('mode'),pubnote=document.getElementById('pubnote');
 function explain(){pinned(()=>{pubnote.classList.remove('refused');pubnote.textContent=`Anyone in range can read it. Signed with your key${MY_FP?', '+MY_FP:''}.`})}
 function refuse(why,btn=sendBtn){pinned(()=>{pubnote.classList.add('refused');pubnote.textContent=sentence(why)});nudge(btn)}
-function setPublic(on){if(on===PUBLIC)return;pinned(()=>{PUBLIC=on;modeSw.setAttribute('aria-checked',on);form.classList.toggle('public',on);replyLabels();fit();explain();
+function setPublic(on){if(on===PUBLIC)return;pinned(()=>{PUBLIC=on;modeSw.setAttribute('aria-checked',on);form.classList.toggle('public',on);replyLabels();fit();explain();applyChannels();
   if(!on)pubnote.classList.remove('refused')});Drum.spin(1,1.3)}
 modeSw.addEventListener('click',()=>{setPublic(!PUBLIC);reply.focus()});
 let broadcasting=false;
-function broadcast(text){if(broadcasting)return;
-  const s=KNOBS.k1.pos;
-  if(sendBtn.getAttribute('aria-disabled')==='true'){refuse(`${!KNOBS.k1.read?'The Sound switch was not read from the machine':s===0?'Sound is off':'Sound is set to listen only'}. Turn it to Listen and send to broadcast`);return}
-  if(!text){refuse('Write the notice first');reply.focus();return}
+// why the Light switch won't flash: it is off, at Read, or was not read from the machine
+const lightRefusal=()=>!KNOBS.k2.read?'The Light switch was not read from the machine':KNOBS.k2.pos===0?'Light is off':'Light is set to read only';
+function broadcast(text,how='sound'){if(broadcasting)return;
+  const s=KNOBS.k1.pos,btn=how==='light'?flashBtn:sendBtn;
+  if(how==='light'&&flashBtn.getAttribute('aria-disabled')==='true'){refuse(`${lightRefusal()}. Turn it to Read and flash to broadcast by light`,flashBtn);return}
+  if(how==='sound'&&sendBtn.getAttribute('aria-disabled')==='true'){refuse(`${!KNOBS.k1.read?'The Sound switch was not read from the machine':s===0?'Sound is off':'Sound is set to listen only'}. Turn it to Listen and send to broadcast`);return}
+  if(!text){refuse('Write the notice first',btn);reply.focus();return}
   const n=new TextEncoder().encode(text).length;
-  if(MAX_BROADCAST!=null&&n>MAX_BROADCAST){refuse(`Too long to broadcast: ${n} bytes, at most ${MAX_BROADCAST}`);return}
+  if(MAX_BROADCAST!=null&&n>MAX_BROADCAST){refuse(`Too long to broadcast: ${n} bytes, at most ${MAX_BROADCAST}`,btn);return}
+  if(how==='light')Lamp.stopped=false;
   // the line clears and the toggle springs back at once; a notice the machine refuses comes back to the line
   broadcasting=true;const was=reply.value;reply.value='';setPublic(false);
-  bridge.broadcast(text).then(id=>{broadcasting=false;onSheet.add(id);
+  bridge.broadcast(text,how).then(id=>{broadcasting=false;onSheet.add(id);
     const ent=entry(bridge.now(),'public');ent.classList.add('mine','public');const what=ent.querySelector('.what');what.append(el('div','typed',text),el('div','state'));
     grow(()=>put(ent),true);
-    sent.set(id,{ent,how:'sound'});
-    if(finished.has(id)){status({state:finished.get(id),why:finishedWhy.get(id),ent,how:'sound',public:true});tick();return}
-    const it=outItem(id);Object.assign(it,{text,ent,how:'sound',public:true});
+    sent.set(id,{ent,how});
+    if(finished.has(id)){status({state:finished.get(id),why:finishedWhy.get(id),ent,how,public:true});tick();return}
+    const it=outItem(id);Object.assign(it,{text,ent,how,public:true});
     if(it.state)setOut(it,it.state);else status(it);tick()},
-    why=>{broadcasting=false;if(!reply.value){reply.value=was;setPublic(true);fit()}refuse(why)})}
+    why=>{broadcasting=false;if(!reply.value){reply.value=was;setPublic(true);fit()}refuse(why,btn)})}
 
 /* ---------- key check menu ---------- */
 // the pencil menu is the mockups' story; in the app the card shows the real safety number (cardRest, below)
@@ -1005,7 +1110,7 @@ document.getElementById('settings').addEventListener('click',e=>{
   setTimeout(()=>{location.href=href},650)});
 // back from the settings page by history: the switches may have moved there, so read them again from the machine
 addEventListener('pageshow',e=>{if(e.persisted){document.body.classList.remove('turning');document.getElementById('app').classList.remove('turning');
-  bridge.settings().then(k=>{Object.assign(KEPT,k);KEPT_READ=true;machineSound();for(const [id,kn] of Object.entries(KNOBS)){if(kn.held)continue;const v=k[kn.setting];if(v>=0&&v<=2&&(v!==kn.pos||!kn.read)){kn.pos=v;kn.read=true;drawKnob(id)}}
+  bridge.settings().then(k=>{Object.assign(KEPT,k);KEPT_READ=true;machineSound();for(const [id,kn] of Object.entries(KNOBS)){if(kn.held)continue;const v=k[kn.setting];if(v>=0&&v<=2&&(v!==kn.pos||!kn.read)){kn.pos=v;kn.read=true;drawKnob(id);if(id==='k2'&&v<2)lightLeftFlash()}}
     applyChannels();drawOutbox();vuTitle();outbox.forEach(status)},()=>{})}});
 
 /* ---------- ?audiotest: render one drum turn offline and report what it contains ---------- */
@@ -1059,27 +1164,43 @@ function drawStations(){const row=document.querySelector('.row3'),counter=row.qu
   for(const p of PEOPLE.length?PEOPLE.slice(0,3):[null]){
     const last=p&&[...(TALK.get(p.id)||[])].reverse().find(m=>!m.outgoing);
     const stn=el('div','stn');stn.innerHTML='<span class="jewel off" aria-hidden="true"></span><span class="holder"><span></span></span>';
-    stn.querySelector('.holder span').append(p?p.name:'No contacts yet',el('small',null,!p?'pair by sound to add one':last?`${last.channel}, ${hhmm(last.at_min*60000)}`:'not heard yet'));
+    stn.querySelector('.holder span').append(p?p.name:'No contacts yet',el('small',null,!p?'pair by sound or light to add one':last?`${last.channel}, ${hhmm(last.at_min*60000)}`:'not heard yet'));
     row.insertBefore(stn,counter)}}
 // the bytes-a-second readout: the rate the node measures for sound, or nothing when it has none
 function showRate(list){const s=list.find(c=>c.channel==='sound'),rd=document.getElementById('raterd');
   if(!s||!(s.rate>0)){rd.hidden=true;return}
   document.getElementById('rate').innerHTML=String(Math.min(999,Math.round(s.rate))).padStart(3,'0').split('').map(d=>`<i>${d}</i>`).join('');
   rd.title=`${s.rate.toFixed(1)} bytes of message a second over sound, as the modem measures it, counting the preamble, framing and error correction around them`;rd.hidden=false;rd.style.visibility=''}
-/* ---------- the key check card, and pairing by sound ----------
+/* ---------- the key check card, and pairing by sound or by light ----------
    At rest the card shows the last key check: in a plain browser the mockups' pencil menu,
    in the app the safety number shared with the contact. Pair by sound plays your hello
    (your name and key) and listens for one; an offer pencils their name, editable, over the
    60-digit safety number for the two of you to compare. Matched, add stores them under the
    name as written and stamps the card without moving the number; Doesn't match keeps nothing
    and says so on a clean card. A hello heard while not listening is held for two minutes,
-   so the second to press sees the first's straight away. */
+   so the second to press sees the first's straight away.
+   Pair by light shows your hello as a light code on the signal lamp, and the camera reads theirs: hold the screens
+   face to face. It needs Light at Read and flash, and turns no switch: at Off or Read it is refused on the card, as
+   sound pairing is at Listen. Once their hello is in, the card takes the offer and the machine is told to finish:
+   your hello shows to the end of its window, so whoever pressed later still gets a whole one to read, then the lamp
+   closes on the offer. Escape (or the lamp's Stop key) while the hello is on the lamp, the light stamp again,
+   Doesn't match, Matched, add, Light leaving Read and flash, and three minutes all end it, and the screen clears.
+   The node marks the hello's frames (display's hello), so only the hello is ever taken off the lamp: a message by
+   light on it keeps its own caption and its own Escape. An offer says the channel its hello came in on. */
 const menu=document.querySelector('.menu'),pencilEl=document.getElementById('pencil'),pairBtn=document.getElementById('pairbtn');
-const yesBtn=document.getElementById('pairyes'),noBtn=document.getElementById('pairno');
+const yesBtn=document.getElementById('pairyes'),noBtn=document.getElementById('pairno'),lightPairBtn=document.getElementById('pairlight');
+// how long pairing stays in progress at most, as the node's PAIRING_CAP_MS (?paircap shortens it for checks)
+const PAIR_CAP=Q.has('paircap')?+Q.get('paircap'):180000;
+// pairing by light: 'reading' while your hello shows and the camera reads theirs, 'finishing' once theirs is in and
+// yours shows to the end of its window; null otherwise
+let lightPairing=null,pairCapT=null;
+// the stamp that started the pairing in progress, for focus to return to when it ends
+let startedBy=null;
+const stampFor=()=>startedBy==='light'?lightPairBtn:pairBtn;
 const menuNote=menu.querySelector('.note'),menuStamp=menu.querySelector('.stmp'),menuSvg=document.getElementById('menusvg'),menuWho=menu.querySelector('h2 span');
 const day=ms=>{const d=new Date(ms);return `${d.getDate()} ${MONTHS[d.getMonth()]}`};
 const HOLD_OFFER=Q.has('hold')?+Q.get('hold'):120000;
-let checkedWith=null;// the key check made on this page: {name, safety, at}
+let checkedWith=null;// the key check made on this page: {name, safety, at, by}
 let offer=null,heldOffer=null;
 const TILTS=[-.6,.4,-.2,.7,-.5,.2,.5,-.7,.3,-.3,.6,-.4];
 // their name above the ruled number, and (once matched) the stamp pressed on its corner
@@ -1088,33 +1209,67 @@ function checkSheet(nameHtml,safety,stamp){const g=safety.trim().split(/\s+/);
 const stampHtml=(date,fresh)=>`<div class="gstmp${fresh&&!RM.matches?' new':''}" aria-label="Matched${date?', '+date:''}">Matched${date?`<small>${esc(date)}</small>`:''}</div>`;
 function pencil(html){menuSvg.style.visibility='hidden';pencilEl.innerHTML=html;pencilEl.hidden=false}
 function noteSays(text){menuNote.textContent=text||''}
-function buttons(state){pairBtn.hidden=state==='offer';yesBtn.hidden=noBtn.hidden=state!=='offer';
-  pairBtn.textContent=state==='listening'?'Stop listening':'Pair by sound';yesBtn.disabled=noBtn.disabled=false}
-function setState(state,gridded){menu.dataset.pair=state;menu.classList.toggle('gridded',!!gridded);buttons(state);
+// a pencil sketch in the card's hand: the same filter and stroke for every one, a seed of its own
+const sketch=(id,seed,body)=>`<svg class="ears" viewBox="0 0 64 40" aria-hidden="true"><defs><filter id="${id}" x="-10%" y="-10%" width="120%" height="120%"><feTurbulence baseFrequency=".08" numOctaves="2" seed="${seed}" result="t"/><feDisplacementMap in="SourceGraphic" in2="t" scale="1.6"/></filter></defs>
+    <g filter="url(#${id})" fill="none" stroke="#4b4a47" stroke-width="1.3" stroke-linecap="round">${body}</g></svg>`;
+// sound: a speaker's dot and its waves; light: two screens face to face, the code passing between them
+const EARS=sketch('penh',5,'<circle cx="10" cy="20" r="2.4" fill="#4b4a47" stroke="none"/><path d="M20 10 Q27 20 20 30"/><path d="M30 4 Q41 20 30 36"/><path d="M40 -1 Q55 20 40 41"/>');
+const FACES=sketch('penl',9,'<rect x="1" y="1" width="10" height="38" rx="2"/><rect x="53" y="1" width="10" height="38" rx="2"/><rect x="3.5" y="4" width="5" height="32" fill="#4b4a47" fill-opacity=".14" stroke="none"/><rect x="55.5" y="4" width="5" height="32" fill="#4b4a47" fill-opacity=".14" stroke="none"/><path d="M17 11 H47" stroke-dasharray="4 3"/><path d="M17 20 H47" stroke-dasharray="4 3"/><path d="M17 29 H47" stroke-dasharray="4 3"/>');
+function buttons(state){pairBtn.hidden=state==='offer'||state==='reading';lightPairBtn.hidden=state==='offer'||state==='listening';yesBtn.hidden=noBtn.hidden=state!=='offer';
+  pairBtn.textContent=state==='listening'?'Stop listening':'Pair by sound';lightPairBtn.textContent=state==='reading'?'Stop reading':'Pair by light';yesBtn.disabled=noBtn.disabled=false}
+function setState(state,gridded){menu.dataset.pair=state;if(state!=='reading'){clearTimeout(pairCapT);pairCapT=null}menu.classList.toggle('gridded',!!gridded);buttons(state);
   menuStamp.hidden=true;menuStamp.classList.remove('new');menu.querySelector('.fp').hidden=true}
 function cardRest(fresh){setState('',true);offer=null;
   const who=checkedWith||(!bridge.simulated&&CONTACT.id&&CONTACT.checked&&CONTACT.safety?{name:CONTACT.name,safety:CONTACT.safety}:null);
-  if(who){pencil(checkSheet(esc(who.name),who.safety,stampHtml(who.at?day(who.at):'',fresh)));menuWho.textContent=who.name;noteSays(who.at?'Checked in person, by sound.':'Checked in person.')}
+  if(who){pencil(checkSheet(esc(who.name),who.safety,stampHtml(who.at?day(who.at):'',fresh)));menuWho.textContent=who.name;noteSays(who.at?`Checked in person, by ${who.by||'sound'}.`:'Checked in person.')}
   else if(bridge.simulated){// the mockups' story
     menu.classList.remove('gridded');pencilEl.hidden=true;menuSvg.style.visibility='';menu.querySelector('.fp').hidden=false;
     menuWho.textContent=`menu 7, ${CONTACT.short}`;noteSays('Checked in person, by light.');
     menuStamp.hidden=false;const d=menuStamp.querySelector('div');d.textContent='Matched';d.appendChild(el('small',null,'2 Oct'))}
-  else{menu.classList.remove('gridded');pencil('<p class="ph">not yet paired</p>');menuWho.textContent='';noteSays('Press Pair by sound here and on their machine.')}}
+  else{menu.classList.remove('gridded');pencil('<p class="ph">not yet paired</p>');menuWho.textContent='';noteSays('Press Pair by sound or Pair by light, here and on their machine.')}}
 async function pairBySound(){
-  if(menu.dataset.pair==='listening'){cardRest();return}
+  if(menu.dataset.pair==='listening'){bridge.stopPairing().catch(()=>{});cardRest();return}
   pairBtn.disabled=true;
-  try{await bridge.pair()}catch(why){pairBtn.disabled=false;cardRest();noteSays(sentence(why));return}
-  pairBtn.disabled=false;setState('listening');menuWho.textContent='pairing by sound';
-  pencil(`<svg class="ears" viewBox="0 0 64 40" aria-hidden="true"><defs><filter id="penh" x="-10%" y="-10%" width="120%" height="120%"><feTurbulence baseFrequency=".08" numOctaves="2" seed="5" result="t"/><feDisplacementMap in="SourceGraphic" in2="t" scale="1.6"/></filter></defs>
-    <g filter="url(#penh)" fill="none" stroke="#4b4a47" stroke-width="1.3" stroke-linecap="round"><circle cx="10" cy="20" r="2.4" fill="#4b4a47" stroke="none"/><path d="M20 10 Q27 20 20 30"/><path d="M30 4 Q41 20 30 36"/><path d="M40 -1 Q55 20 40 41"/></g></svg>
+  try{await bridge.pair('sound')}catch(why){pairBtn.disabled=false;cardRest();noteSays(sentence(why));return}
+  pairBtn.disabled=false;lightPairing=null;startedBy='sound';setState('listening');menuWho.textContent='pairing by sound';
+  pencil(`${EARS}
     <p class="ph">listening for a hello…</p><p class="psub">Your hello plays once the room is quiet. Ask them to press Pair by sound too.</p>`);
   noteSays('');
   if(heldOffer)showOffer(heldOffer.o)}
+// your hello on the lamp, their camera reading it, and yours reading theirs
+async function pairByLight(){
+  if(menu.dataset.pair==='reading'){endLightPairing('Pairing by light stopped. Nothing was kept.');return}
+  if(!(KNOBS.k2.read&&KNOBS.k2.pos===2)){cardRest();noteSays(`${lightRefusal()}. Turn it to Read and flash to pair by light.`);return}
+  lightPairBtn.disabled=true;
+  try{await bridge.pair('light')}catch(why){lightPairBtn.disabled=false;cardRest();noteSays(sentence(why));return}
+  lightPairBtn.disabled=false;startedBy='light';setState('reading');menuWho.textContent='pairing by light';
+  // asked for afresh: a hello is not held back by an earlier Escape
+  lightPairing='reading';Lamp.stopped=false;Lamp.gone=null;
+  pencil(`${FACES}
+    <p class="ph">reading for a hello…</p><p class="psub">Your hello shows as a light code. Hold your screens face to face, and ask them to press Pair by light too.</p>`);
+  noteSays('');
+  pairCapT=setTimeout(()=>{if(menu.dataset.pair==='reading')endLightPairing('Pairing by light ended after three minutes. Nothing was kept.')},PAIR_CAP);
+  if(heldOffer)lightOffer(heldOffer.o)}
+// the hello comes off the lamp at once, and a frame of it still on its way is let go; a message on the lamp stays
+function helloOff(){if(Lamp.state!=='closed'&&Lamp.hello){Lamp.gone=Lamp.tag;lampClose(false)}}
+// stopped before their hello came: the screen clears, the card is as it was
+function endLightPairing(note){lightPairing=null;bridge.stopPairing().catch(()=>{});helloOff();cardRest();noteSays(note);lightPairBtn.focus({preventScroll:true})}
+// Light was turned off Read and flash (the machine has ended the pairing): reading, the card rests and says so;
+// finishing, the offer stays for the person to judge, and focus goes to Matched, add, as Escape leaves it
+function lightLeftFlash(){if(!lightPairing)return;const was=lightPairing;lightPairing=null;helloOff();
+  if(was==='reading'){cardRest();noteSays(`Pairing by light stopped. ${KNOBS.k2.pos===0?'Light is off':'Light is at Read'}, and nothing was kept.`);lightPairBtn.focus({preventScroll:true})}
+  else if(menu.dataset.pair==='offer'&&!yesBtn.hidden)yesBtn.focus({preventScroll:true})}
+// their hello is in: the card takes the offer under the lamp, and the lamp closes once yours has finished its window
+function lightOffer(o){const fromLamp=lampEl.contains(document.activeElement);
+  lightPairing='finishing';bridge.finishPairing().catch(()=>{});
+  showOffer(o);if(Lamp.state!=='closed')lampCaption();
+  if(fromLamp)lampStop.focus({preventScroll:true})}
 // the name field grows with what is written in it
 const fitName=i=>{i.size=Math.max(6,Math.min(28,i.value.length+1))};
+// o.channel: the channel their hello came in on, as the node says
 function showOffer(o){offer=o;heldOffer=null;
   const inCard=menu.contains(document.activeElement);
-  setState('offer',true);menuWho.textContent='pairing by sound';
+  setState('offer',true);menuWho.textContent=`pairing by ${o.channel}`;
   pencil(checkSheet(`<input class="pname" id="peername" maxlength="40" spellcheck="false" autocomplete="off" aria-label="Their name, as you will keep it. Correct it before adding them." title="Their name, as you will keep it. Correct it before adding them."> said hello`,o.safety));
   const nm=document.getElementById('peername');nm.value=o.name;fitName(nm);
   nm.addEventListener('input',()=>fitName(nm));
@@ -1123,25 +1278,159 @@ function showOffer(o){offer=o;heldOffer=null;
   if(inCard)yesBtn.focus()}
 bridge.on('pairOffer',o=>{
   if(menu.dataset.pair==='listening'){showOffer(o);return}
+  if(menu.dataset.pair==='reading'){lightOffer(o);return}
   if(menu.dataset.pair==='offer')return;
-  const held=heldOffer={o};noteSays(`${o.name} said hello. Press Pair by sound to answer.`);
+  const held=heldOffer={o};noteSays(`${o.name} said hello by ${o.channel}. Press Pair by ${o.channel} to answer.`);
   setTimeout(()=>{if(heldOffer!==held)return;heldOffer=null;if(menu.dataset.pair==='')cardRest();else if(menu.dataset.pair==='refused')noteSays('')},HOLD_OFFER)});
 pairBtn.addEventListener('click',pairBySound);
-noBtn.addEventListener('click',()=>{const o=offer;offer=null;setState('refused');menuWho.textContent='';
+lightPairBtn.addEventListener('click',pairByLight);
+noBtn.addEventListener('click',()=>{const o=offer;offer=null;lightPairing=null;bridge.stopPairing().catch(()=>{});helloOff();setState('refused');menuWho.textContent='';
   pencil(`<p class="ph">not added</p><p class="psub">${esc(o?o.name:'Their machine')} is not a contact. Nothing from this hello was kept.</p>`);
-  noteSays('Not added. Nothing was kept.');pairBtn.focus()});
+  noteSays('Not added. Nothing was kept.');stampFor().focus()});
 yesBtn.addEventListener('click',()=>{const o=offer;if(!o)return;
   const nm=document.getElementById('peername'),name=(nm?nm.value:o.name).trim();
   if(!name){noteSays('Write their name first.');nm.focus();return}
   yesBtn.disabled=noBtn.disabled=true;
   bridge.confirmPair(o.peer,name).then(id=>{
-    checkedWith={name,safety:o.safety,at:bridge.now()};
+    lightPairing=null;helloOff();
+    checkedWith={name,safety:o.safety,at:bridge.now(),by:o.channel};
     const p={id,name,short:name.split(' ')[0],checked:true,safety:o.safety};
     const i=PEOPLE.findIndex(x=>x.id===id);if(i<0)PEOPLE.push(p);else PEOPLE[i]=p;
     if(!CONTACT.id){CONTACT=p;nameTheSheet(CONTACT)}
     if(!bridge.simulated)drawStations();
-    cardRest(true);pairBtn.focus()},
+    cardRest(true);stampFor().focus()},
   why=>{yesBtn.disabled=noBtn.disabled=false;noteSays(sentence(why))})});
+
+/* ---------- the flashing view ----------
+   The node hands the page each light code frame as it is due (display), and says when the screen is clear
+   (displayStopped). The first frame opens the signal lamp in the message sheet's place, still for a moment (a
+   plain field of the code's own mean grey, so nothing jumps when the frames start), then the frames follow,
+   each drawn exactly as the light crate's render_bits draws it: a white quiet zone three cells wide, cells of
+   whole device pixels, the leftover split evenly round the grid. Frames that come during the still moment are
+   let go; the node adds the still moment to the window whenever the screen lights from clear (its STILL_MS, the same
+   as READY_MS), so each message still shows code for at least four seconds and three times what a camera needs.
+   Escape (or Stop) turns the Light switch to Read, the machine's own way to stop flashing: the screen clears at
+   once, the message waits, and nothing more flashes until the switch is back at Read and flash. When the frames
+   are your pairing hello (display's hello), the lamp says to hold the screens face to face, and Escape (or Stop)
+   ends the pairing, not the switch: the hello stops, the screen clears, and Light stays where it is. */
+const lampEl=document.getElementById('lamp'),lampCv=document.getElementById('lampcode'),lampCtx=lampCv.getContext('2d',{alpha:false});
+const lampSay=document.getElementById('lampsay'),lampStop=document.getElementById('lampstop'),deckEl=document.querySelector('.deck'),sheetEl=document.querySelector('.sheet');
+// cells a side for each preset (0 slow, 1 normal, 2 fast), and the quiet zone, as crates/light CodeSpec and QUIET
+const LAMP_CELLS=[48,56,64],LAMP_QUIET=3;
+// the still moment before the first frame (the node's STILL_MS: change both); the grey of a half-dark grid (linear luminance 0.5)
+const READY_MS=Q.has('ready')?+Q.get('ready'):1200,LAMP_GREY='#bcbcbc';
+// closed, ready (still) or flashing; for: whose camera to hold it up to (a name, or null for anyone's)
+// next: whose camera the message about to go on screen is for (set as it starts playing); for: the one showing
+// hello: the frames on the lamp are your pairing hello; gone: the tag of a hello just taken off the lamp, whose
+// frames still on their way are let go
+const Lamp={state:'closed',tag:null,hello:false,gone:null,spec:1,bits:null,index:-1,shown:0,readyT:null,stopped:false,stopping:false,for:null,next:null,refocus:false,rateSpec:null};
+const odoDigits=(el,n,w)=>{el.innerHTML=String(Math.max(0,Math.min(10**w-1,Math.round(n)))).padStart(w,'0').split('').map(d=>`<i>${d}</i>`).join('')};
+// the canvas, sized to the bezel's opening in whole device pixels and placed on whole device pixels
+// the lamp's span: the sheet's column, and the card's when it stands beside the sheet (the wide layout)
+function lampPlace(){const a=sheetEl.getBoundingClientRect(),m=document.querySelector('.menu').getBoundingClientRect(),beside=Math.abs(m.top-a.top)<40&&m.left>a.left;
+  const left=Math.max(16,Math.round(a.left)),right=Math.min(innerWidth-16,Math.round(beside?m.right:a.right));
+  lampEl.style.left=left+'px';lampEl.style.width=Math.max(320,right-left)+'px'}
+function lampFit(){if(lampEl.hidden)return;
+  lampPlace();
+  const mid=lampEl.querySelector('.lamp-mid').getBoundingClientRect(),dpr=devicePixelRatio||1;
+  const css=Math.max(96,Math.floor(Math.min(mid.width,mid.height)-28)),px=Math.round(css*dpr);
+  if(lampCv.width!==px){lampCv.width=lampCv.height=px}
+  lampCv.style.width=lampCv.style.height=px/dpr+'px';lampCv.style.transform='';
+  const r=lampCv.getBoundingClientRect(),dx=(Math.round(r.left*dpr)-r.left*dpr)/dpr,dy=(Math.round(r.top*dpr)-r.top*dpr)/dpr;
+  if(dx||dy)lampCv.style.transform=`translate(${dx}px,${dy}px)`;
+  lampPaint()}
+new ResizeObserver(lampFit).observe(lampEl.querySelector('.lamp-mid'));
+addEventListener('resize',lampFit);
+// render_bits: the whole canvas light, then each dark cell
+function lampPaint(){const px=lampCv.width,n=LAMP_CELLS[Lamp.spec],cell=Math.floor(px/(n+2*LAMP_QUIET)),o=Math.floor((px-cell*n)/2),k=lampCtx;
+  k.fillStyle='#fff';k.fillRect(0,0,px,px);
+  if(Lamp.state!=='flashing'||!Lamp.bits){k.fillStyle=LAMP_GREY;k.fillRect(o,o,cell*n,cell*n);return}
+  k.fillStyle='#000';const b=Lamp.bits;
+  for(let i=0;i<n*n;i++)if(b[i>>3]&(128>>(i&7)))k.fillRect(o+(i%n)*cell,o+((i/n)|0)*cell,cell,cell)}
+function lampCaption(){const who=Lamp.for?`${Lamp.for}'s`:'their',hello=Lamp.hello,finishing=hello&&lightPairing==='finishing';
+  lampSay.firstChild.nodeValue=finishing?'Their key is read. Yours finishes showing.':hello?'Hold your screens face to face.':`Hold this screen up to ${who} camera.`;
+  lampSay.querySelector('small').textContent=Lamp.refused?Lamp.refused:finishing?'Escape stops it':Lamp.state==='ready'?'ready, Escape stops it':hello?'reading theirs, Escape stops it':'flashing, Escape stops it';
+  // the plate, the code's label and the Stop key say what is on the lamp: a message, or your hello
+  lampEl.querySelector('.lamp-head .pl.screw').textContent=hello?'Pairing by light':'Flashing by light';
+  lampEl.setAttribute('aria-label',hello?'Pairing by light':'Flashing by light');
+  lampCv.setAttribute('aria-label',hello?'Your hello as a light code':'The message as a light code');
+  lampStop.title=hello?'Stops pairing by light. Escape does the same. The screen clears, and Light stays where it is.':'Stops flashing. Escape does the same. Light turns to Read, and the message waits until it is back at Read and flash.';
+  document.getElementById('lampnrd').title=hello?'Frames of your hello shown in this window':'Frames of this message shown so far'}
+// the readout: the bytes a second this Flash speed shows, as the machine reckons it, read again when the speed changes
+function lampRate(){bridge.channels().then(list=>{const l=list.find(c=>c.channel==='light');const rd=document.getElementById('lamprd');
+  rd.hidden=!(l&&l.rate>0);if(l&&l.rate>0){odoDigits(document.getElementById('lamprate'),l.rate,4);
+    rd.title=`${Math.round(l.rate)} bytes a second at this Flash speed, coding included: what a camera reading every frame takes in`}},()=>{})}
+function lampOpen(){Lamp.state='ready';Lamp.shown=0;
+  Lamp.refocus=sheetEl.contains(document.activeElement)||document.activeElement===document.body;
+  lampEl.hidden=false;deckEl.classList.add('flashing');sheetEl.inert=true;
+  document.getElementById('lampjewel').classList.add('off');odoDigits(document.getElementById('lampn'),0,3);lampCaption();
+  lampFit();if(Lamp.refocus)lampStop.focus({preventScroll:true});
+  clearTimeout(Lamp.readyT);Lamp.readyT=setTimeout(()=>{if(Lamp.state!=='ready')return;Lamp.state='flashing';lampFrame()},READY_MS)}
+function lampFrame(){if(Lamp.state!=='flashing')return;lampPaint();
+  odoDigits(document.getElementById('lampn'),Lamp.shown,3);document.getElementById('lampjewel').classList.remove('off');lampCaption()}
+function lampClose(focusBack=true){clearTimeout(Lamp.readyT);if(Lamp.state==='closed')return;Lamp.state='closed';Lamp.bits=null;Lamp.tag=null;Lamp.hello=false;Lamp.for=null;Lamp.refused='';Lamp.rateSpec=null;
+  const back=lampEl.contains(document.activeElement)||Lamp.refocus;
+  lampEl.hidden=true;deckEl.classList.remove('flashing');sheetEl.inert=false;
+  // back to the reply line, or (a pairing's lamp closing on its offer) to the card's Matched, add
+  if(back&&focusBack)(menu.dataset.pair==='offer'&&!yesBtn.hidden?yesBtn:reply).focus({preventScroll:true})}
+bridge.on('display',d=>{
+  // stopped with Escape: nothing shows again until the machine says the screen is clear
+  if(Lamp.stopped||d.tag===Lamp.gone||!(d.spec in LAMP_CELLS)||d.bits.length!==Math.ceil(LAMP_CELLS[d.spec]**2/8))return;
+  // a new message on screen: it is for whoever the page last sent one by light to, if anyone, else for any camera
+  // (your pairing hello is for no one's camera in particular, and takes no send's name)
+  if(d.tag!==Lamp.tag){Lamp.tag=d.tag;Lamp.shown=0;Lamp.hello=d.hello;if(d.hello)Lamp.for=null;else{Lamp.for=Lamp.next;Lamp.next=null}}
+  Lamp.spec=d.spec;Lamp.bits=d.bits;Lamp.index=d.index;Lamp.shown=d.index+1;
+  if(d.spec!==Lamp.rateSpec){Lamp.rateSpec=d.spec;lampRate()}
+  if(Lamp.state==='closed')lampOpen();else lampFrame()});
+bridge.on('displayStopped',()=>{Lamp.stopped=false;Lamp.gone=null;if(Lamp.hello&&lightPairing==='finishing')lightPairing=null;lampClose()});
+// the lamp goes, and the page says so, only once the machine has taken the switch's turn to Read; refused, the lamp
+// stays up (the machine is still flashing) and says why on its card
+// short enough for the top bar at every width; the whole story is in its title
+const UNSAVED_STOP='Flashing stopped, but not saved.';
+async function stopFlashing(){if(Lamp.state==='closed'||Lamp.stopping)return;
+  // your hello on the lamp: the pairing ends, not the switch; an offer already on the card stays for the person to
+  // judge. A message on the lamp stops the Task 6 way, whatever pairing is doing
+  if(Lamp.hello){
+    if(lightPairing==='reading'){endLightPairing('Pairing by light stopped. Nothing was kept.');return}
+    const offered=lightPairing==='finishing';lightPairing=null;bridge.stopPairing().catch(()=>{});helloOff();
+    if(offered)yesBtn.focus({preventScroll:true});return}
+  Lamp.stopping=true;
+  const taken=await turnKnob('k2',1,true);Lamp.stopping=false;
+  if(taken===true){if(Lamp.state!=='closed'){Lamp.stopped=true;lampClose()}say('Flashing stopped. Light is at Read, and the message waits.');return}
+  // the machine stopped, but couldn't keep the setting on disk: stopped all the same, and the page says what wasn't kept
+  if(taken&&taken.unsaved){if(Lamp.state!=='closed'){Lamp.stopped=true;lampClose()}say(UNSAVED_STOP,`Flashing stopped. Light is at Read for now. ${sentence(taken.unsaved)} So Light goes back to Read and flash next time.`);return}
+  if(Lamp.state!=='closed'){Lamp.refused=`Not stopped. ${sentence(taken)}`;lampCaption()}}
+lampStop.addEventListener('click',stopFlashing);
+addEventListener('keydown',e=>{if(e.key==='Escape'&&Lamp.state!=='closed'){e.preventDefault();stopFlashing()}});
+
+/* ---------- the eyepiece, and what the camera has to say ----------
+   While Light reads, the eyepiece on its switch shows what the camera sees, small and grey, so the reader can aim.
+   Its shutter closes it: the page then asks for no picture, and the machine sends none. The shutter's position
+   is this window's own (kept in its storage, not a machine setting); open unless closed here before. */
+const eyeEl=document.getElementById('eyepiece'),eyeCv=eyeEl.querySelector('canvas'),eyeCtx=eyeCv.getContext('2d');
+let eyeOpen=true;try{eyeOpen=localStorage.getItem('bombechat.eyepiece')!=='shut'}catch(e){}
+let eyeAsked=null;
+function showEyepiece(){const reading=KNOBS.k2.read&&KNOBS.k2.pos>0,want=eyeOpen&&reading&&!document.hidden;
+  eyeEl.setAttribute('aria-checked',eyeOpen);eyeEl.classList.toggle('shut',!eyeOpen);eyeEl.classList.toggle('dark',!want);
+  eyeEl.title=!eyeOpen?'Eyepiece shut: nothing the camera sees is shown. Press to open it.':reading?'What the camera sees, small and grey, to aim it by. Press to shut it.':'The camera is closed. Its eyepiece shows what it sees while Light reads.';
+  if(want!==eyeAsked){eyeAsked=want;if(!want){eyeCtx.fillStyle='#0d0d0c';eyeCtx.fillRect(0,0,eyeCv.width,eyeCv.height)}Promise.resolve(bridge.eyepiece(want)).catch(()=>{})}}
+eyeEl.addEventListener('click',()=>{eyeOpen=!eyeOpen;try{if(eyeOpen)localStorage.removeItem('bombechat.eyepiece');else localStorage.setItem('bombechat.eyepiece','shut')}catch(e){}
+  Drum.spin(1,1.6);showEyepiece()});
+document.addEventListener('visibilitychange',showEyepiece);
+// leaving the page (to the settings page, or closing) lets go of the eyepiece even where visibilitychange doesn't come;
+// coming back from the back/forward cache asks again
+addEventListener('pagehide',()=>{if(eyeAsked){eyeAsked=false;Promise.resolve(bridge.eyepiece(false)).catch(()=>{})}});
+addEventListener('pageshow',e=>{if(e.persisted){eyeAsked=null;showEyepiece()}});
+bridge.on('eyepiece',p=>{if(!eyeAsked||!(p.width>0&&p.height>0)||p.pixels.length!==p.width*p.height)return;
+  if(eyeCv.width!==p.width||eyeCv.height!==p.height){eyeCv.width=p.width;eyeCv.height=p.height}
+  const img=eyeCtx.createImageData(p.width,p.height);for(let i=0;i<p.pixels.length;i++){const v=p.pixels[i];img.data[i*4]=img.data[i*4+1]=img.data[i*4+2]=v;img.data[i*4+3]=255}
+  eyeCtx.putImageData(img,0,0)});
+// what the camera says goes on a strip of tape by the eyepiece: a code it sees and can't read, or why it can't open
+const TILT_OR_DIM='seeing a code: tilt or dim the screen';
+const lightNote=document.querySelector('#lightnote b');
+// (the camera sees a code it can't read: the tape says what to do, its label says why)
+function lightSays(state){const tilt=state===TILT_OR_DIM;lightNote.textContent=tilt?'Tilt or dim the screen.':/^unavailable: /.test(state)?sentence(state.slice(13)):'';
+  lightNote.parentElement.setAttribute('aria-label',tilt?'The camera sees a code it cannot read. Tilt or dim the screen.':lightNote.textContent)}
 
 /* ---------- open: replay what came before, then listen ---------- */
 drawOutbox();applyChannels();cardRest();
@@ -1229,8 +1518,11 @@ async function build(){
 
   /* ---- rails, plates, numbers ---- */
   const rails=[];for(let i=0;i<5;i++){const m=new THREE.Mesh(new THREE.CylinderGeometry(i<3?.05:.035,i<3?.05:.035,1,24),railMat);m.rotation.z=Math.PI/2;m.castShadow=true;m.receiveShadow=true;scene.add(m);rails.push(m)}
-  const plates=['Plain','Heard','Key'].map(t=>K.plate(t.toUpperCase(),0,0,{h:.2,size:56}));
-  const screwGeo=new THREE.CylinderGeometry(.035,.035,.025,20);screwGeo.rotateX(Math.PI/2);const plateScrews=plates.map(()=>[0,1].map(()=>{const m=new THREE.Mesh(screwGeo,M.brassDull);m.castShadow=true;scene.add(m);return m}));
+  const plates=['Plain','Heard','Key'].map(t=>K.plate(t.toUpperCase(),0,0,{h:.2,size:56,pad:.7}));
+  // slotted steel screws, as on every other plate (the CSS plates and the back panel's bolts)
+  const screwGeo=new THREE.CylinderGeometry(.035,.035,.025,20);screwGeo.rotateX(Math.PI/2);const screwSlot=new THREE.BoxGeometry(.052,.009,.008);
+  const SLOTS=[.62,-.48,.85,-.7,.4,-.9];
+  const plateScrews=plates.map((_,r)=>[0,1].map(i=>{const g=new THREE.Group();const h=new THREE.Mesh(screwGeo,M.steel);h.castShadow=true;const s=new THREE.Mesh(screwSlot,M.hole);s.position.z=.0135;s.rotation.z=SLOTS[r*2+i];g.add(h,s);scene.add(g);return g}));
   const nums=[...Array(12)].map((_,i)=>K.engrave(String(i+1),0,0,.13,'#b8b09a'));
 
   /* ---- place everything from the HTML layout ---- */
@@ -1248,7 +1540,8 @@ async function build(){
     [0,1].forEach(i=>{const m=rails[3+i];const y=(rowY[i]+rowY[i+1])/2;m.position.set((x0+x1)/2,y-.02,-.05);m.scale.set(1,(x1-x0)+1.2,1)});
     const lab=[...document.querySelectorAll('.rowlab')];
     const ps=(21/U)/.2;plates.forEach((p,r)=>{p.scale.set(ps,ps,1);const lr=lab[r].getBoundingClientRect();const w=p.geometry.parameters.width*ps;const pos=toWorld(lr.left-br.left+4,0);p.position.set(pos.x+w/2,rowY[r],-.18);
-      plateScrews[r][0].position.set(p.position.x-w/2-6/U,rowY[r],-.18);plateScrews[r][1].position.set(p.position.x+w/2+6/U,rowY[r],-.18);plateScrews[r].forEach(m=>m.scale.setScalar(Math.max(1,(7/U)/.07)))});
+      // the screws sit in the plate's ends, 8 px in, as the printed plates have them
+      plateScrews[r][0].position.set(p.position.x-w/2+8/U,rowY[r],-.155);plateScrews[r][1].position.set(p.position.x+w/2-8/U,rowY[r],-.155);plateScrews[r].forEach(m=>m.scale.setScalar((6/U)/.07))});
     const cn=[...document.querySelectorAll('.colno')];nums.forEach((n,i)=>{const r=cn[i].getBoundingClientRect();const p=toWorld(r.left-br.left+r.width/2,r.top-br.top+r.height/2);n.position.set(p.x,p.y+.07,-.205);n.scale.setScalar(Math.max(1,(13/U)/.13))});
     renderer.shadowMap.needsUpdate=true;dirty=true}
   let baseD=10,dirty=true;

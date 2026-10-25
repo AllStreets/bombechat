@@ -96,7 +96,13 @@ impl Bench {
     }
 
     /// The same, in a room at `level`.
-    fn hear_in(&mut self, level: f32, from: &Identity, to: &PublicIdentity, text: &str) -> [u8; 16] {
+    fn hear_in(
+        &mut self,
+        level: f32,
+        from: &Identity,
+        to: &PublicIdentity,
+        text: &str,
+    ) -> [u8; 16] {
         self.run(1, level);
         let now = (std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -194,7 +200,7 @@ fn at_listen_a_message_is_heard_and_nothing_is_queued_for_the_speaker() {
     let sheet = commands::conversation(&b.shared, contact.0).unwrap();
     assert_eq!(sheet.last().unwrap()["state"], "failed");
     assert_eq!(
-        commands::pair(&b.shared),
+        commands::pair(&b.shared, "sound".into()),
         Err("not sent: sound is set to listen only".to_string())
     );
 }

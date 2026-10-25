@@ -18,7 +18,9 @@ use std::time::{Duration, Instant};
 
 use bombechat_core::{safety_number, PublicIdentity};
 use bombechat_modem::Band;
-use bombechat_node::{NodeEvent, MAX_BROADCAST, NOT_SENT, NOT_STORED};
+use bombechat_node::{
+    max_private_text, NodeEvent, MAX_BROADCAST, NOT_IN_THIS_PLAN, NOT_SENT, NOT_STORED,
+};
 use bombechat_store::{Channel, Contact, ContactId, StoredBroadcast, StoredMessage};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -35,10 +37,12 @@ const PANIC_REPORT_GAP: Duration = Duration::from_secs(5);
 const MAX_NAME_CHARS: usize = 40;
 
 /// The command names, exactly as `bridge.js` invokes them.
-pub const NAMES: [&str; 13] = [
+pub const NAMES: [&str; 16] = [
     "send",
     "broadcast",
     "pair",
+    "stop_pairing",
+    "finish_pairing",
     "confirm_pair",
     "set_setting",
     "settings",
@@ -49,6 +53,7 @@ pub const NAMES: [&str; 13] = [
     "conversation",
     "broadcasts",
     "machine",
+    "eyepiece",
 ];
 
 /// Each setting the settings page can change, with how many values it
@@ -76,12 +81,10 @@ pub const SETTINGS: [(&str, usize, usize); 15] = [
 /// Settings whose feature this build does not have yet, with their name
 /// on the settings page and what they wait for. `set_setting` refuses
 /// them and `settings` reports their default: nothing pretends they work.
-pub const COMING: [(&str, &str, &str); 5] = [
+pub const COMING: [(&str, &str, &str); 3] = [
     ("carry", "Carry for others", "comes with relay"),
     ("hops", "Hop limit", "comes with relay"),
     ("hold", "Hold for", "comes with relay"),
-    ("light", "Light switch", "comes with light"),
-    ("flash", "Flash speed", "comes with light"),
 ];
 
 /// New contacts need a key check: on this build every contact is added
@@ -190,14 +193,25 @@ pub type Opened = Box<dyn Any + Send>;
 pub type Unlocking = Box<dyn FnOnce(&str, &str) -> Result<Opened, String> + Send>;
 
 /// The node as the commands see it. The app's is [`crate::Device`], a
-/// [`bombechat_node::Node`] over the sound card and the store in the app
-/// data folder; tests use a fake.
+/// [`bombechat_node::Node`] over the sound card and the camera and the
+/// store in the app data folder; tests use a fake.
 pub trait Machine: Send {
     fn send(&mut self, to: &[ContactId], text: &str, channel: Channel) -> [u8; 16];
-    fn broadcast(&mut self, text: &str) -> [u8; 16];
-    /// Play this machine's pairing hello, or say why not (for example,
-    /// the Sound switch is at Listen).
-    fn start_pairing(&mut self, my_name: &str) -> Result<(), String>;
+    fn broadcast(&mut self, text: &str, channel: Channel) -> [u8; 16];
+    /// Send this machine's pairing hello on `channel` (by light it keeps
+    /// showing until pairing ends), or say why not (for example, the
+    /// Sound switch is at Listen, or Light at Read). No switch is turned
+    /// for it.
+    fn start_pairing(&mut self, my_name: &str, channel: Channel) -> Result<(), String>;
+    /// End the pairing in progress, if any: the hello stops showing.
+    fn stop_pairing(&mut self);
+    /// Their hello is in: the hello showing by light finishes its sending
+    /// window and pairing ends (at once with none showing).
+    fn finish_pairing(&mut self);
+    /// Whether to send the page what the camera sees while it reads (the
+    /// eyepiece). Off until the page asks; a machine without a camera
+    /// ignores it.
+    fn set_eyepiece(&mut self, _on: bool) {}
     fn confirm_pairing(&mut self, peer: &PublicIdentity, name: &str) -> ContactId;
     fn contacts(&self) -> Vec<Contact>;
     /// The stored messages with one contact, oldest first.
@@ -311,6 +325,9 @@ pub struct MachineView {
     pub version: &'static str,
     /// The longest broadcast, in UTF-8 bytes of text.
     pub broadcast_max: usize,
+    /// The longest reply (a private message to one person), in UTF-8
+    /// bytes of text.
+    pub reply_max: usize,
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -373,12 +390,14 @@ pub fn send(
     sent(s.machine().send(&to, &text, channel))
 }
 
-/// `broadcast { text }`: the broadcast's id, as hex. Refused with a
-/// sentence to show when there is nothing to say, or more than one
+/// `broadcast { text, channel }`: the broadcast's id, as hex. Refused
+/// with a sentence to show when there is nothing to say, or more than one
 /// envelope holds ([`MAX_BROADCAST`] bytes, which `machine` reports).
-/// The Sound switch's refusal comes as for `send`: the channel state,
-/// then the outbox's `failed`.
-pub fn broadcast(s: &Shared, text: String) -> Result<String, String> {
+/// The channel's switch refuses it as for `send` (sound unless at Listen
+/// and send, light unless at Read and flash): the channel state, then
+/// the outbox's `failed`.
+pub fn broadcast(s: &Shared, text: String, channel: String) -> Result<String, String> {
+    let channel = parse_channel(&channel)?;
     if text.trim().is_empty() {
         return Err("Write the notice first".to_string());
     }
@@ -388,12 +407,20 @@ pub fn broadcast(s: &Shared, text: String) -> Result<String, String> {
             text.len()
         ));
     }
-    sent(s.machine().broadcast(&text))
+    sent(s.machine().broadcast(&text, channel))
 }
 
-/// `pair`: announce this machine for pairing, under the person's name.
-/// Refused with the reason when the Sound switch does not allow sending.
-pub fn pair(s: &Shared) -> Result<(), String> {
+/// `pair { channel }`: announce this machine for pairing, under the
+/// person's name, on `channel` ("sound" or "light"): by sound the hello
+/// plays once the room is quiet; by light it keeps showing until
+/// `stop_pairing`, `confirm_pair` or three minutes. Refused with the
+/// channel's state when its switch does not allow sending: pairing never
+/// turns a switch, so the camera and the screen stay as Light has them.
+pub fn pair(s: &Shared, channel: String) -> Result<(), String> {
+    let channel = parse_channel(&channel)?;
+    if channel == Channel::Bluetooth {
+        return Err(NOT_IN_THIS_PLAN.to_string());
+    }
     let mut machine = s.machine();
     if machine.lock() != Lock::Unlocked {
         return Err("locked".to_string());
@@ -401,7 +428,30 @@ pub fn pair(s: &Shared) -> Result<(), String> {
     let name = machine
         .my_name()
         .unwrap_or_else(|| MACHINE_NAME.to_string());
-    machine.start_pairing(&name)
+    machine.start_pairing(&name, channel)
+}
+
+/// `stop_pairing`: end the pairing in progress, if any; the hello stops
+/// showing. Nothing to refuse: with none in progress it does nothing.
+pub fn stop_pairing(s: &Shared) {
+    s.machine().stop_pairing();
+}
+
+/// `finish_pairing`: their hello is in, so pairing ends once the hello
+/// showing by light has shown to the end of its sending window: the
+/// other person, who may have pressed later, still gets a whole window
+/// to read it. With none showing, it ends now. Nothing to refuse.
+pub fn finish_pairing(s: &Shared) {
+    s.machine().finish_pairing();
+}
+
+/// `eyepiece { on }`: whether the page is sent what the camera sees, as
+/// the `eyepiece` event, while Light reads. The page asks for it while
+/// its eyepiece is shown and stops asking when it is hidden, so a hidden
+/// eyepiece means no picture leaves the camera's reader at all. Not a
+/// setting: off whenever the app starts, until the page asks.
+pub fn eyepiece(s: &Shared, on: bool) {
+    s.machine().set_eyepiece(on);
 }
 
 /// `confirm_pair { peerHex, name }`: store the peer (its sign key then its
@@ -554,14 +604,15 @@ pub fn machine(s: &Shared) -> Result<MachineView, String> {
         held: machine.held_for_others(),
         version: env!("CARGO_PKG_VERSION"),
         broadcast_max: MAX_BROADCAST,
+        reply_max: max_private_text(1),
     })
 }
 
 /// `channels`: the last state each channel reported, so a page that
 /// opens (or reloads) after the event knows it: "unavailable: ...",
 /// "receiving" mid-message, and so on, with each channel's measured rate
-/// where it has one. A channel with a rate that has reported nothing yet
-/// is listening.
+/// where it has one (sound's at its band, light's at the Flash speed). A
+/// channel with a rate that has reported nothing yet is listening.
 pub fn channels(s: &Shared) -> Vec<ChannelView> {
     let rates = s.machine().rates();
     let band = s.machine().band().map(band_name);
@@ -638,9 +689,10 @@ pub fn bridge_event(e: &NodeEvent) -> (&'static str, Value) {
             index,
             of,
             view,
+            channel,
         } => (
             "chunk",
-            json!({ "tag": tag, "index": index, "of": of,
+            json!({ "tag": tag, "index": index, "of": of, "channel": channel_name(*channel),
                     "view": { "plain": view.plain, "heard": view.heard, "key": view.key } }),
         ),
         NodeEvent::Message(m) => ("message", message_json(m)),
@@ -657,9 +709,14 @@ pub fn bridge_event(e: &NodeEvent) -> (&'static str, Value) {
             json!({ "id": id.to_vec(), "outgoing": false, "signer": identity(signer), "text": text,
                     "verified": verified, "hops": hops, "at_min": at_min }),
         ),
-        NodeEvent::PairOffer { peer, name, safety } => (
+        NodeEvent::PairOffer {
+            peer,
+            name,
+            safety,
+            channel,
+        } => (
             "pairOffer",
-            json!({ "peer": identity(peer), "name": name, "safety": safety }),
+            json!({ "peer": identity(peer), "name": name, "safety": safety, "channel": channel_name(*channel) }),
         ),
         NodeEvent::RoomDb(db) => ("roomDb", json!(db)),
         NodeEvent::ChannelState { channel, state } => (
@@ -669,6 +726,29 @@ pub fn bridge_event(e: &NodeEvent) -> (&'static str, Value) {
         NodeEvent::Outbox { id, state } => (
             "outbox",
             json!({ "id": id.to_vec(), "state": state.as_str() }),
+        ),
+        // Light code frames for the flashing view: public code bits only,
+        // never key material.
+        NodeEvent::Display {
+            tag,
+            bits,
+            spec_id,
+            index,
+            hello,
+        } => (
+            "display",
+            json!({ "tag": tag, "bits": bits, "spec": spec_id, "index": index, "hello": hello }),
+        ),
+        NodeEvent::DisplayStopped { tag } => ("displayStopped", json!({ "tag": tag })),
+        // What the camera sees, small and grey, for the eyepiece: shown,
+        // never kept.
+        NodeEvent::Eyepiece {
+            width,
+            height,
+            pixels,
+        } => (
+            "eyepiece",
+            json!({ "width": width, "height": height, "pixels": pixels }),
         ),
     }
 }
