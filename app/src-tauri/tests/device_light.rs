@@ -279,3 +279,56 @@ fn a_code_that_cannot_be_read_asks_to_tilt_or_dim_the_screen() {
     b.steps(20);
     assert_eq!(b.light()["state"], "listening");
 }
+
+#[test]
+fn pairing_by_light_shows_the_hello_and_never_turns_the_switch() {
+    let dir = TempDir::new().unwrap();
+    let cam = FakeCamera::new(Vec::new());
+    let mut b = Bench::new(&store(&dir), &cam);
+    commands::unlock(&b.s, "correct horse".into(), Some("Ana".into())).unwrap();
+
+    // At Off (and at Read), refused as the switch says: the camera stays
+    // closed and the switch where it was.
+    b.step();
+    assert_eq!(
+        commands::pair(&b.s, "light".into()),
+        Err("not sent: light is off".to_string())
+    );
+    b.steps(5);
+    assert_eq!(cam.starts(), 0, "pairing never opens the camera");
+    assert_eq!(commands::settings(&b.s)["light"], 0);
+    b.set("light", 1);
+    assert_eq!(
+        commands::pair(&b.s, "light".into()),
+        Err("not sent: light is set to read only".to_string())
+    );
+    assert_eq!(commands::settings(&b.s)["light"], 1);
+
+    // At Read and flash, the hello goes up and keeps showing, past one
+    // window, while the camera reads.
+    b.set("light", 2);
+    commands::pair(&b.s, "light".into()).unwrap();
+    let shown: Vec<_> = b
+        .steps(300)
+        .iter()
+        .map(commands::bridge_event)
+        .filter(|(name, _)| *name == "display" || *name == "displayStopped")
+        .collect();
+    assert!(shown.len() > 50, "shown throughout: {}", shown.len());
+    assert!(shown.iter().all(|(name, _)| *name == "display"));
+    assert!(cam.is_running());
+
+    // Stopped, the screen clears at once; the camera reads on, as the
+    // switch has it.
+    commands::stop_pairing(&b.s);
+    let after: Vec<_> = b
+        .steps(100)
+        .iter()
+        .map(commands::bridge_event)
+        .filter(|(name, _)| *name == "display" || *name == "displayStopped")
+        .map(|(name, _)| name)
+        .collect();
+    assert_eq!(after, vec!["displayStopped"]);
+    assert!(cam.is_running());
+    assert_eq!(commands::settings(&b.s)["light"], 2);
+}

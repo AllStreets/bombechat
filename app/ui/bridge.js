@@ -11,12 +11,16 @@
 //                                default) or 'light'. Rejects with a sentence to show: 'Write the notice first' (nothing
 //                                but spaces), 'Too long to broadcast: N bytes, at most M' (M is machine().broadcast_max).
 //                                The channel's switch refuses it as send
-//   pair()                       [pair]                             sends this machine's hello on every channel whose switch
-//                                allows it: by sound once the room is quiet, by light shown until pairing ends (a peer's
-//                                hello arrives as pairOffer). Rejects with the reason when no switch will send, e.g.
-//                                'not sent: sound is set to listen only'
+//   pair(channel)                [pair { channel }]                 sends this machine's hello on channel, 'sound' (the default)
+//                                or 'light': by sound once the room is quiet, by light shown until pairing ends (a peer's
+//                                hello arrives as pairOffer). Rejects with the channel's state when its switch won't send,
+//                                e.g. 'not sent: sound is set to listen only', 'not sent: light is off'. No switch is
+//                                turned for it: the camera and the screen stay as the Light switch has them
 //   stopPairing()                [stop_pairing]                     ends the pairing in progress: the hello stops showing.
 //                                confirmPair ends it too, and it ends by itself after three minutes
+//   finishPairing()              [finish_pairing]                   their hello is in: the hello showing by light finishes its
+//                                window (so whoever pressed later still has a whole one to read it), then the screen
+//                                clears (displayStopped) and pairing ends; with none showing it ends at once
 //   eyepiece(on)                 [eyepiece { on }]                  whether to be sent what the camera sees (the eyepiece
 //                                event) while Light reads. Off until asked, and not a setting: the page asks while its
 //                                eyepiece is shown and lets go when it is hidden, so a hidden one gets no picture at all
@@ -186,8 +190,9 @@ function tauriBackend() {
   return {
     send: (contactIds, text, channel) => invoke('send', { contactIds, text, channel }).then(hex),
     broadcast: (text, channel) => invoke('broadcast', { text, channel }).then(hex),
-    pair: () => invoke('pair'),
+    pair: channel => invoke('pair', { channel }),
     stopPairing: () => invoke('stop_pairing'),
+    finishPairing: () => invoke('finish_pairing'),
     eyepiece: on => invoke('eyepiece', { on: !!on }),
     confirmPair: (peerHex, name) => invoke('confirm_pair', { peerHex, name }).then(contactId),
     setSetting: (id, valueIndex) => invoke('set_setting', { id, valueIndex }),
@@ -210,8 +215,9 @@ function simulatedBackend() {
   return {
     send: (contactIds, text, channel) => sim.send(contactIds, text, channel).then(hex),
     broadcast: (text, channel) => sim.broadcast(text, channel).then(hex),
-    pair: () => sim.pair(),
+    pair: channel => sim.pair(channel),
     stopPairing: () => sim.stopPairing(),
+    finishPairing: () => sim.finishPairing(),
     eyepiece: on => sim.eyepiece(!!on),
     confirmPair: (peerHex, name) => sim.confirmPair(peerHex, name).then(contactId),
     setSetting: (id, valueIndex) => sim.setSetting(id, valueIndex),
@@ -234,8 +240,9 @@ export const bridge = {
   simulated: !tauri,
   send: (contactIds, text, channel = 'sound') => backend.send(contactIds, text, lower(channel)),
   broadcast: (text, channel = 'sound') => backend.broadcast(text, lower(channel)),
-  pair: () => backend.pair(),
+  pair: (channel = 'sound') => backend.pair(lower(channel)),
   stopPairing: () => backend.stopPairing(),
+  finishPairing: () => backend.finishPairing(),
   eyepiece: on => backend.eyepiece(on),
   confirmPair: (peerHex, name) => backend.confirmPair(peerHex, name),
   setSetting: (id, valueIndex) => backend.setSetting(id, valueIndex),

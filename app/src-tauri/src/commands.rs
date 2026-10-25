@@ -18,7 +18,9 @@ use std::time::{Duration, Instant};
 
 use bombechat_core::{safety_number, PublicIdentity};
 use bombechat_modem::Band;
-use bombechat_node::{max_private_text, NodeEvent, MAX_BROADCAST, NOT_SENT, NOT_STORED};
+use bombechat_node::{
+    max_private_text, NodeEvent, MAX_BROADCAST, NOT_IN_THIS_PLAN, NOT_SENT, NOT_STORED,
+};
 use bombechat_store::{Channel, Contact, ContactId, StoredBroadcast, StoredMessage};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -35,11 +37,12 @@ const PANIC_REPORT_GAP: Duration = Duration::from_secs(5);
 const MAX_NAME_CHARS: usize = 40;
 
 /// The command names, exactly as `bridge.js` invokes them.
-pub const NAMES: [&str; 15] = [
+pub const NAMES: [&str; 16] = [
     "send",
     "broadcast",
     "pair",
     "stop_pairing",
+    "finish_pairing",
     "confirm_pair",
     "set_setting",
     "settings",
@@ -195,12 +198,16 @@ pub type Unlocking = Box<dyn FnOnce(&str, &str) -> Result<Opened, String> + Send
 pub trait Machine: Send {
     fn send(&mut self, to: &[ContactId], text: &str, channel: Channel) -> [u8; 16];
     fn broadcast(&mut self, text: &str, channel: Channel) -> [u8; 16];
-    /// Send this machine's pairing hello on every channel that may send
-    /// (by light it keeps showing until pairing ends), or say why not
-    /// (for example, the Sound switch is at Listen).
-    fn start_pairing(&mut self, my_name: &str) -> Result<(), String>;
+    /// Send this machine's pairing hello on `channel` (by light it keeps
+    /// showing until pairing ends), or say why not (for example, the
+    /// Sound switch is at Listen, or Light at Read). No switch is turned
+    /// for it.
+    fn start_pairing(&mut self, my_name: &str, channel: Channel) -> Result<(), String>;
     /// End the pairing in progress, if any: the hello stops showing.
     fn stop_pairing(&mut self);
+    /// Their hello is in: the hello showing by light finishes its sending
+    /// window and pairing ends (at once with none showing).
+    fn finish_pairing(&mut self);
     /// Whether to send the page what the camera sees while it reads (the
     /// eyepiece). Off until the page asks; a machine without a camera
     /// ignores it.
@@ -403,11 +410,17 @@ pub fn broadcast(s: &Shared, text: String, channel: String) -> Result<String, St
     sent(s.machine().broadcast(&text, channel))
 }
 
-/// `pair`: announce this machine for pairing, under the person's name,
-/// on every channel whose switch allows sending; by light the hello
-/// keeps showing until `stop_pairing`, `confirm_pair` or three minutes.
-/// Refused with the reason when no switch allows sending.
-pub fn pair(s: &Shared) -> Result<(), String> {
+/// `pair { channel }`: announce this machine for pairing, under the
+/// person's name, on `channel` ("sound" or "light"): by sound the hello
+/// plays once the room is quiet; by light it keeps showing until
+/// `stop_pairing`, `confirm_pair` or three minutes. Refused with the
+/// channel's state when its switch does not allow sending: pairing never
+/// turns a switch, so the camera and the screen stay as Light has them.
+pub fn pair(s: &Shared, channel: String) -> Result<(), String> {
+    let channel = parse_channel(&channel)?;
+    if channel == Channel::Bluetooth {
+        return Err(NOT_IN_THIS_PLAN.to_string());
+    }
     let mut machine = s.machine();
     if machine.lock() != Lock::Unlocked {
         return Err("locked".to_string());
@@ -415,13 +428,21 @@ pub fn pair(s: &Shared) -> Result<(), String> {
     let name = machine
         .my_name()
         .unwrap_or_else(|| MACHINE_NAME.to_string());
-    machine.start_pairing(&name)
+    machine.start_pairing(&name, channel)
 }
 
 /// `stop_pairing`: end the pairing in progress, if any; the hello stops
 /// showing. Nothing to refuse: with none in progress it does nothing.
 pub fn stop_pairing(s: &Shared) {
     s.machine().stop_pairing();
+}
+
+/// `finish_pairing`: their hello is in, so pairing ends once the hello
+/// showing by light has shown to the end of its sending window: the
+/// other person, who may have pressed later, still gets a whole window
+/// to read it. With none showing, it ends now. Nothing to refuse.
+pub fn finish_pairing(s: &Shared) {
+    s.machine().finish_pairing();
 }
 
 /// `eyepiece { on }`: whether the page is sent what the camera sees, as

@@ -10,7 +10,11 @@
 //
 // Pairing: pair() hears Teodor say hello 2.4 s later (a pairOffer with a made-up
 // key and a seeded safety number); confirmPair adds him to contacts() under the
-// name as the page corrected it.
+// name as the page corrected it. pair('light') also shows this machine's hello as
+// the node does: display frames at the Flash speed until stopPairing or
+// confirmPair, the end of the window showing when finishPairing is called, or
+// three minutes (?paircap=ms shortens it). Refused, as the node refuses it, when
+// the channel's switch won't send.
 //
 // Settings: the simulated machine keeps them as the device keeps settings.json,
 // apart from the page's own storage: in memory, carried between the front and
@@ -84,6 +88,8 @@ const MAX_BROADCAST = 3939;
 // the longest reply, in UTF-8 bytes of text, as the node's max_private_text(1)
 const REPLY_MAX = 2814;
 const PAIR_MS = 2400;
+// how long pairing stays in progress at most, as the node's PAIRING_CAP_MS
+const PAIRING_CAP_MS = 180000;
 // this machine's public identity, sign key then dh key, made up but seeded so its fingerprint is always C41D
 const SELF_KEY = 'c41d' + Array.from({ length: 62 }, ((r) => () => r().toString(16).padStart(2, '0'))(seeded(4242))).join('');
 const at = (h, m) => Math.floor(new Date(2026, 9, 24, h, m).getTime() / 60000);
@@ -127,6 +133,7 @@ function history(emit, setClock) {
 
 export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
   const still = query.has('still');
+  const pairCap = query.has('paircap') ? +query.get('paircap') : PAIRING_CAP_MS;
   const incoming = chunked(sealedInner(SHOWN, at(9, 14), 1931), 1931);
   const NC = incoming.length;
   let c = query.has('f') ? Math.max(0, Math.min(NC - 1, +query.get('f') || 0)) : 1;
@@ -185,23 +192,35 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
   const flashes = [];
   let flashing = null;// { m, spec, shown, window, lit, announced, heard }
   let flashT = null;
+  // the pairing hello on show by light, if any: a flash with no message, shown window after window
+  let hello = null, helloCap = null;
+  const lightWindow = spec => Math.ceil(LIGHT_FLOOR_MS * LIGHT_FPS[spec] / 1000);
+  // the hello stops showing at once: off the queue, or off the screen
+  function endHello() {
+    clearTimeout(helloCap);
+    const h = hello; hello = null;
+    if (!h) return;
+    const i = flashes.indexOf(h); if (i >= 0) flashes.splice(i, 1);
+    if (flashing === h) { flashing = null; if (h.lit) emit('displayStopped', { tag: h.tag }); }
+  }
   const frameBits = (spec, tag, index) => { const r = seeded((tag << 12) ^ index ^ (spec << 28)); return Array.from({ length: Math.ceil(LIGHT_CELLS[spec] ** 2 / 8) }, r); };
   function flashTick() {
-    if (!flashing) { flashing = flashes.shift() || null; if (flashing) { flashing.spec = settings.flash; flashing.window = Math.ceil(LIGHT_FLOOR_MS * LIGHT_FPS[flashing.spec] / 1000); } }
+    if (!flashing) { flashing = flashes.shift() || null; if (flashing) { flashing.spec = settings.flash; if (!flashing.hello) flashing.window = lightWindow(flashing.spec); } }
     const f = flashing;
     if (!f) { flashT = null; return; }
     if (settings.light < 2) {
       // Light turned down: the screen clears and the send waits, carrying on where it stopped
       if (f.lit) { f.lit = false; emit('displayStopped', { tag: f.tag }); }
-      if (f.announced) { f.announced = false; outbox(f.m, 'waiting'); }
+      if (f.announced && f.m) { f.announced = false; outbox(f.m, 'waiting'); }
       flashT = later(flashTick, 200); return;
     }
-    if (!f.announced) { f.announced = true; outbox(f.m, 'playing'); }
+    if (!f.announced && f.m) { f.announced = true; outbox(f.m, 'playing'); }
     emit('display', { tag: f.tag, bits: frameBits(f.spec, f.tag, f.shown), spec: f.spec, index: f.shown });
     f.lit = true; f.shown += 1;
     if (f.shown >= f.window) {
       flashing = null;
-      later(() => { if (!flashing) emit('displayStopped', { tag: f.tag }); outbox(f.m, 'sent'); if (f.heard) emit('heard', { id: f.m.id, by: MARISOL }); }, 1000 / LIGHT_FPS[f.spec]);
+      if (f.hello) { if (hello === f) { hello = null; clearTimeout(helloCap); } later(() => { if (!flashing) emit('displayStopped', { tag: f.tag }); }, 1000 / LIGHT_FPS[f.spec]); }
+      else later(() => { if (!flashing) emit('displayStopped', { tag: f.tag }); outbox(f.m, 'sent'); if (f.heard) emit('heard', { id: f.m.id, by: MARISOL }); }, 1000 / LIGHT_FPS[f.spec]);
     }
     flashT = later(flashTick, 1000 / LIGHT_FPS[f.spec]);
   }
@@ -317,10 +336,32 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
       else { queue.push(m); later(() => outbox(m, 'waiting')); }
       return Promise.resolve(m.id);
     },
-    pair() { later(() => emit('pairOffer', { peer: signer(0x2c, 0x91), name: 'Teodor Vance', safety }), PAIR_MS); return Promise.resolve(); },
-    stopPairing: () => Promise.resolve(),
+    pair(channel = 'sound') {
+      if (channel === 'light') {
+        if (settings.light < 2) { const why = LIGHT_SAYS[settings.light]; later(() => { light(why); light(lightAt()); }); return Promise.reject(why); }
+        endHello();
+        const h = hello = { hello: true, tag: Math.floor(Math.random() * 65536), shown: 0, lit: false, announced: true, window: Infinity };
+        flashes.push(h);
+        if (!flashT) flashT = later(flashTick, 0);
+        helloCap = later(() => { if (hello === h) endHello(); }, pairCap);
+        later(() => { if (hello === h) emit('pairOffer', { peer: signer(0x2c, 0x91), name: 'Teodor Vance', safety }); }, PAIR_MS);
+        return Promise.resolve();
+      }
+      if (channel !== 'sound') return Promise.reject(`no such channel: ${channel}`);
+      if (settings.sound < 2) { const why = settings.sound === 0 ? 'not sent: sound is off' : 'not sent: sound is set to listen only'; later(() => { sound(why); sound(settings.sound === 0 ? 'off' : 'listening'); }); return Promise.reject(why); }
+      later(() => emit('pairOffer', { peer: signer(0x2c, 0x91), name: 'Teodor Vance', safety }), PAIR_MS);
+      return Promise.resolve();
+    },
+    stopPairing() { endHello(); return Promise.resolve(); },
+    // their hello is in: the one on show finishes its window (the whole first one if it has not started), then clears
+    finishPairing() {
+      const h = hello;
+      if (h) { const win = lightWindow(flashing === h ? h.spec : settings.flash); h.window = Math.ceil(Math.max(1, h.shown) / win) * win; }
+      return Promise.resolve();
+    },
     eyepiece(on) { eyeOn = on; eyeWake(); return Promise.resolve(); },
     confirmPair(peerHex, name) {
+      endHello();
       if (!people.some(p => p.id === TEODOR)) people.push({ id: TEODOR, name, checked: true, safety });
       return Promise.resolve(TEODOR);
     },

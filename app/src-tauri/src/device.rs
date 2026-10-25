@@ -604,8 +604,10 @@ impl Machine for Device {
         self.node.broadcast(text, channel)
     }
 
-    fn start_pairing(&mut self, my_name: &str) -> Result<(), String> {
-        self.node.start_pairing(my_name).map_err(str::to_string)
+    fn start_pairing(&mut self, my_name: &str, channel: Channel) -> Result<(), String> {
+        self.node
+            .start_pairing_by(my_name, channel)
+            .map_err(str::to_string)
     }
 
     fn set_eyepiece(&mut self, on: bool) {
@@ -614,6 +616,10 @@ impl Machine for Device {
 
     fn stop_pairing(&mut self) {
         self.node.stop_pairing();
+    }
+
+    fn finish_pairing(&mut self) {
+        self.node.finish_pairing();
     }
 
     fn confirm_pairing(&mut self, peer: &PublicIdentity, name: &str) -> ContactId {
@@ -851,7 +857,7 @@ mod tests {
     /// Play the pairing hello across a quiet room for `ms`, and what the
     /// speaker was handed.
     fn hello(device: &mut Device, card: &FakeAudio, ms: u64) -> Vec<f32> {
-        device.start_pairing("Ana").unwrap();
+        device.start_pairing("Ana", Channel::Sound).unwrap();
         let mut now = 0;
         while now <= ms {
             card.feed(&vec![0.0; 9_600]);

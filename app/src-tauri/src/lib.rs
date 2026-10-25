@@ -44,13 +44,18 @@ fn broadcast(state: State<'_, Shared>, text: String, channel: String) -> Result<
 }
 
 #[tauri::command]
-fn pair(state: State<'_, Shared>) -> Result<(), String> {
-    commands::pair(&state)
+fn pair(state: State<'_, Shared>, channel: String) -> Result<(), String> {
+    commands::pair(&state, channel)
 }
 
 #[tauri::command]
 fn stop_pairing(state: State<'_, Shared>) {
     commands::stop_pairing(&state)
+}
+
+#[tauri::command]
+fn finish_pairing(state: State<'_, Shared>) {
+    commands::finish_pairing(&state)
 }
 
 #[tauri::command]
@@ -154,6 +159,7 @@ pub fn run() {
             broadcast,
             pair,
             stop_pairing,
+            finish_pairing,
             confirm_pair,
             set_setting,
             settings,

@@ -22,9 +22,12 @@ struct Calls {
     broadcasts: Vec<String>,
     /// The channel each broadcast went on.
     broadcast_on: Vec<Channel>,
-    pairings: Vec<String>,
+    /// Each pairing started: the name it announces, and the channel.
+    pairings: Vec<(String, Channel)>,
     /// How many times pairing was stopped.
     stopped: usize,
+    /// How many times pairing was finished (their hello in).
+    finished: usize,
     /// What the page asked of the eyepiece, in turn.
     eyepiece: Vec<bool>,
     confirmed: Vec<(PublicIdentity, String)>,
@@ -110,16 +113,19 @@ impl Machine for Fake {
         calls.broadcast_on.push(channel);
         ID
     }
-    fn start_pairing(&mut self, my_name: &str) -> Result<(), String> {
+    fn start_pairing(&mut self, my_name: &str, channel: Channel) -> Result<(), String> {
         self.calls
             .lock()
             .unwrap()
             .pairings
-            .push(my_name.to_string());
+            .push((my_name.to_string(), channel));
         Ok(())
     }
     fn stop_pairing(&mut self) {
         self.calls.lock().unwrap().stopped += 1;
+    }
+    fn finish_pairing(&mut self) {
+        self.calls.lock().unwrap().finished += 1;
     }
     fn set_eyepiece(&mut self, on: bool) {
         self.calls.lock().unwrap().eyepiece.push(on);
@@ -333,11 +339,15 @@ fn broadcast_passes_the_channel_and_refuses_one_there_is_none_of() {
 }
 
 #[test]
-fn stop_pairing_ends_the_pairing_in_progress() {
+fn stop_and_finish_pairing_reach_the_machine() {
     let (m, calls) = fake(Lock::Unlocked);
-    commands::pair(&m).unwrap();
+    commands::pair(&m, "light".into()).unwrap();
     commands::stop_pairing(&m);
     assert_eq!(calls.lock().unwrap().stopped, 1);
+    commands::pair(&m, "light".into()).unwrap();
+    commands::finish_pairing(&m);
+    let calls = calls.lock().unwrap();
+    assert_eq!((calls.stopped, calls.finished), (1, 1));
 }
 
 #[test]
@@ -394,13 +404,32 @@ fn the_simulator_broadcasts_as_much_as_the_node() {
 }
 
 #[test]
-fn pair_announces_your_name_and_refuses_while_locked() {
+fn pair_announces_your_name_on_the_channel_asked_and_refuses_while_locked() {
     let (m, calls) = fake(Lock::Unlocked);
-    commands::pair(&m).unwrap();
-    assert_eq!(calls.lock().unwrap().pairings, vec!["Ana Lima"]);
+    commands::pair(&m, "sound".into()).unwrap();
+    commands::pair(&m, "light".into()).unwrap();
+    assert_eq!(
+        calls.lock().unwrap().pairings,
+        vec![
+            ("Ana Lima".to_string(), Channel::Sound),
+            ("Ana Lima".to_string(), Channel::Light)
+        ]
+    );
+    assert_eq!(
+        commands::pair(&m, "radio".into()),
+        Err("no such channel: radio".to_string())
+    );
+    assert_eq!(
+        commands::pair(&m, "bluetooth".into()),
+        Err(bombechat_node::NOT_IN_THIS_PLAN.to_string())
+    );
+    assert_eq!(calls.lock().unwrap().pairings.len(), 2);
 
     let (locked, calls) = fake(Lock::Locked);
-    assert_eq!(commands::pair(&locked), Err("locked".to_string()));
+    assert_eq!(
+        commands::pair(&locked, "light".into()),
+        Err("locked".to_string())
+    );
     assert!(calls.lock().unwrap().pairings.is_empty());
 }
 

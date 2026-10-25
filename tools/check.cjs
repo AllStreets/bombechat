@@ -63,7 +63,7 @@ const PARTS = { top: '.top', bank: '.bank', sheet: '.sheet', compose: '.compose'
 // would; `refuseBroadcast` is a reason the machine gives for refusing every broadcast.
 // Unlocking: `keychain` opens the store before the page asks (the Lock Off launch); `unlockMs` is how long
 // working out the key takes (0 if not given); the first `wrong` unlocks are refused as 'wrong passphrase'.
-function tauriStub({ hello, safety, people, talk, afterUnlock, settings, broadcastMax = 3939, kept = [], refuseBroadcast, keychain, unlockMs = 0, wrong = 0, wrongWhy = 'wrong passphrase', refuseSetting }) {
+function tauriStub({ hello, safety, pairOfferMs = 1200, people, talk, afterUnlock, settings, broadcastMax = 3939, kept = [], refuseBroadcast, keychain, unlockMs = 0, wrong = 0, wrongWhy = 'wrong passphrase', refuseSetting }) {
   let unlocked = !!keychain, refusals = wrong;
   const KEPT = 'stub.notices';
   const notices = () => JSON.parse(sessionStorage.getItem(KEPT) || 'null') || kept;
@@ -89,7 +89,13 @@ function tauriStub({ hello, safety, people, talk, afterUnlock, settings, broadca
         case 'channels': return Promise.resolve([{ channel: 'sound', state: 'listening', rate: 16.1 }, { channel: 'light', state: 'off', rate: 2290 }]);
         case 'stop_pairing': return Promise.resolve(null);
         case 'eyepiece': return Promise.resolve(null);
-        case 'pair': setTimeout(() => window.__emit('pairOffer', { peer: { sign: Array(32).fill(5), dh: Array(32).fill(6) }, name: hello, safety }), 1200); return Promise.resolve(null);
+        // refused as the node refuses it when the channel's switch won't send; pairOfferMs null: no hello comes by itself
+        case 'pair': {
+          const light = (settings && settings !== 'unread' ? settings.light : 0);
+          if (args.channel === 'light' && light < 2) return Promise.reject(light === 0 ? 'not sent: light is off' : 'not sent: light is set to read only');
+          if (pairOfferMs !== null) setTimeout(() => window.__emit('pairOffer', { peer: { sign: Array(32).fill(5), dh: Array(32).fill(6) }, name: hello, safety }), pairOfferMs);
+          return Promise.resolve(null);
+        }
         case 'confirm_pair': return Promise.resolve(7);
         case 'set_setting': return refuseSetting ? Promise.reject(refuseSetting) : Promise.resolve(null);
         case 'send': return Promise.reject('not sent');
@@ -751,7 +757,7 @@ function measureText() {
         const heldNote = await pr.evaluate(() => document.querySelector('.menu .note').textContent);
         await pr.waitForTimeout(1900);
         const lapsed = await pr.evaluate(() => document.querySelector('.menu .note').textContent);
-        if (heldNote !== 'Teodor Vance said hello. Press Pair by sound to answer.' || /said hello/.test(lapsed)) problems.push(`${tag}: a held hello's note: ${JSON.stringify({ heldNote, lapsed })}`);
+        if (heldNote !== 'Teodor Vance said hello. Press Pair by sound or Pair by light to answer.' || /said hello/.test(lapsed)) problems.push(`${tag}: a held hello's note: ${JSON.stringify({ heldNote, lapsed })}`);
       }
       await pr.click('#pairbtn');
       await pr.waitForTimeout(300);
@@ -791,6 +797,11 @@ function measureText() {
       if (refused.state !== 'refused' || refused.note !== 'Not added. Nothing was kept.' || refused.groups.length || refused.stamp || refused.oldStamp || refused.yes || refused.pairBtn !== 'Pair by sound' || !/not added/.test(refused.pencil)) problems.push(`${tag}: Doesn't match did not leave a clean card: ${JSON.stringify(refused)}`);
       if (JSON.stringify(after) !== JSON.stringify(added)) problems.push(`${tag}: Doesn't match changed the contacts: ${JSON.stringify(added)} to ${JSON.stringify(after)}`);
       await shot('refused');
+      if (where === 'app') {
+        // Pair by sound asks for sound only, and Doesn't match ends the pairing in the machine
+        const asked = await pr.evaluate(() => ({ pairs: __calls.filter(c => c[0] === 'pair').map(c => c[1]), stops: __calls.filter(c => c[0] === 'stop_pairing').length }));
+        if (asked.pairs.length !== 2 || asked.pairs.some(a => JSON.stringify(a) !== '{"channel":"sound"}') || asked.stops < 1) problems.push(`${tag}: pairing by sound asked the machine ${JSON.stringify(asked)}`);
+      }
       report.pairing[tag] = { listening: listening.state, offered: { name: offered.name, groupPx: offered.groupPx, gridAt: offered.gridAt }, matched: { stamp: matched.stamp, gridAt: matched.gridAt, who: matched.who }, refused: refused.note, contacts: after };
       await pr.close();
     }
@@ -966,11 +977,11 @@ function measureText() {
       const CODE = [0, 1, 2].map(preset => JSON.parse(example(['frames', String(preset), '120', '4660'])));
       const readBack = files => example(['read', ...files]).trim().split('\n').map(l => JSON.parse(l));
       const TILT = 'seeing a code: tilt or dim the screen';
-      const openLight = async (w, h, light, { dpr = 2, q = 'still&ready=400' } = {}) => {
+      const openLight = async (w, h, light, { dpr = 2, q = 'still&ready=400', stub = {} } = {}) => {
         const lp = await browser.newPage({ viewport: { width: w, height: h }, deviceScaleFactor: dpr });
         watch(lp, `light ${w}`);
         await lp.addInitScript(tauriStub, { hello: 'Marisol Ortega', safety: '', people: [{ id: 1, name: 'Marisol Ortega', checked: true, safety: '' }],
-          settings: { sound: 2, volume: 2, band: 0, light, flash: 1, machine: 1, machvol: 2, carry: 1, hops: 3, hold: 2, quiet: 2, repeats: 2, lock: 1, expire: 0, inperson: 1 } });
+          settings: { sound: 2, volume: 2, band: 0, light, flash: 1, machine: 1, machvol: 2, carry: 1, hops: 3, hold: 2, quiet: 2, repeats: 2, lock: 1, expire: 0, inperson: 1 }, ...stub });
         await lp.goto(url(q));
         await lp.waitForSelector('.unlock input[name=pass]');
         await lp.fill('.unlock input[name=pass]', 'correct horse');
@@ -1103,6 +1114,134 @@ function measureText() {
         }
         Object.assign(r, { ready: ready.mid, flashing: flashing.frames, stopped: stopped.light, hint: hint.note, refused: refusedNotice.pubnote });
         await lp.close();
+      }
+
+      // Pairing by light on the key check card, on the app path (the node's events emitted as it emits them, its frames
+      // the core's own) and in a plain browser (the simulator shows the hello and hears Teodor's), at 1024, 1440 and
+      // 1728, with 2x crops (card-<path>-<w>-light-<state>.png, light-pair-<path>-<w>-<state>.png): the card at rest with
+      // both stamps; Pair by light asks for light only and the lamp shows your hello, saying to hold the screens face to
+      // face; their hello in, the card takes the offer under the lamp, the machine is told to finish, and the lamp closes
+      // when the screen clears, focus on Matched, add; Matched, add stamps the card "by light". Then (app, 1440): Escape
+      // ends the pairing (stop_pairing, the switch untouched, a late frame of the hello not shown); Doesn't match ends it;
+      // three minutes (shortened) end it; at Read it is refused on the card in sentence case with nothing asked.
+      report.lightPairing = {};
+      const SAFETY = '90817 26354 55102 83746 19283 74650 31415 92653 58979 32384 62643 38327';
+      const pairCard = () => { const m = document.querySelector('.menu'), l = document.getElementById('lamp');
+        return { state: m.dataset.pair, who: m.querySelector('h2 span').textContent, note: m.querySelector('.note').textContent,
+          pencil: (m.querySelector('#pencil:not([hidden])') || { innerText: '' }).innerText.replace(/\s+/g, ' ').trim(),
+          stamps: [...m.querySelectorAll('.pairact .rs')].filter(b => !b.hidden).map(b => b.textContent),
+          stamp: (m.querySelector('.gstmp') || { innerText: '' }).innerText.replace(/\s+/g, ' ').trim(),
+          groups: [...m.querySelectorAll('.sn li')].map(li => li.textContent), gridAt: (g => g ? Math.round((g.getBoundingClientRect().top - m.getBoundingClientRect().top) * 2) / 2 : null)(m.querySelector('.sn')),
+          lamp: !l.hidden, plate: l.querySelector('.lamp-head .pl.screw').textContent, say: document.getElementById('lampsay').innerText.replace(/\s+/g, ' ').trim(),
+          focus: document.activeElement && document.activeElement.id, light: document.getElementById('k2').getAttribute('aria-valuenow'),
+          calls: window.__calls ? __calls.filter(c => /pair|set_setting/.test(c[0])).map(c => c[1] ? `${c[0]} ${JSON.stringify(c[1])}` : c[0]) : [] }; };
+      for (const where of ['app', 'browser']) for (const [w, h] of [[1024, 768], [1440, 900], [1728, 1117]]) {
+        const tag = `light pairing ${where} ${w}`, r = report.lightPairing[`${where} ${w}`] = {};
+        let lp;
+        if (where === 'app') lp = await openLight(w, h, 2, { stub: { pairOfferMs: null } });
+        else {
+          lp = await browser.newPage({ viewport: { width: w, height: h }, deviceScaleFactor: 2 });
+          watch(lp, tag);
+          await lp.addInitScript(() => sessionStorage.setItem('bombechat.simulated-machine', JSON.stringify({ light: 2 })));
+          await lp.goto(url('still&ready=300'));
+          await lp.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
+          await lp.evaluate(() => document.fonts.ready);
+        }
+        const st = () => lp.evaluate(pairCard);
+        const cardShot = n => lp.locator('.menu').screenshot({ path: path.join(out, `card-${where}-${w}-light-${n}.png`) });
+        const rest = await st();
+        if (JSON.stringify(rest.stamps) !== '["Pair by sound","Pair by light"]') problems.push(`${tag}: the card's stamps at rest: ${JSON.stringify(rest.stamps)}`);
+        await cardShot('rest');
+        await lp.click('#pairlight');
+        if (where === 'app') { await paint(lp); for (let i = 0; i <= 3; i++) { await emit(lp, 'display', frame(1, i, 0x4e1)); await paint(lp); } await lp.waitForTimeout(450); for (let i = 4; i <= 6; i++) { await emit(lp, 'display', frame(1, i, 0x4e1)); await paint(lp); } }
+        else await lp.waitForTimeout(1100);
+        const reading = await st();
+        if (reading.state !== 'reading' || reading.who !== 'pairing by light' || !reading.lamp || reading.plate !== 'Pairing by light' || reading.say !== 'Hold your screens face to face. reading theirs, Escape stops it' || !/reading for a hello/.test(reading.pencil))
+          problems.push(`${tag}: Pair by light did not show the hello: ${JSON.stringify(reading)}`);
+        if (where === 'app' && JSON.stringify(reading.calls) !== '["pair {\\"channel\\":\\"light\\"}"]') problems.push(`${tag}: Pair by light asked the machine ${JSON.stringify(reading.calls)}`);
+        r.small = await lp.evaluate(`(${measureText.toString()})()`);
+        if (r.small.length) problems.push(`${tag}: text under 12px while pairing by light: ${r.small.join('; ')}`);
+        await lp.locator('.lamp').screenshot({ path: path.join(out, `light-pair-${where}-${w}-reading.png`) });
+        await cardShot('reading');
+        // their hello is in: the card has the offer under the lamp, and the lamp shows yours to the end of its window
+        if (where === 'app') { await emit(lp, 'pairOffer', { peer: { sign: Array(32).fill(5), dh: Array(32).fill(6) }, name: 'Marisol Ortega', safety: SAFETY }); await paint(lp); }
+        else await lp.waitForFunction(() => document.querySelector('.menu').dataset.pair === 'offer', null, { timeout: 8000 }).catch(() => {});
+        const finishing = await st();
+        if (finishing.state !== 'offer' || !finishing.lamp || finishing.say !== 'Hold your screens face to face. theirs is read, yours finishes, Escape stops it') problems.push(`${tag}: the offer did not wait under the lamp for the hello to finish: ${JSON.stringify(finishing)}`);
+        if (where === 'app' && !finishing.calls.includes('finish_pairing')) problems.push(`${tag}: the machine was not told to finish: ${JSON.stringify(finishing.calls)}`);
+        await lp.locator('.lamp').screenshot({ path: path.join(out, `light-pair-${where}-${w}-finishing.png`) });
+        if (where === 'app') { await emit(lp, 'displayStopped', { tag: 0x4e1 }); await paint(lp); }
+        else await lp.waitForFunction(() => document.getElementById('lamp').hidden, null, { timeout: 8000 }).catch(() => {});
+        await lp.waitForTimeout(150);
+        const offered = await st();
+        if (offered.lamp || offered.state !== 'offer' || offered.who !== 'pairing by light' || offered.groups.length !== 12 || offered.focus !== 'pairyes' || offered.note !== 'Compare these with theirs, out loud or side by side.')
+          problems.push(`${tag}: the lamp did not close on the offer: ${JSON.stringify(offered)}`);
+        await cardShot('offer');
+        await lp.click('#pairyes'); await lp.waitForTimeout(500);
+        const matched = await st();
+        if (matched.state !== '' || !/^Matched \d+ [A-Z][a-z]{2}$/.test(matched.stamp) || matched.note !== 'Checked in person, by light.' || Math.abs(matched.gridAt - offered.gridAt) > 1 || matched.lamp)
+          problems.push(`${tag}: Matched, add after pairing by light: ${JSON.stringify(matched)}`);
+        await cardShot('matched');
+        Object.assign(r, { reading: reading.say, finishing: finishing.say, offered: offered.state, matched: matched.note });
+        if (where === 'app' && w === 1440) {
+          // Escape ends the pairing, not the switch, and a frame of the hello still on its way is not shown
+          const before = (await st()).calls.length;
+          await lp.click('#pairlight'); await paint(lp);
+          await emit(lp, 'display', frame(1, 0, 0x4e2)); await lp.waitForTimeout(500); await emit(lp, 'display', frame(1, 1, 0x4e2)); await paint(lp);
+          await lp.keyboard.press('Escape'); await paint(lp);
+          await emit(lp, 'display', frame(1, 2, 0x4e2)); await lp.waitForTimeout(300);
+          const esc = await st();
+          if (esc.lamp || esc.state !== '' || esc.note !== 'Pairing by light stopped. Nothing was kept.' || esc.light !== '2' || JSON.stringify(esc.calls.slice(before)) !== '["pair {\\"channel\\":\\"light\\"}","stop_pairing"]' || esc.focus !== 'pairlight')
+            problems.push(`${tag}: Escape did not end the pairing by light: ${JSON.stringify(esc)}`);
+          await emit(lp, 'displayStopped', { tag: 0x4e2 });
+          // Doesn't match ends it
+          const before2 = (await st()).calls.length;
+          await lp.click('#pairlight'); await paint(lp);
+          await emit(lp, 'display', frame(1, 0, 0x4e3)); await lp.waitForTimeout(500);
+          await emit(lp, 'pairOffer', { peer: { sign: Array(32).fill(7), dh: Array(32).fill(8) }, name: 'Someone Else', safety: SAFETY }); await paint(lp);
+          await emit(lp, 'display', frame(1, 1, 0x4e3)); await paint(lp);
+          await lp.keyboard.press('Escape'); await paint(lp);
+          const escOffer = await st();
+          if (escOffer.lamp || escOffer.state !== 'offer' || escOffer.focus !== 'pairyes') problems.push(`${tag}: Escape while the hello finished did not leave the offer: ${JSON.stringify(escOffer)}`);
+          await lp.click('#pairno'); await paint(lp);
+          const declined = await st();
+          if (declined.state !== 'refused' || declined.lamp || JSON.stringify(declined.calls.slice(before2)) !== '["pair {\\"channel\\":\\"light\\"}","finish_pairing","stop_pairing","stop_pairing"]')
+            problems.push(`${tag}: Doesn't match after pairing by light: ${JSON.stringify(declined)}`);
+          r.escape = esc.note;
+        }
+        await lp.close();
+      }
+      {
+        // three minutes, shortened to 1.5 s: the pairing ends, the screen clears, and the card says so
+        const tag = 'light pairing cap 1440';
+        const lp = await openLight(1440, 900, 2, { q: 'still&ready=300&paircap=1500', stub: { pairOfferMs: null } });
+        await lp.click('#pairlight'); await paint(lp);
+        await emit(lp, 'display', frame(1, 0, 0x4e4)); await lp.waitForTimeout(1700);
+        await emit(lp, 'display', frame(1, 1, 0x4e4)); await paint(lp);
+        const capped = await lp.evaluate(pairCard);
+        if (capped.lamp || capped.state !== '' || capped.note !== 'Pairing by light ended after three minutes. Nothing was kept.' || !capped.calls.includes('stop_pairing')) problems.push(`${tag}: the cap did not end it: ${JSON.stringify(capped)}`);
+        await lp.locator('.menu').screenshot({ path: path.join(out, 'card-app-1440-light-capped.png') });
+        await lp.close();
+        // at Read: refused on the card, nothing asked of the machine
+        const rp = await openLight(1440, 900, 1);
+        await rp.click('#pairlight'); await paint(rp);
+        const refused = await rp.evaluate(pairCard);
+        if (refused.lamp || refused.note !== 'Light is set to read only. Turn it to Read and flash to pair by light.' || refused.calls.some(c => /^pair/.test(c))) problems.push(`light pairing at Read: ${JSON.stringify(refused)}`);
+        await rp.locator('.menu').screenshot({ path: path.join(out, 'card-app-1440-light-refused.png') });
+        await rp.close();
+        // browser: Escape ends the simulator's hello too
+        const bp = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 });
+        watch(bp, 'light pairing browser escape');
+        await bp.addInitScript(() => sessionStorage.setItem('bombechat.simulated-machine', JSON.stringify({ light: 2 })));
+        await bp.goto(url('still&ready=300&paircap=60000'));
+        await bp.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
+        await bp.click('#pairlight'); await bp.waitForTimeout(900);
+        const up = await bp.evaluate(pairCard);
+        await bp.keyboard.press('Escape'); await bp.waitForTimeout(800);
+        const esc = await bp.evaluate(pairCard);
+        if (!up.lamp || esc.lamp || esc.state !== '' || esc.note !== 'Pairing by light stopped. Nothing was kept.' || esc.light !== '2') problems.push(`light pairing browser: Escape: ${JSON.stringify({ up: up.lamp, esc })}`);
+        await bp.close();
+        report.lightPairing.cap = capped.note; report.lightPairing.refused = refused.note;
       }
 
       // Photosensitivity. WCAG 2.3.1, general flash: a flash is a pair of opposing changes in relative luminance of 10% or

@@ -358,6 +358,75 @@ fn pair_message_and_receipt_by_light_alone() {
     assert_eq!(messages(&room.peers[1].log).len(), 1);
 }
 
+/// Pairing by light, as the "Pair by light" stamp drives it: each hello
+/// goes up on its own screen only, each camera reads the other's, and
+/// once a hello is in, the page finishes the pairing: the hello on screen
+/// shows to the end of its window, so whoever pressed later still has a
+/// whole window to read it, then the screen clears. Then one side
+/// matches (kept) and the other does not (nothing kept).
+#[test]
+fn pairing_by_light_alone_one_pressing_later() {
+    let dir = TempDir::new().unwrap();
+    let a = Peer::new(&dir, "ann", FakeCamera::new(Vec::new()));
+    let b = Peer::new(&dir, "ben", FakeCamera::new(Vec::new()));
+    let mut room = Room::new(vec![a, b], vec![facing(0, 1), facing(1, 0)]);
+
+    // Ann presses first; Ben's camera reads her hello before he presses.
+    room.peers[0]
+        .node
+        .start_pairing_by("Ann", Channel::Light)
+        .unwrap();
+    assert!(room.run_until(6_000, |r| offer(&r.peers[1].log).is_some()));
+    room.run(3_000);
+    // Ben presses: his hello was held, so his page finishes at once, and
+    // Ann's as soon as she reads his.
+    room.peers[1]
+        .node
+        .start_pairing_by("Ben", Channel::Light)
+        .unwrap();
+    room.peers[1].node.finish_pairing();
+    assert!(room.run_until(10_000, |r| offer(&r.peers[0].log).is_some()));
+    assert!(
+        room.peers.iter().all(|p| p.screen.is_some()),
+        "both hellos are still up when the second offer arrives"
+    );
+    room.peers[0].node.finish_pairing();
+    assert!(room.run_until(10_000, |r| r.peers.iter().all(|p| !p.node.pairing())));
+    // The screen clears at what would have been the next frame.
+    room.run(200);
+    assert!(room.peers.iter().all(|p| p.screen.is_none()));
+
+    let (ben, name) = offer(&room.peers[0].log).unwrap();
+    assert_eq!((&ben, name.as_str()), (&room.peers[1].me, "Ben"));
+    let (ann, name) = offer(&room.peers[1].log).unwrap();
+    assert_eq!((&ann, name.as_str()), (&room.peers[0].me, "Ann"));
+
+    // Ann's numbers match: Ben is kept. Ben's do not: he keeps nothing.
+    let ben_id = room.peers[0].node.confirm_pairing(&ben, "Ben");
+    assert!(room.peers[0]
+        .node
+        .contacts()
+        .iter()
+        .any(|c| c.id == ben_id && c.checked));
+    room.peers[1].node.stop_pairing();
+    assert!(room.peers[1].node.contacts().is_empty());
+
+    // Nothing more goes up, and both cameras still read (Read and flash).
+    let shown = (
+        displays(&room.peers[0].log).len(),
+        displays(&room.peers[1].log).len(),
+    );
+    room.run(5_000);
+    assert_eq!(
+        shown,
+        (
+            displays(&room.peers[0].log).len(),
+            displays(&room.peers[1].log).len()
+        )
+    );
+    assert!(room.peers.iter().all(|p| p.cam.is_running()));
+}
+
 /// Contacts already paired, each seeing the other.
 fn paired(dir: &TempDir) -> (Room, ContactId, ContactId) {
     let mut a = Peer::new(dir, "ann", FakeCamera::new(Vec::new()));
