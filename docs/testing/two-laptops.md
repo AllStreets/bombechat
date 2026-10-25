@@ -44,6 +44,18 @@ On each Mac, in the room you will test in, with nobody talking:
 
 If a reading is at or above Send under: turn the machine round and raise Send under to the next step above the reading (45 or 50 dB), and write down the value you used. If even 50 dB is not enough, lower the input volume in System Settings, Sound, Input and read it again. A reading that high in a quiet room is a finding in itself: note the Mac and microphone.
 
+### Then: each laptop hears itself
+
+Before pairing, check each Mac alone. Unlock it, leave Sound at "Listen and send" and press **Test the machine** at the foot of the message sheet. It seals a short message to its own key, waits for the room to fall under Send under like any send, plays it, and hears it back through its own microphone: the drums turn and the sheet types it under the margin note "self-test", with how long it took, the bytes a second and the band. Nothing of it is kept. If it says "Not heard", raise the output volume (or set Band to Audible in Settings) and test again; a Mac that can't hear itself won't hear the other one either.
+
+| Mac | Self-test result (seconds, bytes a second, band) |
+|---|---|
+| A | |
+| B | |
+| C | |
+
+With Light at "Read and flash", **Test by light** does the same with the camera: hold a mirror flat in front of the screen while the code shows, and the sheet says "Read back in the mirror" once it is read.
+
 `crates/modem/examples/measure.rs` plays a run of full-size frames through the speaker, records the microphone while they play, decodes the recording and prints what came back.
 
 ```sh

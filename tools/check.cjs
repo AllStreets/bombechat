@@ -13,6 +13,10 @@
 //   unlock-<w>-<state>.png  2x crops of the passphrase form on the app path at 1024, 1440 and 1728
 //   broadcast-<path>-<w>-<state>.png  2x crops of the message sheet writing a public notice
 //                         (idle, composing, sent; refused at 1440), browser and app path
+//   selftest-<path>-<w>-<state>.png  2x crops of the sheet testing the machine (rest, refused, waiting,
+//                         heard, stopped; not heard at 1440), browser and app path, and its stamps beside
+//                         the key check card's (selftest-<path>-<w>-stamps-foot.png, -stamps-card.png);
+//                         selftest-browser-1440-light-<state>.png for Test by light
 // and prints what it measured. Exits non-zero on page errors, horizontal overflow,
 // text under 12px, layout shift on load, a plain row that doesn't settle on the
 // frame text, the sheet not keeping its place, a reply that doesn't land, clipped
@@ -22,7 +26,11 @@
 // pairing by sound doesn't run in the browser or on the app path (first run asking your name,
 // pair, a 60-digit offer legible at 1024, 1440 and 1728 under an editable name, Matched, add
 // keeping the corrected name and stamping the card in place, Doesn't match keeping nothing,
-// a held hello lapsing), when writing a public notice doesn't work in the browser or on the app
+// a held hello lapsing), when testing the machine doesn't run in the browser or on the app path (its stamps
+// not cut as Pair by sound's are, refused at Off and Listen in sentence case with nothing asked of the machine, the
+// run waiting for quiet, the drums not spelling it, its entry not under the margin note self-test with what came
+// back, the rate and band and the stamp, anything of it in the outbox, Escape not stopping it, a test nobody hears
+// not saying what to try, Test by light not on the lamp for a mirror, the first run's typed line missing), when writing a public notice doesn't work in the browser or on the app
 // path (the Reply/Public toggle, the line saying who can read it and the key that signs it,
 // empty, too long and Sound at Listen refused in sentence case with nothing sent, a sent
 // notice on the sheet as a signed public entry with its outbox status, the toggle springing
@@ -63,7 +71,9 @@ const PARTS = { top: '.top', bank: '.bank', sheet: '.sheet', compose: '.compose'
 // would; `refuseBroadcast` is a reason the machine gives for refusing every broadcast.
 // Unlocking: `keychain` opens the store before the page asks (the Lock Off launch); `unlockMs` is how long
 // working out the key takes (0 if not given); the first `wrong` unlocks are refused as 'wrong passphrase'.
-function tauriStub({ hello, safety, pairOfferMs = 1200, people, talk, afterUnlock, settings, broadcastMax = 3939, kept = [], refuseBroadcast, keychain, unlockMs = 0, wrong = 0, wrongWhy = 'wrong passphrase', refuseSetting, sendId }) {
+// Testing the machine: self_test runs as the node reports one, waiting, playing, its chunks, then heard; `selfTest`
+// 'unheard' hears nothing and gives it up 1.5 s in. stop_self_test reports it stopped.
+function tauriStub({ hello, safety, pairOfferMs = 1200, people, talk, afterUnlock, settings, broadcastMax = 3939, kept = [], refuseBroadcast, keychain, unlockMs = 0, wrong = 0, wrongWhy = 'wrong passphrase', refuseSetting, sendId, selfTest = 'heard' }) {
   let unlocked = !!keychain, refusals = wrong;
   const KEPT = 'stub.notices';
   const notices = () => JSON.parse(sessionStorage.getItem(KEPT) || 'null') || kept;
@@ -99,6 +109,27 @@ function tauriStub({ hello, safety, pairOfferMs = 1200, people, talk, afterUnloc
           return Promise.resolve(null);
         }
         case 'confirm_pair': return Promise.resolve(7);
+        // refused as the node refuses it when the channel's switch won't send
+        case 'self_test': {
+          const s = settings && settings !== 'unread' ? settings : { sound: 2, light: 0 };
+          if (args.channel === 'sound' && s.sound < 2) return Promise.reject(s.sound === 0 ? 'not sent: sound is off' : 'not sent: sound is set to listen only');
+          if (args.channel === 'light' && s.light < 2) return Promise.reject(s.light === 0 ? 'not sent: light is off' : 'not sent: light is set to read only');
+          const tag = 0x7e00 + (window.__calls.length & 255), channel = args.channel === 'light' ? 'Light' : 'Sound';
+          const run = window.__selfTest = { tag, channel, timers: [] };
+          const at = (ms, f) => run.timers.push(setTimeout(f, ms));
+          const says = (state, extra) => window.__emit('selfTest', { tag, channel, state, ...extra });
+          at(50, () => says('waiting'));
+          at(400, () => says('playing'));
+          if (selfTest === 'heard') {
+            // sealed as the node seals it: sender keys and time, the text, a signature, in 48-byte chunks
+            const inner = [...Array(68).fill(0x51), ...new TextEncoder().encode('The machine hears itself.'), ...Array(64).fill(0x52)], of = Math.ceil(inner.length / 48);
+            for (let i = 0; i < of; i++) at(600 + i * 150, () => { const plain = inner.slice(i * 48, i * 48 + 48); window.__emit('chunk', { tag, index: i, of, channel, view: { plain, heard: plain.map(b => b ^ 9), key: plain.map(() => 9) } }); });
+            at(600 + of * 150, () => { window.__selfTest = null; says('heard', { text: 'The machine hears itself.', bytes: 379, ms: 23510, rate: 16.1, band: 'near silent' }); });
+          } else at(1500, () => { window.__selfTest = null; says('unheard'); });
+          return Promise.resolve(null);
+        }
+        case 'stop_self_test': { const run = window.__selfTest; window.__selfTest = null;
+          if (run) { run.timers.forEach(clearTimeout); window.__emit('selfTest', { tag: run.tag, channel: run.channel, state: 'stopped' }); } return Promise.resolve(null); }
         // refused as the device refuses a save that fails: left as it was, except Light turned down, which the
         // machine keeps for the session (Escape always stops) and its settings then answer
         case 'set_setting': if (!refuseSetting) return Promise.resolve(null);
@@ -966,6 +997,131 @@ function measureText() {
       if (stub) await bp.locator('.sheet').screenshot({ path: path.join(out, 'broadcast-app-1440-refused-by-machine.png') });
       report.broadcast[tag] = r.note;
       await bp.close();
+    }
+
+    // testing the machine, in the browser (the simulator, its chunks paced at 250 ms) and on the app path (from first
+    // run), at 1024, 1440 and 1728, with 2x crops of the sheet: the stamps cut as the key check card's are; refused at
+    // Off and at Listen in sentence case, nothing asked of the machine; a run waiting for quiet, the drums spelling it as
+    // it arrives, its entry under the margin note self-test with what came back, the rate and band, and the stamp;
+    // nothing of it in the outbox or sent; Escape stopping one; at 1440 one nobody hears saying what to try, and (in
+    // the browser) Test by light on the lamp for a mirror
+    report.selfTest = {};
+    const TESTED = 'The machine hears itself.';
+    const testView = () => { const ents = [...document.querySelectorAll('#log .ent.selftest')], e = ents[ents.length - 1], q = s => e && e.querySelector(s);
+      return { entries: ents.length, how: q('.when span') ? q('.when span').textContent : '', typed: q('.typed') ? q('.typed').textContent : '',
+        tape: e ? [...e.querySelectorAll('.strip')].map(s => s.textContent).join(' ') : '', state: q('.state') ? q('.state').textContent : '', failed: !!e && e.classList.contains('failed'),
+        stamp: q('.stamp') ? q('.stamp').textContent : '', note: document.getElementById('testnote').textContent, refused: document.getElementById('testnote').classList.contains('refused'),
+        button: document.getElementById('testbtn').textContent, lightHidden: document.getElementById('testlight').hidden,
+        calls: window.__TAURI__ ? __calls.filter(c => /self_test/.test(c[0])).map(c => c[0] + (c[1] ? ':' + c[1].channel : '')) : null,
+        sent: window.__TAURI__ ? __calls.filter(c => c[0] === 'send' || c[0] === 'broadcast').length : 0,
+        slips: [...document.querySelectorAll('#outbox .slip:not(.empty)')].map(s => s.textContent) }; };
+    // the stamps as they are cut: the same face, size, rule and height as Pair by sound's, in the sheet's ink
+    const cut = () => ['testbtn', 'testlight', 'pairbtn', 'pairlight'].map(id => { const b = document.getElementById(id), c = getComputedStyle(b);
+      return { font: c.fontFamily.split(',')[0] + ' ' + c.fontSize, border: c.borderTopWidth + ' ' + c.borderTopStyle, height: b.offsetHeight, opacity: c.opacity, padding: c.padding }; });
+    const testPage = async (where, w, h, { query = '&testpace=250', stub = {} } = {}) => {
+      const tp = await browser.newPage({ viewport: { width: w, height: h }, deviceScaleFactor: 2 });
+      watch(tp, `self-test ${where} ${w}`);
+      if (where === 'app') {
+        // first run: the registration card, then the sheet
+        await tp.addInitScript(tauriStub, { hello: 'Marisol Ortega', safety: '', ...stub });
+        await tp.goto(url('still'));
+        await tp.waitForSelector('.unlock input[name=who]');
+        await tp.fill('.unlock input[name=who]', 'Ana Lima'); await tp.fill('.unlock input[name=pass]', 'correct horse'); await tp.fill('.unlock input[name=again]', 'correct horse');
+        await tp.click('.unlock button');
+      } else await tp.goto(url('still' + query));
+      await settle(tp);
+      return tp;
+    };
+    for (const where of ['browser', 'app']) for (const [w, h] of [[1024, 768], [1440, 900], [1728, 1117]]) {
+      const tag = `self-test ${where} ${w}`;
+      const tp = await testPage(where, w, h);
+      const shot = st => tp.locator('.sheet').screenshot({ path: path.join(out, `selftest-${where}-${w}-${st}.png`) });
+      const rest = await tp.evaluate(testView);
+      if (rest.button !== 'Test the machine' || rest.lightHidden || rest.entries) problems.push(`${tag}: the stamps are not at rest: ${JSON.stringify(rest)}`);
+      // the first run, and only the first run, suggests it: one typed line on the empty sheet
+      const hint = await tp.evaluate(() => [...document.querySelectorAll('#log .ent.firstrun')].map(e => e.innerText.replace(/\s+/g, ' ').trim()));
+      const wanted = where === 'app' ? [/^\d\d\.\d\d Try it alone first: press Test the machine, at the foot of this sheet\.$/] : [];
+      if (hint.length !== wanted.length || hint.some((t, i) => !wanted[i].test(t)) || rest.note || rest.refused) problems.push(`${tag}: the first run's line reads ${JSON.stringify(hint)}, beside the stamps ${JSON.stringify(rest.note)}`);
+      const stamps = await tp.evaluate(cut);
+      if (stamps.some(s => JSON.stringify({ ...s }) !== JSON.stringify(stamps[2]))) problems.push(`${tag}: the test stamps are not cut as Pair by sound's: ${JSON.stringify(stamps)}`);
+      const inside = await tp.evaluate(() => ['testbtn', 'testlight'].every(id => { const r = document.getElementById(id).getBoundingClientRect(), s = document.querySelector('.sheet').getBoundingClientRect(); return r.left >= s.left && r.right <= s.right && r.bottom <= s.bottom; }));
+      if (!inside) problems.push(`${tag}: a test stamp spills off the sheet`);
+      await tp.locator('.sh-foot').screenshot({ path: path.join(out, `selftest-${where}-${w}-stamps-foot.png`) });
+      await tp.locator('.pairact').screenshot({ path: path.join(out, `selftest-${where}-${w}-stamps-card.png`) });
+      await shot('rest');
+      // refused at Off, then at Listen: the switch named, in sentence case, nothing asked of the machine
+      for (const at of ['Off', 'Listen']) {
+        await tp.click('#k1'); await tp.waitForTimeout(250);
+        await tp.click('#testbtn'); await tp.waitForTimeout(250);
+        const r = await tp.evaluate(testView);
+        if (r.note !== 'Turn Sound to Listen and send to test the machine.' || !r.refused || r.entries || (r.calls && r.calls.length)) problems.push(`${tag}: at ${at} the test was not refused: ${JSON.stringify(r)}`);
+        if (at === 'Listen') await shot('refused');
+      }
+      await tp.click('#k1'); await tp.waitForTimeout(400);
+      // a run: waiting for quiet, the drums spelling it, then on the sheet as heard
+      await tp.click('#testbtn'); await tp.waitForTimeout(120);
+      const waiting = await tp.evaluate(testView);
+      if (!/^waiting for quiet/.test(waiting.state) || waiting.how !== 'self-test' || waiting.typed !== TESTED || waiting.button !== 'Stop the test' || !waiting.lightHidden || waiting.note) problems.push(`${tag}: the test did not start waiting for quiet: ${JSON.stringify(waiting)}`);
+      await shot('waiting');
+      const spelled = await tp.waitForFunction(() => /MACHINE/.test(__bank.rows().plain), null, { timeout: 30000 }).then(() => true, () => false);
+      if (!spelled) problems.push(`${tag}: the drums never spelled the test`);
+      await tp.waitForFunction(() => { const e = [...document.querySelectorAll('#log .ent.selftest')].pop(); return e && (e.querySelector('.stamp') || e.classList.contains('failed')); }, null, { timeout: 30000 }).catch(() => {});
+      await tp.waitForTimeout(400);
+      const heard = await tp.evaluate(testView);
+      if (heard.tape.toLowerCase() !== TESTED.toLowerCase() || heard.failed || !/^Heard back after \d+ s: \d+\.\d bytes a second on the near silent band\.$/.test(heard.state)
+        || !/^heard by this machine, \d\d\.\d\d$/.test(heard.stamp) || heard.button !== 'Test the machine' || heard.lightHidden) problems.push(`${tag}: the test did not land on the sheet as heard: ${JSON.stringify(heard)}`);
+      if (heard.slips.some(s => s.includes(TESTED)) || heard.sent || (heard.calls && JSON.stringify(heard.calls) !== '["self_test:sound"]')) problems.push(`${tag}: the test went further than itself: ${JSON.stringify(heard)}`);
+      await shot('heard');
+      // Escape stops one
+      await tp.click('#testbtn'); await tp.waitForTimeout(150);
+      await tp.keyboard.press('Escape'); await tp.waitForTimeout(250);
+      const stopped = await tp.evaluate(testView);
+      if (stopped.state !== 'Test stopped.' || stopped.failed || stopped.button !== 'Test the machine' || stopped.entries !== 2 || (stopped.calls && !stopped.calls.includes('stop_self_test'))) problems.push(`${tag}: Escape did not stop the test: ${JSON.stringify(stopped)}`);
+      await shot('stopped');
+      report.selfTest[tag] = { rest: rest.note, waiting: waiting.state, heard: heard.state, stamp: heard.stamp, stopped: stopped.state };
+      await tp.close();
+      // nobody hears it: given up, saying what to try
+      if (w === 1440) {
+        const dp = await testPage(where, w, h, { query: '&testpace=250&selftest=deaf&testcap=1500', stub: { selfTest: 'unheard' } });
+        await dp.click('#testbtn');
+        await dp.waitForFunction(() => { const e = [...document.querySelectorAll('#log .ent.selftest')].pop(); return e && e.classList.contains('failed'); }, null, { timeout: 15000 }).catch(() => {});
+        const deaf = await dp.evaluate(testView);
+        if (deaf.state !== 'Not heard. Raise the volume, or set Band to Audible in Settings, and test again.' || !deaf.failed || deaf.tape) problems.push(`${tag}: a test nobody heard reads ${JSON.stringify(deaf)}`);
+        await dp.locator('.sheet').screenshot({ path: path.join(out, `selftest-${where}-${w}-unheard.png`) });
+        report.selfTest[`${tag} unheard`] = deaf.state;
+        await dp.close();
+      }
+    }
+    // Test by light, in the browser at 1440: refused at Off; at Read and flash it goes on the lamp for a mirror, Escape
+    // ends the test and leaves Light where it is, and one read back lands on the sheet as seen
+    {
+      const tag = 'self-test by light';
+      // read back 2.4 s after it first shows, as the simulator has it
+      const lp = await testPage('browser', 1440, 900, { query: '' });
+      const shot = (st, sel = '.sheet') => lp.locator(sel).screenshot({ path: path.join(out, `selftest-browser-1440-light-${st}.png`) });
+      await lp.click('#testlight'); await lp.waitForTimeout(200);
+      const off = await lp.evaluate(testView);
+      if (off.note !== 'Turn Light to Read and flash to test by light.' || !off.refused || off.entries) problems.push(`${tag}: at Off it was not refused: ${JSON.stringify(off)}`);
+      await shot('refused');
+      await lp.click('#k2'); await lp.waitForTimeout(250); await lp.click('#k2'); await lp.waitForTimeout(400);
+      const lamp = () => ({ open: !document.getElementById('lamp').hidden, plate: document.querySelector('.lamp-head .pl').textContent, say: document.getElementById('lampsay').innerText.replace(/\s+/g, ' ').trim(),
+        light: document.getElementById('k2').getAttribute('aria-valuenow'), button: document.getElementById('testlight').textContent });
+      await lp.click('#testlight');
+      await lp.waitForFunction(() => !document.getElementById('lamp').hidden, null, { timeout: 5000 }).catch(() => {});
+      const on = await lp.evaluate(lamp);
+      if (!on.open || on.plate !== 'Testing by light' || !/^Hold a mirror up to this screen\./.test(on.say) || on.button !== 'Stop the test') problems.push(`${tag}: the lamp does not show the test for a mirror: ${JSON.stringify(on)}`);
+      await shot('lamp', '.lamp');
+      await lp.keyboard.press('Escape'); await lp.waitForTimeout(300);
+      const esc = { ...(await lp.evaluate(lamp)), ...(await lp.evaluate(testView)) };
+      if (esc.open || esc.light !== '2' || esc.state !== 'Test stopped.') problems.push(`${tag}: Escape did not end the test by light alone: ${JSON.stringify(esc)}`);
+      await lp.click('#testlight');
+      await lp.waitForFunction(() => { const e = [...document.querySelectorAll('#log .ent.selftest')].pop(); return e && e.querySelector('.stamp'); }, null, { timeout: 15000 }).catch(() => {});
+      await lp.waitForTimeout(400);
+      const seen = { ...(await lp.evaluate(lamp)), ...(await lp.evaluate(testView)) };
+      if (seen.open || !/^Read back in the mirror after \d+ s\.$/.test(seen.state) || !/^seen by this machine, \d\d\.\d\d$/.test(seen.stamp) || seen.tape.toLowerCase() !== TESTED.toLowerCase()) problems.push(`${tag}: a test read back did not land as seen: ${JSON.stringify(seen)}`);
+      await shot('seen');
+      report.selfTest[tag] = { refused: off.note, lamp: on.say, seen: seen.state };
+      await lp.close();
     }
 
     // Light: the flashing view, the Light switch's eyepiece and note, and Flash, on the app path (window.__TAURI__

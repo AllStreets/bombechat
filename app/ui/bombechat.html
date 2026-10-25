@@ -283,6 +283,16 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
 .sh-foot div{font-family:var(--print);font-size:12px;color:var(--green-ink)}
 .sh-foot b{display:block;font-family:var(--type);font-weight:400;font-size:13.5px;color:var(--type-ink)}
 .sh-foot p{font-family:var(--print);font-size:12.5px;color:var(--green-ink);text-align:right}
+/* testing the machine: rubber stamps along the foot of the sheet, in the sheet's own green ink, with a typed line
+   beside them for what the machine says about a test it won't run */
+.sh-foot .testrow{grid-column:1/-1;display:flex;align-items:center;justify-content:flex-end;gap:8px 16px;padding-top:8px;min-height:44px}
+.sh-foot .testnote{flex:1 1 auto;min-width:0;font-family:var(--type);font-size:12.5px;line-height:1.35;color:#6e6553;text-align:left}
+.sh-foot .testnote.refused{color:#7a3a30}
+.testrow .rs{flex:none;box-sizing:border-box;min-height:28px}
+.rs.test{--ink:var(--green-ink);--tilt:-1.6deg}
+.rs.test.light{--tilt:1.2deg}
+/* a new machine's first line: what the machine says, set level with the time beside it */
+.ent.firstrun .what{padding-top:3px}
 
 /* key check card */
 .menu{grid-area:menu;position:relative;background:#f1eee5;border-radius:1px;padding:14px 16px 12px;color:var(--graphite);transform:rotate(.6deg);min-height:0;
@@ -519,6 +529,7 @@ body:has(.lamp:not([hidden])){perspective:none}
         <div>Received on<b>kitchen laptop</b></div>
         <div>Heard through<b>built-in mic</b></div>
         <p>Nothing on this sheet has crossed a network.</p>
+        <div class="testrow"><p class="testnote" id="testnote" role="status" aria-live="polite"></p><button type="button" class="rs test" id="testbtn" title="Seals a short message to this machine's own key and plays it once the room is quiet. The microphone hears it back and it lands on this sheet. Nothing of it is kept. Sound must be at Listen and send.">Test the machine</button><button type="button" class="rs test light" id="testlight" title="Shows a short message sealed to this machine's own key as a light code. Hold a mirror up to the screen and the camera reads it back. Nothing of it is kept. Light must be at Read and flash.">Test by light</button></div>
       </div>
     </article>
 
@@ -627,9 +638,11 @@ function askPassphrase(first){return new Promise(done=>{
     clear();working(true);
     try{await bridge.unlock(pass.value,first?who.value.trim():undefined);f.remove();done()}
     catch(why){working(false);refuse(pass,sentence(why))}})})}
+// the registration card was filled in on this page: the machine is new
+let FIRST_RUN=false;
 async function openContacts(){
   for(;;){
-    try{return await bridge.contacts()}catch(why){if(why!=='locked'&&why!=='no store yet')throw why;await askPassphrase(why==='no store yet')}}}
+    try{return await bridge.contacts()}catch(why){if(why!=='locked'&&why!=='no store yet')throw why;await askPassphrase(why==='no store yet');if(why==='no store yet')FIRST_RUN=true}}}
 // the reply line writes to the sheet's contact, or (the toggle thrown down) a public notice
 let PUBLIC=false;
 function replyLabels(){const r=document.getElementById('reply');
@@ -773,7 +786,7 @@ const hopsWord=n=>['no hops','one hop','two hops','three hops','four hops','five
 
 function onMessage(m){
   if(onSheet.has(m.id))return;
-  if(!m.outgoing&&!m.via&&arrival&&arrival.ent&&m.channel===arrival.how)return;// it finishes a provisional entry: see below
+  if(!m.outgoing&&!m.via&&arrival&&arrival.ent&&!arrival.test&&m.channel===arrival.how)return;// it finishes a provisional entry: see below
   if(m.contact!==CONTACT.id)return;// another person's sheet
   onSheet.add(m.id);
   const how=m.via?'relay':m.channel;const ent=entry(m.at_min*60000,how);const what=ent.querySelector('.what');
@@ -815,18 +828,21 @@ function provisionalTape(a,text){const what=a.ent.querySelector('.what'),note=wh
   const last=strips.length?strips[strips.length-1]:what.insertBefore(el('div','strip provisional feed'),note);
   last.appendChild(el('span','cur'))}
 function failArrival(a){if(!a||!a.ent)return;clearTimeout(a.stallT);const ent=a.ent;a.ent=null;
+  // the self-test's arrival: the machine says how the test ended (selfTest), not the arrival
+  if(a.test)return;
   grow(()=>{ent.classList.remove('arriving');ent.classList.add('failed');ent.querySelectorAll('.cur').forEach(c=>c.remove());
     const note=ent.querySelector('.state');note.classList.remove('live');note.textContent='did not check'})}
 bridge.on('chunk',c=>{const v=c.view,fpc=Math.max(1,Math.ceil(v.plain.length/W));
-  if(!arrival||arrival.tag!==c.tag||c.index===0){failArrival(arrival);arrival={tag:c.tag,fpc,how:c.channel,ent:arrivingEntry(c.channel),text:''}}
+  if(!arrival||arrival.tag!==c.tag||c.index===0){failArrival(arrival);const test=!!(Test&&Test.ent&&Test.tags.has(c.tag));
+    arrival={tag:c.tag,fpc,how:c.channel,test,ent:test?testArriving(c.channel):arrivingEntry(c.channel),text:''}}
   const base=c.index*arrival.fpc,total=c.index===c.of-1?base+fpc:c.of*arrival.fpc;
   for(let i=0;i<fpc;i++){const s=i*W;frames.push({plain:pad(v.plain.slice(s,s+W)),heard:pad(v.heard.slice(s,s+W)),key:pad(v.key.slice(s,s+W)),no:base+i,total,index:c.index,of:c.of})}
   const a=arrival;
-  if(a.ent){a.text=c.text;grow(()=>provisionalTape(a,c.text));clearTimeout(a.stallT);a.stallT=setTimeout(()=>failArrival(a),STALL)}
+  if(a.ent){a.text=c.text;grow(()=>provisionalTape(a,c.text));clearTimeout(a.stallT);if(!a.test)a.stallT=setTimeout(()=>failArrival(a),STALL)}
   pump()});
 // the message the chunks were spelling: the provisional tape gives way to the real entry
 bridge.on('message',m=>{
-  if(m.outgoing||m.via||!arrival||!arrival.ent||m.channel!==arrival.how)return;
+  if(m.outgoing||m.via||!arrival||!arrival.ent||arrival.test||m.channel!==arrival.how)return;
   const a=arrival,ent=a.ent;a.ent=null;clearTimeout(a.stallT);
   // another person's, or already on the sheet: the provisional tape goes
   if(m.contact!==CONTACT.id||onSheet.has(m.id)){grow(()=>ent.remove());return}
@@ -918,7 +934,7 @@ const vuNeedle=(()=>{const g=document.getElementById('vusvg');const cx=100,cy=96
   g.innerHTML=h;const n=document.getElementById('needle');
   return v=>n.setAttribute('transform',`rotate(${-48+(Math.max(28,Math.min(62,v))-30)/30*96} ${cx} ${cy})`)})();
 vuNeedle(room??30);
-bridge.on('roomDb',db=>{room=db;vuNeedle(room)});
+bridge.on('roomDb',db=>{room=db;vuNeedle(room);testWaiting()});
 
 /* ---------- outbox and replying ----------
    The node holds each send until the room is quieter than Send under, and says
@@ -1168,6 +1184,7 @@ function drawStations(){const row=document.querySelector('.row3'),counter=row.qu
     row.insertBefore(stn,counter)}}
 // the bytes-a-second readout: the rate the node measures for sound, or nothing when it has none
 function showRate(list){const s=list.find(c=>c.channel==='sound'),rd=document.getElementById('raterd');
+  soundBand=s&&s.band||null;
   if(!s||!(s.rate>0)){rd.hidden=true;return}
   document.getElementById('rate').innerHTML=String(Math.min(999,Math.round(s.rate))).padStart(3,'0').split('').map(d=>`<i>${d}</i>`).join('');
   rd.title=`${s.rate.toFixed(1)} bytes of message a second over sound, as the modem measures it, counting the preamble, framing and error correction around them`;rd.hidden=false;rd.style.visibility=''}
@@ -1323,7 +1340,7 @@ const READY_MS=Q.has('ready')?+Q.get('ready'):1200,LAMP_GREY='#bcbcbc';
 // next: whose camera the message about to go on screen is for (set as it starts playing); for: the one showing
 // hello: the frames on the lamp are your pairing hello; gone: the tag of a hello just taken off the lamp, whose
 // frames still on their way are let go
-const Lamp={state:'closed',tag:null,hello:false,gone:null,spec:1,bits:null,index:-1,shown:0,readyT:null,stopped:false,stopping:false,for:null,next:null,refocus:false,rateSpec:null};
+const Lamp={state:'closed',tag:null,hello:false,test:false,gone:null,spec:1,bits:null,index:-1,shown:0,readyT:null,stopped:false,stopping:false,for:null,next:null,refocus:false,rateSpec:null};
 const odoDigits=(el,n,w)=>{el.innerHTML=String(Math.max(0,Math.min(10**w-1,Math.round(n)))).padStart(w,'0').split('').map(d=>`<i>${d}</i>`).join('')};
 // the canvas, sized to the bezel's opening in whole device pixels and placed on whole device pixels
 // the lamp's span: the sheet's column, and the card's when it stands beside the sheet (the wide layout)
@@ -1347,15 +1364,16 @@ function lampPaint(){const px=lampCv.width,n=LAMP_CELLS[Lamp.spec],cell=Math.flo
   if(Lamp.state!=='flashing'||!Lamp.bits){k.fillStyle=LAMP_GREY;k.fillRect(o,o,cell*n,cell*n);return}
   k.fillStyle='#000';const b=Lamp.bits;
   for(let i=0;i<n*n;i++)if(b[i>>3]&(128>>(i&7)))k.fillRect(o+(i%n)*cell,o+((i/n)|0)*cell,cell,cell)}
-function lampCaption(){const who=Lamp.for?`${Lamp.for}'s`:'their',hello=Lamp.hello,finishing=hello&&lightPairing==='finishing';
-  lampSay.firstChild.nodeValue=finishing?'Their key is read. Yours finishes showing.':hello?'Hold your screens face to face.':`Hold this screen up to ${who} camera.`;
-  lampSay.querySelector('small').textContent=Lamp.refused?Lamp.refused:finishing?'Escape stops it':Lamp.state==='ready'?'ready, Escape stops it':hello?'reading theirs, Escape stops it':'flashing, Escape stops it';
-  // the plate, the code's label and the Stop key say what is on the lamp: a message, or your hello
-  lampEl.querySelector('.lamp-head .pl.screw').textContent=hello?'Pairing by light':'Flashing by light';
-  lampEl.setAttribute('aria-label',hello?'Pairing by light':'Flashing by light');
-  lampCv.setAttribute('aria-label',hello?'Your hello as a light code':'The message as a light code');
-  lampStop.title=hello?'Stops pairing by light. Escape does the same. The screen clears, and Light stays where it is.':'Stops flashing. Escape does the same. Light turns to Read, and the message waits until it is back at Read and flash.';
-  document.getElementById('lampnrd').title=hello?'Frames of your hello shown in this window':'Frames of this message shown so far'}
+function lampCaption(){const who=Lamp.for?`${Lamp.for}'s`:'their',hello=Lamp.hello,test=Lamp.test,finishing=hello&&lightPairing==='finishing';
+  lampSay.firstChild.nodeValue=finishing?'Their key is read. Yours finishes showing.':hello?'Hold your screens face to face.':test?'Hold a mirror up to this screen.':`Hold this screen up to ${who} camera.`;
+  lampSay.querySelector('small').textContent=Lamp.refused?Lamp.refused:finishing?'Escape stops it':Lamp.state==='ready'?'ready, Escape stops it':hello?'reading theirs, Escape stops it':test?'the camera reads it back, Escape stops it':'flashing, Escape stops it';
+  // the plate, the code's label and the Stop key say what is on the lamp: a message, your hello, or the self-test
+  const plate=hello?'Pairing by light':test?'Testing by light':'Flashing by light';
+  lampEl.querySelector('.lamp-head .pl.screw').textContent=plate;
+  lampEl.setAttribute('aria-label',plate);
+  lampCv.setAttribute('aria-label',hello?'Your hello as a light code':test?'The test message as a light code':'The message as a light code');
+  lampStop.title=hello?'Stops pairing by light. Escape does the same. The screen clears, and Light stays where it is.':test?'Stops the test. Escape does the same. The screen clears, and Light stays where it is.':'Stops flashing. Escape does the same. Light turns to Read, and the message waits until it is back at Read and flash.';
+  document.getElementById('lampnrd').title=hello?'Frames of your hello shown in this window':test?'Frames of the test message shown':'Frames of this message shown so far'}
 // the readout: the bytes a second this Flash speed shows, as the machine reckons it, read again when the speed changes
 function lampRate(){bridge.channels().then(list=>{const l=list.find(c=>c.channel==='light');const rd=document.getElementById('lamprd');
   rd.hidden=!(l&&l.rate>0);if(l&&l.rate>0){odoDigits(document.getElementById('lamprate'),l.rate,4);
@@ -1368,8 +1386,10 @@ function lampOpen(){Lamp.state='ready';Lamp.shown=0;
   clearTimeout(Lamp.readyT);Lamp.readyT=setTimeout(()=>{if(Lamp.state!=='ready')return;Lamp.state='flashing';lampFrame()},READY_MS)}
 function lampFrame(){if(Lamp.state!=='flashing')return;lampPaint();
   odoDigits(document.getElementById('lampn'),Lamp.shown,3);document.getElementById('lampjewel').classList.remove('off');lampCaption()}
-function lampClose(focusBack=true){clearTimeout(Lamp.readyT);if(Lamp.state==='closed')return;Lamp.state='closed';Lamp.bits=null;Lamp.tag=null;Lamp.hello=false;Lamp.for=null;Lamp.refused='';Lamp.rateSpec=null;
+function lampClose(focusBack=true){clearTimeout(Lamp.readyT);if(Lamp.state==='closed')return;const test=Lamp.test;Lamp.state='closed';Lamp.bits=null;Lamp.tag=null;Lamp.hello=false;Lamp.test=false;Lamp.for=null;Lamp.refused='';Lamp.rateSpec=null;
   const back=lampEl.contains(document.activeElement)||Lamp.refocus;
+  // back to the stamp that started a test by light
+  if(test&&back&&focusBack){lampEl.hidden=true;deckEl.classList.remove('flashing');sheetEl.inert=false;testLightBtn.focus({preventScroll:true});return}
   lampEl.hidden=true;deckEl.classList.remove('flashing');sheetEl.inert=false;
   // back to the reply line, or (a pairing's lamp closing on its offer) to the card's Matched, add
   if(back&&focusBack)(menu.dataset.pair==='offer'&&!yesBtn.hidden?yesBtn:reply).focus({preventScroll:true})}
@@ -1378,7 +1398,7 @@ bridge.on('display',d=>{
   if(Lamp.stopped||d.tag===Lamp.gone||!(d.spec in LAMP_CELLS)||d.bits.length!==Math.ceil(LAMP_CELLS[d.spec]**2/8))return;
   // a new message on screen: it is for whoever the page last sent one by light to, if anyone, else for any camera
   // (your pairing hello is for no one's camera in particular, and takes no send's name)
-  if(d.tag!==Lamp.tag){Lamp.tag=d.tag;Lamp.shown=0;Lamp.hello=d.hello;if(d.hello)Lamp.for=null;else{Lamp.for=Lamp.next;Lamp.next=null}}
+  if(d.tag!==Lamp.tag){Lamp.tag=d.tag;Lamp.shown=0;Lamp.hello=d.hello;Lamp.test=d.test;if(d.hello||d.test)Lamp.for=null;else{Lamp.for=Lamp.next;Lamp.next=null}}
   Lamp.spec=d.spec;Lamp.bits=d.bits;Lamp.index=d.index;Lamp.shown=d.index+1;
   if(d.spec!==Lamp.rateSpec){Lamp.rateSpec=d.spec;lampRate()}
   if(Lamp.state==='closed')lampOpen();else lampFrame()});
@@ -1388,6 +1408,8 @@ bridge.on('displayStopped',()=>{Lamp.stopped=false;Lamp.gone=null;if(Lamp.hello&
 // short enough for the top bar at every width; the whole story is in its title
 const UNSAVED_STOP='Flashing stopped, but not saved.';
 async function stopFlashing(){if(Lamp.state==='closed'||Lamp.stopping)return;
+  // the self-test on the lamp: the test ends, not the switch
+  if(Lamp.test){stopTest();return}
   // your hello on the lamp: the pairing ends, not the switch; an offer already on the card stays for the person to
   // judge. A message on the lamp stops the Task 6 way, whatever pairing is doing
   if(Lamp.hello){
@@ -1401,7 +1423,85 @@ async function stopFlashing(){if(Lamp.state==='closed'||Lamp.stopping)return;
   if(taken&&taken.unsaved){if(Lamp.state!=='closed'){Lamp.stopped=true;lampClose()}say(UNSAVED_STOP,`Flashing stopped. Light is at Read for now. ${sentence(taken.unsaved)} So Light goes back to Read and flash next time.`);return}
   if(Lamp.state!=='closed'){Lamp.refused=`Not stopped. ${sentence(taken)}`;lampCaption()}}
 lampStop.addEventListener('click',stopFlashing);
-addEventListener('keydown',e=>{if(e.key==='Escape'&&Lamp.state!=='closed'){e.preventDefault();stopFlashing()}});
+addEventListener('keydown',e=>{if(e.key!=='Escape')return;if(Lamp.state!=='closed'){e.preventDefault();stopFlashing()}else if(Test){e.preventDefault();stopTest()}});
+
+/* ---------- testing the machine ----------
+   Test the machine, stamped at the foot of the sheet, has the machine seal a short message to its own key and play
+   it once the room is quiet, as any send waits. Its own microphone hears it, the drums turn as they do for any
+   message, and it lands on the sheet under the margin note self-test, with what came back, how fast and on which
+   band. Test by light shows it on the signal lamp for a mirror held up to the screen, and the camera reads it back.
+   Nothing of it is kept: the entry is this page's alone, gone when it closes. Each needs its switch at its sending
+   position, as pairing does, and turns none: refused, the line beside the stamps says which switch to turn. Escape,
+   or the stamp again, stops it; a test that comes back with nothing says what to try. On a new machine the empty
+   sheet's first line suggests it. */
+// what the machine seals for a test, as the node's SELF_TEST_TEXT
+const SELF_TEST_TEXT='The machine hears itself.';
+const testBtn=document.getElementById('testbtn'),testLightBtn=document.getElementById('testlight'),testNote=document.getElementById('testnote');
+// the test in progress: its channel, the tags it goes out under, its entry on the sheet once the machine took it, and
+// how far it has got ('asking', 'waiting', 'playing' or 'arriving')
+let Test=null;
+// the band sound is really on, as channels() says, for what to try when nothing was heard
+let soundBand=null;
+function testSays(text,refused){testNote.textContent=text||'';testNote.classList.toggle('refused',!!refused)}
+// one stamp while a test runs, saying it stops it; both at rest
+function testStamps(){const on=Test&&Test.channel;testBtn.hidden=on==='light';testLightBtn.hidden=on==='sound';
+  testBtn.textContent=on==='sound'?'Stop the test':'Test the machine';testLightBtn.textContent=on==='light'?'Stop the test':'Test by light'}
+const testStampFor=channel=>channel==='light'?testLightBtn:testBtn;
+// the switch that won't let it run, said as what to turn
+function refuseTest(channel){const k=channel==='light'?KNOBS.k2:KNOBS.k1,name=channel==='light'?'Light':'Sound';
+  testSays(`${k.read?'':`The ${name} switch was not read from the machine. `}Turn ${name} to ${k.labels[2]} to ${channel==='light'?'test by light':'test the machine'}.`,true);
+  nudge(testStampFor(channel))}
+function testLine(text,live){if(!Test||!Test.ent)return;const st=Test.ent.querySelector('.state');st.textContent=text;st.classList.toggle('live',!!live)}
+// waiting: for a quiet room, by sound, as the outbox says it of any send
+function testWaiting(){if(!Test||Test.state!=='waiting')return;
+  testLine(Test.channel==='light'?'waiting to go on screen':room==null?'waiting for quiet':room<sendUnder()?'playing next':`waiting for quiet, the room is at ${Math.round(room)} dB`)}
+function testShow(){if(!Test)return;if(Test.state==='waiting')testWaiting();
+  else if(Test.state==='playing')testLine(Test.channel==='light'?'on the screen for a mirror':'playing by sound, listening for it',true)}
+// its first chunk: the provisional tape types into the test's own entry
+function testArriving(how){Test.state='arriving';testLine(`arriving by ${how}, not yet checked`,true);return Test.ent}
+async function startTest(channel){
+  if(Test){if(Test.channel===channel)stopTest();return}
+  const k=channel==='light'?KNOBS.k2:KNOBS.k1,btn=testStampFor(channel);
+  if(!(k.read&&k.pos===2)){refuseTest(channel);return}
+  const t=Test={channel,tags:new Set(),ent:null,state:'asking'};
+  btn.disabled=true;
+  try{await bridge.selfTest(channel)}catch(why){btn.disabled=false;if(Test===t)Test=null;
+    if(/^not sent: /.test(String(why)))refuseTest(channel);else{testSays(sentence(why),true);nudge(btn)}return}
+  btn.disabled=false;testSays('');
+  if(Test!==t)return;// it ended before the machine's answer came
+  if(channel==='light'){Lamp.stopped=false;Lamp.gone=null}
+  const ent=entry(bridge.now(),'self-test');ent.classList.add('mine','selftest');
+  ent.querySelector('.what').append(el('div','typed',SELF_TEST_TEXT),el('div','state'));
+  t.ent=ent;if(t.state==='asking')t.state='waiting';
+  grow(()=>put(ent),true);testStamps();testShow();
+  bridge.channels().then(list=>{const s=list.find(c=>c.channel==='sound');if(s&&s.band)soundBand=s.band},()=>{})}
+// stopped from the page: the sheet says so at once, and the machine's own word of it finds nothing left to end
+function stopTest(){if(!Test)return;const ch=Test.channel;bridge.stopSelfTest().catch(()=>{});testEnded({state:'stopped',channel:ch});
+  // off the lamp at once, and a frame of it still on its way let go, as a hello is
+  if(Lamp.state!=='closed'&&Lamp.test){Lamp.gone=Lamp.tag;lampClose(false)}
+  testStampFor(ch).focus({preventScroll:true})}
+const secs=ms=>Math.max(1,Math.round(ms/1000));
+function testEnded(t){const T=Test;Test=null;testStamps();
+  if(arrival&&arrival.test){arrival.ent=null;arrival=null}
+  if(!T||!T.ent)return;const ent=T.ent,what=ent.querySelector('.what'),st=what.querySelector('.state'),light=T.channel==='light';
+  ent.querySelectorAll('.cur').forEach(c=>c.remove());st.classList.remove('live');
+  if(t.state==='heard'){
+    // what came back goes on the tape as a message does, once the drums have finished turning
+    whenDrumsRest(()=>grow(()=>{what.querySelectorAll('.strip').forEach(s=>s.remove());tape(what,t.text||SELF_TEST_TEXT,'strip',st);
+      st.textContent=light?`Read back in the mirror after ${secs(t.ms)} s.`:`Heard back after ${secs(t.ms)} s: ${(+t.rate).toFixed(1)} bytes a second on the ${t.band||soundBand||'near silent'} band.`;
+      what.appendChild(el('div','stamp new',`${light?'seen':'heard'} by this machine, ${hhmm(bridge.now())}`))}));
+    return}
+  grow(()=>{if(t.state!=='stopped')ent.classList.add('failed');
+    st.textContent=t.state==='stopped'?'Test stopped.'
+      :t.state==='unplayed'?(light?'Not shown. Test again.':'Not played. Check the sound output and test again.')
+      :light?'Not read. Hold a mirror square in front of the screen and test again.'
+      :(t.band||soundBand)==='audible'?'Not heard. Raise the volume and test again.':'Not heard. Raise the volume, or set Band to Audible in Settings, and test again.'})}
+bridge.on('selfTest',t=>{if(!Test||t.channel!==Test.channel)return;Test.tags.add(t.tag);
+  // by light it plays again under a fresh tag each window: an arrival already under way stays one
+  if(t.state==='waiting'||t.state==='playing'){if(Test.state!=='arriving'&&!(Test.state==='asking'&&t.state==='waiting'))Test.state=t.state;testShow();return}
+  testEnded(t)});
+testBtn.addEventListener('click',()=>startTest('sound'));
+testLightBtn.addEventListener('click',()=>startTest('light'));
 
 /* ---------- the eyepiece, and what the camera has to say ----------
    While Light reads, the eyepiece on its switch shows what the camera sees, small and grey, so the reader can aim.
@@ -1443,6 +1543,8 @@ bridge.start();
 // a page opened (or reloaded) after the channel last changed still learns its state
 bridge.channels().then(list=>{list.forEach(onChannel);showRate(list)});
 booting=false;tick();setInterval(tick,20000);
+// a new machine: its empty sheet has one typed line, to try it alone first
+if(FIRST_RUN){const ent=entry(bridge.now(),'');ent.classList.add('firstrun');ent.querySelector('.what').appendChild(el('div','state','Try it alone first: press Test the machine, at the foot of this sheet.'));grow(()=>put(ent))}
 syncMirror();
 requestAnimationFrame(()=>toBottom(false));
 
