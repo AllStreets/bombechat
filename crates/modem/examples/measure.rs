@@ -35,8 +35,8 @@ use std::thread;
 use std::time::Duration;
 
 use bombechat_modem::{
-    measured_rate, modulate, split, AudioIo, Band, CpalAudio, DemodEvent, Demodulator, Event,
-    ModemConfig, Reassembler, FRAME_DATA,
+    dbfs_to_room_db, measured_rate, modulate, split, AudioIo, Band, CpalAudio, DemodEvent,
+    Demodulator, Event, ModemConfig, Reassembler, DEFAULT_CALIBRATION_OFFSET, FRAME_DATA,
 };
 use rustfft::num_complex::Complex;
 use rustfft::FftPlanner;
@@ -265,6 +265,21 @@ fn snr_db(x: &[f32], rate: u32, band: Band) -> Option<f64> {
     (noise > 0.0).then(|| 10.0 * ((signal - noise).max(f64::MIN_POSITIVE) / noise).log10())
 }
 
+/// The room's loudness before the first frame, in dB the way the app's
+/// quiet gate and VU meter read it (all frequencies, dBFS plus
+/// [`DEFAULT_CALIBRATION_OFFSET`]): 300 ms from just after the stream's
+/// leading digital silence, inside the lead-in.
+fn room_db(x: &[f32], rate: u32) -> Option<f32> {
+    let start = x.iter().position(|s| *s != 0.0)? + rate as usize / 50;
+    let len = rate as usize * 3 / 10;
+    let w = x.get(start..start + len)?;
+    let mean_square = w.iter().map(|s| (*s as f64).powi(2)).sum::<f64>() / len as f64;
+    Some(dbfs_to_room_db(
+        (10.0 * mean_square.log10()) as f32,
+        DEFAULT_CALIBRATION_OFFSET,
+    ))
+}
+
 fn score(cfg: &ModemConfig, heard: &[f32], sent: &[Vec<u8>]) -> ExitCode {
     let peak = heard.iter().fold(0.0f32, |m, s| m.max(s.abs()));
     let rms =
@@ -350,6 +365,9 @@ fn score(cfg: &ModemConfig, heard: &[f32], sent: &[Vec<u8>]) -> ExitCode {
     match snr_db(heard, cfg.sample_rate, cfg.band) {
         Some(db) => println!("snr in band: {db:.1} dB"),
         None => println!("snr in band: no noise floor to measure against"),
+    }
+    if let Some(db) = room_db(heard, cfg.sample_rate) {
+        println!("room before the first frame: {db:.0} dB (the app sends only under Send under, 40 dB unless changed)");
     }
     println!("measured_rate: {:.1} bytes a second", measured_rate(cfg));
     if ok.len() == n {

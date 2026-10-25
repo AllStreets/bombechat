@@ -25,6 +25,23 @@ Before you start:
 
 ## Part 1: the modem on real hardware
 
+### First: each laptop's quiet room
+
+The app only plays a message, a receipt or a pairing hello while the room is quieter than **Send under** (40 dB unless you change it on the settings page). The room level is the microphone's loudness across all frequencies plus a fixed 94 dB, so it is only a rough figure, and some laptops read a quiet room well above what it is. A laptop whose idle room reads 41 dB or more never sends anything, and nothing says why except the waiting line on the sheet.
+
+On each Mac, in the room you will test in, with nobody talking:
+
+1. Open the app with the Sound switch at "Listen and send", leave it for half a minute, and read the room meter (the needle on the front, marked 30 to 60 dB). Or run `measure` (below) and read the line `room before the first frame: N dB`.
+2. Write it down here.
+
+| Mac | Idle room reading | Send under used |
+|---|---|---|
+| A | | |
+| B | | |
+| C | | |
+
+If a reading is at or above Send under: turn the machine round and raise Send under to the next step above the reading (45 or 50 dB), and write down the value you used. If even 50 dB is not enough, lower the input volume in System Settings, Sound, Input and read it again. A reading that high in a quiet room is a finding in itself: note the Mac and microphone.
+
 `crates/modem/examples/measure.rs` plays a run of full-size frames through the speaker, records the microphone while they play, decodes the recording and prints what came back.
 
 ```sh

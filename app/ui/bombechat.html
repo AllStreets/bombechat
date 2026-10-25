@@ -942,6 +942,7 @@ yesBtn.addEventListener('click',()=>{const o=offer;if(!o)return;
 
 /* ---------- open: replay what came before, then listen ---------- */
 drawOutbox();applyChannels();cardRest();
+document.querySelector('.vu').title=`Loudness of the room. Messages wait to play until it drops under ${sendUnder()} dB.`;
 for(const k of Object.values(KNOBS))bridge.setSetting(k.setting,k.pos);
 if(!bridge.simulated)await realSheet();
 bridge.start();

@@ -2,7 +2,7 @@
 
 Bombechat is a messenger that never touches the internet. Messages travel between nearby devices by sound, by light, or by Bluetooth, and can hop from device to device to reach people further away. It is meant for when the network is down, and for when you would rather it not be involved at all.
 
-It is at the design stage. This repo holds the interface mockups and the checks I run on them. There is no messaging code yet.
+The first part works: two Macs running the airgapped build can pair and message each other by sound. Light and Bluetooth are still to come. This repo holds the app, the interface mockups it grew from, and the checks I run on both.
 
 ![The Bombechat mockup: a bank of 36 code drums above a message sheet, a key check card, and the channel switches](mockups/bombechat.png)
 
@@ -47,9 +47,30 @@ npm run check
 
 `tools/check-settings.cjs` runs the settings page in Chrome on the GPU. It sets every setting to a new value and confirms the cord ends up in the matching jack, tests the arrow keys, measures the frame rate, and saves the overview, a focused row, a cord in mid-air and the narrow layout. The output of both goes to `checks/`, which is not committed.
 
-The fonts on the engraved plates use Copperplate, which ships with macOS. A web release will need a licensed engraving face.
+The engraved plates are set in Marcellus SC, with Libre Caslon for the figures. Both are open fonts (SIL OFL, licences beside them) and are embedded in `app/ui/fonts`, so the app asks nothing of the network or of the fonts installed on the Mac.
 
 CI runs `cargo test --workspace` and the airgapped dependency gate (`npm run check:airgapped`, both the clean check and the negative check that a `bluetooth`-featured build fails it). It does not run `npm run check:front` or `npm run check:settings`: both need a GPU-backed Chrome to render the WebGL interface, which the CI runners don't have. Those stay a local gate, run by hand before a change counts as done.
+
+## Build and run the app
+
+The app is a Tauri shell around the interface in `app/ui`. You need Rust and the Tauri CLI (`cargo install tauri-cli`). From the repository root:
+
+```
+cd app/src-tauri
+cargo tauri build
+```
+
+The app lands in `target/release/bundle/macos/Bombechat.app`, at the top of the repository. Open it from there or copy it to `/Applications`. The first time it opens, macOS asks for the microphone; without it nothing can be heard. The first run asks for your name and a passphrase, and keeps its store and settings in `~/Library/Application Support/app.bombechat.airgapped/`.
+
+To look at the interface without building anything, run it in a browser against a simulated conversation:
+
+```
+npm run serve
+```
+
+and open http://localhost:4810/app/ui/bombechat.html. The browser path never touches the sound card.
+
+`docs/testing/two-laptops.md` is the walkthrough for trying it on two Macs.
 
 ## Airgapped build
 
