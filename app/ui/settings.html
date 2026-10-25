@@ -488,7 +488,9 @@ async function build(){
   const screen=id=>{const P=plugs[id];const h=P.head.position.clone();h.z+=.35;return {plug:toScreen(h),first:toScreen(P.jacks[0].clone().setZ(.3))}};
   // where a row's jack rings run on screen, top to bottom
   const rowBand=id=>{const P=plugs[id],a=toPx(new THREE.Vector3(P.jacks[0].x,P.jacks[0].y+.135,.05)),b=toPx(new THREE.Vector3(P.jacks[0].x,P.jacks[0].y-.135,.05));const r=renderer.domElement.getBoundingClientRect();return {top:r.top+a.y,bottom:r.top+b.y}};
-  return {focus,move,seat,plugs,camera,screen,rowBand,get ready(){return frames>2},endOf:id=>{const P=plugs[id];return {x:P.end.x,jack:P.jacks.findIndex(j=>Math.abs(j.x-P.end.x)<1e-3&&Math.abs(j.y-P.end.y)<1e-3),lift:P.lift,parked:!!P.park&&P.end.distanceTo(P.park)<1e-3,dim:P.dim}}};
+  // for the README's clip: where a point of the panel lands on the screen, and where a row's parts are on the panel
+  const at=(x,y,z)=>toScreen(new THREE.Vector3(x,y,z)),row=id=>{const P=plugs[id];return {name:P.nameX,y:P.src.y,jacks:P.jacks.map(j=>j.x)}};
+  return {focus,move,seat,plugs,camera,screen,at,row,rowBand,get ready(){return frames>2},endOf:id=>{const P=plugs[id];return {x:P.end.x,jack:P.jacks.findIndex(j=>Math.abs(j.x-P.end.x)<1e-3&&Math.abs(j.y-P.end.y)<1e-3),lift:P.lift,parked:!!P.park&&P.end.distanceTo(P.park)<1e-3,dim:P.dim}}};
 }
 
 /* arriving from the front: finish the turn the front started */
@@ -498,7 +500,7 @@ try{if(sessionStorage.getItem('bombechat-turn')==='front-to-back'&&!REDUCED){ses
 // back here by history (bfcache): the settings may have moved on the front, so read them again from the machine
 // and show them, sending nothing
 addEventListener('pageshow',e=>{if(!e.persisted)return;bridge.settings().then(kept=>{for(const id of takeKept(kept)){syncRow(id);machine&&machine.seat(id,byId[id].v)}},()=>{})});
-window.__bc={screen:id=>machine.screen(id),rowBand:id=>machine.rowBand(id),tag:()=>{const r=document.getElementById('tag').getBoundingClientRect();return {top:r.top,bottom:r.bottom,on:document.getElementById('tag').classList.contains('on')}},focused:()=>focusId,get:id=>byId[id].v,held:()=>Object.fromEntries(SETTINGS.filter(s=>s.held).map(s=>[s.id,{note:s.held,parked:!!s.parked}])),set:(id,i)=>setValue(id,i,'test'),focus:id=>focusSetting(id,'pin'),end:id=>machine&&machine.endOf(id),settings:SETTINGS.map(s=>s.id)};
+window.__bc={screen:id=>machine.screen(id),rowBand:id=>machine.rowBand(id),tag:()=>{const r=document.getElementById('tag').getBoundingClientRect();return {top:r.top,bottom:r.bottom,on:document.getElementById('tag').classList.contains('on')}},focused:()=>focusId,get:id=>byId[id].v,held:()=>Object.fromEntries(SETTINGS.filter(s=>s.held).map(s=>[s.id,{note:s.held,parked:!!s.parked}])),set:(id,i)=>setValue(id,i,'test'),focus:id=>focusSetting(id,'pin'),at:(x,y,z)=>machine.at(x,y,z),row:id=>machine.row(id),end:id=>machine&&machine.endOf(id),settings:SETTINGS.map(s=>s.id)};
 if(Q.has('focus'))focusSetting(Q.get('focus'),'pin');
 document.getElementById('back').addEventListener('click',e=>{if(REDUCED)return;e.preventDefault();const href=e.currentTarget.href;try{sessionStorage.setItem('bombechat-turn','back-to-front')}catch(_){}document.body.animate([{transform:'perspective(1600px) rotateY(0deg)',opacity:1},{transform:'perspective(1600px) rotateY(-80deg)',opacity:0}],{duration:420,easing:'cubic-bezier(.5,0,.75,0)'}).onfinish=()=>location.href=href});
 </script>

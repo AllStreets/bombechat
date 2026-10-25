@@ -1,9 +1,10 @@
 // Renders the README's pictures from the app itself, headless, on the GPU:
-//   node tools/media.cjs [logo] [banner] [shots] [demo]     (all of them when none is named)
+//   node tools/media.cjs [logo] [banner] [shots] [demo] [settings]     (all of them when none is named)
 // Writes to docs/media/. Every picture is a page of this repository served by
 // tools/serve.cjs (the browser simulator for the front, a stand-in for the
 // Tauri shell for the first run); nothing on the screen is captured.
-// Needs Google Chrome (Playwright's channel 'chrome', for Metal) and ffmpeg for the GIF.
+// Needs Google Chrome (Playwright's channel 'chrome', for Metal) and ffmpeg for the GIFs, and gifsicle to make
+// the settings clip small enough.
 const path = require('path');
 const fs = require('fs');
 const { execFileSync } = require('child_process');
@@ -35,6 +36,46 @@ function firstRun() {
   };
 }
 
+// A clock the page runs on while a clip is made. Until freeze() the page keeps real time, so it loads as usual;
+// after it, time moves only when step() is called: requestAnimationFrame, performance.now, setTimeout and the
+// page's CSS transitions and animations all advance by exactly one frame, and nothing is dropped however slowly
+// the frame is captured.
+function virtualClock() {
+  const realNow = performance.now.bind(performance), realRaf = requestAnimationFrame.bind(window);
+  const realSet = setTimeout.bind(window), realClear = clearTimeout.bind(window);
+  let frozen = false, vt = 0, raf = [], timers = [], nid = 1e9;
+  const css = new Map();
+  performance.now = () => frozen ? vt : realNow();
+  window.requestAnimationFrame = cb => { if (frozen) { raf.push(cb); return raf.length; } return realRaf(t => frozen ? raf.push(cb) : cb(t)); };
+  window.setTimeout = (fn, ms = 0, ...a) => { if (!frozen) return realSet(fn, ms, ...a); const id = nid++; timers.push({ id, at: vt + ms, fn: () => fn(...a) }); return id; };
+  window.clearTimeout = id => { if (id >= 1e9) timers = timers.filter(t => t.id !== id); else realClear(id); };
+  // the cursor, drawn into the page since a screenshot has none
+  addEventListener('DOMContentLoaded', () => {
+    const c = document.createElement('div');
+    c.innerHTML = '<svg width="23" height="23" viewBox="0 0 23 23"><path d="M3 2v17l4.4-4.2 2.9 6.6 2.9-1.3-2.9-6.4h6.1z" fill="#fff" stroke="#000" stroke-width="1.3" stroke-linejoin="round"/></svg>';
+    c.style.cssText = 'position:fixed;left:0;top:0;z-index:99999;pointer-events:none;transform-origin:3px 2px;filter:drop-shadow(0 1.5px 2px rgba(0,0,0,.55));transition:none;opacity:0';
+    document.body.appendChild(c);
+    const put = e => { c.style.left = (e.clientX - 3) + 'px'; c.style.top = (e.clientY - 2) + 'px'; c.style.opacity = 1; };
+    addEventListener('pointermove', put, true);
+    addEventListener('pointerdown', e => { put(e); c.style.transform = 'scale(.86)'; }, true);
+    addEventListener('pointerup', e => { put(e); c.style.transform = ''; }, true);
+    window.__press = on => { c.style.transform = on ? 'scale(.86)' : ''; };
+  });
+  window.__clock = {
+    freeze() { vt = realNow(); frozen = true; },
+    step(ms) {
+      vt += ms;
+      for (;;) { const due = timers.filter(t => t.at <= vt).sort((a, b) => a.at - b.at)[0]; if (!due) break; timers = timers.filter(t => t !== due); due.fn(); }
+      document.body.getBoundingClientRect();
+      for (const a of document.getAnimations()) {
+        if (!css.has(a)) { css.set(a, vt - ms - (a.currentTime || 0)); a.pause(); }
+        a.currentTime = Math.max(0, vt - css.get(a));
+      }
+      const q = raf; raf = []; q.forEach(cb => cb(vt));
+    },
+  };
+}
+
 (async () => {
   const server = await start(PORT);
   const browser = await chromium.launch({ channel: 'chrome', args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
@@ -45,6 +86,7 @@ function firstRun() {
     if (doing('banner')) await banner();
     if (doing('shots')) await shots();
     if (doing('demo')) await demo();
+    if (doing('settings')) await settingsClip();
     shrink();
   } finally {
     await browser.close();
@@ -54,7 +96,7 @@ function firstRun() {
   // Shrink the PNGs: full-window shots down to 1.5x, then everything but the logo to 256 colours (Pillow,
   // when python3 has it; the pictures are left as rendered otherwise).
   function shrink() {
-    const full = ['front.png', 'settings.png'];
+    const full = ['front.png'];
     const py = `
 import sys
 from PIL import Image
@@ -200,23 +242,6 @@ for name in sys.argv[2:]:
       await c.close();
       console.log('notice.png');
     }
-    // the back of the machine with a plug on its way to a new jack
-    {
-      const c = await ctx(1440, 900, 2);
-      await c.addInitScript(() => { try { localStorage.clear(); sessionStorage.clear(); } catch (e) {} });
-      const p = await c.newPage(); errors(p);
-      await p.goto(at('app/ui/settings.html'));
-      await p.waitForFunction(() => window.__ready, null, { timeout: 60000 });
-      await p.evaluate(() => document.fonts.ready);
-      await p.waitForTimeout(800);
-      await p.hover('.row[data-id="repeats"]');
-      await p.waitForTimeout(1600);
-      await p.click('.row[data-id="repeats"] .jk[data-i="3"]');
-      await p.waitForTimeout(+(process.env.MIDAIR || 330));
-      await p.screenshot({ path: path.join(OUT, 'settings.png') });
-      await c.close();
-      console.log('settings.png');
-    }
     // the first run, as the app shows it before there is a store
     {
       const c = await ctx(1440, 900, 2);
@@ -233,6 +258,133 @@ for name in sys.argv[2:]:
       await c.close();
       console.log('first-run.png');
     }
+  }
+  // the back of the machine, as a loop: Repeats moved from 2 to 3 on the wiring schedule card, the camera in on the
+  // row while the cord travels, back out; then the same plug dragged back to 2 on the panel, and out again to the
+  // opening frame. Every frame is stepped on the page's own clock (virtualClock), so none is dropped.
+  async function settingsClip() {
+    const FPS = 20, DT = 1000 / FPS;
+    const tmp = path.join(ROOT, 'checks', 'media', 'settings'); fs.rmSync(tmp, { recursive: true, force: true }); fs.mkdirSync(tmp, { recursive: true });
+    const c = await ctx(1280, 800, 2);
+    await c.addInitScript(() => { try { localStorage.clear(); sessionStorage.clear(); } catch (e) {} });
+    await c.addInitScript(virtualClock);
+    const p = await c.newPage(); errors(p);
+    await p.goto(at('app/ui/settings.html'));
+    await p.waitForFunction(() => window.__ready, null, { timeout: 60000 });
+    await p.evaluate(() => document.fonts.ready);
+    // the card scrolled to Quiet sending, so the Repeats row sits level with the gap above the plug field
+    await p.evaluate(() => { const s = document.getElementById('sched'), g = [...s.querySelectorAll('.grp')].find(e => e.textContent.startsWith('Quiet'));
+      s.scrollTop += g.getBoundingClientRect().top - s.getBoundingClientRect().top; });
+    const jackOnCard = i => p.evaluate(i => { const r = document.querySelector(`.row[data-id="repeats"] .jk[data-i="${i}"] i`).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; }, i);
+    const world = (x, y, z = .05) => p.evaluate(([x, y, z]) => window.__bc.at(x, y, z), [x, y, z]);
+    const row = await p.evaluate(() => window.__bc.row('repeats'));
+    // where the cursor rests: on the panel between the drum connectors and the plug field, level with the row
+    // on the card, where nothing can be picked up
+    const j3 = await jackOnCard(3);
+    const rest = { x: (await world(-1.2, 2)).x, y: j3.y };
+    await p.mouse.move(rest.x, rest.y);
+    await p.waitForTimeout(2500);
+    await p.evaluate(() => window.__clock.freeze());
+    // three seconds on the page's clock before the first frame, so the camera has settled where the loop ends
+    for (let i = 0; i < 3 * FPS; i++) await p.evaluate(dt => window.__clock.step(dt), DT);
+    let n = 0, cur = { ...rest }; const log = [];
+    async function frame() {
+      await p.evaluate(dt => window.__clock.step(dt), DT);
+      await p.screenshot({ path: path.join(tmp, `f${String(n++).padStart(4, '0')}.jpg`), type: 'jpeg', quality: 94 });
+      log.push(await p.evaluate(() => window.__bc.focused()));
+    }
+    const hold = async s => { for (let i = Math.round(s * FPS); i > 0; i--) await frame(); };
+    const ease = k => k < .5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2;
+    const easeSoft = k => k < .5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
+    // the cursor along a smooth path through the waypoints, eased over the whole of it; each waypoint is asked
+    // for again every frame, so a point on the panel is followed while the camera moves
+    async function glide(points, s, e = ease, until = () => false) {
+      const N = Math.round(s * FPS), from = { ...cur };
+      for (let i = 1; i <= N; i++) {
+        const pts = [from]; for (const f of points) pts.push(typeof f === 'function' ? await f() : f);
+        const P = catmull(pts, 12), L = [0]; for (let k = 1; k < P.length; k++) L.push(L[k - 1] + Math.hypot(P[k].x - P[k - 1].x, P[k].y - P[k - 1].y));
+        const want = e(i / N) * L[L.length - 1]; let k = 1; while (k < L.length - 1 && L[k] < want) k++;
+        const t = L[k] === L[k - 1] ? 0 : (want - L[k - 1]) / (L[k] - L[k - 1]);
+        cur = { x: P[k - 1].x + (P[k].x - P[k - 1].x) * t, y: P[k - 1].y + (P[k].y - P[k - 1].y) * t };
+        await p.mouse.move(cur.x, cur.y); await frame();
+        if (until()) return;
+      }
+    }
+    function catmull(pts, per) {
+      if (pts.length < 3) return pts;
+      const out = [], g = i => pts[Math.max(0, Math.min(pts.length - 1, i))];
+      for (let i = 0; i < pts.length - 1; i++) for (let s = 0; s < per; s++) {
+        const t = s / per, a = g(i - 1), b = g(i), c2 = g(i + 1), d = g(i + 2), f = k => .5 * (2 * b[k] + (-a[k] + c2[k]) * t + (2 * a[k] - 5 * b[k] + 4 * c2[k] - d[k]) * t * t + (-a[k] + 3 * b[k] - 3 * c2[k] + d[k]) * t * t * t);
+        out.push({ x: f('x'), y: f('y') });
+      }
+      out.push(pts[pts.length - 1]); return out;
+    }
+    // a click lands at once (a press held across frames would let the card's row open under it); the cursor
+    // shows the press for the next two frames
+    const click = async () => { await p.mouse.down(); await p.mouse.up(); await p.evaluate(() => window.__press(true)); await frame(); await frame(); await p.evaluate(() => window.__press(false)); };
+    const plug = async () => (await p.evaluate(() => window.__bc.screen('repeats'))).plug;
+    // the cursor held on the plug while the camera comes in, a frame behind it, as a hand would be
+    const ride = async s => { for (let i = 0, N = Math.round(s * FPS); i < N; i++) { const q = await plug(), a = Math.min(1, .45 + i * .14);
+      cur = { x: cur.x + (q.x - cur.x) * a, y: cur.y + (q.y - cur.y) * a }; await p.mouse.move(cur.x, cur.y); await frame(); } };
+
+    await hold(.4);
+    // on the card: across to jack 3 of Repeats; the camera comes in on the row as the cursor reaches it, and the
+    // click waits for it to arrive so the cord travels in a still frame
+    await glide([() => jackOnCard(3)], 1.2);
+    await hold(1.0);
+    await click();
+    await hold(1.4);
+    // back to the full view: a click anywhere on the machine away from a plug
+    await glide([rest], .9);
+    await click();
+    await hold(.5);
+    // on the panel: down the gap, along under the row, and up onto the plug, which brings the camera in again
+    const under = row.y - .36, j = row.jacks[3];
+    // once the plug is under the cursor the camera starts in, and the cursor stays on the plug from then on
+    const onPlug = () => log[log.length - 1] === 'repeats';
+    await glide([await world(-1.2, under), await world(j, under)], 1.3, ease, onPlug);
+    if (!onPlug()) await glide([plug], .4, easeSoft, onPlug);
+    await ride(.9);
+    // the plug dragged back along the row to jack 2, and let go: it drops into the nearest jack
+    await p.mouse.down(); await frame(); await frame();
+    await glide([() => world(row.jacks[2], row.y, .5)], .7);
+    await hold(.1);
+    await p.mouse.up();
+    await hold(.9);
+    // and out: along the row past its name, up to where the cursor started, a click
+    await glide([await world(row.name + 1.6, row.y + .02), rest], 1.1);
+    await click();
+    await hold(2.6);
+    await c.close();
+    console.log('focus by frame:', log.map((f, i) => i === 0 || f !== log[i - 1] ? `${i}:${f}` : null).filter(Boolean).join(' '));
+    encode(tmp, n, FPS);
+  }
+  // A GIF of a photoreal scene in motion: scaled down, softened a touch (the enamel's grain is what costs the most),
+  // then held still wherever a pixel moved less than the eye can see, so the frames carry only what changed. One
+  // palette for the whole clip, no dithering, then gifsicle's lossy pass when it is installed.
+  function encode(dir, n, FPS) {
+    const W = 800, H = 500, T = 8, size = W * H * 3;
+    const raw = path.join(dir, 'frames.rgb'), held = path.join(dir, 'held.rgb'), gif = path.join(dir, 'clip.gif'), out = path.join(OUT, 'settings.gif');
+    execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-framerate', String(FPS), '-i', path.join(dir, 'f%04d.jpg'), '-vf', `scale=${W}:${H}:flags=lanczos,gblur=sigma=.6`, '-f', 'rawvideo', '-pix_fmt', 'rgb24', raw]);
+    // once a move has come to rest (a frame where nothing passes the threshold), the whole frame is brought up to
+    // date, so what the threshold held back never lingers; the last frame is too, so the loop meets its first
+    const fin = fs.openSync(raw, 'r'), fout = fs.openSync(held, 'w'), prev = Buffer.alloc(size), cur = Buffer.alloc(size);
+    let settled = true;
+    for (let f = 0; f < n && fs.readSync(fin, cur, 0, size, f * size) === size; f++) {
+      let moved = 0;
+      if (f > 0) for (let i = 0; i < size; i += 3) {
+        if (Math.abs(cur[i] - prev[i]) > T || Math.abs(cur[i + 1] - prev[i + 1]) > T || Math.abs(cur[i + 2] - prev[i + 2]) > T) { prev[i] = cur[i]; prev[i + 1] = cur[i + 1]; prev[i + 2] = cur[i + 2]; moved++; }
+      }
+      if (f === 0 || f === n - 1 || (!moved && !settled)) cur.copy(prev);
+      settled = !moved;
+      fs.writeSync(fout, prev);
+    }
+    fs.closeSync(fin); fs.closeSync(fout);
+    const vf = 'split[a][b];[a]palettegen=max_colors=128:stats_mode=full[p];[b][p]paletteuse=dither=none:diff_mode=rectangle';
+    execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', `${W}x${H}`, '-framerate', String(FPS), '-i', held, '-vf', vf, '-loop', '0', gif]);
+    try { execFileSync('gifsicle', ['-O3', '--lossy=80', '-o', out, gif]); } catch (e) { console.warn('gifsicle not found, so the GIF is left unoptimised'); fs.copyFileSync(gif, out); }
+    fs.rmSync(raw); fs.rmSync(held);
+    console.log('settings.gif', n, 'frames,', (n / FPS).toFixed(2), 's,', (fs.statSync(out).size / 1e6).toFixed(2), 'MB');
   }
   // a message arriving: the drums turn, the tape types in, the sheet stamps it.
   // Frames come from Chrome's screencast (what the page painted, with their times), then ffmpeg

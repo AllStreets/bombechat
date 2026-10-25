@@ -85,7 +85,7 @@ The first run asks for your name and a passphrase. Nobody can recover the passph
 
 ## Settings
 
-<img src="docs/media/settings.png" alt="The back of the machine: the wiring schedule card on the left, and the rear panel in 3D with a patch cord lifting out of one jack on its way to another" />
+<img src="docs/media/settings.gif" alt="The back of the machine. Repeats is changed from 2 to 3 on the wiring schedule card, and the camera moves in on that row of the rear panel while its patch cord pulls out and seats in jack 3. A click returns to the whole panel, then the same plug is dragged back to jack 2 on the panel itself, and the view pulls out again." />
 
 Settings live on the back of the machine. Press the Settings plate and the window turns round. On the left is a wiring schedule, and on the right is the rear panel, rendered in 3D. Every setting is a row of jacks with a patch cord in it. On and off settings have two jacks, and number settings have one jack per value, so Repeats at 3 means the cord sits in jack 3.
 
