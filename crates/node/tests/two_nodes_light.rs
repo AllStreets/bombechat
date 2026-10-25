@@ -16,7 +16,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use bombechat_core::{Identity, PublicIdentity};
-use bombechat_light::{CodeSpec, FakeCamera, Reader};
+use bombechat_light::{CodeSpec, FakeCamera};
 use bombechat_node::{
     LightSwitch, LightTransport, Node, NodeEvent, OutboxState, ReaderWatch, SoundSwitch,
 };
@@ -59,13 +59,10 @@ impl Peer {
         let id = Identity::generate();
         let store =
             Store::create(&dir.path().join(format!("{name}.db")), "pass", &id, name).unwrap();
-        // A patient reader: the tests run in parallel on a busy machine,
-        // and what they check is the transport, not the reader's budget.
-        let light = LightTransport::with_reader(
-            Box::new(cam.clone()),
-            CodeSpec::normal(),
-            Reader::with_budget(Duration::from_millis(200)),
-        );
+        // A patient reader that counts looks, not wall time: the tests run
+        // in parallel on a busy machine, and what they check is the
+        // transport, not the reader's budget.
+        let light = LightTransport::unhurried(Box::new(cam.clone()), CodeSpec::normal());
         let watch = light.watch();
         let mut node = Node::new(Some(store), vec![Box::new(light)]);
         node.set_sound(SoundSwitch::Off);

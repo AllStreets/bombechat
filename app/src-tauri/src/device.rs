@@ -103,7 +103,11 @@ fn sound_transport(audio: Box<dyn AudioIo>) -> Result<Box<dyn Transport>, NodeEv
 /// The light transport over `camera`, showing codes at Normal until the
 /// Flash speed setting says otherwise, and a handle on its reader.
 fn light_transport(camera: Box<dyn CameraIo>) -> (Box<dyn Transport>, ReaderWatch) {
-    let light = LightTransport::new(camera, CodeSpec::normal());
+    watched(LightTransport::new(camera, CodeSpec::normal()))
+}
+
+/// The light transport, boxed, and a handle on its reader.
+fn watched(light: LightTransport) -> (Box<dyn Transport>, ReaderWatch) {
     let watch = light.watch();
     (Box::new(light), watch)
 }
@@ -295,7 +299,9 @@ impl Device {
     }
 
     /// As [`Device::with_audio`], and reading and flashing through
-    /// `camera` as the Light switch allows.
+    /// `camera` as the Light switch allows. For tests over a fake camera:
+    /// its reader counts its budget in looks at the clock, not wall time
+    /// ([`LightTransport::unhurried`]), so a busy machine reads the same.
     pub fn with_audio_and_camera(
         store_path: PathBuf,
         audio: Box<dyn AudioIo>,
@@ -306,7 +312,7 @@ impl Device {
             Ok(t) => transports.push(t),
             Err(e) => pending.push(e),
         }
-        let (light, watch) = light_transport(camera);
+        let (light, watch) = watched(LightTransport::unhurried(camera, CodeSpec::normal()));
         transports.push(light);
         let mut device = Device::new(store_path, transports, pending);
         device.light_watch = Some(watch);

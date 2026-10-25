@@ -42,8 +42,8 @@ use std::time::{Duration, Instant};
 
 use bombechat_core::MAX_ENVELOPE;
 use bombechat_light::{
-    encode, grid_bits, CameraError, CameraIo, CodeSpec, Collector, Encoder, LightEvent,
-    ReadOutcome, Reader,
+    count_looks_as_time, encode, grid_bits, CameraError, CameraIo, CodeSpec, Collector, Encoder,
+    LightEvent, ReadOutcome, Reader,
 };
 use bombechat_modem::{split, Event, Reassembler};
 use bombechat_store::Channel;
@@ -439,6 +439,10 @@ pub struct LightTransport {
     now_ms: u64,
 }
 
+/// The budget of a [`LightTransport::unhurried`] reader, in looks at the
+/// clock (a microsecond each): far more than any reading takes.
+const UNHURRIED: Duration = Duration::from_secs(1);
+
 impl LightTransport {
     /// A light transport reading through `camera` and showing `spec`
     /// codes. Nothing is opened until the first poll.
@@ -458,6 +462,25 @@ impl LightTransport {
         spec: CodeSpec,
         reader: Reader,
     ) -> LightTransport {
+        LightTransport::start(camera, spec, reader, false)
+    }
+
+    /// As [`LightTransport::new`], for tests that must read the same
+    /// however busy the machine is: the reader's budget is counted in
+    /// looks at the clock ([`count_looks_as_time`]), not read off the
+    /// wall, and is far more than any reading takes, so a reading is never cut short by a
+    /// test runner that preempts the camera thread.
+    #[doc(hidden)]
+    pub fn unhurried(camera: Box<dyn CameraIo>, spec: CodeSpec) -> LightTransport {
+        LightTransport::start(camera, spec, Reader::with_budget(UNHURRIED), true)
+    }
+
+    fn start(
+        camera: Box<dyn CameraIo>,
+        spec: CodeSpec,
+        reader: Reader,
+        counting_looks: bool,
+    ) -> LightTransport {
         assert!(spec.is_valid(), "{spec:?} is not a light code preset");
         let shared = Arc::new(Shared::default());
         let (out, reports) = mpsc::channel();
@@ -468,6 +491,9 @@ impl LightTransport {
             .name("light reader".to_string())
             .spawn(move || {
                 let _alive = alive;
+                if counting_looks {
+                    count_looks_as_time(true);
+                }
                 work(camera, reader, theirs, out)
             })
             .expect("start the light reader thread");
@@ -856,7 +882,7 @@ mod tests {
     use bombechat_light::FakeCamera;
 
     fn transport(cam: &FakeCamera) -> LightTransport {
-        LightTransport::new(Box::new(cam.clone()), CodeSpec::normal())
+        LightTransport::unhurried(Box::new(cam.clone()), CodeSpec::normal())
     }
 
     fn settle(t: &LightTransport) {
@@ -1101,7 +1127,8 @@ mod tests {
     #[test]
     fn a_failure_is_reported_by_the_time_the_camera_reads_closed() {
         let cam = FakeCamera::new(Vec::new());
-        let mut t = LightTransport::new(Box::new(SlowRelease(cam.clone())), CodeSpec::normal());
+        let mut t =
+            LightTransport::unhurried(Box::new(SlowRelease(cam.clone())), CodeSpec::normal());
         t.poll(0);
         settle(&t);
         assert!(cam.is_running());

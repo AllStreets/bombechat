@@ -270,10 +270,17 @@ fn escape_stops_flashing_even_when_the_setting_cannot_be_saved() {
     // screen clears and nothing more is shown.
     let why = commands::set_setting(&b.s, "light".into(), 1).unwrap_err();
     assert!(why.starts_with("The setting was not saved"), "{why}");
-    assert_eq!(commands::settings(&b.s)["light"], 1, "Read, for this session");
+    assert_eq!(
+        commands::settings(&b.s)["light"],
+        1,
+        "Read, for this session"
+    );
     let after: Vec<_> = b.steps(300).iter().map(commands::bridge_event).collect();
     assert!(after.iter().any(|(name, _)| *name == "displayStopped"));
-    assert!(!after.iter().any(|(name, _)| *name == "display"), "nothing flashed after Escape");
+    assert!(
+        !after.iter().any(|(name, _)| *name == "display"),
+        "nothing flashed after Escape"
+    );
     assert_eq!(b.light()["state"], "listening", "still reading");
 
     // Turned back up while the file still can't be written: refused, and
