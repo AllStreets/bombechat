@@ -99,25 +99,39 @@ const HAS_KEYCHAIN: bool = cfg!(target_os = "macos");
 
 /// A setting the person cannot change on this machine: what it says
 /// instead of a working value, and the value it is held at, if it has
-/// one (a setting that waits for a feature has none).
+/// one (a setting that waits for a feature has none). Or, as a `notice`,
+/// something the machine has to tell about a setting the person can still
+/// change, shown beside its value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SettingNote {
     pub note: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<usize>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub notice: bool,
 }
 
 /// Every setting the person cannot change on this machine, by id.
 fn held_settings() -> BTreeMap<&'static str, SettingNote> {
     let mut held: BTreeMap<&'static str, SettingNote> = COMING
         .iter()
-        .map(|&(id, _, note)| (id, SettingNote { note, value: None }))
+        .map(|&(id, _, note)| {
+            (
+                id,
+                SettingNote {
+                    note,
+                    value: None,
+                    notice: false,
+                },
+            )
+        })
         .collect();
     held.insert(
         "inperson",
         SettingNote {
             note: KEY_CHECK_ALWAYS,
             value: Some(1),
+            notice: false,
         },
     );
     if !HAS_KEYCHAIN {
@@ -126,6 +140,7 @@ fn held_settings() -> BTreeMap<&'static str, SettingNote> {
             SettingNote {
                 note: KEYCHAIN_ONLY_ON_MACOS,
                 value: Some(1),
+                notice: false,
             },
         );
     }
@@ -219,6 +234,12 @@ pub trait Machine: Send {
     /// Tone band setting (a sound card too slow for near silent stays
     /// audible).
     fn band(&self) -> Option<Band> {
+        None
+    }
+    /// What the machine has to tell about Lock with passphrase, if
+    /// anything: for example, that the Keychain would not keep the key at
+    /// unlock, so the lock went back on.
+    fn lock_note(&self) -> Option<&'static str> {
         None
     }
     fn tick(&mut self, now_ms: u64) -> Vec<NodeEvent>;
@@ -418,9 +439,19 @@ pub fn set_setting(s: &Shared, id: String, value_index: usize) -> Result<(), Str
 
 /// `setting_notes`: the settings this machine cannot change, by id, each
 /// with what the settings page says in its place ("comes with relay",
-/// "always, on this build") and the value it is held at, if any.
-pub fn setting_notes(_s: &Shared) -> BTreeMap<&'static str, SettingNote> {
-    held_settings()
+/// "always, on this build") and the value it is held at, if any; and any
+/// notice the machine has about one the person can change (the lock went
+/// back on), marked `notice`.
+pub fn setting_notes(s: &Shared) -> BTreeMap<&'static str, SettingNote> {
+    let mut notes = held_settings();
+    if let Some(note) = s.machine().lock_note() {
+        notes.entry("lock").or_insert(SettingNote {
+            note,
+            value: None,
+            notice: true,
+        });
+    }
+    notes
 }
 
 /// `settings`: every setting's value, by id, as the machine keeps it, or

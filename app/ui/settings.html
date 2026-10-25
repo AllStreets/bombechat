@@ -88,7 +88,7 @@ a.pl svg{display:block}
   background:linear-gradient(#cbbc94,#d8cba6 45%,#c4b48b);box-shadow:0 1px 2px rgba(60,40,10,.4),inset 0 0 0 .5px rgba(90,70,40,.18);transform:rotate(-.5deg);pointer-events:none;
   clip-path:polygon(0 12%,2% 0,30% 7%,62% 0,98% 6%,100% 0,99% 50%,100% 100%,70% 93%,35% 100%,3% 94%,0 100%,1.5% 50%)}
 .row.parked .jk span{color:#8f8571}
-.row .band{display:block;margin-top:4px;font-family:var(--type);font-size:12.5px;color:#3d3b37;text-shadow:0 0 .6px rgba(53,52,49,.5)}
+.row .band,.row .notice{display:block;margin-top:4px;font-family:var(--type);font-size:12.5px;color:#3d3b37;text-shadow:0 0 .6px rgba(53,52,49,.5)}
 .row .band[hidden]{display:none}
 .notfitted{margin-top:8px;padding:10px 12px;border:1px dashed rgba(124,35,29,.5);font-family:var(--type);font-size:12.5px;line-height:1.45;color:#5c3a33;background:rgba(124,35,29,.05)}
 .card-f{border-top:1.5px solid var(--green-ink);padding:8px 22px 12px;display:flex;justify-content:space-between;align-items:baseline;font-family:var(--print);font-size:12px;color:var(--green-ink)}
@@ -181,8 +181,10 @@ try{takeKept(await bridge.settings())}catch(e){SETTINGS.forEach(s=>s.read=false)
 try{localStorage.removeItem('bombechat.settings')}catch(e){}
 // the settings this machine can't change, as it says: one waiting for a feature ('comes with relay') has no value and
 // its plug is parked; one held at a value ('always, on this build') keeps its plug seated there. Neither can be patched.
+// A notice is something the machine has to tell about a setting that still works (the Keychain would not keep the key,
+// so the lock is back on): it is written under the row's name until the person sets that setting again.
 let NOTES={};try{NOTES=await bridge.settingNotes()||{}}catch(e){}
-for(const s of SETTINGS){const n=NOTES[s.id];if(!n)continue;s.held=n.note;s.parked=!Number.isInteger(n.value);if(!s.parked){s.v=n.value;s.read=true}}
+for(const s of SETTINGS){const n=NOTES[s.id];if(!n)continue;if(n.notice){s.notice=n.note;continue}s.held=n.note;s.parked=!Number.isInteger(n.value);if(!s.parked){s.v=n.value;s.read=true}}
 const label=s=>s.held?s.held:s.read?s.values[s.v]+(s.unit||''):'Not read';
 const seatedAt=s=>s.parked?-1:s.v;
 
@@ -198,8 +200,8 @@ for(const g of GROUPS){
     const r=document.createElement('div');r.className='row'+(s.held?' held':'')+(s.parked?' parked':'');r.dataset.id=s.id;
     const off=s.held?' disabled aria-disabled="true"':'';
     r.innerHTML=`<div class="hd"><span class="nm" id="nm-${s.id}">${s.name}</span><span class="val${s.held?' pencil':''}" id="val-${s.id}">${label(s)}</span></div>
-      ${s.id==='band'?'<span class="band" hidden></span>':''}<div class="desc">${s.desc}</div>
-      <div class="jacks${s.values.some(v=>v.includes(' '))?' wide':''}" role="radiogroup" aria-labelledby="nm-${s.id}"${s.held?` aria-describedby="val-${s.id}" aria-disabled="true"`:''}>${s.values.map((v,i)=>`<button class="jk" role="radio" aria-checked="${i===seatedAt(s)}" tabindex="${i===s.v&&!s.held?0:-1}" data-i="${i}" aria-label="${v}${s.unit||''}"${off}><i></i><span>${v}</span></button>`).join('')}</div>`;
+      ${s.id==='band'?'<span class="band" hidden></span>':''}${s.notice?`<span class="notice" id="notice-${s.id}">${s.notice}</span>`:''}<div class="desc">${s.desc}</div>
+      <div class="jacks${s.values.some(v=>v.includes(' '))?' wide':''}" role="radiogroup" aria-labelledby="nm-${s.id}"${s.held?` aria-describedby="val-${s.id}" aria-disabled="true"`:s.notice?` aria-describedby="notice-${s.id}"`:''}>${s.values.map((v,i)=>`<button class="jk" role="radio" aria-checked="${i===seatedAt(s)}" tabindex="${i===s.v&&!s.held?0:-1}" data-i="${i}" aria-label="${v}${s.unit||''}"${off}><i></i><span>${v}</span></button>`).join('')}</div>`;
     sched.appendChild(r);rows[s.id]=r;
     r.addEventListener('mouseenter',()=>focusSetting(s.id,'hover'));
     r.addEventListener('mouseleave',()=>focusSetting(null,'hover'));
@@ -227,7 +229,7 @@ function say(text){savedEl.textContent=text;savedEl.style.opacity=1;clearTimeout
 // the person moved a plug: send it, and if the machine won't take it, put the plug back and say why
 function change(id,i){const s=byId[id],was={v:s.v,read:s.read};s.v=i;s.read=true;syncRow(id);say(`${s.name}: ${label(s)}`);
   Object.values(rows).forEach(r=>r.classList.remove('active'));rows[id].classList.add('active');
-  Promise.resolve(bridge.setSetting(id,i)).then(()=>{if(id==='band')bridge.channels().then(list=>list.forEach(onChannel),()=>{})},why=>{if(s.v!==i)return;s.v=was.v;s.read=was.read;syncRow(id);say(String(why&&why.message||why));
+  Promise.resolve(bridge.setSetting(id,i)).then(()=>{if(s.notice){s.notice=null;rows[id].querySelector('.notice').remove();rows[id].querySelector('.jacks').removeAttribute('aria-describedby')}if(id==='band')bridge.channels().then(list=>list.forEach(onChannel),()=>{})},why=>{if(s.v!==i)return;s.v=was.v;s.read=was.read;syncRow(id);say(String(why&&why.message||why));
     machine&&machine.seat(id,seatedAt(s))})}
 function setValue(id,i,from){const s=byId[id];if(s.held){focusSetting(id,'pin');return}if(s.v===i&&s.read){focusSetting(id,'pin');return}change(id,i);
   if(from!=='card')rows[id].scrollIntoView({block:'nearest',behavior:REDUCED?'auto':'smooth'});

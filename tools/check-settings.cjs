@@ -294,8 +294,42 @@ const url = q => 'http://127.0.0.1:4811/' + path.relative(ROOTDIR, page) + (q ? 
     await rp.screenshot({ path: path.join(out, 'refused-lock.png') });
     await ctx.close();
   }
+  // the Keychain would not keep the key at unlock, so the lock went back on: the Lock row says so under its name, and
+  // still works; setting it again sends that one change and the notice goes
+  let lockNotice = null;
+  if (APP) {
+    const LOCK_BACK_ON = 'The Keychain did not keep the key, so the lock is back on';
+    const ctx = await browser.newContext({ viewport: vp, deviceScaleFactor: 2 });
+    await ctx.addInitScript(notes => {
+      window.__calls = [];
+      window.__TAURI__ = { event: { listen: () => Promise.resolve(() => {}) }, core: { invoke: (cmd, args) => { window.__calls.push([cmd, args]);
+        return Promise.resolve(cmd === 'settings' ? { sound: 2, volume: 2, band: 0, light: 0, flash: 1, machine: 1, machvol: 2, carry: 1, hops: 3, hold: 2, quiet: 2, repeats: 2, lock: 1, expire: 0, inperson: 1 }
+          : cmd === 'setting_notes' ? notes : cmd === 'channels' ? [{ channel: 'sound', state: 'listening', rate: 16.1, band: 'near silent' }] : null); } } };
+    }, { ...NOTES, lock: { note: LOCK_BACK_ON, notice: true } });
+    const lp = await ctx.newPage();
+    lp.on('pageerror', e => problems.push('lock notice: page error: ' + e.message));
+    lp.on('console', m => m.type() === 'error' && problems.push('lock notice: console: ' + m.text()));
+    await lp.goto(url('still'), { waitUntil: 'domcontentloaded', timeout: 120000 });
+    await lp.waitForFunction(() => window.__ready, null, { timeout: 90000 });
+    await lp.waitForTimeout(400);
+    const row = () => lp.evaluate(() => { const r = document.querySelector('.row[data-id="lock"]'), n = r.querySelector('.notice');
+      return { notice: n ? n.textContent : null, size: n ? parseFloat(getComputedStyle(n).fontSize) : null, held: r.classList.contains('held'), label: r.querySelector('.val').textContent,
+        enabled: [...r.querySelectorAll('.jk')].every(b => !b.disabled), described: r.querySelector('.jacks').getAttribute('aria-describedby'), sent: __calls.filter(c => c[0] === 'set_setting').map(c => c[1]) }; });
+    const shown = await row();
+    if (shown.notice !== LOCK_BACK_ON || shown.held || shown.label !== 'On' || !shown.enabled || shown.described !== 'notice-lock' || shown.size < 12) problems.push(`lock notice: not shown on a working Lock row: ${JSON.stringify(shown)}`);
+    await lp.evaluate(() => document.querySelector('.row[data-id="lock"]').scrollIntoView({ block: 'center' }));
+    await lp.waitForTimeout(300);
+    const lb = await lp.locator('.row[data-id="lock"]').boundingBox();
+    await lp.screenshot({ path: path.join(out, 'lock-back-on.png'), clip: { x: 0, y: lb.y - 60, width: 460, height: lb.height + 120 } });
+    await lp.click('.row[data-id="lock"] .jk[data-i="0"]');
+    await lp.waitForTimeout(300);
+    const after = await row();
+    if (after.notice !== null || after.described !== null || JSON.stringify(after.sent) !== JSON.stringify([{ id: 'lock', valueIndex: 0 }])) problems.push(`lock notice: setting the lock again: ${JSON.stringify(after)}`);
+    lockNotice = { shown, after };
+    await ctx.close();
+  }
   await browser.close();
-  console.log(JSON.stringify({ out, fps, results, keyboard: [before, after], atBoot, history, refused, band, problems }, null, 2));
+  console.log(JSON.stringify({ out, fps, results, keyboard: [before, after], atBoot, history, refused, band, lockNotice, problems }, null, 2));
   server.close();
   process.exit(problems.length ? 1 : 0);
 })();

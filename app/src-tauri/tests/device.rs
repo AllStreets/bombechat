@@ -498,11 +498,24 @@ fn a_keychain_that_will_not_keep_the_key_leaves_the_lock_on_and_says_why() {
     pocket.remove().unwrap();
     *pocket.1.lock().unwrap() = Some("The Keychain did not keep the key: locked".into());
     let later = kept_device(&path, &pocket);
+    assert!(!commands::setting_notes(&later).contains_key("lock"));
     commands::unlock(&later, "correct horse".into(), None).unwrap();
     assert_eq!(
         commands::settings(&later)["lock"],
         1,
         "back on, not shown off"
+    );
+    // and the Lock row says so, as a notice: the lock can still be set
+    let note = &commands::setting_notes(&later)["lock"];
+    assert_eq!(
+        serde_json::to_value(note).unwrap(),
+        serde_json::json!({ "note": "The Keychain did not keep the key, so the lock is back on", "notice": true })
+    );
+    *pocket.1.lock().unwrap() = None;
+    commands::set_setting(&later, "lock".into(), 0).unwrap();
+    assert!(
+        !commands::setting_notes(&later).contains_key("lock"),
+        "gone once the lock is set again"
     );
 }
 

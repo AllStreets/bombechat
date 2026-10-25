@@ -48,6 +48,10 @@ const AGE_FILE: &str = "age.json";
 /// this much of it: the age then runs behind, never ahead.
 const AGE_SAVE_EVERY_MS: u64 = 60 * 1000;
 
+/// What the Lock row says when the Keychain would not keep the key at
+/// unlock, so the lock went back on.
+pub const LOCK_BACK_ON: &str = "The Keychain did not keep the key, so the lock is back on";
+
 /// The settings file's name, beside the store. Settings are not secret
 /// (which switch is where, a threshold), so they are kept as plain JSON.
 const SETTINGS_FILE: &str = "settings.json";
@@ -178,6 +182,9 @@ pub struct Device {
     age_saved: u64,
     /// The pump's clock at the last tick, once there has been one.
     now_ms: Option<u64>,
+    /// Set when the Keychain would not keep the key at unlock and the
+    /// lock went back on; cleared once the person sets the lock again.
+    lock_note: Option<&'static str>,
 }
 
 impl Device {
@@ -248,6 +255,7 @@ impl Device {
             age_ms,
             age_saved: age_ms,
             now_ms: None,
+            lock_note: None,
         };
         for (id, _, default) in SETTINGS {
             let value = device.setting(id).unwrap_or(default);
@@ -290,7 +298,7 @@ impl Device {
     /// none is left there if it is on), and delete what is older than
     /// Delete messages after. If the keychain will not keep the key, the
     /// lock goes back on, so it is never shown off while launch would
-    /// still ask.
+    /// still ask, and the Lock row says so.
     ///
     /// The machine's age is taken to be at least the largest age any kept
     /// row was stored at: if [`AGE_FILE`] was lost the age would start
@@ -312,6 +320,7 @@ impl Device {
         if self.lock_is_off() {
             if let Err(e) = self.keeper.put(&key) {
                 eprintln!("bombechat: {e}; Lock with passphrase is back on");
+                self.lock_note = Some(LOCK_BACK_ON);
                 self.settings.insert("lock".to_string(), 1);
                 if let Err(e) = save_settings(&settings_path(&self.store_path), &self.settings) {
                     eprintln!("bombechat: settings not saved: {e}");
@@ -534,6 +543,7 @@ impl Machine for Device {
         let before = self.setting(id);
         if id == "lock" {
             self.set_lock(value_index)?;
+            self.lock_note = None;
         }
         self.apply(id, value_index);
         if before == Some(value_index) {
@@ -612,6 +622,10 @@ impl Machine for Device {
 
     fn band(&self) -> Option<Band> {
         self.node.band()
+    }
+
+    fn lock_note(&self) -> Option<&'static str> {
+        self.lock_note
     }
 
     /// Ticks the node, and while the store is open deletes old messages
