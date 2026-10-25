@@ -1404,7 +1404,14 @@ impl Node {
     /// ignores its own echo. Returns the tag.
     fn transmit(&mut self, env: &Envelope, channels: &[Channel]) -> u16 {
         self.mark_seen(env.id);
-        let tag = OsRng.next_u32() as u16;
+        // a tag no send in the outbox has: two envelopes on one tag would share a queue slot in the transport and
+        // one outbox entry, so a refusal or a sent report would land on the wrong message
+        let tag = loop {
+            let tag = OsRng.next_u32() as u16;
+            if !self.outbox.contains_key(&tag) {
+                break tag;
+            }
+        };
         let frames = split(&env.encode(), tag);
         for t in &mut self.transports {
             if !channels.contains(&t.name()) {
