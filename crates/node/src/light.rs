@@ -290,10 +290,12 @@ fn work(
         }
         if let Some(start) = running {
             if let Some(e) = camera.take_error() {
+                // Said before the camera is released: once it reads
+                // closed, the failure is already waiting for the poll.
+                let _ = out.send(Report::Failed(start, e));
                 camera.stop();
                 running = None;
                 lock(&shared.work).pictures.clear();
-                let _ = out.send(Report::Failed(start, e));
             }
         }
         lock(&shared.work).busy = false;
@@ -1076,6 +1078,43 @@ mod tests {
         settle(&t);
         assert_eq!(cam.starts(), 2, "off and on tries afresh");
         assert!(cam.is_running());
+    }
+
+    /// A camera whose release takes a while after its light goes off, as
+    /// a real one can: the worker is still inside `stop` when the camera
+    /// already reads closed.
+    struct SlowRelease(FakeCamera);
+
+    impl CameraIo for SlowRelease {
+        fn start(&mut self, sink: Box<dyn FnMut(GrayImage) + Send>) -> Result<(), CameraError> {
+            self.0.start(sink)
+        }
+        fn stop(&mut self) {
+            self.0.stop();
+            thread::sleep(Duration::from_millis(300));
+        }
+        fn take_error(&mut self) -> Option<CameraError> {
+            self.0.take_error()
+        }
+    }
+
+    #[test]
+    fn a_failure_is_reported_by_the_time_the_camera_reads_closed() {
+        let cam = FakeCamera::new(Vec::new());
+        let mut t = LightTransport::new(Box::new(SlowRelease(cam.clone())), CodeSpec::normal());
+        t.poll(0);
+        settle(&t);
+        assert!(cam.is_running());
+        cam.fail(CameraError::Unsupported("broken".into()));
+        wait_until_closed(&cam);
+        settle(&t);
+        // No wait beyond that: the report is in hand once the camera is closed.
+        assert_eq!(
+            t.poll(20),
+            vec![TransportEvent::Unavailable(
+                "camera unsupported (broken)".to_string()
+            )]
+        );
     }
 
     /// Until the worker has noticed the camera failed and closed it: it

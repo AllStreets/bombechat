@@ -1621,12 +1621,15 @@ fn a_reader_lets_go_of_a_code_it_cannot_read() {
 /// A reader following two codes it cannot read still finds a readable
 /// code that comes into view. Counted in looks at the clock rather than
 /// wall time ([`bombechat_light::count_looks_as_time`]), so the same
-/// budget buys the same work however busy the machine: with room for one
-/// whole search, following both takes no more than its share and the
-/// code reads at the first picture; with a quarter of that, the budget
-/// rises after pictures cut short and the code still reads within 12.
-/// `following_is_capped` checks the same on the wall clock, alone, in
-/// release.
+/// budget buys the same work however busy the machine: with 40 looks,
+/// room for one whole search, the code reads at the first picture while
+/// both are followed; with a quarter of that, the budget rises after
+/// pictures cut short and the code still reads within 12. This shows the
+/// followed codes do not starve the search. It does not show that
+/// following stops at its 30 percent share: a read at the first picture
+/// only says enough was left for the search, not how much following
+/// took. The cap itself is
+/// checked by `following_is_capped`, on the wall clock, alone, in release.
 #[test]
 fn followed_unreadable_codes_leave_the_search_its_time() {
     bombechat_light::count_looks_as_time(true);
