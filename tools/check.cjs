@@ -72,6 +72,8 @@ function tauriStub({ hello, safety, pairOfferMs = 1200, people, talk, afterUnloc
   const listeners = {};
   window.__calls = [];
   window.__emit = (name, payload) => (listeners[name] || []).forEach(f => f({ payload }));
+  // a setting moved elsewhere (on the settings page): what the machine answers from now on
+  window.__moveSetting = (id, value) => { if (settings && typeof settings === 'object') settings[id] = value; };
   window.__TAURI__ = {
     event: { listen: (name, f) => { (listeners[name] = listeners[name] || []).push(f); return Promise.resolve(() => {}); } },
     core: { invoke: (cmd, args) => { window.__calls.push([cmd, args]);
@@ -1230,6 +1232,22 @@ function measureText() {
             problems.push(`${tag}: Escape on a message during pairing: ${JSON.stringify(msgEsc)}`);
           await emit(lp, 'displayStopped', { tag: 0x4e6 });
           r.messageDuringPairing = { plate: mixed.plate, escape: msgEsc.note };
+          // Light moved off Read and flash on the settings page while the hello finishes, focus on the lamp's Stop key:
+          // back on the front, the lamp closes, the offer stays, and focus goes to Matched, add (not lost with the lamp)
+          await lp.focus('#k2'); await lp.keyboard.press('End'); await lp.waitForTimeout(600);
+          await lp.click('#pairlight'); await paint(lp);
+          await emit(lp, 'display', helloFrame(1, 0, 0x4e7)); await lp.waitForTimeout(500);
+          await emit(lp, 'pairOffer', { peer: { sign: Array(32).fill(9), dh: Array(32).fill(10) }, name: 'Marisol Ortega', safety: SAFETY, channel: 'Light' }); await paint(lp);
+          await emit(lp, 'display', helloFrame(1, 1, 0x4e7)); await paint(lp);
+          await lp.focus('#lampstop');
+          const beforeMove = await st();
+          await lp.evaluate(() => { window.__moveSetting('light', 1); dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })); });
+          await lp.waitForTimeout(600);
+          const moved = await st();
+          if (!beforeMove.lamp || beforeMove.focus !== 'lampstop' || moved.lamp || moved.state !== 'offer' || moved.light !== '1' || moved.focus !== 'pairyes')
+            problems.push(`${tag}: Light moved off Read and flash while the hello finished: ${JSON.stringify({ before: { lamp: beforeMove.lamp, focus: beforeMove.focus }, moved })}`);
+          await emit(lp, 'displayStopped', { tag: 0x4e7 });
+          r.lightMovedWhileFinishing = { state: moved.state, focus: moved.focus };
         }
         await lp.close();
       }

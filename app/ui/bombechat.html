@@ -1245,9 +1245,10 @@ function helloOff(){if(Lamp.state!=='closed'&&Lamp.hello){Lamp.gone=Lamp.tag;lam
 // stopped before their hello came: the screen clears, the card is as it was
 function endLightPairing(note){lightPairing=null;bridge.stopPairing().catch(()=>{});helloOff();cardRest();noteSays(note);lightPairBtn.focus({preventScroll:true})}
 // Light was turned off Read and flash (the machine has ended the pairing): reading, the card rests and says so;
-// finishing, the offer stays for the person to judge
+// finishing, the offer stays for the person to judge, and focus goes to Matched, add, as Escape leaves it
 function lightLeftFlash(){if(!lightPairing)return;const was=lightPairing;lightPairing=null;helloOff();
-  if(was==='reading'){cardRest();noteSays(`Pairing by light stopped. ${KNOBS.k2.pos===0?'Light is off':'Light is at Read'}, and nothing was kept.`);lightPairBtn.focus({preventScroll:true})}}
+  if(was==='reading'){cardRest();noteSays(`Pairing by light stopped. ${KNOBS.k2.pos===0?'Light is off':'Light is at Read'}, and nothing was kept.`);lightPairBtn.focus({preventScroll:true})}
+  else if(menu.dataset.pair==='offer'&&!yesBtn.hidden)yesBtn.focus({preventScroll:true})}
 // their hello is in: the card takes the offer under the lamp, and the lamp closes once yours has finished its window
 function lightOffer(o){const fromLamp=lampEl.contains(document.activeElement);
   lightPairing='finishing';bridge.finishPairing().catch(()=>{});

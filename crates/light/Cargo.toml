@@ -68,3 +68,9 @@ bombechat-light = { path = ".", features = ["fake-camera"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 proptest = "1"
 rand = "0.8"
+
+# The measuring tool (see the example's header). Its tests run the
+# self-test under `cargo test`. Examples are never part of the app.
+[[example]]
+name = "measure"
+test = true
