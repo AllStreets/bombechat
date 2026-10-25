@@ -4,5 +4,7 @@
 <dict>
   <key>NSMicrophoneUsageDescription</key>
   <string>Bombechat listens for messages sent nearby by sound.</string>
+  <key>NSCameraUsageDescription</key>
+  <string>Bombechat reads messages shown to it on another screen.</string>
 </dict>
 </plist>
