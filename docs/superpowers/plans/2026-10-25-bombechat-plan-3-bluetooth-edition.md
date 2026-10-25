@@ -62,7 +62,7 @@
 
 **Interfaces produced:** `trait Radio { fn start(&mut self, mode: Mode); fn stop(&mut self); fn write(&mut self, peer: LinkId, bytes: &[u8]); fn poll(&mut self) -> Vec<RadioEvent>; fn max_write(&self, peer: LinkId) -> usize }`, `RadioEvent::{Up(LinkId), Down(LinkId), Bytes(LinkId, Vec<u8>), Unavailable(String)}`, `FakeRadio` (in-memory, several radios in one "room", with drop/reorder/duplicate knobs), `BleTransport<R: Radio>` implementing the node's `Transport` (name `Channel::Bluetooth`).
 
-- [ ] Our service UUID and characteristic UUID, generated once, recorded in code and the spec.
+- [x] Our service UUID and characteristic UUID, generated once, recorded in code and the spec: service `8AAC3E33-A919-4002-96A8-14E1A873404F`, characteristic `CC26A52C-3F93-439B-83DC-2301C13CA327`.
 - [ ] Framing: link messages `{kind, flags, len, body}`, fragmented to the link's `max_write`, reassembled with caps (at most 32 assemblies per link, 64 KiB each, 30 s) and dropped on overflow.
 - [ ] Per link: a Noise XX handshake first; envelopes travel inside the session. A link that fails the handshake is closed.
 - [ ] Peers: a link's remote identity is a contact, a stranger, or self (dropped). Envelopes go only to links whose remote is the recipient contact, or, for public broadcasts, to every session.

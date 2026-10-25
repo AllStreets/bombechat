@@ -1,0 +1,18 @@
+[package]
+name = "bombechat-bluetooth"
+version = "0.1.0"
+edition = "2021"
+
+# The link protocol only: no platform Bluetooth code and no networking
+# crates. The CoreBluetooth radio is added behind its own cfg later.
+[dependencies]
+bombechat-core = { path = "../core" }
+bombechat-modem = { path = "../modem" }
+bombechat-node = { path = "../node" }
+bombechat-session = { path = "../session" }
+bombechat-store = { path = "../store" }
+rand_core = { version = "0.6", features = ["getrandom"] }
+
+[dev-dependencies]
+bombechat-modem = { path = "../modem", features = ["fake-audio"] }
+tempfile = "3"
