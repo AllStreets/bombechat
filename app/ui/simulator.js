@@ -46,6 +46,15 @@ function keptSettings() {
   for (const id in NOTES) out[id] = NOTES[id].value ?? DEFAULTS[id];
   return out;
 }
+// the notices this machine sent, kept as the device's store keeps them (beside the settings, in sessionStorage):
+// broadcasts() replays them after a reload, and one still waiting is queued again when the conversation starts
+const MACHINE_NOTICES = 'bombechat.simulated-notices';
+function keptNotices() { try { return JSON.parse(sessionStorage.getItem(MACHINE_NOTICES) || '[]') || []; } catch (e) { return []; } }
+function keepNotice(n) {
+  const all = keptNotices().filter(k => String(k.id) !== String(n.id));
+  all.push(n);
+  try { sessionStorage.setItem(MACHINE_NOTICES, JSON.stringify(all)); } catch (e) {}
+}
 function keepSettings(settings) { try { sessionStorage.setItem(MACHINE_SETTINGS, JSON.stringify(settings)); } catch (e) {} }
 // bytes of message a second over sound, as the modem measures it at its defaults (crates/modem measured_rate)
 const RATE = 16.1;
@@ -80,7 +89,7 @@ function chunked(inner, seed) {
 function history(emit, setClock) {
   const MARISOL_KEY = signer(0x7f, 0x3a);
   const msg = (h, m, outgoing, channel, text, extra = {}) => { setClock(h, m); const id = bytes(16); emit('message', { id, contact: MARISOL, outgoing, text, channel, at_min: at(h, m), heard: false, ...extra }); return id; };
-  const pub = (h, m, text, hops) => { setClock(h, m); emit('broadcast', { signer: MARISOL_KEY, text, verified: true, hops }); };
+  const pub = (h, m, text, hops) => { setClock(h, m); emit('broadcast', { id: bytes(16), outgoing: false, signer: MARISOL_KEY, text, verified: true, hops, at_min: at(h, m) }); };
   msg(6, 52, false, 'Light', 'Power went around two. Anything on your side?');
   msg(6, 58, true, 'Light', 'Same. The whole block is dark and the phone shows no service.');
   pub(7, 20, 'Red and Blue lines stopped. Buses running on Ashland.', 2);
@@ -108,7 +117,10 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
 
   let soundState = null;// the last state the sound channel reported, for channels()
   const sound = state => { soundState = state; emit('channel', { channel: 'Sound', state }); };
-  const outbox = (m, state, first) => emit('outbox', first ? { id: m.id, state, text: m.text, public: !!m.public } : { id: m.id, state });
+  const outbox = (m, state, first) => {
+    if (m.kept) keepNotice({ ...m.kept, state: state === 'playing' ? 'waiting' : state });
+    emit('outbox', first ? { id: m.id, state, text: m.text, public: !!m.public } : { id: m.id, state });
+  };
   function land(n) {
     emit('chunk', { tag: TAG, index: n, of: NC, view: incoming[n] });
     if (n === NC - 1) finish();
@@ -147,6 +159,8 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
     if (started) return; started = true;
     history(emit, setClock);
     for (const m of queue) outbox(m, 'waiting', true);
+    // a notice of this machine's still waiting when the page last closed goes again, as the node queues it on unlock
+    for (const k of keptNotices().filter(k => k.state === 'waiting')) { const m = { id: k.id, text: k.text, public: true, kept: k }; queue.push(m); outbox(m, 'waiting'); }
     setClock(9, 14);
     if (settings.sound > 0) { sound('receiving'); for (let i = 0; i <= c; i++) land(i); }
     setClock(9, 15);
@@ -205,6 +219,8 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
       if (n > MAX_BROADCAST) return Promise.reject(`Too long to broadcast: ${n} bytes, at most ${MAX_BROADCAST}`);
       const m = { id: bytes(16), text, public: true };
       clock += 60000;
+      m.kept = { id: m.id, outgoing: true, signer: SELF_KEY.slice(0, 64), text, verified: true, hops: 0, at_min: Math.floor(clock / 60000), state: 'waiting' };
+      keepNotice(m.kept);
       if (settings.sound < 2) later(() => { sound(settings.sound === 0 ? 'not sent: sound is off' : 'not sent: sound is set to listen only'); outbox(m, 'failed'); sound(settings.sound === 0 ? 'off' : 'listening'); });
       else { queue.push(m); later(() => outbox(m, 'waiting')); }
       return Promise.resolve(m.id);
@@ -229,6 +245,8 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
     contacts: () => Promise.resolve(people.map(p => ({ ...p }))),
     // the sheet's history arrives as events when the conversation starts, as the mockups showed it
     conversation: () => Promise.resolve([]),
+    // this machine's own notices, kept across reloads; the heard ones arrive as history, as the mockups showed them
+    broadcasts: () => Promise.resolve(keptNotices()),
     // you are Teodor here: his key signs your broadcasts
     machine: () => Promise.resolve({ name: 'Machine No. 1', key: SELF_KEY, you: 'Teodor Vance', held: 6, version: '0.4', broadcast_max: MAX_BROADCAST }),
     channels: () => Promise.resolve([{ channel: 'Sound', state: soundState || 'listening', rate: RATE, band: settings.band ? 'audible' : 'near silent' }]),

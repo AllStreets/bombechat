@@ -9,7 +9,9 @@ use std::path::{Path, PathBuf};
 use bombechat_core::{Identity, PublicIdentity};
 use bombechat_modem::{AudioIo, Band, CpalAudio, ModemConfig, QuietGate};
 use bombechat_node::{Node, NodeEvent, SoundSwitch, SoundTransport, Transport};
-use bombechat_store::{Channel, Contact, ContactId, Store, StoreError, StoreKey, StoredMessage};
+use bombechat_store::{
+    Channel, Contact, ContactId, Store, StoreError, StoreKey, StoredBroadcast, StoredMessage,
+};
 
 use crate::commands::{is_setting, Lock, Machine, Opened, Unlocking, SETTINGS};
 use crate::keychain::{Keeper, Nowhere};
@@ -491,6 +493,10 @@ impl Machine for Device {
 
     fn conversation(&self, contact: ContactId) -> Vec<StoredMessage> {
         self.node.conversation(contact)
+    }
+
+    fn broadcasts(&self) -> Vec<StoredBroadcast> {
+        self.node.broadcasts()
     }
 
     fn my_name(&self) -> Option<String> {

@@ -578,11 +578,16 @@ const atBottom=()=>log.scrollHeight-log.scrollTop-log.clientHeight<28;
 function toBottom(smooth){log.scrollTo({top:log.scrollHeight,behavior:smooth&&!RM.matches?'smooth':'auto'});newtab.hidden=true}
 // anything that adds to the sheet goes through here: follow along if the reader is at the bottom, otherwise leave them where they are
 function grow(fn,own){if(booting){fn();return}const follow=own||atBottom();fn();if(follow)toBottom(!own);else newtab.hidden=false}
+// onto the sheet: while the page replays what came before (the store's messages and broadcasts, then what
+// arrived while it opened) each entry goes in its time's place; after that, at the bottom as it happens
+function put(ent){if(!booting){log.appendChild(ent);return}const at=+ent.dataset.at;log.insertBefore(ent,[...log.children].find(e=>+e.dataset.at>at)||null)}
+// the compose block changes height (a notice's line, a longer reply): a reader at the bottom stays there
+function pinned(fn){const was=atBottom();fn();if(was)log.scrollTop=log.scrollHeight}
 log.addEventListener('scroll',()=>{if(atBottom())newtab.hidden=true});
 newtab.addEventListener('click',()=>{toBottom(true);log.focus({preventScroll:true})});
 const hhmm=ms=>{const d=new Date(ms);return String(d.getHours()).padStart(2,'0')+'.'+String(d.getMinutes()).padStart(2,'0')};
 const el=(tag,cls,text)=>{const e=document.createElement(tag);if(cls)e.className=cls;if(text!=null)e.textContent=text;return e};
-function entry(ms,how){const ent=el('div',booting?'ent':'ent fresh');const when=el('div','when',hhmm(ms));when.appendChild(el('span',null,how));ent.append(when,el('div','what'));return ent}
+function entry(ms,how){const ent=el('div',booting?'ent':'ent fresh');ent.dataset.at=ms;const when=el('div','when',hhmm(ms));when.appendChild(el('span',null,how));ent.append(when,el('div','what'));return ent}
 // tape: a strip per line; a line longer than a strip of tape is cut at the word nearest 40 letters
 function cut(t,max){const w=t.split(' ');const out=[];let cur='';w.forEach(x=>{if((cur+' '+x).trim().length>max){out.push(cur.trim());cur=x}else cur+=' '+x});if(cur.trim())out.push(cur.trim());return out}
 const TILT=[-.3,.4,-.15];
@@ -609,12 +614,20 @@ function onMessage(m){
     else if(m.state==='failed'){ent.classList.add('failed');what.appendChild(el('div','state',sentence('not sent')))}
     else if(m.state==='waiting'){what.appendChild(el('div','state'));const it=outItem(m.id);Object.assign(it,{text:m.text,ent,how:m.channel});setOut(it,it.state||'waiting')}}
   else{tape(what,m.text);if(m.via)what.appendChild(el('div','state',`passed on by the ${m.via}`))}
-  grow(()=>log.appendChild(ent))}
+  grow(()=>put(ent))}
 bridge.on('message',onMessage);
-bridge.on('broadcast',b=>{const ent=entry(bridge.now(),'public');const what=ent.querySelector('.what');tape(what,b.text);
-  // from someone not checked in person: unverified, with the key that signed it
-  what.appendChild(el('div','state',`signed ${b.signer.slice(0,4).toUpperCase()}${b.verified?'':', unverified'}${b.hops?', '+hopsWord(b.hops):''}`));
-  grow(()=>log.appendChild(ent))});
+// a public broadcast, heard (tape, with the key that signed it) or this machine's own (typed, with how far it got),
+// as it happens or replayed from the store; each once, by id
+function drawNotice(b){if(b.id){if(onSheet.has(b.id))return;onSheet.add(b.id)}
+  const ent=entry(b.at_min!=null?b.at_min*60000:bridge.now(),'public');const what=ent.querySelector('.what');
+  if(b.outgoing){ent.classList.add('mine','public');what.append(el('div','typed',b.text),el('div','state'));sent.set(b.id,{ent,how:'sound'});
+    const it=outItem(b.id);Object.assign(it,{text:b.text,ent,how:'sound',public:true});
+    if(b.state==='waiting')setOut(it,it.state||'waiting');else{outbox.delete(b.id);status({state:b.state||'sent',ent,how:'sound',public:true})}}
+  else{tape(what,b.text);
+    // from someone not checked in person: unverified, with the key that signed it
+    what.appendChild(el('div','state',`signed ${b.signer.slice(0,4).toUpperCase()}${b.verified?'':', unverified'}${b.hops?', '+hopsWord(b.hops):''}`))}
+  grow(()=>put(ent))}
+bridge.on('broadcast',drawNotice);
 bridge.on('heard',h=>{const s=sent.get(h.id);if(!s||s.ent.querySelector('.stamp'))return;
   grow(()=>{const st=s.ent.querySelector('.state');if(st)st.remove();stamp(s.ent.querySelector('.what'),s.how,bridge.now(),h.by)})});
 
@@ -626,7 +639,7 @@ bridge.on('heard',h=>{const s=sent.get(h.id);if(!s||s.ent.querySelector('.stamp'
 const STALL=Q.has('stall')?+Q.get('stall'):30000;
 function arrivingEntry(){const ent=entry(bridge.now(),'sound');ent.classList.add('arriving');
   ent.querySelector('.what').append(el('div','strip provisional feed'),el('div','state live','arriving by sound, not yet checked'));
-  grow(()=>log.appendChild(ent));return ent}
+  grow(()=>put(ent));return ent}
 function provisionalTape(a,text){const what=a.ent.querySelector('.what'),note=what.querySelector('.state');
   what.querySelectorAll('.strip').forEach(s=>s.remove());
   const strips=text?tape(what,text,'strip provisional',note):[];
@@ -751,11 +764,11 @@ bridge.on('outbox',o=>{const it=outItem(o.id);if(o.text&&!it.text){it.text=o.tex
 const nowtime=document.getElementById('nowtime');
 const tick=()=>{nowtime.firstChild.nodeValue=hhmm(bridge.now())};
 const reply=document.getElementById('reply'),form=document.getElementById('compose');
-function fit(){reply.style.height='auto';reply.style.height=Math.min(88,reply.scrollHeight)+'px'}
+function fit(){pinned(()=>{reply.style.height='auto';reply.style.height=Math.min(88,reply.scrollHeight)+'px'})}
 reply.addEventListener('input',()=>{fit();if(pubnote.classList.contains('refused'))explain()});
 reply.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();send('sound')}});
 form.addEventListener('submit',e=>{e.preventDefault();send('sound')});
-flashBtn.addEventListener('click',()=>send('light'));
+flashBtn.addEventListener('click',()=>{if(PUBLIC){refuse('A public notice goes by sound only. Use Send by sound',flashBtn);return}send('light')});
 function nudge(btn){btn.animate([{transform:'translateX(0)'},{transform:'translateX(-3px)'},{transform:'translateX(3px)'},{transform:'translateX(0)'}],{duration:220});}
 function send(how){const text=reply.value.trim();
   if(PUBLIC&&how==='sound'){broadcast(text);return}
@@ -763,7 +776,7 @@ function send(how){const text=reply.value.trim();
   if(btn.getAttribute('aria-disabled')==='true'){nudge(btn);btn.focus();return}
   if(!text){reply.focus();return}
   const ent=entry(bridge.now(),how);ent.classList.add('mine');const what=ent.querySelector('.what');what.append(el('div','typed',text),el('div','state'));
-  grow(()=>log.appendChild(ent),true);
+  grow(()=>put(ent),true);
   reply.value='';fit();
   bridge.send([CONTACT.id],text,how).then(id=>{sent.set(id,{ent,how});
     if(finished.has(id)){status({state:finished.get(id),why:finishedWhy.get(id),ent,how});tick();return}
@@ -777,28 +790,28 @@ function send(how){const text=reply.value.trim();
    underneath; a notice the machine won't send says why there, and keeps what was written.
    Once one goes, the toggle springs back to Reply, so the next reply is never public by mistake. */
 const modeSw=document.getElementById('mode'),pubnote=document.getElementById('pubnote');
-function explain(){pubnote.classList.remove('refused');pubnote.textContent=`Anyone in range can read it. Signed with your key${MY_FP?', '+MY_FP:''}.`}
-function refuse(why){pubnote.classList.add('refused');pubnote.textContent=sentence(why);nudge(sendBtn)}
-function setPublic(on){if(on===PUBLIC)return;PUBLIC=on;modeSw.setAttribute('aria-checked',on);form.classList.toggle('public',on);replyLabels();fit();explain();
-  if(!on)pubnote.classList.remove('refused');Drum.spin(1,1.3)}
+function explain(){pinned(()=>{pubnote.classList.remove('refused');pubnote.textContent=`Anyone in range can read it. Signed with your key${MY_FP?', '+MY_FP:''}.`})}
+function refuse(why,btn=sendBtn){pinned(()=>{pubnote.classList.add('refused');pubnote.textContent=sentence(why)});nudge(btn)}
+function setPublic(on){if(on===PUBLIC)return;pinned(()=>{PUBLIC=on;modeSw.setAttribute('aria-checked',on);form.classList.toggle('public',on);replyLabels();fit();explain();
+  if(!on)pubnote.classList.remove('refused')});Drum.spin(1,1.3)}
 modeSw.addEventListener('click',()=>{setPublic(!PUBLIC);reply.focus()});
 let broadcasting=false;
 function broadcast(text){if(broadcasting)return;
   const s=KNOBS.k1.pos;
-  if(sendBtn.getAttribute('aria-disabled')==='true'){refuse(`Sound is ${s===0?'off':'set to listen only'}. Turn it to Listen and send to broadcast`);return}
+  if(sendBtn.getAttribute('aria-disabled')==='true'){refuse(`${!KNOBS.k1.read?'The Sound switch was not read from the machine':s===0?'Sound is off':'Sound is set to listen only'}. Turn it to Listen and send to broadcast`);return}
   if(!text){refuse('Write the notice first');reply.focus();return}
   const n=new TextEncoder().encode(text).length;
   if(MAX_BROADCAST!=null&&n>MAX_BROADCAST){refuse(`Too long to broadcast: ${n} bytes, at most ${MAX_BROADCAST}`);return}
-  broadcasting=true;
-  bridge.broadcast(text).then(id=>{broadcasting=false;
+  // the line clears and the toggle springs back at once; a notice the machine refuses comes back to the line
+  broadcasting=true;const was=reply.value;reply.value='';setPublic(false);
+  bridge.broadcast(text).then(id=>{broadcasting=false;onSheet.add(id);
     const ent=entry(bridge.now(),'public');ent.classList.add('mine','public');const what=ent.querySelector('.what');what.append(el('div','typed',text),el('div','state'));
-    grow(()=>log.appendChild(ent),true);
-    reply.value='';fit();setPublic(false);
+    grow(()=>put(ent),true);
     sent.set(id,{ent,how:'sound'});
     if(finished.has(id)){status({state:finished.get(id),why:finishedWhy.get(id),ent,how:'sound',public:true});tick();return}
     const it=outItem(id);Object.assign(it,{text,ent,how:'sound',public:true});
     if(it.state)setOut(it,it.state);else status(it);tick()},
-    why=>{broadcasting=false;refuse(why)})}
+    why=>{broadcasting=false;if(!reply.value){reply.value=was;setPublic(true);fit()}refuse(why)})}
 
 /* ---------- key check menu ---------- */
 // the pencil menu is the mockups' story; in the app the card shows the real safety number (cardRest, below)
@@ -1035,6 +1048,8 @@ drawOutbox();applyChannels();cardRest();
 function vuTitle(){document.querySelector('.vu').title=`Loudness of the room. Messages wait to play until it drops under ${sendUnder()} dB.`}
 vuTitle();
 if(!bridge.simulated)await realSheet();
+// the broadcasts kept, this machine's own and the ones heard, in their places among the messages
+for(const b of await bridge.broadcasts().catch(()=>[]))drawNotice(b);
 bridge.start();
 // a page opened (or reloaded) after the channel last changed still learns its state
 bridge.channels().then(list=>{list.forEach(onChannel);showRate(list)});

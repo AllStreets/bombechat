@@ -388,6 +388,7 @@ fn broadcast_from_stranger_is_unverified() {
                 signer,
                 text,
                 verified,
+                ..
             } => Some((signer.clone(), text.clone(), *verified)),
             _ => None,
         })

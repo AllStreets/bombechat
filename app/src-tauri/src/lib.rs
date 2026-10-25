@@ -94,6 +94,11 @@ fn conversation(
 }
 
 #[tauri::command]
+fn broadcasts(state: State<'_, Shared>) -> Result<Vec<serde_json::Value>, String> {
+    commands::broadcasts(&state)
+}
+
+#[tauri::command]
 fn machine(state: State<'_, Shared>) -> Result<commands::MachineView, String> {
     commands::machine(&state)
 }
@@ -145,6 +150,7 @@ pub fn run() {
             unlock,
             contacts,
             conversation,
+            broadcasts,
             machine,
             channels
         ])

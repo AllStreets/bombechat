@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use bombechat_core::{safety_number, PublicIdentity};
 use bombechat_modem::Band;
 use bombechat_node::{NodeEvent, MAX_BROADCAST, NOT_SENT, NOT_STORED};
-use bombechat_store::{Channel, Contact, ContactId, StoredMessage};
+use bombechat_store::{Channel, Contact, ContactId, StoredBroadcast, StoredMessage};
 use serde::Serialize;
 use serde_json::{json, Value};
 
@@ -35,7 +35,7 @@ const PANIC_REPORT_GAP: Duration = Duration::from_secs(5);
 const MAX_NAME_CHARS: usize = 40;
 
 /// The command names, exactly as `bridge.js` invokes them.
-pub const NAMES: [&str; 12] = [
+pub const NAMES: [&str; 13] = [
     "send",
     "broadcast",
     "pair",
@@ -47,6 +47,7 @@ pub const NAMES: [&str; 12] = [
     "contacts",
     "channels",
     "conversation",
+    "broadcasts",
     "machine",
 ];
 
@@ -186,6 +187,8 @@ pub trait Machine: Send {
     fn contacts(&self) -> Vec<Contact>;
     /// The stored messages with one contact, oldest first.
     fn conversation(&self, contact: ContactId) -> Vec<StoredMessage>;
+    /// The broadcasts kept, sent and heard, oldest first.
+    fn broadcasts(&self) -> Vec<StoredBroadcast>;
     /// The person's name, as their pairing hellos carry it, once unlocked.
     fn my_name(&self) -> Option<String>;
     /// This machine's public identity, once unlocked.
@@ -491,6 +494,21 @@ pub fn conversation(s: &Shared, contact_id: i64) -> Result<Vec<Value>, String> {
         .collect())
 }
 
+/// `broadcasts`: the public broadcasts kept, this machine's own and the
+/// ones it heard, oldest first, each shaped as the `broadcast` event
+/// (with `outgoing`, and `state` for how far one of its own got).
+pub fn broadcasts(s: &Shared) -> Result<Vec<Value>, String> {
+    let machine = s.machine();
+    unlocked(machine.as_ref())?;
+    Ok(machine.broadcasts().iter().map(broadcast_json).collect())
+}
+
+fn broadcast_json(b: &StoredBroadcast) -> Value {
+    json!({ "id": b.id.to_vec(), "outgoing": b.outgoing, "signer": { "sign": b.signer.to_vec() },
+            "text": b.text, "verified": b.verified, "hops": b.hops, "at_min": b.at_min,
+            "state": b.delivery.as_str() })
+}
+
 /// `machine`: this machine's name, public identity and what it holds.
 pub fn machine(s: &Shared) -> Result<MachineView, String> {
     let machine = s.machine();
@@ -597,12 +615,16 @@ pub fn bridge_event(e: &NodeEvent) -> (&'static str, Value) {
         NodeEvent::Message(m) => ("message", message_json(m)),
         NodeEvent::Heard { id, by } => ("heard", json!({ "id": id.to_vec(), "by": by.0 })),
         NodeEvent::Broadcast {
+            id,
             signer,
             text,
             verified,
+            hops,
+            at_min,
         } => (
             "broadcast",
-            json!({ "signer": identity(signer), "text": text, "verified": verified }),
+            json!({ "id": id.to_vec(), "outgoing": false, "signer": identity(signer), "text": text,
+                    "verified": verified, "hops": hops, "at_min": at_min }),
         ),
         NodeEvent::PairOffer { peer, name, safety } => (
             "pairOffer",

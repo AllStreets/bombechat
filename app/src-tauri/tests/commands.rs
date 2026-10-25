@@ -10,7 +10,7 @@ use std::time::Duration;
 use bombechat_app::commands::{self, bridge_event, Lock, Machine, Opened, Shared, Unlocking};
 use bombechat_core::{safety_number, ChunkView, PublicIdentity};
 use bombechat_node::{NodeEvent, OutboxState, MAX_BROADCAST, NOT_SENT, NOT_STORED};
-use bombechat_store::{Channel, Contact, ContactId, Delivery, StoredMessage};
+use bombechat_store::{Channel, Contact, ContactId, Delivery, StoredBroadcast, StoredMessage};
 use serde_json::json;
 
 /// What the fake was asked to do.
@@ -129,6 +129,30 @@ impl Machine for Fake {
         } else {
             Vec::new()
         }
+    }
+    fn broadcasts(&self) -> Vec<StoredBroadcast> {
+        vec![
+            StoredBroadcast {
+                id: ID,
+                outgoing: true,
+                signer: [1; 32],
+                verified: true,
+                hops: 0,
+                text: "Water at the church.".into(),
+                at_min: 29_000_002,
+                delivery: Delivery::Waiting,
+            },
+            StoredBroadcast {
+                id: [4; 16],
+                outgoing: false,
+                signer: [7; 32],
+                verified: false,
+                hops: 2,
+                text: "Road north is open.".into(),
+                at_min: 29_000_003,
+                delivery: Delivery::Sent,
+            },
+        ]
     }
     fn my_name(&self) -> Option<String> {
         (self.lock == Lock::Unlocked).then(|| "Ana Lima".to_string())
@@ -557,6 +581,24 @@ fn conversation_is_the_stored_messages_shaped_as_message_events() {
 }
 
 #[test]
+fn broadcasts_are_the_kept_ones_shaped_as_broadcast_events_with_their_state() {
+    let (m, _) = fake(Lock::Unlocked);
+    assert_eq!(
+        commands::broadcasts(&m),
+        Ok(vec![
+            json!({ "id": ID.to_vec(), "outgoing": true, "signer": { "sign": vec![1u8; 32] },
+                    "text": "Water at the church.", "verified": true, "hops": 0,
+                    "at_min": 29_000_002, "state": "waiting" }),
+            json!({ "id": vec![4u8; 16], "outgoing": false, "signer": { "sign": vec![7u8; 32] },
+                    "text": "Road north is open.", "verified": false, "hops": 2,
+                    "at_min": 29_000_003, "state": "sent" }),
+        ])
+    );
+    let (locked, _) = fake(Lock::Locked);
+    assert_eq!(commands::broadcasts(&locked), Err("locked".to_string()));
+}
+
+#[test]
 fn machine_is_named_machine_no_1_with_its_public_key() {
     let (m, _) = fake(Lock::Unlocked);
     let view = serde_json::to_value(commands::machine(&m).unwrap()).unwrap();
@@ -723,13 +765,17 @@ fn node_events_become_the_bridge_events_with_the_payloads_bridge_js_expects() {
     let (sign, dh) = (vec![7u8; 32], vec![9u8; 32]);
     assert_eq!(
         bridge_event(&NodeEvent::Broadcast {
+            id: ID,
             signer: who.clone(),
             text: "Road north is open.".to_string(),
-            verified: true
+            verified: true,
+            hops: 1,
+            at_min: 29_000_004,
         }),
         (
             "broadcast",
-            json!({ "signer": { "sign": sign, "dh": dh }, "text": "Road north is open.", "verified": true })
+            json!({ "id": ID.to_vec(), "outgoing": false, "signer": { "sign": sign, "dh": dh },
+                    "text": "Road north is open.", "verified": true, "hops": 1, "at_min": 29_000_004 })
         )
     );
     assert_eq!(

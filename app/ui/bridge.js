@@ -31,6 +31,9 @@
 //                                safety: the 60-digit safety number shared with them, in 12 groups of five
 //   conversation(contactId)      [conversation { contactId }]       resolves to the stored messages, oldest first, each
 //                                shaped as the message event
+//   broadcasts()                 [broadcasts]                       resolves to the broadcasts kept, this machine's own and the
+//                                ones heard, oldest first, each shaped as the broadcast event, with state for its own
+//                                ('waiting' queued again on unlock, 'sent' or 'failed')
 //   machine()                    [machine]                          resolves to { name, key, you, held, version, broadcast_max }:
 //                                name is the machine's plate (Machine No. 1), key its public identity as hex (sign key
 //                                first, so its first four digits are the short fingerprint broadcasts are signed with),
@@ -51,7 +54,9 @@
 //                state: an outgoing message's delivery as the store keeps it, 'waiting', 'sent' or
 //                'failed' (received messages are 'sent'); absent in the simulator
 //   heard      { id, by }
-//   broadcast  { signer, text, verified }                       signer: hex of the signing key
+//   broadcast  { id, outgoing, signer, text, verified, hops, at_min, state? }
+//                                                               signer: hex of the signing key; heard ones arrive as
+//                                                               events, kept ones (and this machine's own) from broadcasts()
 //   pairOffer  { peer, name, safety }                           peer: hex of sign key then dh key
 //   roomDb     number
 //   channel    { channel, state }       state 'receiving' while a message arrives by sound; 'failed' when one
@@ -119,7 +124,7 @@ const normalise = {
   },
   message: m => ({ ...m, id: hex(m.id), contact: contactId(m.contact), channel: lower(m.channel) }),
   heard: h => ({ id: hex(h.id), by: contactId(h.by) }),
-  broadcast: b => ({ ...b, signer: b.signer && b.signer.sign ? hex(b.signer.sign) : hex(b.signer) }),
+  broadcast: b => ({ ...b, id: hex(b.id), outgoing: !!b.outgoing, signer: b.signer && b.signer.sign ? hex(b.signer.sign) : hex(b.signer) }),
   pairOffer: p => ({ ...p, peer: identity(p.peer) }),
   roomDb: d => +(d && typeof d === 'object' ? d.db : d),
   channel: s => ({ ...s, channel: lower(s.channel) }),
@@ -158,6 +163,7 @@ function tauriBackend() {
     unlock: (passphrase, name) => invoke('unlock', name === undefined ? { passphrase } : { passphrase, name }),
     contacts: () => invoke('contacts').then(list => list.map(person)),
     conversation: contactId => invoke('conversation', { contactId }).then(list => list.map(normalise.message)),
+    broadcasts: () => invoke('broadcasts').then(list => list.map(normalise.broadcast)),
     machine: () => invoke('machine'),
     channels: () => invoke('channels').then(list => list.map(normalise.channel)),
     start() {},
@@ -179,6 +185,7 @@ function simulatedBackend() {
     unlock: (passphrase, name) => sim.unlock(passphrase, name),
     contacts: () => sim.contacts().then(list => list.map(person)),
     conversation: contactId => sim.conversation(contactId).then(list => list.map(normalise.message)),
+    broadcasts: () => sim.broadcasts().then(list => list.map(normalise.broadcast)),
     machine: () => sim.machine(),
     channels: () => sim.channels().then(list => list.map(normalise.channel)),
     start: () => sim.start(),
@@ -200,6 +207,7 @@ export const bridge = {
   unlock: (passphrase, name) => backend.unlock(passphrase, name),
   contacts: () => backend.contacts(),
   conversation: contactId => backend.conversation(contactId),
+  broadcasts: () => backend.broadcasts(),
   machine: () => backend.machine(),
   channels: () => backend.channels(),
   on(event, fn) {

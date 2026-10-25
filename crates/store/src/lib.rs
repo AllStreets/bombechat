@@ -1,5 +1,5 @@
-//! bombechat-store: encrypted on-device storage for identity, contacts and
-//! messages.
+//! bombechat-store: encrypted on-device storage for identity, contacts,
+//! messages and public broadcasts.
 //!
 //! Everything lives in one SQLCipher-encrypted SQLite database. The
 //! encryption key is derived from a user passphrase with Argon2id
@@ -57,13 +57,26 @@ CREATE TABLE messages (
     envelope BLOB,
     age_at INTEGER
 );
-PRAGMA user_version = 2;
+CREATE TABLE broadcasts (
+    id BLOB PRIMARY KEY,
+    outgoing INTEGER NOT NULL,
+    signer BLOB NOT NULL,
+    verified INTEGER NOT NULL,
+    hops INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    at_min INTEGER NOT NULL,
+    delivery INTEGER NOT NULL,
+    envelope BLOB,
+    age_at INTEGER
+);
+PRAGMA user_version = 3;
 ";
 
 /// The schema version [`SCHEMA`] makes, kept in `PRAGMA user_version`.
 /// Version 0 is the first schema, before messages kept their delivery;
-/// version 1 is before messages kept the machine's age.
-const SCHEMA_VERSION: i64 = 2;
+/// version 1 is before messages kept the machine's age; version 2 is
+/// before public broadcasts were kept.
+const SCHEMA_VERSION: i64 = 3;
 
 /// Brings a version 0 store up to version 1: outgoing messages gain a
 /// delivery state and, while waiting, their sealed envelope. Rows from
@@ -84,6 +97,26 @@ const MIGRATE_TO_2: &str = "
 BEGIN;
 ALTER TABLE messages ADD COLUMN age_at INTEGER;
 PRAGMA user_version = 2;
+COMMIT;
+";
+
+/// Brings a version 2 store up to version 3: public broadcasts, heard and
+/// sent, are kept in a table of their own (none were kept before).
+const MIGRATE_TO_3: &str = "
+BEGIN;
+CREATE TABLE broadcasts (
+    id BLOB PRIMARY KEY,
+    outgoing INTEGER NOT NULL,
+    signer BLOB NOT NULL,
+    verified INTEGER NOT NULL,
+    hops INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    at_min INTEGER NOT NULL,
+    delivery INTEGER NOT NULL,
+    envelope BLOB,
+    age_at INTEGER
+);
+PRAGMA user_version = 3;
 COMMIT;
 ";
 
@@ -177,6 +210,24 @@ pub struct StoredMessage {
     pub channel: Channel,
     pub at_min: u32,
     pub heard: bool,
+    pub delivery: Delivery,
+}
+
+/// A public broadcast: one this device signed and sent (`outgoing`), or
+/// one it heard. Not tied to a contact; anyone in range can read it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoredBroadcast {
+    pub id: [u8; 16],
+    pub outgoing: bool,
+    /// The key that signed it: this device's own for one it sent.
+    pub signer: [u8; 32],
+    /// Signed by a contact whose key was checked in person (always true
+    /// for this device's own).
+    pub verified: bool,
+    /// How many carriers it came through to reach this device.
+    pub hops: u8,
+    pub text: String,
+    pub at_min: u32,
     pub delivery: Delivery,
 }
 
@@ -433,17 +484,21 @@ impl Store {
         Ok(())
     }
 
-    /// Record how far a message's delivery got. Once it is no longer
+    /// Record how far a message's (or a broadcast's) delivery got. Once it is no longer
     /// waiting its envelope is let go. Unknown ids are ignored.
     pub fn set_delivery(&self, id: &[u8; 16], delivery: Delivery) -> Result<(), StoreError> {
         let conn = self.conn.lock().expect("store mutex poisoned");
-        conn.execute(
-            "UPDATE messages SET delivery = ?1,
-                 envelope = CASE WHEN ?1 = 0 THEN envelope ELSE NULL END
-             WHERE id = ?2",
-            params![delivery.to_i64(), id.as_slice()],
-        )
-        .map_err(|_| StoreError::Corrupt)?;
+        for table in ["messages", "broadcasts"] {
+            conn.execute(
+                &format!(
+                    "UPDATE {table} SET delivery = ?1,
+                         envelope = CASE WHEN ?1 = 0 THEN envelope ELSE NULL END
+                     WHERE id = ?2"
+                ),
+                params![delivery.to_i64(), id.as_slice()],
+            )
+            .map_err(|_| StoreError::Corrupt)?;
+        }
         Ok(())
     }
 
@@ -515,12 +570,13 @@ impl Store {
             .collect()
     }
 
-    /// Whether a message with this envelope id is already stored, used to
-    /// dedup envelopes that arrive more than once.
+    /// Whether a message or broadcast with this envelope id is already
+    /// stored, used to dedup envelopes that arrive more than once.
     pub fn has_message(&self, id: &[u8; 16]) -> bool {
         let conn = self.conn.lock().expect("store mutex poisoned");
         conn.query_row(
-            "SELECT 1 FROM messages WHERE id = ?1",
+            "SELECT 1 FROM messages WHERE id = ?1
+             UNION ALL SELECT 1 FROM broadcasts WHERE id = ?1",
             params![id.as_slice()],
             |_| Ok(()),
         )
@@ -576,14 +632,20 @@ impl Store {
     /// many.
     pub fn adopt_unaged(&self, age_ms: u64) -> Result<usize, StoreError> {
         let conn = self.conn.lock().expect("store mutex poisoned");
-        conn.execute(
-            "UPDATE messages SET age_at = ?1 WHERE age_at IS NULL",
-            params![i64::try_from(age_ms).unwrap_or(i64::MAX)],
-        )
-        .map_err(|_| StoreError::Corrupt)
+        let age = i64::try_from(age_ms).unwrap_or(i64::MAX);
+        let mut n = 0;
+        for table in ["messages", "broadcasts"] {
+            n += conn
+                .execute(
+                    &format!("UPDATE {table} SET age_at = ?1 WHERE age_at IS NULL"),
+                    params![age],
+                )
+                .map_err(|_| StoreError::Corrupt)?;
+        }
+        Ok(n)
     }
 
-    /// Erase every message stored more than `keep_ms` of running time
+    /// Erase every message and broadcast stored more than `keep_ms` of running time
     /// before the machine's age `age_ms`, except outgoing ones still
     /// waiting to go out (they are erased once they have gone, at the
     /// next purge) and ones with no age yet. Returns how many went.
@@ -592,13 +654,122 @@ impl Store {
             return Ok(0);
         };
         let conn = self.conn.lock().expect("store mutex poisoned");
+        let before = i64::try_from(before).unwrap_or(i64::MAX);
+        let mut n = 0;
+        for table in ["messages", "broadcasts"] {
+            n += conn
+                .execute(
+                    &format!(
+                        "DELETE FROM {table}
+                         WHERE age_at IS NOT NULL AND age_at < ?1
+                           AND NOT (outgoing = 1 AND delivery = 0)"
+                    ),
+                    params![before],
+                )
+                .map_err(|_| StoreError::Corrupt)?;
+        }
+        Ok(n)
+    }
+
+    /// Keep a broadcast: one this device sent, with the sealed envelope
+    /// that carries it while it is [`Delivery::Waiting`] (so it can be
+    /// queued again after a restart, [`Store::waiting_broadcasts`]), or
+    /// one it heard (no envelope). Stored again under the same id, it
+    /// updates the row but keeps the age it was first stored at.
+    pub fn put_broadcast(
+        &self,
+        b: &StoredBroadcast,
+        envelope: Option<&[u8]>,
+    ) -> Result<(), StoreError> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let envelope = envelope.filter(|_| b.delivery == Delivery::Waiting);
         conn.execute(
-            "DELETE FROM messages
-             WHERE age_at IS NOT NULL AND age_at < ?1
-               AND NOT (outgoing = 1 AND delivery = 0)",
-            params![i64::try_from(before).unwrap_or(i64::MAX)],
+            "INSERT INTO broadcasts
+                 (id, outgoing, signer, verified, hops, text, at_min, delivery, envelope, age_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT(id) DO UPDATE SET
+                 outgoing = excluded.outgoing,
+                 signer = excluded.signer,
+                 verified = excluded.verified,
+                 hops = excluded.hops,
+                 text = excluded.text,
+                 at_min = excluded.at_min,
+                 delivery = excluded.delivery,
+                 envelope = excluded.envelope",
+            params![
+                b.id.as_slice(),
+                b.outgoing as i64,
+                b.signer.as_slice(),
+                b.verified as i64,
+                b.hops as i64,
+                b.text,
+                b.at_min,
+                b.delivery.to_i64(),
+                envelope,
+                self.age(),
+            ],
         )
-        .map_err(|_| StoreError::Corrupt)
+        .map_err(|_| StoreError::Corrupt)?;
+        Ok(())
+    }
+
+    /// Every broadcast kept, sent and heard, in the order first stored.
+    pub fn broadcasts(&self) -> Vec<StoredBroadcast> {
+        self.broadcasts_where("1")
+            .into_iter()
+            .map(|(b, _)| b)
+            .collect()
+    }
+
+    /// This device's broadcasts still waiting to go out, oldest first,
+    /// each with the sealed envelope that carries it.
+    pub fn waiting_broadcasts(&self) -> Vec<(StoredBroadcast, Vec<u8>)> {
+        self.broadcasts_where("outgoing = 1 AND delivery = 0 AND envelope IS NOT NULL")
+            .into_iter()
+            .filter_map(|(b, e)| Some((b, e?)))
+            .collect()
+    }
+
+    fn broadcasts_where(&self, filter: &str) -> Vec<(StoredBroadcast, Option<Vec<u8>>)> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT id, outgoing, signer, verified, hops, text, at_min, delivery, envelope
+                 FROM broadcasts WHERE {filter} ORDER BY rowid"
+            ))
+            .expect("preparing broadcasts query");
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, u32>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, Option<Vec<u8>>>(8)?,
+                ))
+            })
+            .expect("querying broadcasts");
+        rows.map(|r| r.expect("reading broadcast row"))
+            .filter_map(|(id, outgoing, signer, verified, hops, text, at_min, delivery, envelope)| {
+                Some((
+                    StoredBroadcast {
+                        id: id.try_into().ok()?,
+                        outgoing: outgoing != 0,
+                        signer: signer.try_into().ok()?,
+                        verified: verified != 0,
+                        hops: u8::try_from(hops).unwrap_or(u8::MAX),
+                        text,
+                        at_min,
+                        delivery: Delivery::from_i64(delivery),
+                    },
+                    envelope,
+                ))
+            })
+            .collect()
     }
 
     /// Set whether a contact's safety number has been checked. Unknown
@@ -689,7 +860,7 @@ fn migrate(conn: &Connection) -> Result<(), StoreError> {
     if version > SCHEMA_VERSION {
         return Err(StoreError::Corrupt);
     }
-    for (to, step) in [(1, MIGRATE_TO_1), (2, MIGRATE_TO_2)] {
+    for (to, step) in [(1, MIGRATE_TO_1), (2, MIGRATE_TO_2), (3, MIGRATE_TO_3)] {
         if version < to && conn.execute_batch(step).is_err() {
             let _ = conn.execute_batch("ROLLBACK;");
             return Err(StoreError::Corrupt);
@@ -914,5 +1085,62 @@ mod tests {
         // opening it again does not migrate twice
         let store = Store::open(&path, "pw").unwrap();
         assert_eq!(store.adopt_unaged(1).unwrap(), 0);
+    }
+
+    /// The version 2 schema, as stores made before broadcasts were kept
+    /// have it.
+    const SCHEMA_2: &str = "
+    CREATE TABLE identity (id INTEGER PRIMARY KEY CHECK (id = 0), secret BLOB NOT NULL, name TEXT NOT NULL);
+    CREATE TABLE contacts (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, sign BLOB NOT NULL,
+        dh BLOB NOT NULL, checked INTEGER NOT NULL);
+    CREATE TABLE messages (id BLOB PRIMARY KEY, contact_id INTEGER NOT NULL REFERENCES contacts(id),
+        outgoing INTEGER NOT NULL, text TEXT NOT NULL, channel INTEGER NOT NULL, at_min INTEGER NOT NULL,
+        heard INTEGER NOT NULL, delivery INTEGER NOT NULL DEFAULT 1, envelope BLOB, age_at INTEGER);
+    PRAGMA user_version = 2;
+    ";
+
+    #[test]
+    fn a_store_from_before_broadcasts_were_kept_opens_with_none_and_keeps_them_from_then() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v2.db");
+        let them = Identity::generate().public();
+        {
+            let salt = random_salt();
+            write_salt_sidecar(&path, &salt).unwrap();
+            create_private_db_file(&path).unwrap();
+            let conn = open_existing(&path).unwrap();
+            key_connection(&conn, &derive_key("pw", &salt).unwrap()).unwrap();
+            conn.execute_batch(SCHEMA_2).unwrap();
+            store_identity(&conn, &Identity::generate(), "me").unwrap();
+            conn.execute(
+                "INSERT INTO contacts (name, sign, dh, checked) VALUES ('Marisol', ?1, ?2, 1)",
+                params![them.sign.as_slice(), them.dh.as_slice()],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO messages VALUES (?1, 1, 0, 'Kept.', 0, 5, 0, 1, NULL, 9)",
+                params![[7u8; 16].as_slice()],
+            )
+            .unwrap();
+        }
+
+        let store = Store::open(&path, "pw").unwrap();
+        assert!(store.broadcasts().is_empty());
+        assert_eq!(store.message(&[7u8; 16]).unwrap().text, "Kept.");
+        let b = StoredBroadcast {
+            id: [3u8; 16],
+            outgoing: false,
+            signer: them.sign,
+            verified: true,
+            hops: 1,
+            text: "Road north is open.".into(),
+            at_min: 6,
+            delivery: Delivery::Sent,
+        };
+        store.put_broadcast(&b, None).unwrap();
+        drop(store);
+        // opening it again does not migrate twice, and keeps what it holds
+        let store = Store::open(&path, "pw").unwrap();
+        assert_eq!(store.broadcasts(), vec![b]);
     }
 }

@@ -82,7 +82,9 @@ use bombechat_core::{
     Identity, Kind, Opened, PublicIdentity, CHUNK, MAX_ENVELOPE,
 };
 use bombechat_modem::{split, Band, Event, Reassembler};
-use bombechat_store::{Channel, Contact, ContactId, Delivery, Store, StoredMessage};
+use bombechat_store::{
+    Channel, Contact, ContactId, Delivery, Store, StoredBroadcast, StoredMessage,
+};
 use rand_core::{OsRng, RngCore};
 
 pub use sound::{SoundTransport, MAX_QUEUED_ENVELOPES, QUEUE_FULL};
@@ -214,12 +216,17 @@ pub enum NodeEvent {
     Message(StoredMessage),
     /// A contact reports hearing a message this node sent.
     Heard { id: [u8; 16], by: ContactId },
-    /// A signed public broadcast. `verified` is true when the signer is a
-    /// contact whose safety number has been checked.
+    /// A signed public broadcast, heard and kept ([`Node::broadcasts`]).
+    /// `verified` is true when the signer is a contact whose safety
+    /// number has been checked; `hops` is how many carriers it came
+    /// through; `at_min` is when it was kept, as messages are stamped.
     Broadcast {
+        id: [u8; 16],
         signer: PublicIdentity,
         text: String,
         verified: bool,
+        hops: u8,
+        at_min: u32,
     },
     /// Someone nearby offered to pair. Nothing is stored until
     /// [`Node::confirm_pairing`].
@@ -460,11 +467,13 @@ impl Node {
 
     /// Hand the node its opened store. Envelopes held while locked are
     /// opened on the next [`tick`](Node::tick). Messages that were still
-    /// waiting to go out when the store was last open are queued again
-    /// under the same envelope, or marked failed if it has expired.
+    /// waiting to go out when the store was last open (messages, then
+    /// broadcasts) are queued again under the same envelope, or marked
+    /// failed if it has expired.
     pub fn unlock(&mut self, store: Store) {
         self.me = Some(store.me());
         let waiting = store.waiting();
+        let notices = store.waiting_broadcasts();
         self.store = Some(store);
         let now = now_min();
         for (m, bytes) in waiting {
@@ -475,6 +484,15 @@ impl Node {
                     self.track(tag, env.id);
                 }
                 _ => self.settle(m.id, OutboxState::Failed, None),
+            }
+        }
+        for (b, bytes) in notices {
+            match Envelope::decode(&bytes) {
+                Ok(env) if env.id == b.id && env.expires_min > now => {
+                    let tag = self.transmit(&env);
+                    self.track(tag, env.id);
+                }
+                _ => self.settle(b.id, OutboxState::Failed, None),
             }
         }
     }
@@ -635,6 +653,15 @@ impl Node {
         self.me.as_ref().map(Identity::public)
     }
 
+    /// The broadcasts kept, sent and heard, oldest first, or none while
+    /// locked.
+    pub fn broadcasts(&self) -> Vec<StoredBroadcast> {
+        self.store
+            .as_ref()
+            .map(Store::broadcasts)
+            .unwrap_or_default()
+    }
+
     /// The stored messages with `contact`, oldest first, or none while
     /// locked.
     pub fn conversation(&self, contact: ContactId) -> Vec<StoredMessage> {
@@ -740,19 +767,39 @@ impl Node {
         env.id
     }
 
-    /// Sign `text` as a public broadcast and send it. Returns its envelope
+    /// Sign `text` as a public broadcast, keep it ([`Node::broadcasts`];
+    /// while waiting, with its envelope, so an unlock queues it again)
+    /// and send it. Returns its envelope
     /// id, or [`NOT_SENT`] if locked or the text is longer than
     /// [`MAX_BROADCAST`]. Refused by
     /// the Sound switch as [`Node::send`] is.
     pub fn broadcast(&mut self, text: &str) -> [u8; 16] {
-        let Some(me) = &self.me else {
-            return NOT_SENT;
-        };
-        if text.len() > MAX_BROADCAST {
+        if self.me.is_none() || self.store.is_none() || text.len() > MAX_BROADCAST {
             return NOT_SENT;
         }
+        let at_min = self.stamp();
+        let (Some(me), Some(store)) = (&self.me, &self.store) else {
+            return NOT_SENT;
+        };
         let env = seal_public(me, text, now_min(), TTL_MIN);
-        if let Some(why) = self.sound_refusal() {
+        let refused = self.sound_refusal();
+        let mut kept = StoredBroadcast {
+            id: env.id,
+            outgoing: true,
+            signer: me.public().sign,
+            verified: true,
+            hops: 0,
+            text: text.to_string(),
+            at_min,
+            delivery: Delivery::Waiting,
+        };
+        if refused.is_some() {
+            kept.delivery = Delivery::Failed;
+        }
+        if store.put_broadcast(&kept, Some(&env.encode())).is_err() {
+            return NOT_SENT;
+        }
+        if let Some(why) = refused {
             self.report_refusal(why);
             self.pending.push(NodeEvent::Outbox {
                 id: env.id,
@@ -1187,10 +1234,30 @@ impl Node {
             return;
         }
         let verified = self.contact_for(&signer).is_some_and(|c| c.checked);
+        let at_min = self.stamp();
+        let kept = StoredBroadcast {
+            id: env.id,
+            outgoing: false,
+            signer: signer.sign,
+            verified,
+            hops: env.hops,
+            text: text.clone(),
+            at_min,
+            delivery: Delivery::Sent,
+        };
+        // kept once: already_have, above, finds it in the store next time
+        let _ = self
+            .store
+            .as_ref()
+            .expect("unlocked")
+            .put_broadcast(&kept, None);
         events.push(NodeEvent::Broadcast {
+            id: env.id,
             signer,
             text,
             verified,
+            hops: env.hops,
+            at_min,
         });
     }
 
@@ -2200,5 +2267,85 @@ mod tests {
         let kept = node.conversation(c);
         assert_eq!(kept[0].delivery, Delivery::Waiting);
         assert_eq!(kept[1].delivery, Delivery::Failed);
+    }
+    #[test]
+    fn a_broadcast_is_kept_with_its_delivery_and_one_heard_is_kept_once() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (a, c) = (Identity::generate(), Identity::generate());
+        let (mut node, wire, _) = node(&dir, &a, &[]);
+        let id = node.broadcast("Water at the church.");
+        let kept = node.broadcasts();
+        assert_eq!(kept.len(), 1);
+        assert!(kept[0].outgoing && kept[0].verified);
+        assert_eq!((kept[0].id, kept[0].signer), (id, a.public().sign));
+        assert_eq!(
+            (kept[0].text.as_str(), kept[0].delivery),
+            ("Water at the church.", Delivery::Waiting)
+        );
+        wire.news
+            .lock()
+            .unwrap()
+            .push(TransportEvent::Sent(wire.last_tag()));
+        node.tick(1);
+        assert_eq!(node.broadcasts()[0].delivery, Delivery::Sent);
+
+        // at Listen it is kept, as failed, and nothing plays
+        node.set_sound(SoundSwitch::Listen);
+        let before = wire.sent.lock().unwrap().len();
+        let refused = node.broadcast("refused");
+        assert_eq!(wire.sent.lock().unwrap().len(), before);
+        assert_eq!(node.broadcasts()[1].id, refused);
+        assert_eq!(node.broadcasts()[1].delivery, Delivery::Failed);
+
+        // one heard, twice: kept once, reported once, with its id and hops
+        let mut heard = seal_public(&c, "Road north is open.", now_min(), 60);
+        heard.hops = 2;
+        wire.hear(&heard, 7);
+        let events = node.tick(2);
+        wire.hear(&heard, 8);
+        let again = node.tick(3);
+        let reported: Vec<_> = events
+            .iter()
+            .chain(again.iter())
+            .filter_map(|e| match e {
+                NodeEvent::Broadcast {
+                    id, hops, verified, ..
+                } => Some((*id, *hops, *verified)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(reported, vec![(heard.id, 2, false)]);
+        let kept = node.broadcasts();
+        assert_eq!(kept.len(), 3);
+        assert!(!kept[2].outgoing);
+        assert_eq!(
+            (kept[2].signer, kept[2].hops, kept[2].verified),
+            (c.public().sign, 2, false)
+        );
+        assert_eq!(kept[2].text, "Road north is open.");
+    }
+
+    #[test]
+    fn a_broadcast_still_waiting_at_quit_is_queued_again_on_unlock() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let a = Identity::generate();
+        let path = dir.path().join("a.db");
+        let store = Store::create(&path, "pass", &a, "me").unwrap();
+        let mut node = Node::new(Some(store), vec![Box::new(Wire::default())]);
+        let id = node.broadcast("Shelter open until dawn.");
+        drop(node);
+
+        let wire = Wire::default();
+        let mut node = Node::new(None, vec![Box::new(wire.clone())]);
+        node.unlock(Store::open(&path, "pass").unwrap());
+        let resent: Vec<_> = wire.envelopes().iter().map(|e| e.id).collect();
+        assert_eq!(resent, vec![id], "the same signed envelope");
+        assert_eq!(outbox(&node.tick(1)), vec![(id, OutboxState::Waiting)]);
+        wire.news
+            .lock()
+            .unwrap()
+            .push(TransportEvent::Sent(wire.last_tag()));
+        node.tick(2);
+        assert_eq!(node.broadcasts()[0].delivery, Delivery::Sent);
     }
 }

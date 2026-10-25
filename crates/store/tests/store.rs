@@ -1,5 +1,7 @@
 use bombechat_core::{Identity, PublicIdentity};
-use bombechat_store::{Channel, Contact, Delivery, Store, StoreError, StoreKey, StoredMessage};
+use bombechat_store::{
+    Channel, Contact, Delivery, Store, StoreError, StoreKey, StoredBroadcast, StoredMessage,
+};
 use tempfile::tempdir;
 
 fn marisol() -> PublicIdentity {
@@ -491,4 +493,63 @@ fn messages_stored_before_ages_were_kept_take_the_age_they_are_found_at() {
     assert_eq!(store.adopt_unaged(90_000).unwrap(), 0, "adopted once");
     assert_eq!(store.forget_older_than(60_000, 10_000).unwrap(), 0);
     assert_eq!(store.forget_older_than(60_001, 10_000).unwrap(), 1);
+}
+
+fn notice(id: u8, outgoing: bool, delivery: Delivery) -> StoredBroadcast {
+    StoredBroadcast {
+        id: [id; 16],
+        outgoing,
+        signer: [id; 32],
+        verified: outgoing,
+        hops: if outgoing { 0 } else { 2 },
+        text: format!("notice {id}"),
+        at_min: 100 + id as u32,
+        delivery,
+    }
+}
+
+#[test]
+fn broadcasts_sent_and_heard_are_kept_across_a_reopen_in_order() {
+    let d = tempdir().unwrap();
+    let path = d.path().join("b.db");
+    let me = Identity::generate();
+    let (sent, heard) = (notice(1, true, Delivery::Waiting), notice(2, false, Delivery::Sent));
+    {
+        let store = Store::create(&path, "pw", &me, "me").unwrap();
+        store.put_broadcast(&sent, Some(b"sealed")).unwrap();
+        store.put_broadcast(&heard, None).unwrap();
+        assert!(store.has_message(&[1; 16]) && store.has_message(&[2; 16]));
+        assert!(!store.has_message(&[3; 16]));
+    }
+    let store = Store::open(&path, "pw").unwrap();
+    assert_eq!(store.broadcasts(), vec![sent.clone(), heard]);
+    assert!(store.waiting().is_empty(), "not a message to anyone");
+    assert_eq!(store.waiting_broadcasts(), vec![(sent, b"sealed".to_vec())]);
+
+    store.set_delivery(&[1; 16], Delivery::Sent).unwrap();
+    assert!(store.waiting_broadcasts().is_empty(), "its envelope let go once sent");
+    assert_eq!(store.broadcasts()[0].delivery, Delivery::Sent);
+    store.set_delivery(&[1; 16], Delivery::Failed).unwrap();
+    assert_eq!(store.broadcasts()[0].delivery, Delivery::Failed);
+}
+
+#[test]
+fn broadcasts_are_forgotten_as_messages_are_but_never_while_waiting() {
+    let d = tempdir().unwrap();
+    let store = Store::create(&d.path().join("b.db"), "pw", &Identity::generate(), "me").unwrap();
+    store.put_broadcast(&notice(9, false, Delivery::Sent), None).unwrap(); // no age yet
+    assert_eq!(store.adopt_unaged(500).unwrap(), 1);
+    store.set_age(1_000);
+    store.put_broadcast(&notice(1, false, Delivery::Sent), None).unwrap();
+    store.put_broadcast(&notice(2, true, Delivery::Waiting), Some(b"sealed")).unwrap();
+    store.set_age(9_000);
+    store.put_broadcast(&notice(3, true, Delivery::Sent), None).unwrap();
+    // heard again: still the age it was first kept at
+    store.put_broadcast(&notice(1, false, Delivery::Sent), None).unwrap();
+
+    assert_eq!(store.forget_older_than(9_000, 4_000).unwrap(), 2, "9 and 1, not the waiting 2");
+    let left: Vec<u8> = store.broadcasts().iter().map(|b| b.id[0]).collect();
+    assert_eq!(left, vec![2, 3]);
+    store.set_delivery(&[2; 16], Delivery::Sent).unwrap();
+    assert_eq!(store.forget_older_than(9_000, 4_000).unwrap(), 1);
 }
