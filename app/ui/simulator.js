@@ -30,10 +30,20 @@
 // moment, then displayStopped, then sent. At Read or Off it is refused as the node refuses it. Turning Light down mid-flash clears the screen and the
 // send waits; turning it back to Read and flash carries on.
 //
+// The self-test: selfTest() seals SELF_TEST_TEXT to this machine's own key, as the node does, and hears it back: by
+// sound it waits for a quiet spell in the room (held still, one comes at once), plays, and its chunks land at the
+// modem's rate; by light it shows on screen (display frames that say test) until its camera reads it in a mirror, 2.4 s
+// in. It never reaches the sheet as a message, the outbox or a receipt. ?selftest=deaf hears nothing, so it is given up
+// SELF_TEST_MS after it should have finished going out; ?testpace=ms paces its chunks (and the quiet it waits for)
+// instead, and ?testcap=ms gives it up that long after it began to play. Refused, as pairing is, when the channel's
+// switch won't send, and ended when the switch turns away from sending. The scripted conversation holds still while a
+// test runs and carries on after it, so a message can be part way in when a test starts and finish after it.
+// ?testhold keeps a test by sound waiting for quiet until window.__sim.quiet() brings a quiet spell.
+//
 // The eyepiece: while asked for and Light reads, a made-up grey room (a window, a desk, someone moving) four times a
 // second, 64 by 48, as the camera's would come.
 //
-// Query parameters: ?f=N starts the incoming message at chunk N (0 based),
+// Query parameters: ?f=N starts the incoming message at chunk N (0 based), ?next=ms holds its next chunk that long,
 // ?still holds everything where it lands (no room meter, no further chunks).
 const SHOWN = 'Water is at the church on Fifth. Bring the radio, we leave at dusk.';
 const CHUNK = 48;
@@ -92,6 +102,12 @@ const MAX_BROADCAST = 3939;
 // the longest reply, in UTF-8 bytes of text, as the node's max_private_text(1)
 const REPLY_MAX = 2814;
 const PAIR_MS = 2400;
+// the self-test, as the node's SELF_TEST_TEXT and SELF_TEST_MS
+const SELF_TEST_TEXT = 'The machine hears itself.';
+const SELF_TEST_MS = 30000;
+// a private envelope's header, the private header and one key wrap before its chunks, and each chunk's tag, in bytes,
+// as crates/core lays them out
+const SEALED_HEAD = 25 + 21 + 112, CHUNK_TAG = 16;
 // how long pairing stays in progress at most, as the node's PAIRING_CAP_MS
 const PAIRING_CAP_MS = 180000;
 // this machine's public identity, sign key then dh key, made up but seeded so its fingerprint is always C41D
@@ -138,6 +154,12 @@ function history(emit, setClock) {
 export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
   const still = query.has('still');
   const pairCap = query.has('paircap') ? +query.get('paircap') : PAIRING_CAP_MS;
+  const deaf = query.get('selftest') === 'deaf';
+  const testPace = query.has('testpace') ? +query.get('testpace') : null;
+  const testCap = query.has('testcap') ? +query.get('testcap') : SELF_TEST_MS;
+  const testHold = query.has('testhold');
+  // how long after the start the scripted message's next chunk comes (?next=ms)
+  const firstNext = query.has('next') ? +query.get('next') : 4200;
   const incoming = chunked(sealedInner(SHOWN, at(9, 14), 1931), 1931);
   const NC = incoming.length;
   let c = query.has('f') ? Math.max(0, Math.min(NC - 1, +query.get('f') || 0)) : 1;
@@ -181,7 +203,7 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
     const target = dipUntil ? 36.5 : 47;
     room += (target - room) * 0.12 + (Math.random() - .5) * 1.5;
     emit('roomDb', room);
-    if (room < 40) flush();
+    if (room < 40) { flush(); testQuiet(); }
   }
   // what the node's quiet gate does: one at a time, under 40 dB, only when Sound may send
   function flush() {
@@ -206,9 +228,12 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
   function endHello() {
     clearTimeout(helloCap);
     const h = hello; hello = null;
-    if (!h) return;
-    const i = flashes.indexOf(h); if (i >= 0) flashes.splice(i, 1);
-    if (flashing === h) { flashing = null; if (h.lit) cleared(h.tag); }
+    if (h) offScreen(h);
+  }
+  // off the queue, or off the screen
+  function offScreen(f) {
+    const i = flashes.indexOf(f); if (i >= 0) flashes.splice(i, 1);
+    if (flashing === f) { flashing = null; if (f.lit) cleared(f.tag); }
   }
   const frameBits = (spec, tag, index) => {
     const real = typeof window !== 'undefined' && window.__lightFrames && window.__lightFrames[spec];
@@ -216,7 +241,7 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
     const r = seeded((tag << 12) ^ index ^ (spec << 28)); return Array.from({ length: Math.ceil(LIGHT_CELLS[spec] ** 2 / 8) }, r);
   };
   function flashTick() {
-    if (!flashing) { flashing = flashes.shift() || null; if (flashing) { flashing.spec = settings.flash; if (!flashing.hello) flashing.window = lightWindow(flashing.spec); } }
+    if (!flashing) { flashing = flashes.shift() || null; if (flashing) { flashing.spec = settings.flash; if (!flashing.hello && !flashing.test) flashing.window = lightWindow(flashing.spec); } }
     const f = flashing;
     if (!f) { flashT = null; return; }
     if (settings.light < 2) {
@@ -229,7 +254,8 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
     // lighting a clear screen: the page stands still first, so the frames it hides are added to the window
     if (!screenLit && !f.hello) f.window += Math.ceil(LIGHT_STILL_MS * LIGHT_FPS[f.spec] / 1000);
     screenLit = true;
-    emit('display', { tag: f.tag, bits: frameBits(f.spec, f.tag, f.shown), spec: f.spec, index: f.shown, hello: !!f.hello });
+    if (f.test && !f.shown) f.test(f);
+    emit('display', { tag: f.tag, bits: frameBits(f.spec, f.tag, f.shown), spec: f.spec, index: f.shown, hello: !!f.hello, test: !!f.test });
     f.lit = true; f.shown += 1;
     if (f.shown >= f.window) {
       flashing = null;
@@ -269,6 +295,52 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
   }
   const eyeWake = () => { if (!eyeT) eyeT = later(eyeTick, 0); };
 
+  // the self-test in progress: { tag, channel, timers, at (when it began to play), flash (by light) }
+  let selfTest = null;
+  const testSays = (t, state, extra = {}) => emit('selfTest', { tag: t.tag, channel: t.channel === 'light' ? 'Light' : 'Sound', state, ...extra });
+  // whether a test is what holds the scripted conversation still
+  let heldForTest = false;
+  function endTest(state, extra) {
+    const t = selfTest; if (!t) return;
+    selfTest = null; t.timers.forEach(clearTimeout);
+    if (t.flash) offScreen(t.flash);
+    testSays(t, state, extra);
+    // the conversation carries on where it stopped
+    if (heldForTest) { heldForTest = false; paused = false; if (started && !done && !still) later(nextChunk, 4200); }
+  }
+  // a quiet spell, as the meter shows it, and a test by sound waiting for one plays
+  function quietSpell() { room = 36.5; emit('roomDb', room); testQuiet(); }
+  // its envelope, sealed as the node seals it, and how long it takes over sound
+  const testParts = t => chunked(sealedInner(SELF_TEST_TEXT, Math.floor(clock / 60000), t.tag), t.tag);
+  const testBytes = parts => SEALED_HEAD + parts.reduce((n, p) => n + p.plain.length + CHUNK_TAG, 0);
+  // it went out: given up SELF_TEST_MS after it should have finished, unless heard first
+  function testPlaying(t, airMs) {
+    t.at = performance.now(); testSays(t, 'playing');
+    t.timers.push(later(() => { if (selfTest === t) endTest('unheard'); }, airMs + testCap));
+  }
+  // its chunks land, all at once by light (the light transport hands an envelope over whole), then it is heard
+  function testHeard(t, parts, at) {
+    const by = t.channel === 'light' ? light : sound, Channel = t.channel === 'light' ? 'Light' : 'Sound';
+    parts.forEach((view, index) => t.timers.push(later(() => {
+      if (selfTest !== t) return;
+      if (!index) by('receiving');
+      emit('chunk', { tag: t.tag, index, of: parts.length, view, channel: Channel });
+      if (index < parts.length - 1) return;
+      const bytes = testBytes(parts), ms = Math.max(1, Math.round(performance.now() - t.at));
+      endTest('heard', { text: SELF_TEST_TEXT, bytes, ms, rate: Math.round(bytes * 10000 / ms) / 10, ...(t.channel === 'sound' ? { band: settings.band ? 'audible' : 'near silent' } : {}) });
+      by(t.channel === 'light' ? lightAt() : 'listening');
+    }, at(index))));
+  }
+  // by sound: once the room is quiet (held still, a quiet spell comes at once), as the node's quiet gate has it
+  function testQuiet() {
+    const t = selfTest;
+    if (!t || t.channel !== 'sound' || t.at || settings.sound < 2) return;
+    const parts = testParts(t), rate = RATE / 1000;
+    const through = i => SEALED_HEAD + parts.slice(0, i + 1).reduce((n, p) => n + p.plain.length + CHUNK_TAG, 0);
+    testPlaying(t, testPace != null ? testPace * parts.length : testBytes(parts) / rate);
+    if (!deaf) testHeard(t, parts, i => testPace != null ? testPace * (i + 1) : through(i) / rate);
+  }
+
   // refused by the Light switch, as the node refuses a send: the channel says why, the outbox fails, then the state
   function refuseLight(m) { later(() => { light(LIGHT_SAYS[settings.light]); outbox(m, 'failed'); light(lightAt()); }); }
 
@@ -287,7 +359,7 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
     if (still) return;
     nextDip = performance.now() + 9000;
     setInterval(roomTick, 170);
-    if (!done) later(nextChunk, 4200);
+    if (!done) later(nextChunk, firstNext);
   }
 
   const people = [{ id: MARISOL, name: 'Marisol Ortega', checked: true }];
@@ -320,6 +392,8 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
     fail() { sound('failed'); },
     receiving(on) { sound(on ? 'receiving' : 'listening'); },
     pause() { paused = true; },
+    // a quiet spell in the room now (for ?testhold)
+    quiet() { quietSpell(); },
     // how many times a setting was set, for the check that a page's load sets none
     settingsSet: 0,
   };
@@ -367,6 +441,36 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
       return Promise.resolve();
     },
     stopPairing() { endHello(); return Promise.resolve(); },
+    selfTest(channel = 'sound') {
+      if (channel !== 'sound' && channel !== 'light') return Promise.reject(`no such channel: ${channel}`);
+      const say = channel === 'light' ? light : sound;
+      const at = channel === 'light' ? settings.light : settings.sound;
+      if (at < 2) {
+        const why = channel === 'light' ? LIGHT_SAYS[at] : at === 0 ? 'not sent: sound is off' : 'not sent: sound is set to listen only';
+        later(() => { say(why); say(channel === 'light' ? lightAt() : at === 0 ? 'off' : 'listening'); });
+        return Promise.reject(why);
+      }
+      endTest('stopped');
+      if (!paused) { paused = true; heldForTest = true; }
+      const t = selfTest = { tag: Math.floor(Math.random() * 65536), channel, timers: [], at: 0 };
+      later(() => {
+        if (selfTest !== t) return;
+        testSays(t, 'waiting');
+        if (channel === 'light') {
+          // shown until it is read: the light transport shows it again each window, so one long window here
+          t.flash = { tag: t.tag, shown: 0, lit: false, announced: true, window: Infinity,
+            test: () => { if (selfTest !== t || t.at) return; testPlaying(t, 0); if (!deaf) testHeard(t, testParts(t), () => testPace ?? PAIR_MS); } };
+          flashes.push(t.flash);
+          if (!flashT) flashT = later(flashTick, 0);
+        } else if (testHold) {
+          // waiting until the page's check brings a quiet spell (test.quiet)
+        } else if (still || testPace != null) {
+          t.timers.push(later(() => { if (selfTest === t) quietSpell(); }, testPace ?? 600));
+        } else testQuiet();
+      });
+      return Promise.resolve();
+    },
+    stopSelfTest() { endTest('stopped'); return Promise.resolve(); },
     // their hello is in: the one on show finishes its window (the whole first one if it has not started), then clears
     finishPairing() {
       const h = hello;
@@ -388,8 +492,9 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
       settings[id] = valueIndex; keepSettings(settings);
       // the light channel says when its camera closes or opens, as the node does on its next tick
       if (id === 'light' && (was === 0) !== (valueIndex === 0)) { later(() => light(lightAt())); eyeWake(); }
-      // pairing by light ends when Light leaves Read and flash, as the node ends it
+      // pairing by light ends when Light leaves Read and flash, as the node ends it; a self-test ends likewise
       if (id === 'light' && valueIndex < 2) endHello();
+      if (selfTest && valueIndex < 2 && id === selfTest.channel) endTest('stopped');
       return Promise.resolve();
     },
     // read from the record each time, as the device answers from its own: another page may have changed it

@@ -191,6 +191,20 @@ impl Transport for SoundTransport {
         self.sending = on;
     }
 
+    /// Frames of `tag` still in the gate (first plays or repeats) are
+    /// let go; audio already handed to the speaker plays out, and the
+    /// envelope is reported sent once it has, if any of it played.
+    fn withdraw(&mut self, tag: u16) {
+        let gate = &mut self.gate;
+        self.queued.retain(|item, frame| {
+            let keep = frame_tag(frame) != Some(tag);
+            if !keep {
+                gate.forget(*item);
+            }
+            keep
+        });
+    }
+
     fn set_send_under(&mut self, db: f32) {
         self.gate.set_send_under(db);
     }

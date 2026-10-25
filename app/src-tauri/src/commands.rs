@@ -19,7 +19,8 @@ use std::time::{Duration, Instant};
 use bombechat_core::{safety_number, PublicIdentity};
 use bombechat_modem::Band;
 use bombechat_node::{
-    max_private_text, NodeEvent, MAX_BROADCAST, NOT_IN_THIS_PLAN, NOT_SENT, NOT_STORED,
+    max_private_text, NodeEvent, SelfTestState, MAX_BROADCAST, NOT_IN_THIS_PLAN, NOT_SENT,
+    NOT_STORED,
 };
 use bombechat_store::{Channel, Contact, ContactId, StoredBroadcast, StoredMessage};
 use serde::Serialize;
@@ -37,12 +38,14 @@ const PANIC_REPORT_GAP: Duration = Duration::from_secs(5);
 const MAX_NAME_CHARS: usize = 40;
 
 /// The command names, exactly as `bridge.js` invokes them.
-pub const NAMES: [&str; 16] = [
+pub const NAMES: [&str; 18] = [
     "send",
     "broadcast",
     "pair",
     "stop_pairing",
     "finish_pairing",
+    "self_test",
+    "stop_self_test",
     "confirm_pair",
     "set_setting",
     "settings",
@@ -208,6 +211,12 @@ pub trait Machine: Send {
     /// Their hello is in: the hello showing by light finishes its sending
     /// window and pairing ends (at once with none showing).
     fn finish_pairing(&mut self);
+    /// Test the machine on `channel`: a message sealed to its own key, sent
+    /// and heard by itself, reported as `NodeEvent::SelfTest`; or say why
+    /// not, as for pairing. No switch is turned for it.
+    fn start_self_test(&mut self, channel: Channel) -> Result<(), String>;
+    /// End the self-test in progress, if any.
+    fn stop_self_test(&mut self);
     /// Whether to send the page what the camera sees while it reads (the
     /// eyepiece). Off until the page asks; a machine without a camera
     /// ignores it.
@@ -443,6 +452,31 @@ pub fn stop_pairing(s: &Shared) {
 /// to read it. With none showing, it ends now. Nothing to refuse.
 pub fn finish_pairing(s: &Shared) {
     s.machine().finish_pairing();
+}
+
+/// `self_test { channel }`: test the machine on `channel` ("sound" or
+/// "light"): it seals a short message to its own key and sends it, by
+/// sound once the room is quiet, by light on the screen for a mirror; its
+/// own microphone (or camera) hears it and opens it, and the `selfTest`
+/// event says how it went. Nothing of it is stored. Refused with
+/// "locked", or with the channel's state when its switch does not allow
+/// sending, as `pair` is.
+pub fn self_test(s: &Shared, channel: String) -> Result<(), String> {
+    let channel = parse_channel(&channel)?;
+    if channel == Channel::Bluetooth {
+        return Err(NOT_IN_THIS_PLAN.to_string());
+    }
+    let mut machine = s.machine();
+    if machine.lock() != Lock::Unlocked {
+        return Err("locked".to_string());
+    }
+    machine.start_self_test(channel)
+}
+
+/// `stop_self_test`: end the self-test in progress, if any (Escape, or
+/// the stamp pressed again). Nothing to refuse.
+pub fn stop_self_test(s: &Shared) {
+    s.machine().stop_self_test();
 }
 
 /// `eyepiece { on }`: whether the page is sent what the camera sees, as
@@ -681,6 +715,45 @@ fn message_json(m: &StoredMessage) -> Value {
             "heard": m.heard, "state": m.delivery.as_str() })
 }
 
+/// A self-test's progress as the page sees it: `state` "waiting",
+/// "playing", "heard", "unheard", "unplayed", "noquiet" (the room never
+/// went quiet enough to play it) or "stopped". Heard, it carries the text
+/// that came back, the envelope's `bytes`, and for sound the `band` it
+/// went on; and, when the time was measured, the `ms` from its first play
+/// to its last chunk opening and the `rate` that makes in bytes a second.
+/// Unmeasured, it has neither: no rate is made up.
+fn self_test_json(tag: u16, channel: Channel, state: &SelfTestState) -> Value {
+    let word = match state {
+        SelfTestState::Waiting => "waiting",
+        SelfTestState::Playing => "playing",
+        SelfTestState::Heard { .. } => "heard",
+        SelfTestState::NotHeard => "unheard",
+        SelfTestState::NotPlayed => "unplayed",
+        SelfTestState::RoomNeverQuiet => "noquiet",
+        SelfTestState::Stopped => "stopped",
+    };
+    let mut out = json!({ "tag": tag, "channel": channel_name(channel), "state": word });
+    if let SelfTestState::Heard {
+        text,
+        bytes,
+        ms,
+        band,
+    } = state
+    {
+        out["text"] = json!(text);
+        out["bytes"] = json!(bytes);
+        if let Some(ms) = ms.filter(|ms| *ms > 0) {
+            let rate = *bytes as f64 * 1000.0 / ms as f64;
+            out["ms"] = json!(ms);
+            out["rate"] = json!((rate * 10.0).round() / 10.0);
+        }
+        if let Some(b) = band {
+            out["band"] = json!(band_name(*b));
+        }
+    }
+    out
+}
+
 /// A node event as the bridge event it becomes: its name and payload.
 pub fn bridge_event(e: &NodeEvent) -> (&'static str, Value) {
     match e {
@@ -735,11 +808,17 @@ pub fn bridge_event(e: &NodeEvent) -> (&'static str, Value) {
             spec_id,
             index,
             hello,
+            test,
         } => (
             "display",
-            json!({ "tag": tag, "bits": bits, "spec": spec_id, "index": index, "hello": hello }),
+            json!({ "tag": tag, "bits": bits, "spec": spec_id, "index": index, "hello": hello, "test": test }),
         ),
         NodeEvent::DisplayStopped { tag } => ("displayStopped", json!({ "tag": tag })),
+        NodeEvent::SelfTest {
+            tag,
+            channel,
+            state,
+        } => ("selfTest", self_test_json(*tag, *channel, state)),
         // What the camera sees, small and grey, for the eyepiece: shown,
         // never kept.
         NodeEvent::Eyepiece {

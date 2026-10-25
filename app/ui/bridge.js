@@ -21,6 +21,14 @@
 //   finishPairing()              [finish_pairing]                   their hello is in: the hello showing by light finishes its
 //                                window (so whoever pressed later still has a whole one to read it), then the screen
 //                                clears (displayStopped) and pairing ends; with none showing it ends at once
+//   selfTest(channel)            [self_test { channel }]            tests the machine on channel, 'sound' (the default) or
+//                                'light': it seals a short message to its own key and sends it, by sound once the room is
+//                                quiet, by light on the screen for a mirror held in front of it, and hears it with its own
+//                                microphone (or camera). How it goes arrives as selfTest. Nothing of it is stored, sent to
+//                                anyone or answered. Rejects as pair does: 'locked', or the channel's state when its switch
+//                                won't send ('not sent: sound is set to listen only'). No switch is turned for it
+//   stopSelfTest()               [stop_self_test]                   ends the self-test in progress: nothing more of it goes
+//                                out, and what is still arriving of it is let go (selfTest 'stopped')
 //   eyepiece(on)                 [eyepiece { on }]                  whether to be sent what the camera sees (the eyepiece
 //                                event) while Light reads. Off until asked, and not a setting: the page asks while its
 //                                eyepiece is shown and lets go when it is hidden, so a hidden one gets no picture at all
@@ -91,14 +99,21 @@
 //                                       'playing', 'sent', or 'failed' (it will never go out). text and public come with the first report of a send
 //                                       this page didn't make (one queued before it opened); the simulator sends
 //                                       them, the node does not yet, so in the app such a send shows no slip.
-//   display    { tag, bits, spec, index, hello }  light: put this code frame on screen now, in place of the last. bits: the
+//   display    { tag, bits, spec, index, hello, test }  light: put this code frame on screen now, in place of the last. bits: the
 //                                       whole grid, one bit a cell (dark 1), row-major from the top left, most
 //                                       significant bit first; the grid is 48, 56 or 64 cells a side for spec 0 (slow),
 //                                       1 (normal) or 2 (fast). index counts the frames of envelope tag shown so far.
 //                                       Public code bits only, never a key. Not held before ready(): a frame is only
 //                                       worth showing when it comes. hello: the frame is of this machine's pairing hello,
-//                                       not a message
+//                                       not a message. test: the frame is of this machine's self-test, for a mirror
 //   displayStopped { tag }             light: clear the screen; tag's frame was on it
+//   selfTest   { tag, channel, state, text?, bytes?, ms?, rate?, band? }  the self-test's progress. state: 'waiting' (for
+//                                       a quiet room, as any send), 'playing' (by light: on screen, again under a fresh tag
+//                                       each time its window ends), 'heard' (with the text that came back, the envelope's
+//                                       bytes, the ms from its first play to its last chunk opening, the rate that makes in
+//                                       bytes a second and, by sound, the band), 'unheard' (nothing came back in time),
+//                                       'unplayed' (the carrier would not take it) or 'stopped'. tag: the one it goes out
+//                                       under, so its chunk events (which turn the drums as any message's) can be told apart
 //   eyepiece   { width, height, pixels }  light: what the camera sees, small and grey (64 pixels wide, one byte a
 //                                       pixel, row-major), about four a second while Light reads and eyepiece(true)
 //                                       was asked. Shown, never kept. Not held before ready()
@@ -148,7 +163,7 @@ function provisional(tag, index, of, plain) {
   return decoder.decode(new Uint8Array(a.so.slice(SENDER_LEN, end))).replace(/\uFFFD+$/, '');
 }
 
-const EVENTS = ['chunk', 'message', 'heard', 'broadcast', 'pairOffer', 'roomDb', 'channel', 'outbox', 'display', 'displayStopped', 'eyepiece'];
+const EVENTS = ['chunk', 'message', 'heard', 'broadcast', 'pairOffer', 'roomDb', 'channel', 'outbox', 'display', 'displayStopped', 'eyepiece', 'selfTest'];
 // shown as they come, or not at all: never held for a page still setting up
 const LIVE = new Set(['display', 'displayStopped', 'eyepiece']);
 const normalise = {
@@ -165,9 +180,10 @@ const normalise = {
   roomDb: d => +(d && typeof d === 'object' ? d.db : d),
   channel: s => ({ ...s, channel: lower(s.channel) }),
   outbox: o => ({ ...o, id: hex(o.id), state: lower(o.state) }),
-  display: d => ({ tag: +d.tag, bits: bytesOf(d.bits), spec: +d.spec, index: +d.index, hello: !!d.hello }),
+  display: d => ({ tag: +d.tag, bits: bytesOf(d.bits), spec: +d.spec, index: +d.index, hello: !!d.hello, test: !!d.test }),
   displayStopped: d => ({ tag: d && typeof d === 'object' ? +d.tag : +d }),
   eyepiece: e => ({ width: +e.width, height: +e.height, pixels: bytesOf(e.pixels) }),
+  selfTest: t => ({ ...t, tag: +t.tag, channel: lower(t.channel) || 'sound', state: lower(t.state) }),
 };
 
 const handlers = Object.fromEntries(EVENTS.map(e => [e, new Set()]));
@@ -197,6 +213,8 @@ function tauriBackend() {
     pair: channel => invoke('pair', { channel }),
     stopPairing: () => invoke('stop_pairing'),
     finishPairing: () => invoke('finish_pairing'),
+    selfTest: channel => invoke('self_test', { channel }),
+    stopSelfTest: () => invoke('stop_self_test'),
     eyepiece: on => invoke('eyepiece', { on: !!on }),
     confirmPair: (peerHex, name) => invoke('confirm_pair', { peerHex, name }).then(contactId),
     setSetting: (id, valueIndex) => invoke('set_setting', { id, valueIndex }),
@@ -222,6 +240,8 @@ function simulatedBackend() {
     pair: channel => sim.pair(channel),
     stopPairing: () => sim.stopPairing(),
     finishPairing: () => sim.finishPairing(),
+    selfTest: channel => sim.selfTest(channel),
+    stopSelfTest: () => sim.stopSelfTest(),
     eyepiece: on => sim.eyepiece(!!on),
     confirmPair: (peerHex, name) => sim.confirmPair(peerHex, name).then(contactId),
     setSetting: (id, valueIndex) => sim.setSetting(id, valueIndex),
@@ -247,6 +267,8 @@ export const bridge = {
   pair: (channel = 'sound') => backend.pair(lower(channel)),
   stopPairing: () => backend.stopPairing(),
   finishPairing: () => backend.finishPairing(),
+  selfTest: (channel = 'sound') => backend.selfTest(lower(channel)),
+  stopSelfTest: () => backend.stopSelfTest(),
   eyepiece: on => backend.eyepiece(on),
   confirmPair: (peerHex, name) => backend.confirmPair(peerHex, name),
   setSetting: (id, valueIndex) => backend.setSetting(id, valueIndex),

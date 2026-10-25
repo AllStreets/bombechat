@@ -620,6 +620,14 @@ impl Machine for Device {
         self.node.set_eyepiece(on);
     }
 
+    fn start_self_test(&mut self, channel: Channel) -> Result<(), String> {
+        self.node.start_self_test(channel).map_err(str::to_string)
+    }
+
+    fn stop_self_test(&mut self) {
+        self.node.stop_self_test();
+    }
+
     fn stop_pairing(&mut self) {
         self.node.stop_pairing();
     }

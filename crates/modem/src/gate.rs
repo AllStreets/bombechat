@@ -104,6 +104,11 @@ impl QuietGate {
         });
     }
 
+    /// Let `item` go: it plays no more, first play or repeat.
+    pub fn forget(&mut self, item: usize) {
+        self.queue.retain(|e| e.item != item);
+    }
+
     /// Record the room's current loudness in dB, as measured at `now_ms`.
     /// Only the most recent reading matters to [`due`](QuietGate::due).
     pub fn observe(&mut self, room_db: f32, now_ms: u64) {
@@ -168,6 +173,21 @@ mod tests {
         assert!(g.is_queued(3), "one repeat still to play");
         assert_eq!(g.due(90_000), Some(3));
         assert!(!g.is_queued(3));
+    }
+
+    #[test]
+    fn a_forgotten_item_plays_no_more_repeats() {
+        let mut g = QuietGate::new(40.0, 2, 90);
+        g.enqueue(1);
+        g.enqueue(2);
+        g.observe(10.0, 0);
+        assert_eq!(g.due(0), Some(1));
+        g.forget(1);
+        assert!(!g.is_queued(1));
+        assert_eq!(g.due(0), Some(2));
+        assert_eq!(g.due(90_000), Some(2), "only the other repeats");
+        assert_eq!(g.due(180_000), Some(2));
+        assert_eq!(g.due(270_000), None);
     }
 
     #[test]
