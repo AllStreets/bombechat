@@ -378,6 +378,50 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
 .holder span small{display:block;font-size:12px;color:#625a49;margin-top:1px}
 .counter{display:flex;align-items:center;gap:10px}
 
+/* the flashing view: while the machine flashes by light, the message sheet's place holds a signal lamp. The code
+   sits in a brass bezel on mid-grey enamel, so it never fills the screen and its surround never changes. The
+   canvas is drawn pixel for pixel as the light crate's renderer draws a frame, and is never turned or scaled. */
+.lamp{grid-area:sheet;position:relative;z-index:2;display:grid;grid-template-rows:auto minmax(0,1fr) auto;gap:12px;min-height:0;padding:12px 16px 14px;border-radius:3px;
+  background:linear-gradient(#8f8b80,#8d887a);box-shadow:inset 0 0 0 1px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.16),0 10px 24px rgba(0,0,0,.55),0 2px 3px rgba(0,0,0,.5)}
+.lamp[hidden]{display:none}
+.lamp::before{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;opacity:.3;mix-blend-mode:overlay;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .5  0 0 0 0 .5  0 0 0 0 .5  0 0 0 .55 0'/></filter><rect width='240' height='240' filter='url(%23n)'/></svg>")}
+.lamp>*{position:relative}
+.deck.flashing .sheet{visibility:hidden}
+.lamp-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px}
+#lampnrd{margin-left:auto}
+.lamp-mid{display:grid;place-items:center;min-height:0}
+/* the bezel: turned brass, screwed to the enamel at its corners, with a dark lip round the glass */
+.bezel{position:relative;padding:14px;border-radius:2px;background:linear-gradient(145deg,#f0dcae,#b8955c 38%,#6e5631);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.35),inset 0 -1px 0 rgba(0,0,0,.35),0 0 0 1px rgba(0,0,0,.55),0 3px 6px rgba(0,0,0,.45)}
+.bezel::before{content:"";position:absolute;inset:11px;border-radius:1px;box-shadow:0 0 0 1px rgba(0,0,0,.5),inset 0 0 0 3px #2b2a26}
+.bezel>i{position:absolute;width:6px;height:6px;border-radius:50%;
+  background:linear-gradient(135deg,transparent 44%,#2a2925 44%,#2a2925 58%,transparent 58%),radial-gradient(circle at 35% 30%,#d9d5ca,#8f8b80 60%,#4c4a44);box-shadow:0 .5px 0 #000,0 0 0 .5px rgba(0,0,0,.6)}
+.bezel>i:nth-of-type(1){left:4px;top:4px}.bezel>i:nth-of-type(2){right:4px;top:4px;transform:rotate(70deg)}
+.bezel>i:nth-of-type(3){left:4px;bottom:4px;transform:rotate(-40deg)}.bezel>i:nth-of-type(4){right:4px;bottom:4px;transform:rotate(25deg)}
+.bezel canvas{display:block;position:relative;background:#fff}
+.lamp-foot{display:flex;align-items:center;gap:14px}
+.lamp-foot .holder{flex:1 1 auto}
+.lamp-foot .holder span{white-space:normal}
+
+/* the Light switch's eyepiece: a brass ring round a small lens showing what the camera sees, in grey, while Light
+   reads. Pressed, a brass shutter closes over it and the machine sends no picture at all */
+.eyepiece{all:unset;box-sizing:border-box;position:absolute;right:7px;top:7px;z-index:1;width:40px;height:40px;border-radius:50%;padding:5px;cursor:pointer;
+  background:radial-gradient(circle at 38% 32%,#f0dcae,#b8955c 55%,#6e5631);box-shadow:0 0 0 1px #000,0 2px 3px rgba(0,0,0,.6)}
+.eyepiece canvas{display:block;width:30px;height:30px;border-radius:50%;object-fit:cover;background:#0d0d0c}
+.eyepiece::after{content:"";position:absolute;inset:5px;border-radius:50%;box-shadow:inset 0 1px 3px rgba(0,0,0,.85),inset 0 0 0 1px rgba(0,0,0,.6);pointer-events:none}
+.eyepiece .shutter{position:absolute;inset:5px;border-radius:50%;opacity:0;transition:opacity .2s;
+  background:linear-gradient(135deg,transparent 46%,#2a2925 46%,#2a2925 54%,transparent 54%),radial-gradient(circle at 38% 32%,#d9d5ca,#8f8b80 60%,#4c4a44)}
+.eyepiece.shut .shutter{opacity:1}
+.eyepiece.dark canvas{visibility:hidden}
+.eyepiece:hover{box-shadow:0 0 0 1px #000,0 0 0 2px rgba(231,166,60,.55),0 2px 3px rgba(0,0,0,.6)}
+.eyepiece:focus-visible{outline:1.5px solid var(--amber);outline-offset:3px}
+/* what the camera has to say (it sees a code it can't read; it is unavailable), typed on a strip of tape by the eyepiece */
+.lightnote{position:absolute;right:3px;top:52px;z-index:2;max-width:calc(100% - 8px);transform:rotate(-3deg);pointer-events:none;filter:drop-shadow(0 1px 1.5px rgba(0,0,0,.7))}
+.lightnote:has(b:empty){display:none}
+.lightnote b{display:block;width:8.4em;max-width:100%;font-weight:400;font-family:var(--type);font-size:12.5px;line-height:1.2;color:#2b2926;text-shadow:0 0 .6px rgba(43,41,38,.55);padding:5px 7px 4px;
+  background:linear-gradient(#cbbc94,#d8cba6 45%,#c4b48b);clip-path:polygon(0 6%,3% 0,97% 4%,100% 0,98% 50%,100% 100%,96% 95%,4% 100%,0 94%,2% 50%)}
+
 /* short laptop screens: tighten the panel, not the type */
 @media (max-height:880px){
   .mod{padding:8px 4px 10px;gap:4px}
@@ -394,6 +438,7 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
   .ent.fresh,.stamp.new{animation:none}
   .cur,.state.live::after,.ears path{animation:none}
   .menu .stmp.new div,.gstmp.new{animation:none}
+  .eyepiece .shutter{transition:none}
   .unlock.working .turn .odo i span,.unlock .rs[aria-disabled="true"]{animation:none}
 }
 </style>
@@ -463,6 +508,19 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
       </div>
     </article>
 
+    <section class="lamp" id="lamp" aria-label="Flashing by light" hidden>
+      <div class="lamp-head">
+        <span class="pl screw">Flashing by light</span>
+        <span class="rd" id="lampnrd" title="Frames of this message shown so far"><span class="pl">Frames shown</span><span class="odo" id="lampn"><i>0</i><i>0</i><i>0</i></span></span>
+        <span class="rd" id="lamprd" title="Bytes of message a second at this Flash speed"><span class="pl">Bytes a second</span><span class="odo" id="lamprate"><i>0</i><i>0</i><i>0</i><i>0</i></span></span>
+      </div>
+      <div class="lamp-mid"><div class="bezel"><i></i><i></i><i></i><i></i><canvas id="lampcode" width="300" height="300" role="img" aria-label="The message as a light code"></canvas></div></div>
+      <div class="lamp-foot">
+        <span class="holder"><span id="lampsay" role="status" aria-live="polite">Hold this screen up to their camera.<small>ready, Escape stops it</small></span></span>
+        <button type="button" class="key pb" id="lampstop" title="Stops flashing. Escape does the same. Light turns to Read, and the message waits until it is back at Read and flash."><span class="jewel off" id="lampjewel" aria-hidden="true"></span>Stop</button>
+      </div>
+    </section>
+
     <aside class="menu" aria-label="Key check with Marisol">
       <span class="pin" aria-hidden="true"></span>
       <h2>Key check <span>menu 7, Marisol</span></h2>
@@ -481,7 +539,9 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
     <section class="panel" aria-label="Channels and stations">
       <div class="mods">
         <div class="mod"><span class="jewel" id="j1" aria-hidden="true"></span><button class="knob" id="k1" role="slider" aria-label="Sound" aria-valuemin="0" aria-valuemax="2"></button><span class="pl screw">Sound</span></div>
-        <div class="mod"><span class="jewel off" id="j2" aria-hidden="true"></span><button class="knob" id="k2" role="slider" aria-label="Light" aria-valuemin="0" aria-valuemax="2"></button><span class="pl screw">Light</span></div>
+        <div class="mod"><span class="jewel off" id="j2" aria-hidden="true"></span><button class="knob" id="k2" role="slider" aria-label="Light" aria-valuemin="0" aria-valuemax="2"></button><span class="pl screw">Light</span>
+          <button type="button" class="eyepiece dark" id="eyepiece" role="switch" aria-checked="true" aria-label="Camera eyepiece"><canvas width="64" height="48"></canvas><span class="shutter" aria-hidden="true"></span></button>
+          <span class="lightnote" id="lightnote" role="status" aria-live="polite"><b></b></span></div>
         <div class="mod" title="The airgapped build ships without Bluetooth. Nothing here can be switched on."><span class="jewel off" style="opacity:.25" aria-hidden="true"></span><div class="blank"><b>Bluetooth</b><i style="left:6px;top:6px"></i><i style="right:6px;top:6px"></i><i style="left:6px;bottom:6px"></i><i style="right:6px;bottom:6px"></i></div><span class="pl red">Not fitted</span></div>
       </div>
       <div class="row2">
@@ -697,7 +757,7 @@ const hopsWord=n=>['no hops','one hop','two hops','three hops','four hops','five
 
 function onMessage(m){
   if(onSheet.has(m.id))return;
-  if(!m.outgoing&&m.channel==='sound'&&!m.via&&arrival&&arrival.ent)return;// it finishes a provisional entry: see below
+  if(!m.outgoing&&!m.via&&arrival&&arrival.ent&&m.channel===arrival.how)return;// it finishes a provisional entry: see below
   if(m.contact!==CONTACT.id)return;// another person's sheet
   onSheet.add(m.id);
   const how=m.via?'relay':m.channel;const ent=entry(m.at_min*60000,how);const what=ent.querySelector('.what');
@@ -713,9 +773,9 @@ bridge.on('message',onMessage);
 // as it happens or replayed from the store; each once, by id
 function drawNotice(b){if(b.id){if(onSheet.has(b.id))return;onSheet.add(b.id)}
   const ent=entry(b.at_min!=null?b.at_min*60000:bridge.now(),'public');const what=ent.querySelector('.what');
-  if(b.outgoing){ent.classList.add('mine','public');what.append(el('div','typed',b.text),el('div','state'));sent.set(b.id,{ent,how:'sound'});
-    const it=outItem(b.id);Object.assign(it,{text:b.text,ent,how:'sound',public:true});
-    if(b.state==='waiting')setOut(it,it.state||'waiting');else{outbox.delete(b.id);status({state:b.state||'sent',ent,how:'sound',public:true})}}
+  if(b.outgoing){const how=b.channel==='light'?'light':'sound';ent.classList.add('mine','public');what.append(el('div','typed',b.text),el('div','state'));sent.set(b.id,{ent,how});
+    const it=outItem(b.id);Object.assign(it,{text:b.text,ent,how,public:true});
+    if(b.state==='waiting')setOut(it,it.state||'waiting');else{outbox.delete(b.id);status({state:b.state||'sent',ent,how,public:true})}}
   else{tape(what,b.text);
     // from someone not checked in person: unverified, with the key that signed it
     what.appendChild(el('div','state',`signed ${b.signer.slice(0,4).toUpperCase()}${b.verified?'':', unverified'}${b.hops?', '+hopsWord(b.hops):''}`))}
@@ -730,8 +790,8 @@ bridge.on('heard',h=>{const s=sent.get(h.id);if(!s||s.ent.querySelector('.stamp'
    is marked as not yet checked. The message event (from this sheet's contact)
    replaces it with the real entry; a failure, or no chunk for 30 s, strikes it through. */
 const STALL=Q.has('stall')?+Q.get('stall'):30000;
-function arrivingEntry(){const ent=entry(bridge.now(),'sound');ent.classList.add('arriving');
-  ent.querySelector('.what').append(el('div','strip provisional feed'),el('div','state live','arriving by sound, not yet checked'));
+function arrivingEntry(how){const ent=entry(bridge.now(),how);ent.classList.add('arriving');
+  ent.querySelector('.what').append(el('div','strip provisional feed'),el('div','state live',`arriving by ${how}, not yet checked`));
   grow(()=>put(ent));return ent}
 function provisionalTape(a,text){const what=a.ent.querySelector('.what'),note=what.querySelector('.state');
   what.querySelectorAll('.strip').forEach(s=>s.remove());
@@ -742,7 +802,7 @@ function failArrival(a){if(!a||!a.ent)return;clearTimeout(a.stallT);const ent=a.
   grow(()=>{ent.classList.remove('arriving');ent.classList.add('failed');ent.querySelectorAll('.cur').forEach(c=>c.remove());
     const note=ent.querySelector('.state');note.classList.remove('live');note.textContent='did not check'})}
 bridge.on('chunk',c=>{const v=c.view,fpc=Math.max(1,Math.ceil(v.plain.length/W));
-  if(!arrival||arrival.tag!==c.tag||c.index===0){failArrival(arrival);arrival={tag:c.tag,fpc,ent:arrivingEntry(),text:''}}
+  if(!arrival||arrival.tag!==c.tag||c.index===0){failArrival(arrival);arrival={tag:c.tag,fpc,how:c.channel,ent:arrivingEntry(c.channel),text:''}}
   const base=c.index*arrival.fpc,total=c.index===c.of-1?base+fpc:c.of*arrival.fpc;
   for(let i=0;i<fpc;i++){const s=i*W;frames.push({plain:pad(v.plain.slice(s,s+W)),heard:pad(v.heard.slice(s,s+W)),key:pad(v.key.slice(s,s+W)),no:base+i,total,index:c.index,of:c.of})}
   const a=arrival;
@@ -750,7 +810,7 @@ bridge.on('chunk',c=>{const v=c.view,fpc=Math.max(1,Math.ceil(v.plain.length/W))
   pump()});
 // the message the chunks were spelling: the provisional tape gives way to the real entry
 bridge.on('message',m=>{
-  if(m.outgoing||m.channel!=='sound'||m.via||!arrival||!arrival.ent)return;
+  if(m.outgoing||m.via||!arrival||!arrival.ent||m.channel!==arrival.how)return;
   const a=arrival,ent=a.ent;a.ent=null;clearTimeout(a.stallT);
   // another person's, or already on the sheet: the provisional tape goes
   if(m.contact!==CONTACT.id||onSheet.has(m.id)){grow(()=>ent.remove());return}
@@ -760,7 +820,9 @@ bridge.on('message',m=>{
 let refusedWhy=null;
 // a switch's refusal, on either channel, goes with the outbox failure that follows it
 function onChannel(s){if(/^not sent: /.test(s.state))refusedWhy=s.state;
-  if(s.channel!=='sound')return;Drum.receiving=s.state==='receiving';if(s.state==='failed')failArrival(arrival)}
+  if(s.state==='failed'&&arrival&&arrival.how===s.channel)failArrival(arrival);
+  if(s.channel==='light'){lightSays(s.state);return}
+  if(s.channel!=='sound')return;Drum.receiving=s.state==='receiving'}
 bridge.on('channel',onChannel);
 
 /* ---------- channels ---------- */
@@ -795,6 +857,8 @@ for(const [id,k] of Object.entries(KNOBS)){const n=NOTES[k.setting];if(!n)contin
 const saidEl=document.getElementById('said');let saidT;
 function say(text){saidEl.textContent=text;saidEl.title=text;saidEl.style.opacity=1;clearTimeout(saidT);saidT=setTimeout(()=>saidEl.style.opacity=0,text.length>40?5200:2600)}
 function turnKnob(id,pos){const k=KNOBS[id];if(k.held)return;pos=Math.max(0,Math.min(2,pos));if(pos===k.pos&&k.read)return;const was={pos:k.pos,read:k.read};k.pos=pos;k.read=true;
+  // turned back to Read and flash: what Escape stopped may show again
+  if(id==='k2'&&pos===2)Lamp.stopped=false;
   const cap=document.querySelector(`#${id} .cap`);cap.style.transform=`rotate(${ANG[pos]}deg)`;setTimeout(()=>drawKnob(id),RM.matches?0:330);
   Drum.spin(2,0.7);
   Promise.resolve(bridge.setSetting(k.setting,pos)).catch(why=>{if(k.pos!==pos)return;k.pos=was.pos;k.read=was.read;drawKnob(id);applyChannels();
@@ -811,7 +875,8 @@ function applyChannels(){const s=KNOBS.k1.pos,l=KNOBS.k2.pos;
   sendBtn.setAttribute('aria-disabled',s<2);document.getElementById('sendlamp').classList.toggle('off',s<2);
   sendBtn.title=s<2?`Sound is set to ${KNOBS.k1.labels[s].toLowerCase()}. Turn it to Listen and send to play replies.`:'Plays the message through the speaker. Enter does the same.';
   flashBtn.setAttribute('aria-disabled',l<2);
-  flashBtn.title=l<2?'Light is not set to Read and flash. Turn the Light switch to Read and flash to send this way.':`Flashes the message on screen. Hold it up to ${CONTACT.short}'s camera.`}
+  flashBtn.title=l<2?'Light is not set to Read and flash. Turn the Light switch to Read and flash to send this way.':PUBLIC?'Flashes the notice on screen, for any camera held up to it.':`Flashes the message on screen. Hold it up to ${CONTACT.short}'s camera.`;
+  showEyepiece();outbox.forEach(status);drawOutbox()}
 
 /* ---------- room meter and the quiet rule ---------- */
 // in the app the room is unknown until the microphone measures it
@@ -843,11 +908,11 @@ const esc=s=>s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&qu
 function outItem(id){let it=outbox.get(id);if(!it){it={id,text:'',public:false,state:null,ent:null,how:'sound',leaving:false};outbox.set(id,it)}return it}
 function drawOutbox(){const q=[...outbox.values()].filter(m=>m.text&&(m.state==='waiting'||m.leaving));
   if(!q.length){outboxEl.innerHTML='<div class="slip empty">Nothing waiting to send.</div>';return}
-  outboxEl.innerHTML=q.slice(0,2).map(m=>`<div class="slip${m.leaving?' gone':''}" data-id="${m.id}">${esc(m.text)}<small>${m.public?'public, ':''}sends once under ${sendUnder()} dB</small></div>`).join('')+(q.length>2?`<div class="slip empty">and ${q.length-2} more</div>`:'')}
+  outboxEl.innerHTML=q.slice(0,2).map(m=>`<div class="slip${m.leaving?' gone':''}" data-id="${m.id}">${esc(m.text)}<small>${m.public?'public, ':''}${m.how==='light'?(KNOBS.k2.pos<2?'flashes at Read and flash':'flashes next'):`sends once under ${sendUnder()} dB`}</small></div>`).join('')+(q.length>2?`<div class="slip empty">and ${q.length-2} more</div>`:'')}
 function status(it){const st=it.ent&&it.ent.querySelector('.state');if(!st)return;
   st.classList.toggle('live',it.state==='playing');
   if(it.ent)it.ent.classList.toggle('failed',it.state==='failed');
-  const said=it.state==='waiting'?(room==null?'waiting for quiet':room<sendUnder()?'playing next':`waiting for quiet, the room is at ${Math.round(room)} dB`)
+  const said=it.state==='waiting'?(it.how==='light'?(KNOBS.k2.pos<2?'waiting for Read and flash':'flashing next'):room==null?'waiting for quiet':room<sendUnder()?'playing next':`waiting for quiet, the room is at ${Math.round(room)} dB`)
     :it.state==='playing'?(it.how==='light'?'flashing on screen':'playing by sound'):it.state==='sent'?(it.public?'sent to anyone in range':'sent, not heard yet'):it.state==='failed'?sentence(it.why||'not sent'):'';
   // a public notice carries the key it is signed with, as the public entries heard on the sheet do
   st.textContent=it.public&&it.state!=='failed'?[signedBy(),said].filter(Boolean).join(', '):said}
@@ -869,16 +934,19 @@ function fit(){pinned(()=>{reply.style.height='auto';reply.style.height=Math.min
 reply.addEventListener('input',()=>{fit();if(pubnote.classList.contains('refused'))explain()});
 reply.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();send('sound')}});
 form.addEventListener('submit',e=>{e.preventDefault();send('sound')});
-flashBtn.addEventListener('click',()=>{if(PUBLIC){refuse('A public notice goes by sound only. Use Send by sound',flashBtn);return}send('light')});
+flashBtn.addEventListener('click',()=>send('light'));
 function nudge(btn){btn.animate([{transform:'translateX(0)'},{transform:'translateX(-3px)'},{transform:'translateX(3px)'},{transform:'translateX(0)'}],{duration:220});}
 function send(how){const text=reply.value.trim();
-  if(PUBLIC&&how==='sound'){broadcast(text);return}
+  if(PUBLIC){broadcast(text,how);return}
   const btn=how==='sound'?sendBtn:flashBtn;
+  // the Light switch won't flash it: say why under the line, as a notice's refusal is said, and keep what was written
+  if(how==='light'&&btn.getAttribute('aria-disabled')==='true'){refuse(`${lightRefusal()}. Turn it to Read and flash to send by light`,flashBtn);flashBtn.focus();return}
   if(btn.getAttribute('aria-disabled')==='true'){nudge(btn);btn.focus();return}
   if(!text){reply.focus();return}
+  if(how==='light'){Lamp.stopped=false;Lamp.for=CONTACT.id?CONTACT.short:null}
   const ent=entry(bridge.now(),how);ent.classList.add('mine');const what=ent.querySelector('.what');what.append(el('div','typed',text),el('div','state'));
   grow(()=>put(ent),true);
-  reply.value='';fit();
+  reply.value='';fit();if(pubnote.classList.contains('refused'))pinned(()=>pubnote.classList.remove('refused'));
   bridge.send([CONTACT.id],text,how).then(id=>{sent.set(id,{ent,how});
     if(finished.has(id)){status({state:finished.get(id),why:finishedWhy.get(id),ent,how});tick();return}
     const it=outItem(id);Object.assign(it,{text,ent,how});
@@ -893,26 +961,30 @@ function send(how){const text=reply.value.trim();
 const modeSw=document.getElementById('mode'),pubnote=document.getElementById('pubnote');
 function explain(){pinned(()=>{pubnote.classList.remove('refused');pubnote.textContent=`Anyone in range can read it. Signed with your key${MY_FP?', '+MY_FP:''}.`})}
 function refuse(why,btn=sendBtn){pinned(()=>{pubnote.classList.add('refused');pubnote.textContent=sentence(why)});nudge(btn)}
-function setPublic(on){if(on===PUBLIC)return;pinned(()=>{PUBLIC=on;modeSw.setAttribute('aria-checked',on);form.classList.toggle('public',on);replyLabels();fit();explain();
+function setPublic(on){if(on===PUBLIC)return;pinned(()=>{PUBLIC=on;modeSw.setAttribute('aria-checked',on);form.classList.toggle('public',on);replyLabels();fit();explain();applyChannels();
   if(!on)pubnote.classList.remove('refused')});Drum.spin(1,1.3)}
 modeSw.addEventListener('click',()=>{setPublic(!PUBLIC);reply.focus()});
 let broadcasting=false;
-function broadcast(text){if(broadcasting)return;
-  const s=KNOBS.k1.pos;
-  if(sendBtn.getAttribute('aria-disabled')==='true'){refuse(`${!KNOBS.k1.read?'The Sound switch was not read from the machine':s===0?'Sound is off':'Sound is set to listen only'}. Turn it to Listen and send to broadcast`);return}
-  if(!text){refuse('Write the notice first');reply.focus();return}
+// why the Light switch won't flash: it is off, at Read, or was not read from the machine
+const lightRefusal=()=>!KNOBS.k2.read?'The Light switch was not read from the machine':KNOBS.k2.pos===0?'Light is off':'Light is set to read only';
+function broadcast(text,how='sound'){if(broadcasting)return;
+  const s=KNOBS.k1.pos,btn=how==='light'?flashBtn:sendBtn;
+  if(how==='light'&&flashBtn.getAttribute('aria-disabled')==='true'){refuse(`${lightRefusal()}. Turn it to Read and flash to broadcast by light`,flashBtn);return}
+  if(how==='sound'&&sendBtn.getAttribute('aria-disabled')==='true'){refuse(`${!KNOBS.k1.read?'The Sound switch was not read from the machine':s===0?'Sound is off':'Sound is set to listen only'}. Turn it to Listen and send to broadcast`);return}
+  if(!text){refuse('Write the notice first',btn);reply.focus();return}
   const n=new TextEncoder().encode(text).length;
-  if(MAX_BROADCAST!=null&&n>MAX_BROADCAST){refuse(`Too long to broadcast: ${n} bytes, at most ${MAX_BROADCAST}`);return}
+  if(MAX_BROADCAST!=null&&n>MAX_BROADCAST){refuse(`Too long to broadcast: ${n} bytes, at most ${MAX_BROADCAST}`,btn);return}
+  if(how==='light'){Lamp.stopped=false;Lamp.for=null}
   // the line clears and the toggle springs back at once; a notice the machine refuses comes back to the line
   broadcasting=true;const was=reply.value;reply.value='';setPublic(false);
-  bridge.broadcast(text).then(id=>{broadcasting=false;onSheet.add(id);
+  bridge.broadcast(text,how).then(id=>{broadcasting=false;onSheet.add(id);
     const ent=entry(bridge.now(),'public');ent.classList.add('mine','public');const what=ent.querySelector('.what');what.append(el('div','typed',text),el('div','state'));
     grow(()=>put(ent),true);
-    sent.set(id,{ent,how:'sound'});
-    if(finished.has(id)){status({state:finished.get(id),why:finishedWhy.get(id),ent,how:'sound',public:true});tick();return}
-    const it=outItem(id);Object.assign(it,{text,ent,how:'sound',public:true});
+    sent.set(id,{ent,how});
+    if(finished.has(id)){status({state:finished.get(id),why:finishedWhy.get(id),ent,how,public:true});tick();return}
+    const it=outItem(id);Object.assign(it,{text,ent,how,public:true});
     if(it.state)setOut(it,it.state);else status(it);tick()},
-    why=>{broadcasting=false;if(!reply.value){reply.value=was;setPublic(true);fit()}refuse(why)})}
+    why=>{broadcasting=false;if(!reply.value){reply.value=was;setPublic(true);fit()}refuse(why,btn)})}
 
 /* ---------- key check menu ---------- */
 // the pencil menu is the mockups' story; in the app the card shows the real safety number (cardRest, below)
@@ -1143,6 +1215,96 @@ yesBtn.addEventListener('click',()=>{const o=offer;if(!o)return;
     if(!bridge.simulated)drawStations();
     cardRest(true);pairBtn.focus()},
   why=>{yesBtn.disabled=noBtn.disabled=false;noteSays(sentence(why))})});
+
+/* ---------- the flashing view ----------
+   The node hands the page each light code frame as it is due (display), and says when the screen is clear
+   (displayStopped). The first frame opens the signal lamp in the message sheet's place, still for a moment (a
+   plain field of the code's own mean grey, so nothing jumps when the frames start), then the frames follow,
+   each drawn exactly as the light crate's render_bits draws it: a white quiet zone three cells wide, cells of
+   whole device pixels, the leftover split evenly round the grid. Frames that come during the still moment are
+   let go; the node shows each message for at least four seconds and three times what a camera needs.
+   Escape (or Stop) turns the Light switch to Read, the machine's own way to stop flashing: the screen clears at
+   once, the message waits, and nothing more flashes until the switch is back at Read and flash. */
+const lampEl=document.getElementById('lamp'),lampCv=document.getElementById('lampcode'),lampCtx=lampCv.getContext('2d',{alpha:false});
+const lampSay=document.getElementById('lampsay'),lampStop=document.getElementById('lampstop'),deckEl=document.querySelector('.deck'),sheetEl=document.querySelector('.sheet');
+// cells a side for each preset (0 slow, 1 normal, 2 fast), and the quiet zone, as crates/light CodeSpec and QUIET
+const LAMP_CELLS=[48,56,64],LAMP_QUIET=3;
+// the still moment before the first frame; the grey of a half-dark grid (linear luminance 0.5)
+const READY_MS=Q.has('ready')?+Q.get('ready'):1200,LAMP_GREY='#bcbcbc';
+// closed, ready (still) or flashing; for: whose camera to hold it up to (a name, or null for anyone's)
+const Lamp={state:'closed',tag:null,spec:1,bits:null,index:-1,shown:0,readyT:null,stopped:false,for:null,refocus:false};
+const odoDigits=(el,n,w)=>{el.innerHTML=String(Math.max(0,Math.min(10**w-1,Math.round(n)))).padStart(w,'0').split('').map(d=>`<i>${d}</i>`).join('')};
+// the canvas, sized to the bezel's opening in whole device pixels and placed on whole device pixels
+function lampFit(){if(lampEl.hidden)return;
+  const mid=lampEl.querySelector('.lamp-mid').getBoundingClientRect(),dpr=devicePixelRatio||1;
+  const css=Math.max(96,Math.floor(Math.min(mid.width,mid.height)-28)),px=Math.round(css*dpr);
+  if(lampCv.width!==px){lampCv.width=lampCv.height=px}
+  lampCv.style.width=lampCv.style.height=px/dpr+'px';lampCv.style.transform='';
+  const r=lampCv.getBoundingClientRect(),dx=(Math.round(r.left*dpr)-r.left*dpr)/dpr,dy=(Math.round(r.top*dpr)-r.top*dpr)/dpr;
+  if(dx||dy)lampCv.style.transform=`translate(${dx}px,${dy}px)`;
+  lampPaint()}
+new ResizeObserver(lampFit).observe(lampEl.querySelector('.lamp-mid'));
+addEventListener('resize',lampFit);
+// render_bits: the whole canvas light, then each dark cell
+function lampPaint(){const px=lampCv.width,n=LAMP_CELLS[Lamp.spec],cell=Math.floor(px/(n+2*LAMP_QUIET)),o=Math.floor((px-cell*n)/2),k=lampCtx;
+  k.fillStyle='#fff';k.fillRect(0,0,px,px);
+  if(Lamp.state!=='flashing'||!Lamp.bits){k.fillStyle=LAMP_GREY;k.fillRect(o,o,cell*n,cell*n);return}
+  k.fillStyle='#000';const b=Lamp.bits;
+  for(let i=0;i<n*n;i++)if(b[i>>3]&(128>>(i&7)))k.fillRect(o+(i%n)*cell,o+((i/n)|0)*cell,cell,cell)}
+function lampCaption(){const who=Lamp.for?`${Lamp.for}'s`:'their';
+  lampSay.firstChild.nodeValue=`Hold this screen up to ${who} camera.`;
+  lampSay.querySelector('small').textContent=Lamp.state==='ready'?'ready, Escape stops it':'flashing, Escape stops it'}
+function lampOpen(){Lamp.state='ready';Lamp.shown=0;
+  Lamp.refocus=sheetEl.contains(document.activeElement)||document.activeElement===document.body;
+  lampEl.hidden=false;deckEl.classList.add('flashing');sheetEl.inert=true;
+  document.getElementById('lampjewel').classList.add('off');odoDigits(document.getElementById('lampn'),0,3);lampCaption();
+  bridge.channels().then(list=>{const l=list.find(c=>c.channel==='light');const rd=document.getElementById('lamprd');
+    rd.hidden=!(l&&l.rate>0);if(l&&l.rate>0){odoDigits(document.getElementById('lamprate'),l.rate,4);rd.title=`${Math.round(l.rate)} bytes of message a second at this Flash speed`}},()=>{});
+  lampFit();if(Lamp.refocus)lampStop.focus({preventScroll:true});
+  clearTimeout(Lamp.readyT);Lamp.readyT=setTimeout(()=>{if(Lamp.state!=='ready')return;Lamp.state='flashing';lampFrame()},READY_MS)}
+function lampFrame(){if(Lamp.state!=='flashing')return;lampPaint();
+  odoDigits(document.getElementById('lampn'),Lamp.shown,3);document.getElementById('lampjewel').classList.remove('off');lampCaption()}
+function lampClose(){clearTimeout(Lamp.readyT);if(Lamp.state==='closed')return;Lamp.state='closed';Lamp.bits=null;Lamp.tag=null;
+  const back=lampEl.contains(document.activeElement)||Lamp.refocus;
+  lampEl.hidden=true;deckEl.classList.remove('flashing');sheetEl.inert=false;
+  if(back)reply.focus({preventScroll:true})}
+bridge.on('display',d=>{
+  // stopped with Escape: nothing shows again until the machine says the screen is clear
+  if(Lamp.stopped||!(d.spec in LAMP_CELLS)||d.bits.length!==Math.ceil(LAMP_CELLS[d.spec]**2/8))return;
+  if(d.tag!==Lamp.tag){Lamp.tag=d.tag;Lamp.shown=0}
+  Lamp.spec=d.spec;Lamp.bits=d.bits;Lamp.index=d.index;Lamp.shown=d.index+1;
+  if(Lamp.state==='closed')lampOpen();else lampFrame()});
+bridge.on('displayStopped',()=>{Lamp.stopped=false;lampClose()});
+function stopFlashing(){if(Lamp.state==='closed')return;Lamp.stopped=true;lampClose();
+  if(KNOBS.k2.pos===2)turnKnob('k2',1);
+  say('Flashing stopped. Light is at Read, and the message waits.')}
+lampStop.addEventListener('click',stopFlashing);
+addEventListener('keydown',e=>{if(e.key==='Escape'&&Lamp.state!=='closed'){e.preventDefault();stopFlashing()}});
+
+/* ---------- the eyepiece, and what the camera has to say ----------
+   While Light reads, the eyepiece on its switch shows what the camera sees, small and grey, so the reader can aim.
+   Its shutter closes it: the page then asks for no picture, and the machine sends none. The shutter's position
+   is this window's own (kept in its storage, not a machine setting); open unless closed here before. */
+const eyeEl=document.getElementById('eyepiece'),eyeCv=eyeEl.querySelector('canvas'),eyeCtx=eyeCv.getContext('2d');
+let eyeOpen=true;try{eyeOpen=localStorage.getItem('bombechat.eyepiece')!=='shut'}catch(e){}
+let eyeAsked=null;
+function showEyepiece(){const reading=KNOBS.k2.read&&KNOBS.k2.pos>0,want=eyeOpen&&reading&&!document.hidden;
+  eyeEl.setAttribute('aria-checked',eyeOpen);eyeEl.classList.toggle('shut',!eyeOpen);eyeEl.classList.toggle('dark',!want);
+  eyeEl.title=!eyeOpen?'Eyepiece shut: nothing the camera sees is shown. Press to open it.':reading?'What the camera sees, small and grey, to aim it by. Press to shut it.':'The camera is closed. Its eyepiece shows what it sees while Light reads.';
+  if(want!==eyeAsked){eyeAsked=want;if(!want){eyeCtx.fillStyle='#0d0d0c';eyeCtx.fillRect(0,0,eyeCv.width,eyeCv.height)}Promise.resolve(bridge.eyepiece(want)).catch(()=>{})}}
+eyeEl.addEventListener('click',()=>{eyeOpen=!eyeOpen;try{if(eyeOpen)localStorage.removeItem('bombechat.eyepiece');else localStorage.setItem('bombechat.eyepiece','shut')}catch(e){}
+  Drum.spin(1,1.6);showEyepiece()});
+document.addEventListener('visibilitychange',showEyepiece);
+bridge.on('eyepiece',p=>{if(!eyeAsked||!(p.width>0&&p.height>0)||p.pixels.length!==p.width*p.height)return;
+  if(eyeCv.width!==p.width||eyeCv.height!==p.height){eyeCv.width=p.width;eyeCv.height=p.height}
+  const img=eyeCtx.createImageData(p.width,p.height);for(let i=0;i<p.pixels.length;i++){const v=p.pixels[i];img.data[i*4]=img.data[i*4+1]=img.data[i*4+2]=v;img.data[i*4+3]=255}
+  eyeCtx.putImageData(img,0,0)});
+// what the camera says goes on a strip of tape by the eyepiece: a code it sees and can't read, or why it can't open
+const TILT_OR_DIM='seeing a code: tilt or dim the screen';
+const lightNote=document.querySelector('#lightnote b');
+// (the camera sees a code it can't read: the tape says what to do, its label says why)
+function lightSays(state){const tilt=state===TILT_OR_DIM;lightNote.textContent=tilt?'Tilt or dim the screen.':/^unavailable: /.test(state)?sentence(state.slice(13)):'';
+  lightNote.parentElement.setAttribute('aria-label',tilt?'The camera sees a code it cannot read. Tilt or dim the screen.':lightNote.textContent)}
 
 /* ---------- open: replay what came before, then listen ---------- */
 drawOutbox();applyChannels();cardRest();

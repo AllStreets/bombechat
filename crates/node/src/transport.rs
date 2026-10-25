@@ -67,6 +67,14 @@ pub enum TransportEvent {
     CodeUnreadable,
     /// Light: a code was read this poll. At most once a poll.
     CodeRead,
+    /// Light: what the camera sees, as a small grey picture `width` by
+    /// `height`, one byte a pixel, row-major from the top left. Only
+    /// while [`Transport::set_eyepiece`] is on and the camera reads.
+    Eyepiece {
+        width: u32,
+        height: u32,
+        pixels: Vec<u8>,
+    },
 }
 
 /// A carrier for on-air frames.
@@ -115,6 +123,10 @@ pub trait Transport: Send {
     /// For light: show what goes on screen from now on in this code
     /// preset (the flash speed). What is on screen finishes as it started.
     fn set_preset(&mut self, _spec: CodeSpec) {}
+
+    /// For light: whether to report what the camera sees
+    /// ([`TransportEvent::Eyepiece`]). Off by default.
+    fn set_eyepiece(&mut self, _on: bool) {}
 
     /// For sound: play only while the room is quieter than `db`.
     fn set_send_under(&mut self, _db: f32) {}

@@ -34,10 +34,11 @@
 //! current when it goes on screen ([`Transport::set_preset`]).
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bombechat_core::MAX_ENVELOPE;
 use bombechat_light::{
@@ -79,6 +80,15 @@ fn window(spec: &CodeSpec, symbols: u32) -> u32 {
 /// the oldest is let go.
 pub const PICTURES_HELD: usize = 2;
 
+/// Width, in pixels, of the eyepiece: the small grey picture of what the
+/// camera sees that the page may show while reading. Its height follows
+/// the camera's shape.
+pub const EYEPIECE_WIDTH: u32 = 64;
+
+/// The eyepiece is sent at most this often, so about four pictures a
+/// second.
+const EYEPIECE_GAP: Duration = Duration::from_millis(250);
+
 /// How often the worker asks a running camera whether it has failed,
 /// when nothing else wakes it.
 const ERROR_CHECK: Duration = Duration::from_millis(100);
@@ -111,6 +121,8 @@ enum Report {
     Started(u64),
     Failed(u64, CameraError),
     Read(u64, ReadOutcome),
+    /// The eyepiece: a picture shrunk to [`EYEPIECE_WIDTH`] wide.
+    Eyepiece(u64, GrayImage),
 }
 
 /// The worker's inbox.
@@ -129,6 +141,9 @@ struct Work {
 struct Shared {
     work: Mutex<Work>,
     wake: Condvar,
+    /// Whether the page wants the eyepiece. Off by default: nothing the
+    /// camera sees leaves the reader unless asked for.
+    eyepiece: AtomicBool,
 }
 
 /// A handle on a [`LightTransport`]'s reader, which stays usable after
@@ -186,6 +201,7 @@ fn work(
     // The reader's own budget, before any picture raised it.
     let base = reader.budget();
     let mut running: Option<u64> = None;
+    let mut eyepiece_at: Option<Instant> = None;
     loop {
         let job = {
             let mut work = lock(&shared.work);
@@ -256,6 +272,12 @@ fn work(
             Job::Read(start, picture) => {
                 let outcome = reader.read(&picture);
                 let _ = out.send(Report::Read(start, outcome));
+                if shared.eyepiece.load(Ordering::Relaxed)
+                    && eyepiece_at.is_none_or(|at| at.elapsed() >= EYEPIECE_GAP)
+                {
+                    eyepiece_at = Some(Instant::now());
+                    let _ = out.send(Report::Eyepiece(start, eyepiece(&picture)));
+                }
             }
             Job::Check => {}
         }
@@ -329,6 +351,31 @@ fn reason(e: &CameraError) -> String {
         CameraError::Interrupted => "camera in use by another app".to_string(),
         CameraError::Unsupported(detail) => format!("camera unsupported ({detail})"),
     }
+}
+
+/// `picture` shrunk to [`EYEPIECE_WIDTH`] wide (or its own width, if
+/// narrower), each pixel the mean of the pixels it covers. A picture with
+/// no pixels gives one black pixel.
+fn eyepiece(picture: &GrayImage) -> GrayImage {
+    let (w, h) = picture.dimensions();
+    if w == 0 || h == 0 {
+        return GrayImage::new(1, 1);
+    }
+    let ew = EYEPIECE_WIDTH.min(w);
+    let eh = ((u64::from(h) * u64::from(ew) + u64::from(w) / 2) / u64::from(w))
+        .clamp(1, u64::from(h)) as u32;
+    GrayImage::from_fn(ew, eh, |x, y| {
+        let (x0, x1) = (x * w / ew, ((x + 1) * w / ew).max(x * w / ew + 1));
+        let (y0, y1) = (y * h / eh, ((y + 1) * h / eh).max(y * h / eh + 1));
+        let mut sum = 0u64;
+        for yy in y0..y1 {
+            for xx in x0..x1 {
+                sum += u64::from(picture.get_pixel(xx, yy).0[0]);
+            }
+        }
+        let n = u64::from((x1 - x0) * (y1 - y0));
+        image::Luma([((sum + n / 2) / n) as u8])
+    })
 }
 
 /// [`Transport`] over a [`CameraIo`] camera and a screen the page draws.
@@ -515,6 +562,17 @@ impl LightTransport {
                         }
                     }
                 }
+                Report::Eyepiece(start, picture)
+                    if start == self.start
+                        && self.listening
+                        && self.shared.eyepiece.load(Ordering::Relaxed) =>
+                {
+                    events.push(TransportEvent::Eyepiece {
+                        width: picture.width(),
+                        height: picture.height(),
+                        pixels: picture.into_raw(),
+                    });
+                }
                 Report::Read(start, outcome) if start == self.start && self.listening => {
                     let read = self.collector.push_read(&outcome, now_ms);
                     bad_any |= read.contains(&LightEvent::FrameBad);
@@ -635,6 +693,13 @@ impl Transport for LightTransport {
     fn rate(&self) -> Option<f32> {
         let per_frame = self.spec.packets_per_frame() * self.spec.symbol_size as usize;
         Some((per_frame as u32 * self.spec.frames_per_second()) as f32)
+    }
+
+    /// On, about four times a second while the camera reads, the picture
+    /// it sees, shrunk to [`EYEPIECE_WIDTH`] grey pixels wide
+    /// ([`TransportEvent::Eyepiece`]). Off (the default), none is made.
+    fn set_eyepiece(&mut self, on: bool) {
+        self.shared.eyepiece.store(on, Ordering::Relaxed);
     }
 
     /// Show the envelopes that have not gone on screen yet in `spec`, from
@@ -1201,5 +1266,83 @@ mod tests {
         let cam = FakeCamera::new(Vec::new());
         let t = transport(&cam);
         assert_eq!(t.rate(), Some(2290.0));
+    }
+
+    /// Every event that is an eyepiece, as (width, height, pixels).
+    fn eyepieces(events: Vec<TransportEvent>) -> Vec<(u32, u32, Vec<u8>)> {
+        events
+            .into_iter()
+            .filter_map(|e| match e {
+                TransportEvent::Eyepiece {
+                    width,
+                    height,
+                    pixels,
+                } => Some((width, height, pixels)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_eyepiece_is_off_until_asked_for_then_small_and_grey() {
+        // 640 by 480, left half dark (20) and right half light (220), with
+        // one 10 by 10 square of 120 in the top left corner
+        let picture = GrayImage::from_fn(640, 480, |x, y| {
+            image::Luma([if x < 10 && y < 10 {
+                120
+            } else if x < 320 {
+                20
+            } else {
+                220
+            }])
+        });
+        let cam = FakeCamera::new(vec![picture.clone(); 4]);
+        let mut t = transport(&cam);
+        t.poll(0);
+        settle(&t);
+        cam.show_next();
+        settle(&t);
+        assert!(
+            eyepieces(t.poll(20)).is_empty(),
+            "nothing the camera sees is sent unasked"
+        );
+
+        t.set_eyepiece(true);
+        cam.show_next();
+        settle(&t);
+        let seen = eyepieces(t.poll(40));
+        assert_eq!(seen.len(), 1);
+        let (w, h, pixels) = &seen[0];
+        assert_eq!(
+            (*w, *h),
+            (EYEPIECE_WIDTH, 48),
+            "64 wide, the camera's shape"
+        );
+        assert_eq!(pixels.len(), 64 * 48);
+        assert_eq!(
+            pixels[0], 120,
+            "each pixel the mean of the 10 by 10 it covers"
+        );
+        assert_eq!(pixels[1], 20);
+        assert_eq!(pixels[63], 220);
+
+        t.set_eyepiece(false);
+        thread::sleep(EYEPIECE_GAP);
+        cam.show_next();
+        settle(&t);
+        assert!(eyepieces(t.poll(80)).is_empty(), "hidden: none");
+    }
+
+    #[test]
+    fn an_eyepiece_from_a_closed_camera_is_let_go() {
+        let cam = FakeCamera::new(vec![GrayImage::new(64, 48)]);
+        let mut t = transport(&cam);
+        t.set_eyepiece(true);
+        t.poll(0);
+        settle(&t);
+        cam.show_next();
+        settle(&t);
+        t.set_listening(false);
+        assert!(eyepieces(t.poll(20)).is_empty());
     }
 }

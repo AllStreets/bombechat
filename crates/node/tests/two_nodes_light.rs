@@ -317,6 +317,16 @@ fn pair_message_and_receipt_by_light_alone() {
         messages(&room.peers[1].log),
         vec![(TEXT.to_string(), Channel::Light)]
     );
+    // its chunks reach the drums as a sound message's do, saying they came by light
+    let chunks: Vec<Channel> = room.peers[1]
+        .log
+        .iter()
+        .filter_map(|e| match e {
+            NodeEvent::ChunkLanded { channel, .. } => Some(*channel),
+            _ => None,
+        })
+        .collect();
+    assert!(!chunks.is_empty() && chunks.iter().all(|c| *c == Channel::Light));
     assert_eq!(
         room.peers[1].node.conversation(ann_id).last().unwrap().text,
         TEXT

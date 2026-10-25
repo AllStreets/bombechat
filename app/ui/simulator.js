@@ -24,6 +24,9 @@
 // sent. At Read or Off it is refused as the node refuses it. Turning Light down mid-flash clears the screen and the
 // send waits; turning it back to Read and flash carries on.
 //
+// The eyepiece: while asked for and Light reads, a made-up grey room (a window, a desk, someone moving) four times a
+// second, 64 by 48, as the camera's would come.
+//
 // Query parameters: ?f=N starts the incoming message at chunk N (0 based),
 // ?still holds everything where it lands (no room meter, no further chunks).
 const SHOWN = 'Water is at the church on Fifth. Bring the radio, we leave at dusk.';
@@ -72,6 +75,10 @@ const LIGHT_FPS = [6, 10, 15];
 const LIGHT_FLOOR_MS = 4000;
 // the light refusals and states, as the node's
 const LIGHT_SAYS = ['not sent: light is off', 'not sent: light is set to read only'];
+// a code in view the camera cannot read, as the node's TILT_OR_DIM
+const LIGHT_TILT = 'seeing a code: tilt or dim the screen';
+// the eyepiece, as the light transport's: 64 pixels wide, about four a second
+const EYEPIECE_W = 64, EYEPIECE_H = 48, EYEPIECE_MS = 250;
 // the longest broadcast, in UTF-8 bytes of text, as the node's MAX_BROADCAST (an envelope less its header and signing)
 const MAX_BROADCAST = 3939;
 const PAIR_MS = 2400;
@@ -139,7 +146,7 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
     emit('outbox', first ? { id: m.id, state, text: m.text, public: !!m.public } : { id: m.id, state });
   };
   function land(n) {
-    emit('chunk', { tag: TAG, index: n, of: NC, view: incoming[n] });
+    emit('chunk', { tag: TAG, index: n, of: NC, view: incoming[n], channel: 'Sound' });
     if (n === NC - 1) finish();
   }
   function finish() {
@@ -201,6 +208,32 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
     later(() => outbox(m, 'waiting'));
     if (!flashT) flashT = later(flashTick, 0);
   }
+  // the eyepiece: a grey room, the light from a window on the right, a desk below, someone leaning across it
+  let eyeOn = false, eyeT = null, eyeN = 0;
+  const noise = seeded(6406);
+  const grain = Array.from({ length: EYEPIECE_W * EYEPIECE_H }, () => noise() % 13 - 6);
+  function eyeFrame() {
+    const t = eyeN++ / 4, px = new Array(EYEPIECE_W * EYEPIECE_H);
+    const cx = 22 + 9 * Math.sin(t / 3), cy = 23 + 2 * Math.sin(t / 2);
+    for (let y = 0; y < EYEPIECE_H; y++) for (let x = 0; x < EYEPIECE_W; x++) {
+      let v = 64 + 50 * y / EYEPIECE_H + 60 * Math.max(0, (x - 38) / 26);
+      if (x > 44 && x < 60 && y > 5 && y < 25) v = 196;
+      if (y > 34) v = 46 + (y - 34) * 2;
+      const d = ((x - cx) / 10) ** 2 + ((y - cy) / 13) ** 2;
+      if (d < 1) v = v * .45 + 18;
+      px[y * EYEPIECE_W + x] = Math.max(0, Math.min(255, Math.round(v + grain[y * EYEPIECE_W + x])));
+    }
+    return px;
+  }
+  // one picture now, and (unless held still) one every 250 ms after, while asked for and Light reads
+  function eyeTick() {
+    eyeT = null;
+    if (!eyeOn || settings.light === 0) return;
+    emit('eyepiece', { width: EYEPIECE_W, height: EYEPIECE_H, pixels: eyeFrame() });
+    if (!still) eyeT = later(eyeTick, EYEPIECE_MS);
+  }
+  const eyeWake = () => { if (!eyeT) eyeT = later(eyeTick, 0); };
+
   // refused by the Light switch, as the node refuses a send: the channel says why, the outbox fails, then the state
   function refuseLight(m) { later(() => { light(LIGHT_SAYS[settings.light]); outbox(m, 'failed'); light(lightAt()); }); }
 
@@ -233,17 +266,22 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
       paused = true;
       const plain = utf8(text), r = seeded(77), key = plain.map(() => r());
       sound('receiving');
-      emit('chunk', { tag: ++testTag, index: 0, of: 1, view: { plain, key, heard: plain.map((p, i) => p ^ key[i]) } });
+      emit('chunk', { tag: ++testTag, index: 0, of: 1, view: { plain, key, heard: plain.map((p, i) => p ^ key[i]) }, channel: 'Sound' });
       if (end) sound('listening');
     },
-    // a whole sealed message from Marisol, chunk by chunk at once; `complete` false leaves it hanging
-    arrive(text, { complete = true, contact = MARISOL } = {}) {
+    // a whole sealed message from Marisol, chunk by chunk at once; `complete` false leaves it hanging. By light it
+    // arrives as the light transport hands one over: whole, so every chunk at once
+    arrive(text, { complete = true, contact = MARISOL, channel = 'sound' } = {}) {
       paused = true;
       const tag = ++testTag, parts = chunked(sealedInner(text, clock / 60000, tag), tag);
-      sound('receiving');
-      parts.forEach((view, index) => emit('chunk', { tag, index, of: parts.length, view }));
-      if (complete) { emit('message', { id: bytes(16), contact, outgoing: false, text, channel: 'Sound', at_min: Math.floor(clock / 60000), heard: false }); sound('listening'); }
+      const by = channel === 'light' ? light : sound, Channel = channel === 'light' ? 'Light' : 'Sound';
+      by('receiving');
+      parts.forEach((view, index) => emit('chunk', { tag, index, of: parts.length, view, channel: Channel }));
+      if (complete) { emit('message', { id: bytes(16), contact, outgoing: false, text, channel: Channel, at_min: Math.floor(clock / 60000), heard: false }); by(channel === 'light' ? lightAt() : 'listening'); }
     },
+    // the camera sees a code it cannot read, then it gives way
+    tiltOrDim() { light(LIGHT_TILT); },
+    lightState(state) { light(state || lightAt()); },
     fail() { sound('failed'); },
     receiving(on) { sound(on ? 'receiving' : 'listening'); },
     pause() { paused = true; },
@@ -279,6 +317,7 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
     },
     pair() { later(() => emit('pairOffer', { peer: signer(0x2c, 0x91), name: 'Teodor Vance', safety }), PAIR_MS); return Promise.resolve(); },
     stopPairing: () => Promise.resolve(),
+    eyepiece(on) { eyeOn = on; eyeWake(); return Promise.resolve(); },
     confirmPair(peerHex, name) {
       if (!people.some(p => p.id === TEODOR)) people.push({ id: TEODOR, name, checked: true, safety });
       return Promise.resolve(TEODOR);
@@ -291,7 +330,7 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
       const was = settings[id];
       settings[id] = valueIndex; keepSettings(settings);
       // the light channel says when its camera closes or opens, as the node does on its next tick
-      if (id === 'light' && (was === 0) !== (valueIndex === 0)) later(() => light(lightAt()));
+      if (id === 'light' && (was === 0) !== (valueIndex === 0)) { later(() => light(lightAt())); eyeWake(); }
       return Promise.resolve();
     },
     // read from the record each time, as the device answers from its own: another page may have changed it

@@ -17,6 +17,9 @@
 //                                'not sent: sound is set to listen only'
 //   stopPairing()                [stop_pairing]                     ends the pairing in progress: the hello stops showing.
 //                                confirmPair ends it too, and it ends by itself after three minutes
+//   eyepiece(on)                 [eyepiece { on }]                  whether to be sent what the camera sees (the eyepiece
+//                                event) while Light reads. Off until asked, and not a setting: the page asks while its
+//                                eyepiece is shown and lets go when it is hidden, so a hidden one gets no picture at all
 //   confirmPair(peerHex, name)   [confirm_pair { peerHex, name }]   resolves to the new contact id; name as the person
 //                                corrected it on the card (the hello's name is only a suggestion)
 //   setSetting(id, valueIndex)   [set_setting { id, valueIndex }]  only for a change the person just made: the
@@ -53,7 +56,9 @@
 //                                Tone band says)
 //
 // Events (on(name, fn)), as the node's NodeEvent after normalising:
-//   chunk      { tag, index, of, view: { plain, heard, key }, text }
+//   chunk      { tag, index, of, view: { plain, heard, key }, text, channel }
+//                channel: the one it arrived on, 'sound' or 'light' (light envelopes land whole, so their
+//                chunks come all at once)
 //                plain: one letter per byte; ASCII letters upper-cased, every other byte X (the Bombe's spacer)
 //                heard, key: one letter per byte, by letter(b)
 //                text: the message text decrypted so far under this tag, NOT yet checked (see below)
@@ -86,6 +91,9 @@
 //                                       Public code bits only, never a key. Not held before ready(): a frame is only
 //                                       worth showing when it comes
 //   displayStopped { tag }             light: clear the screen; tag's frame was on it
+//   eyepiece   { width, height, pixels }  light: what the camera sees, small and grey (64 pixels wide, one byte a
+//                                       pixel, row-major), about four a second while Light reads and eyepiece(true)
+//                                       was asked. Shown, never kept. Not held before ready()
 // Ids arrive as byte arrays or hex and leave as lowercase hex. Channels arrive as "Sound" or "sound" and leave lower case.
 //
 // A chunk is only known to come from a holder of the content key until the
@@ -132,15 +140,15 @@ function provisional(tag, index, of, plain) {
   return decoder.decode(new Uint8Array(a.so.slice(SENDER_LEN, end))).replace(/\uFFFD+$/, '');
 }
 
-const EVENTS = ['chunk', 'message', 'heard', 'broadcast', 'pairOffer', 'roomDb', 'channel', 'outbox', 'display', 'displayStopped'];
+const EVENTS = ['chunk', 'message', 'heard', 'broadcast', 'pairOffer', 'roomDb', 'channel', 'outbox', 'display', 'displayStopped', 'eyepiece'];
 // shown as they come, or not at all: never held for a page still setting up
-const LIVE = new Set(['display', 'displayStopped']);
+const LIVE = new Set(['display', 'displayStopped', 'eyepiece']);
 const normalise = {
   chunk: c => {
     const plain = bytesOf(c.view.plain);
     const text = provisional(c.tag, c.index, c.of, plain);
     if (c.index === c.of - 1) arriving.delete(c.tag);
-    return { tag: c.tag, index: c.index, of: c.of, text, view: { plain: plain.map(plainLetter).join(''), heard: bytesOf(c.view.heard).map(letter).join(''), key: bytesOf(c.view.key).map(letter).join('') } };
+    return { tag: c.tag, index: c.index, of: c.of, text, channel: lower(c.channel) || 'sound', view: { plain: plain.map(plainLetter).join(''), heard: bytesOf(c.view.heard).map(letter).join(''), key: bytesOf(c.view.key).map(letter).join('') } };
   },
   message: m => ({ ...m, id: hex(m.id), contact: contactId(m.contact), channel: lower(m.channel) }),
   heard: h => ({ id: hex(h.id), by: contactId(h.by) }),
@@ -151,6 +159,7 @@ const normalise = {
   outbox: o => ({ ...o, id: hex(o.id), state: lower(o.state) }),
   display: d => ({ tag: +d.tag, bits: bytesOf(d.bits), spec: +d.spec, index: +d.index }),
   displayStopped: d => ({ tag: d && typeof d === 'object' ? +d.tag : +d }),
+  eyepiece: e => ({ width: +e.width, height: +e.height, pixels: bytesOf(e.pixels) }),
 };
 
 const handlers = Object.fromEntries(EVENTS.map(e => [e, new Set()]));
@@ -179,6 +188,7 @@ function tauriBackend() {
     broadcast: (text, channel) => invoke('broadcast', { text, channel }).then(hex),
     pair: () => invoke('pair'),
     stopPairing: () => invoke('stop_pairing'),
+    eyepiece: on => invoke('eyepiece', { on: !!on }),
     confirmPair: (peerHex, name) => invoke('confirm_pair', { peerHex, name }).then(contactId),
     setSetting: (id, valueIndex) => invoke('set_setting', { id, valueIndex }),
     settings: () => invoke('settings'),
@@ -202,6 +212,7 @@ function simulatedBackend() {
     broadcast: (text, channel) => sim.broadcast(text, channel).then(hex),
     pair: () => sim.pair(),
     stopPairing: () => sim.stopPairing(),
+    eyepiece: on => sim.eyepiece(!!on),
     confirmPair: (peerHex, name) => sim.confirmPair(peerHex, name).then(contactId),
     setSetting: (id, valueIndex) => sim.setSetting(id, valueIndex),
     settings: () => sim.settings(),
@@ -225,6 +236,7 @@ export const bridge = {
   broadcast: (text, channel = 'sound') => backend.broadcast(text, lower(channel)),
   pair: () => backend.pair(),
   stopPairing: () => backend.stopPairing(),
+  eyepiece: on => backend.eyepiece(on),
   confirmPair: (peerHex, name) => backend.confirmPair(peerHex, name),
   setSetting: (id, valueIndex) => backend.setSetting(id, valueIndex),
   settings: () => backend.settings(),

@@ -88,6 +88,7 @@ function tauriStub({ hello, safety, people, talk, afterUnlock, settings, broadca
           inperson: { note: 'always, on this build', value: 1 } });
         case 'channels': return Promise.resolve([{ channel: 'sound', state: 'listening', rate: 16.1 }, { channel: 'light', state: 'off', rate: 2290 }]);
         case 'stop_pairing': return Promise.resolve(null);
+        case 'eyepiece': return Promise.resolve(null);
         case 'pair': setTimeout(() => window.__emit('pairOffer', { peer: { sign: Array(32).fill(5), dh: Array(32).fill(6) }, name: hello, safety }), 1200); return Promise.resolve(null);
         case 'confirm_pair': return Promise.resolve(7);
         case 'set_setting': return refuseSetting ? Promise.reject(refuseSetting) : Promise.resolve(null);
@@ -871,10 +872,10 @@ function measureText() {
       await bp.fill('#reply', TEXT);
       const composing = await bp.evaluate(line);
       if (composing.refused || composing.note !== explained) problems.push(`${tag}: writing again did not clear the refusal: ${JSON.stringify(composing)}`);
-      // Flash never sends a notice as a private reply
+      // Flash sends a notice by light, never as a private reply; with Light off it is refused, saying why
       await bp.click('#flash', { force: true }); await bp.waitForTimeout(150);
       const flashed = await bp.evaluate(line);
-      if (flashed.note !== 'A public notice goes by sound only. Use Send by sound.' || flashed.box !== TEXT || flashed.replies !== composing.replies || (flashed.calls && flashed.calls.length)) problems.push(`${tag}: Flash did not refuse a notice: ${JSON.stringify(flashed)}`);
+      if (flashed.note !== 'Light is off. Turn it to Read and flash to broadcast by light.' || flashed.box !== TEXT || flashed.replies !== composing.replies || (flashed.calls && flashed.calls.length)) problems.push(`${tag}: Flash did not refuse a notice: ${JSON.stringify(flashed)}`);
       await bp.fill('#reply', TEXT);
       await shot('composing');
       await bp.focus('#reply'); await bp.keyboard.press('Enter'); await bp.waitForTimeout(400);
@@ -948,6 +949,233 @@ function measureText() {
       if (stub) await bp.locator('.sheet').screenshot({ path: path.join(out, 'broadcast-app-1440-refused-by-machine.png') });
       report.broadcast[tag] = r.note;
       await bp.close();
+    }
+
+    // Light: the flashing view, the Light switch's eyepiece and note, and Flash, on the app path (window.__TAURI__
+    // stubbed, the node's events emitted as it emits them) at 1024, 1440 and 1728, with 2x crops (light-<w>-<state>.png):
+    // idle; ready (the still field before the first frame); flashing, with the frames shown and the rate the machine
+    // reports; Escape stopping it at once by turning the Light switch to Read, and frames after that not shown; reading,
+    // with what the camera sees in the eyepiece; the camera's hint typed by the eyepiece; Flash refused at Read in
+    // sentence case. The frames are the core's own (crates/light/examples/page_frames.rs), and a screenshot of the
+    // flashing view read back with the camera's decoder gives exactly the frame's bytes, at every width and preset.
+    // Then the photosensitivity check: 120 consecutive frames of the view, from the still field to the sheet coming
+    // back, measured over sliding windows a sixteenth of the view each, against WCAG 2.3.1's general flash threshold.
+    {
+      const { execFileSync } = require('child_process');
+      const example = args => execFileSync('cargo', ['run', '-q', '-p', 'bombechat-light', '--example', 'page_frames', '--', ...args], { cwd: ROOTDIR, encoding: 'utf8', maxBuffer: 1 << 28 });
+      const CODE = [0, 1, 2].map(preset => JSON.parse(example(['frames', String(preset), '120', '4660'])));
+      const readBack = files => example(['read', ...files]).trim().split('\n').map(l => JSON.parse(l));
+      const TILT = 'seeing a code: tilt or dim the screen';
+      const openLight = async (w, h, light, { dpr = 2, q = 'still&ready=400' } = {}) => {
+        const lp = await browser.newPage({ viewport: { width: w, height: h }, deviceScaleFactor: dpr });
+        watch(lp, `light ${w}`);
+        await lp.addInitScript(tauriStub, { hello: 'Marisol Ortega', safety: '', people: [{ id: 1, name: 'Marisol Ortega', checked: true, safety: '' }],
+          settings: { sound: 2, volume: 2, band: 0, light, flash: 1, machine: 1, machvol: 2, carry: 1, hops: 3, hold: 2, quiet: 2, repeats: 2, lock: 1, expire: 0, inperson: 1 } });
+        await lp.goto(url(q));
+        await lp.waitForSelector('.unlock input[name=pass]');
+        await lp.fill('.unlock input[name=pass]', 'correct horse');
+        await lp.click('.unlock button');
+        await lp.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
+        await lp.evaluate(() => document.fonts.ready);
+        await lp.waitForTimeout(200);
+        return lp;
+      };
+      const emit = (lp, name, payload) => lp.evaluate(([n, p]) => window.__emit(n, p), [name, payload]);
+      const frame = (spec, i, tag = 4660) => ({ tag, bits: CODE[spec].frames[i].bits, spec, index: i });
+      const paint = lp => lp.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))));
+      const view = () => { const l = document.getElementById('lamp'), c = document.getElementById('lampcode'), k = c.getContext('2d');
+        const mid = k.getImageData(c.width >> 1, c.height >> 1, 1, 1).data[0];
+        return { shown: !l.hidden, sheet: getComputedStyle(document.querySelector('.sheet')).visibility, say: document.getElementById('lampsay').innerText.replace(/\s+/g, ' ').trim(),
+          frames: document.getElementById('lampn').textContent, rate: document.getElementById('lamprate').textContent, mid,
+          light: document.getElementById('k2').getAttribute('aria-valuenow'), said: document.getElementById('said').textContent,
+          sets: __calls.filter(c => c[0] === 'set_setting').map(c => c[1]), eyepiece: __calls.filter(c => c[0] === 'eyepiece').map(c => c[1].on),
+          note: document.querySelector('#lightnote b').textContent, pubnote: document.getElementById('pubnote').textContent,
+          sends: __calls.filter(c => c[0] === 'send' || c[0] === 'broadcast').length };
+      };
+      report.light = {};
+      for (const [w, h] of [[1024, 768], [1440, 900], [1728, 1117]]) {
+        const tag = `light ${w}`, r = report.light[w] = {};
+        const lp = await openLight(w, h, 2);
+        const shot = async (st, sel) => lp.locator(sel).screenshot({ path: path.join(out, `light-${w}-${st}.png`) });
+        await shot('idle', '.deck');
+        const idle = await lp.evaluate(view);
+        if (idle.shown || !idle.eyepiece.length || idle.eyepiece[idle.eyepiece.length - 1] !== true) problems.push(`${tag}: idle at Read and flash: ${JSON.stringify(idle)}`);
+        // the first frame opens the lamp still: the plain grey field, no frame yet
+        await emit(lp, 'display', frame(1, 0)); await paint(lp);
+        const ready = await lp.evaluate(view);
+        if (!ready.shown || ready.sheet !== 'hidden' || ready.mid !== 0xbc || ready.say !== 'Hold this screen up to their camera. ready, Escape stops it' || ready.frames !== '000') problems.push(`${tag}: the lamp did not open still: ${JSON.stringify(ready)}`);
+        r.small = await lp.evaluate(`(${measureText.toString()})()`);
+        if (r.small.length) problems.push(`${tag}: text under 12px in the flashing view: ${r.small.join('; ')}`);
+        await shot('ready', '.lamp');
+        await lp.waitForTimeout(450);
+        for (let i = 1; i <= 5; i++) { await emit(lp, 'display', frame(1, i)); await paint(lp); }
+        const flashing = await lp.evaluate(view);
+        if (flashing.frames !== '006' || flashing.rate !== '2290' || flashing.say !== 'Hold this screen up to their camera. flashing, Escape stops it') problems.push(`${tag}: the flashing view reads ${JSON.stringify(flashing)}`);
+        await shot('flashing', '.lamp');
+        // what is drawn is what the core means: the camera's decoder reads the frame's bytes back off a screenshot, for
+        // each preset (at 1440 all three; elsewhere Normal)
+        const files = [], want = [];
+        for (const spec of w === 1440 ? [0, 1, 2] : [1]) {
+          await emit(lp, 'display', frame(spec, 7)); await paint(lp);
+          const f = path.join(out, `light-${w}-decode-${spec}.png`);
+          await lp.locator('.lamp').screenshot({ path: f }); files.push(f); want.push(CODE[spec].frames[7].frame);
+        }
+        const got = readBack(files);
+        r.decoded = got.map((g, i) => Array.isArray(g) && g.includes(want[i]));
+        got.forEach((g, i) => { if (!r.decoded[i]) problems.push(`${tag}: the decoder read ${JSON.stringify(g).slice(0, 80)} off ${path.basename(files[i])}, not the frame drawn`); });
+        // Escape: gone at once, the Light switch turned to Read, and nothing more shown
+        await lp.keyboard.press('Escape'); await paint(lp);
+        const gone = await lp.evaluate(() => document.getElementById('lamp').hidden);
+        await emit(lp, 'display', frame(1, 8)); await lp.waitForTimeout(400);
+        const stopped = await lp.evaluate(view);
+        if (!gone || stopped.shown || stopped.sheet !== 'visible' || stopped.light !== '1' || JSON.stringify(stopped.sets) !== JSON.stringify([{ id: 'light', valueIndex: 1 }]) || stopped.said !== 'Flashing stopped. Light is at Read, and the message waits.')
+          problems.push(`${tag}: Escape did not stop flashing: ${JSON.stringify(stopped)}`);
+        await emit(lp, 'displayStopped', { tag: 4660 }); await paint(lp);
+        // reading: what the camera sees, small and grey, in the eyepiece
+        const pic = Array.from({ length: 64 * 48 }, (_, i) => { const x = i % 64, y = (i / 64) | 0; return Math.min(255, 50 + y * 2 + (x > 40 && y < 22 ? 130 : 0) + (Math.hypot(x - 22, y - 26) < 11 ? -40 : 0)); });
+        await emit(lp, 'eyepiece', { width: 64, height: 48, pixels: pic }); await paint(lp);
+        const reading = await lp.evaluate(() => { const c = document.querySelector('#eyepiece canvas'), d = c.getContext('2d').getImageData(50, 10, 1, 1).data; return { px: d[0], dark: document.getElementById('eyepiece').classList.contains('dark') }; });
+        if (reading.dark || reading.px !== pic[10 * 64 + 50]) problems.push(`${tag}: the eyepiece does not show what the camera sees: ${JSON.stringify(reading)}`);
+        await shot('reading', '.mod:has(#k2)');
+        // the camera's hint, typed by the eyepiece, then gone
+        await emit(lp, 'channel', { channel: 'light', state: TILT }); await paint(lp);
+        const hint = await lp.evaluate(view);
+        if (hint.note !== 'Tilt or dim the screen.') problems.push(`${tag}: the hint reads ${JSON.stringify(hint.note)}`);
+        await shot('hint', '.mod:has(#k2)');
+        await emit(lp, 'channel', { channel: 'light', state: 'listening' });
+        if ((await lp.evaluate(view)).note) problems.push(`${tag}: the hint stayed after the camera read on`);
+        // at Read, Flash is refused for a notice and for a reply, in sentence case, and nothing is asked of the machine
+        await lp.click('#mode'); await lp.fill('#reply', 'Road north is open.'); await lp.click('#flash', { force: true }); await paint(lp);
+        const refusedNotice = await lp.evaluate(view);
+        await shot('refusal', '.sheet');
+        await lp.click('#mode'); await lp.fill('#reply', 'On my way.'); await lp.click('#flash', { force: true }); await paint(lp);
+        const refusedReply = await lp.evaluate(view);
+        if (refusedNotice.pubnote !== 'Light is set to read only. Turn it to Read and flash to broadcast by light.' || refusedReply.pubnote !== 'Light is set to read only. Turn it to Read and flash to send by light.' || refusedReply.sends)
+          problems.push(`${tag}: Flash at Read was not refused as it should be: ${JSON.stringify([refusedNotice.pubnote, refusedReply.pubnote, refusedReply.sends])}`);
+        // the eyepiece's shutter: shut, the machine is asked for no picture; open again, it is
+        if (w === 1440) {
+          await lp.click('#eyepiece'); await paint(lp);
+          const shut = await lp.evaluate(() => ({ on: __calls.filter(c => c[0] === 'eyepiece').map(c => c[1].on).pop(), shut: document.getElementById('eyepiece').getAttribute('aria-checked'), kept: localStorage.getItem('bombechat.eyepiece') }));
+          await lp.locator('.mod:has(#k2)').screenshot({ path: path.join(out, `light-${w}-shut.png`) });
+          await lp.click('#eyepiece'); await paint(lp);
+          const open = await lp.evaluate(() => ({ on: __calls.filter(c => c[0] === 'eyepiece').map(c => c[1].on).pop(), kept: localStorage.getItem('bombechat.eyepiece') }));
+          if (shut.on !== false || shut.shut !== 'false' || shut.kept !== 'shut' || open.on !== true || open.kept !== null) problems.push(`${tag}: the eyepiece's shutter: ${JSON.stringify({ shut, open })}`);
+          // a message by light lands on the drums and the sheet as one by sound does, its margin saying light
+          const said = 'Meet by the north door.', bytes = [...Buffer.from(said)];
+          const plain = [...Array(68).fill(0), ...bytes, ...Array(64).fill(0)];
+          await emit(lp, 'channel', { channel: 'light', state: 'receiving' });
+          await emit(lp, 'chunk', { tag: 0x0c0d, index: 0, of: 1, channel: 'light', view: { plain, heard: plain.map(b => b ^ 3), key: plain.map(() => 3) } });
+          await emit(lp, 'message', { id: Array(16).fill(0x31), contact: 1, outgoing: false, text: said, channel: 'light', at_min: 29_000_100, heard: false, state: 'sent' });
+          await emit(lp, 'channel', { channel: 'light', state: 'listening' });
+          await lp.waitForTimeout(3200);
+          const landed = await lp.evaluate(t => { const ents = [...document.querySelectorAll('#log .ent')].filter(e => [...e.querySelectorAll('.strip')].map(s => s.textContent).join(' ') === t);
+            return { copies: ents.length, how: ents[0] && ents[0].querySelector('.when span').textContent, provisional: document.querySelectorAll('#log .provisional').length, drums: !!__bank.frame() }; }, said);
+          if (landed.copies !== 1 || landed.how !== 'light' || landed.provisional || !landed.drums) problems.push(`${tag}: a message by light did not land as one by sound does: ${JSON.stringify(landed)}`);
+          await lp.locator('.sheet').screenshot({ path: path.join(out, `light-${w}-arrived.png`) });
+          r.landed = landed;
+        }
+        Object.assign(r, { ready: ready.mid, flashing: flashing.frames, stopped: stopped.light, hint: hint.note, refused: refusedNotice.pubnote });
+        await lp.close();
+      }
+
+      // Photosensitivity. WCAG 2.3.1, general flash: a flash is a pair of opposing changes in relative luminance of 10% or
+      // more of the maximum where the darker state is below 0.80; no more than three in any one second over any area as
+      // large as about a quarter of the central field of view. Here the view is the lamp's box; each window is a quarter
+      // of its width by a quarter of its height (a sixteenth of it), stepped by an eighth, so 49 windows. 120 consecutive
+      // frames: the still field, 118 code frames, and the sheet back, at the preset's rate (every frame one 1/fps step).
+      report.photosensitivity = {};
+      for (const spec of [1, 2]) {
+        const fps = [6, 10, 15][spec];
+        const lp = await openLight(1440, 900, 2, { dpr: 1, q: 'still&ready=300' });
+        const box = await lp.locator('.sheet').boundingBox();
+        const caps = [];
+        const cap = async () => caps.push((await lp.screenshot({ clip: box })).toString('base64'));
+        await emit(lp, 'display', frame(spec, 0)); await paint(lp); await cap();
+        await lp.waitForTimeout(350);
+        for (let i = 1; i <= 118; i++) { await emit(lp, 'display', frame(spec, i)); await paint(lp); await cap(); }
+        await emit(lp, 'displayStopped', { tag: 4660 }); await paint(lp); await cap();
+        const m = await lp.evaluate(async ([caps, fps]) => {
+          const lin = c => { c /= 255; return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
+          const LUT = Array.from({ length: 256 }, (_, i) => lin(i));
+          const series = [];
+          let W = 0, H = 0;
+          for (const b64 of caps) {
+            const bmp = await createImageBitmap(await (await fetch('data:image/png;base64,' + b64)).blob());
+            W = bmp.width; H = bmp.height;
+            const c = new OffscreenCanvas(W, H), k = c.getContext('2d'); k.drawImage(bmp, 0, 0);
+            const d = k.getImageData(0, 0, W, H).data, Y = new Float64Array(W * H);
+            for (let i = 0; i < W * H; i++) Y[i] = 0.2126 * LUT[d[i * 4]] + 0.7152 * LUT[d[i * 4 + 1]] + 0.0722 * LUT[d[i * 4 + 2]];
+            const ww = Math.floor(W / 4), wh = Math.floor(H / 4), means = [];
+            for (let gy = 0; gy < 7; gy++) for (let gx = 0; gx < 7; gx++) {
+              const x0 = Math.floor(gx * W / 8), y0 = Math.floor(gy * H / 8);
+              let s = 0; for (let y = y0; y < y0 + wh; y++) for (let x = x0; x < x0 + ww; x++) s += Y[y * W + x];
+              means.push(s / (ww * wh));
+            }
+            series.push(means);
+          }
+          let worst = 0, worstFrames = 0, worstAt = null, flashes = 0;
+          for (let wi = 0; wi < 49; wi++) {
+            const L = series.map(m => m[wi]);
+            for (let t = 1; t < L.length; t++) {
+              const d = Math.abs(L[t] - L[t - 1]);
+              if (d > worst) { worst = d; worstAt = { window: wi, frame: t }; }
+              if (t > 1 && t < L.length - 1 && d > worstFrames) worstFrames = d;
+            }
+            // transitions: a change of 0.1 or more from the last extreme, the darker side under 0.8
+            let ext = L[0], dir = 0; const tr = [];
+            for (let t = 1; t < L.length; t++) {
+              const v = L[t];
+              if ((dir === 1 && v >= ext) || (dir === -1 && v <= ext)) { ext = v; continue; }
+              if (Math.abs(v - ext) >= 0.1 && Math.min(v, ext) < 0.8) { dir = Math.sign(v - ext); ext = v; tr.push(t); }
+            }
+            for (let t0 = 0; t0 < L.length; t0++) flashes = Math.max(flashes, Math.floor(tr.filter(t => t >= t0 && t < t0 + fps).length / 2));
+          }
+          return { size: [W, H], captures: series.length, worstChange: +worst.toFixed(4), worstAt, worstBetweenCodeFrames: +worstFrames.toFixed(4), flashesPerSecond: flashes };
+        }, [caps, fps]);
+        report.photosensitivity[['slow', 'normal', 'fast'][spec]] = m;
+        if (m.captures !== 120 || m.flashesPerSecond > 3) problems.push(`photosensitivity (${['slow', 'normal', 'fast'][spec]}): ${JSON.stringify(m)}`);
+        // the code frames themselves stay far under the 10% a single change may be
+        if (m.worstBetweenCodeFrames >= 0.1) problems.push(`photosensitivity (${['slow', 'normal', 'fast'][spec]}): one code frame to the next changes a window by ${m.worstBetweenCodeFrames}`);
+        await lp.close();
+      }
+
+      // Flash in the browser (the simulator) at Read and flash: a reply goes by light, the lamp shows it for Marisol's
+      // camera, still first, and the sheet comes back when it is sent; a notice goes by light too, signed; a notice too
+      // long is refused; a message by light lands with its margin saying light; the eyepiece shows the simulated camera
+      {
+        const bp = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 });
+        watch(bp, 'light browser');
+        await bp.addInitScript(() => { try { sessionStorage.setItem('bombechat.simulated-machine', JSON.stringify({ light: 2 })); sessionStorage.removeItem('bombechat.simulated-notices'); } catch (e) {} });
+        await bp.goto(url('still'));
+        await bp.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
+        await bp.waitForTimeout(300);
+        const eye = await bp.evaluate(() => { const c = document.querySelector('#eyepiece canvas'); return { dark: document.getElementById('eyepiece').classList.contains('dark'), px: c.getContext('2d').getImageData(52, 12, 1, 1).data[0] }; });
+        if (eye.dark || eye.px < 100) problems.push(`browser: the eyepiece shows no simulated camera: ${JSON.stringify(eye)}`);
+        await bp.fill('#reply', 'Meet at the library at noon.'); await bp.click('#flash');
+        await bp.waitForTimeout(250);
+        const opened = await bp.evaluate(() => ({ shown: !document.getElementById('lamp').hidden, say: document.getElementById('lampsay').firstChild.nodeValue, how: [...document.querySelectorAll('#log .ent.mine')].pop().querySelector('.when span').textContent }));
+        await bp.waitForTimeout(1500);
+        const during = await bp.evaluate(() => ({ state: [...document.querySelectorAll('#log .ent.mine')].pop().querySelector('.state').textContent, frames: +document.getElementById('lampn').textContent }));
+        await bp.locator('.deck').screenshot({ path: path.join(out, 'light-browser-1440-flashing.png') });
+        await bp.waitForFunction(() => document.getElementById('lamp').hidden, null, { timeout: 8000 }).catch(() => {});
+        await bp.waitForTimeout(300);
+        const after = await bp.evaluate(() => ({ shown: !document.getElementById('lamp').hidden, stamp: ([...document.querySelectorAll('#log .ent.mine')].pop().querySelector('.stamp') || {}).textContent }));
+        if (!opened.shown || opened.say !== "Hold this screen up to Marisol's camera." || opened.how !== 'light' || during.state !== 'flashing on screen' || !(during.frames > 3) || after.shown || !/^seen by Marisol/.test(after.stamp || ''))
+          problems.push(`browser: Flash did not send a reply by light: ${JSON.stringify({ opened, during, after })}`);
+        await bp.click('#mode'); await bp.fill('#reply', 'x'.repeat(3940)); await bp.click('#flash'); await bp.waitForTimeout(150);
+        const long = await bp.evaluate(() => document.getElementById('pubnote').textContent);
+        if (long !== 'Too long to broadcast: 3940 bytes, at most 3939.') problems.push(`browser: a notice too long for light: ${long}`);
+        await bp.fill('#reply', 'Water at the church.'); await bp.click('#flash');
+        await bp.waitForFunction(() => [...document.querySelectorAll('#log .ent.public.mine')].some(e => /sent to anyone in range/.test(e.querySelector('.state').textContent)), null, { timeout: 9000 }).catch(() => {});
+        const notice = await bp.evaluate(() => { const e = [...document.querySelectorAll('#log .ent.public.mine')].pop(); return e && { text: e.querySelector('.typed').textContent, state: e.querySelector('.state').textContent }; });
+        if (!notice || notice.text !== 'Water at the church.' || notice.state !== 'signed C41D, sent to anyone in range') problems.push(`browser: a notice by light: ${JSON.stringify(notice)}`);
+        await bp.evaluate(() => __sim.arrive('Meet by the north door.', { channel: 'light' }));
+        await bp.waitForTimeout(3200);
+        const arrived = await bp.evaluate(() => { const e = [...document.querySelectorAll('#log .ent')].pop(); return { how: e.querySelector('.when span').textContent, text: [...e.querySelectorAll('.strip')].map(s => s.textContent).join(' ') }; });
+        if (arrived.how !== 'light' || arrived.text !== 'Meet by the north door.') problems.push(`browser: a message by light: ${JSON.stringify(arrived)}`);
+        report.light.browser = { opened, during, after, notice, arrived };
+        await bp.close();
+      }
     }
   }
 

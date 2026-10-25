@@ -157,6 +157,13 @@ const url = q => 'http://127.0.0.1:4811/' + path.relative(ROOTDIR, page) + (q ? 
       await w.waitForTimeout(1600);
       await w.screenshot({ path: path.join(out, `x2-${width}-panel-${id}.png`), clip: viewBox });
     }
+    // a focused plug's tag stands clear of the row above: Flash speed's never covers the Light switch's jacks
+    {
+      await w.evaluate(() => window.__bc.focus('flash'));
+      await w.waitForTimeout(1600);
+      const clear = await w.evaluate(() => ({ tag: window.__bc.tag(), above: window.__bc.rowBand('light'), row: window.__bc.rowBand('flash') }));
+      if (!clear.tag.on || clear.tag.top < clear.above.bottom || clear.tag.bottom > clear.row.top) problems.push(`${width}: the Flash speed tag overlaps a row of jacks: ${JSON.stringify(clear)}`);
+    }
     await w.context().close();
   }
   // narrow

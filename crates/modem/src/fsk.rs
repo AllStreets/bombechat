@@ -28,8 +28,8 @@
 //! the winning tone keeps the symbol clock locked for the rest of the
 //! frame.
 
-use std::fmt;
 use std::f64::consts::{PI, TAU};
+use std::fmt;
 use std::sync::Arc;
 
 use rustfft::num_complex::Complex;

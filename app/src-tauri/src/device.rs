@@ -608,6 +608,10 @@ impl Machine for Device {
         self.node.start_pairing(my_name).map_err(str::to_string)
     }
 
+    fn set_eyepiece(&mut self, on: bool) {
+        self.node.set_eyepiece(on);
+    }
+
     fn stop_pairing(&mut self) {
         self.node.stop_pairing();
     }

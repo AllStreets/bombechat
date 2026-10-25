@@ -54,6 +54,11 @@ fn stop_pairing(state: State<'_, Shared>) {
 }
 
 #[tauri::command]
+fn eyepiece(state: State<'_, Shared>, on: bool) {
+    commands::eyepiece(&state, on)
+}
+
+#[tauri::command]
 fn confirm_pair(state: State<'_, Shared>, peer_hex: String, name: String) -> Result<i64, String> {
     commands::confirm_pair(&state, peer_hex, name)
 }
@@ -158,7 +163,8 @@ pub fn run() {
             conversation,
             broadcasts,
             machine,
-            channels
+            channels,
+            eyepiece
         ])
         .run(tauri::generate_context!())
         .expect("Bombechat could not start");

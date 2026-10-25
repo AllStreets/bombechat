@@ -35,7 +35,7 @@ const PANIC_REPORT_GAP: Duration = Duration::from_secs(5);
 const MAX_NAME_CHARS: usize = 40;
 
 /// The command names, exactly as `bridge.js` invokes them.
-pub const NAMES: [&str; 14] = [
+pub const NAMES: [&str; 15] = [
     "send",
     "broadcast",
     "pair",
@@ -50,6 +50,7 @@ pub const NAMES: [&str; 14] = [
     "conversation",
     "broadcasts",
     "machine",
+    "eyepiece",
 ];
 
 /// Each setting the settings page can change, with how many values it
@@ -200,6 +201,10 @@ pub trait Machine: Send {
     fn start_pairing(&mut self, my_name: &str) -> Result<(), String>;
     /// End the pairing in progress, if any: the hello stops showing.
     fn stop_pairing(&mut self);
+    /// Whether to send the page what the camera sees while it reads (the
+    /// eyepiece). Off until the page asks; a machine without a camera
+    /// ignores it.
+    fn set_eyepiece(&mut self, _on: bool) {}
     fn confirm_pairing(&mut self, peer: &PublicIdentity, name: &str) -> ContactId;
     fn contacts(&self) -> Vec<Contact>;
     /// The stored messages with one contact, oldest first.
@@ -414,6 +419,15 @@ pub fn pair(s: &Shared) -> Result<(), String> {
 /// showing. Nothing to refuse: with none in progress it does nothing.
 pub fn stop_pairing(s: &Shared) {
     s.machine().stop_pairing();
+}
+
+/// `eyepiece { on }`: whether the page is sent what the camera sees, as
+/// the `eyepiece` event, while Light reads. The page asks for it while
+/// its eyepiece is shown and stops asking when it is hidden, so a hidden
+/// eyepiece means no picture leaves the camera's reader at all. Not a
+/// setting: off whenever the app starts, until the page asks.
+pub fn eyepiece(s: &Shared, on: bool) {
+    s.machine().set_eyepiece(on);
 }
 
 /// `confirm_pair { peerHex, name }`: store the peer (its sign key then its
@@ -650,9 +664,10 @@ pub fn bridge_event(e: &NodeEvent) -> (&'static str, Value) {
             index,
             of,
             view,
+            channel,
         } => (
             "chunk",
-            json!({ "tag": tag, "index": index, "of": of,
+            json!({ "tag": tag, "index": index, "of": of, "channel": channel_name(*channel),
                     "view": { "plain": view.plain, "heard": view.heard, "key": view.key } }),
         ),
         NodeEvent::Message(m) => ("message", message_json(m)),
@@ -694,5 +709,15 @@ pub fn bridge_event(e: &NodeEvent) -> (&'static str, Value) {
             json!({ "tag": tag, "bits": bits, "spec": spec_id, "index": index }),
         ),
         NodeEvent::DisplayStopped { tag } => ("displayStopped", json!({ "tag": tag })),
+        // What the camera sees, small and grey, for the eyepiece: shown,
+        // never kept.
+        NodeEvent::Eyepiece {
+            width,
+            height,
+            pixels,
+        } => (
+            "eyepiece",
+            json!({ "width": width, "height": height, "pixels": pixels }),
+        ),
     }
 }

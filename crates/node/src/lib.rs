@@ -279,12 +279,14 @@ pub const NOT_IN_THIS_PLAN: &str = "unavailable: not in this plan";
 pub enum NodeEvent {
     /// One chunk of a private message decrypted, in order. For the drums
     /// only: until the [`NodeEvent::Message`] that follows, the text is
-    /// not known to come from the named sender.
+    /// not known to come from the named sender. `channel` is the one it
+    /// arrived on.
     ChunkLanded {
         tag: u16,
         index: u16,
         of: u16,
         view: ChunkView,
+        channel: Channel,
     },
     /// A private message from a contact, verified and stored.
     Message(StoredMessage),
@@ -333,6 +335,15 @@ pub enum NodeEvent {
     /// Light: clear the screen; nothing is being shown. `tag` is the
     /// envelope whose frame was on it.
     DisplayStopped { tag: u16 },
+    /// Light: what the camera sees, a small grey picture `width` by
+    /// `height` (one byte a pixel, row-major from the top left), about
+    /// four times a second while it reads and [`Node::set_eyepiece`] is
+    /// on. For the page's eyepiece only; never stored.
+    Eyepiece {
+        width: u32,
+        height: u32,
+        pixels: Vec<u8>,
+    },
 }
 
 impl fmt::Debug for NodeEvent {
@@ -391,6 +402,11 @@ impl fmt::Debug for NodeEvent {
             NodeEvent::DisplayStopped { tag } => {
                 f.debug_struct("DisplayStopped").field("tag", tag).finish()
             }
+            NodeEvent::Eyepiece { width, height, .. } => f
+                .debug_struct("Eyepiece")
+                .field("width", width)
+                .field("height", height)
+                .finish_non_exhaustive(),
         }
     }
 }
@@ -665,6 +681,15 @@ impl Node {
                 t.set_listening(switch != LightSwitch::Off);
                 t.set_sending(switch == LightSwitch::ReadAndFlash);
             }
+        }
+    }
+
+    /// Whether light transports report what the camera sees
+    /// ([`NodeEvent::Eyepiece`]) while it reads. Off until turned on: a
+    /// page that hides its eyepiece is sent no picture at all.
+    pub fn set_eyepiece(&mut self, on: bool) {
+        for t in &mut self.transports {
+            t.set_eyepiece(on);
         }
     }
 
@@ -1228,6 +1253,19 @@ impl Node {
                     TransportEvent::DisplayStopped { tag } => {
                         events.push(NodeEvent::DisplayStopped { tag })
                     }
+                    TransportEvent::Eyepiece {
+                        width,
+                        height,
+                        pixels,
+                    } => {
+                        if !self.closed(channel) {
+                            events.push(NodeEvent::Eyepiece {
+                                width,
+                                height,
+                                pixels,
+                            })
+                        }
+                    }
                     TransportEvent::CodeUnreadable => self.unreadable(ti, now_ms, &mut events),
                     TransportEvent::CodeRead => {
                         if self.hinting[ti] {
@@ -1478,6 +1516,7 @@ impl Node {
             return;
         };
         let id = *id;
+        let channel = self.transports.get(ti).map_or(Channel::Sound, |t| t.name());
         while *next < *of {
             let start = *chunks_at + *next as usize * SEGMENT;
             let stop = (start + SEGMENT).min(*end);
@@ -1491,6 +1530,7 @@ impl Node {
                     index: *next,
                     of: *of,
                     view,
+                    channel,
                 }),
                 Err(_) => {
                     *progress = Progress::Settled;

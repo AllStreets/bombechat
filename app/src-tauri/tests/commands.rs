@@ -23,6 +23,8 @@ struct Calls {
     pairings: Vec<String>,
     /// How many times pairing was stopped.
     stopped: usize,
+    /// What the page asked of the eyepiece, in turn.
+    eyepiece: Vec<bool>,
     confirmed: Vec<(PublicIdentity, String)>,
     settings: Vec<(String, usize)>,
     /// What the fake's settings file holds, as `settings` reads it back.
@@ -116,6 +118,9 @@ impl Machine for Fake {
     }
     fn stop_pairing(&mut self) {
         self.calls.lock().unwrap().stopped += 1;
+    }
+    fn set_eyepiece(&mut self, on: bool) {
+        self.calls.lock().unwrap().eyepiece.push(on);
     }
     fn confirm_pairing(&mut self, peer: &PublicIdentity, name: &str) -> ContactId {
         self.calls
@@ -331,6 +336,14 @@ fn stop_pairing_ends_the_pairing_in_progress() {
     commands::pair(&m).unwrap();
     commands::stop_pairing(&m);
     assert_eq!(calls.lock().unwrap().stopped, 1);
+}
+
+#[test]
+fn the_eyepiece_is_asked_for_and_let_go_by_the_page() {
+    let (m, calls) = fake(Lock::Unlocked);
+    commands::eyepiece(&m, true);
+    commands::eyepiece(&m, false);
+    assert_eq!(calls.lock().unwrap().eyepiece, vec![true, false]);
 }
 
 #[test]
@@ -789,12 +802,13 @@ fn node_events_become_the_bridge_events_with_the_payloads_bridge_js_expects() {
             heard: vec![1, 2],
             key: vec![73, 107],
         },
+        channel: Channel::Light,
     };
     assert_eq!(
         bridge_event(&chunk),
         (
             "chunk",
-            json!({ "tag": 0x5a1e, "index": 1, "of": 3,
+            json!({ "tag": 0x5a1e, "index": 1, "of": 3, "channel": "light",
                     "view": { "plain": [72, 105], "heard": [1, 2], "key": [73, 107] } })
         )
     );
@@ -886,6 +900,17 @@ fn node_events_become_the_bridge_events_with_the_payloads_bridge_js_expects() {
         ("displayStopped", json!({ "tag": 0x0d0e }))
     );
     assert_eq!(
+        bridge_event(&NodeEvent::Eyepiece {
+            width: 2,
+            height: 1,
+            pixels: vec![12, 240],
+        }),
+        (
+            "eyepiece",
+            json!({ "width": 2, "height": 1, "pixels": [12, 240] })
+        )
+    );
+    assert_eq!(
         bridge_event(&NodeEvent::ChannelState {
             channel: Channel::Light,
             state: bombechat_node::TILT_OR_DIM.to_string()
@@ -922,6 +947,7 @@ fn every_event_name_is_one_bridge_js_listens_for() {
         "outbox",
         "display",
         "displayStopped",
+        "eyepiece",
     ];
     let list = bridge
         .lines()
@@ -1149,4 +1175,21 @@ fn the_simulator_refuses_light_as_the_node_does() {
     for say in [bombechat_node::LIGHT_OFF, bombechat_node::READ_ONLY] {
         assert!(line.contains(&format!("'{say}'")), "{say}");
     }
+}
+
+#[test]
+fn the_page_and_the_simulator_know_the_cameras_hint_as_the_node_says_it() {
+    let tilt = format!("'{}'", bombechat_node::TILT_OR_DIM);
+    let sim = include_str!("../../ui/simulator.js");
+    assert!(
+        sim.lines()
+            .any(|l| l.starts_with("const LIGHT_TILT = ") && l.contains(&tilt)),
+        "simulator.js LIGHT_TILT"
+    );
+    let page = include_str!("../../ui/bombechat.html");
+    assert!(
+        page.lines()
+            .any(|l| l.starts_with("const TILT_OR_DIM=") && l.contains(&tilt)),
+        "bombechat.html TILT_OR_DIM"
+    );
 }
