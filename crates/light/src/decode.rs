@@ -17,11 +17,32 @@
 //! doubtful, and if the frame does not repair as read, it is retried with
 //! the most doubtful bytes treated as Reed-Solomon erasures.
 //!
-//! A triple whose fixed cells (finders, timing lines, orientation mark)
-//! mostly match is a code in view: if no reading of it passes the CRC,
-//! the result is [`ReadOutcome::Unreadable`] rather than
+//! A fit whose finders, timing lines and orientation mark each mostly
+//! read right is a code in view: if no reading of it passes the CRC, the
+//! result is [`ReadOutcome::Unreadable`] rather than
 //! [`ReadOutcome::NoCode`], so the interface can say it sees a code it
-//! cannot read.
+//! cannot read. Once a code is seen its finders are spent, so an
+//! unreadable code cannot use up the attempts a readable one needs.
+//!
+//! # How often a wrong frame could get through
+//!
+//! Only a fit that is a code in view is ever decoded. A wrong reading is
+//! accepted only if, after Reed-Solomon repair, its version and preset
+//! bytes are right and its CRC-32 matches its data. Treating a wrong
+//! repair as random bytes, that is one chance in 2^16 times 2^32 = 2^48
+//! per reading checked. One picture checks at most 12 fits, 2 readings
+//! (straight and transposed) each, 3 repairs (errors only, then two
+//! erasure counts) each, under 1 mask, or all 16 when the format field
+//! is unreadable: at most 1152 readings, so a wrong frame at most once in
+//! 2^48 / 1152, about 2.4 * 10^11 pictures, or once in 250 years of a
+//! code in view at 30 pictures a second. Wrong readings of real frames
+//! (a picture blending two frames, say) have the right version and
+//! preset already, so only the CRC's 2^32 counts: at most once in 3.7
+//! million pictures if every format field were unreadable, once in 60
+//! million with one mask (72 readings). Repairs that use erasures keep
+//! some parity spare, so Reed-Solomon itself turns most wrong guesses
+//! away before the CRC is asked, and a frame that did slip through would
+//! still fail the envelope's own authentication.
 
 use std::sync::OnceLock;
 
@@ -31,14 +52,13 @@ use crate::code::{orientation, repair_frame, Cell, CodeSpec, Layout, Orientation
 use crate::detect::{find_finders, locate, sample_cells, Finder, Picture};
 
 /// Most finder candidates considered when forming triples.
-const MAX_CANDIDATES: usize = 12;
+const MAX_CANDIDATES: usize = 16;
 
-/// Most grid fits tried in one picture.
+/// Most grid fits (one triple at one grid size) tried in one picture.
 const MAX_ATTEMPTS: usize = 12;
 
-/// Share of fixed cells that must read right for a fit to count as a code
-/// in view.
-const FIXED_MATCH: f32 = 0.8;
+/// Pictures wider than this are shrunk by a whole factor before reading.
+const MAX_WIDTH: u32 = 1280;
 
 /// Side of the window, in cells, a cell's threshold is the mean of.
 const THRESHOLD_WINDOW: usize = 9;
@@ -55,10 +75,17 @@ pub enum ReadOutcome {
 }
 
 /// Read every light code in `image`, a grey camera picture of any size.
-/// Never panics.
+/// A picture wider than 1280 pixels is first shrunk by the smallest whole
+/// factor that brings it to 1280 or under (averaging each square of
+/// pixels), so a 4K picture costs about what a 720p one does; codes in
+/// it must then still have cells of about 3 pixels or more after
+/// shrinking. Never panics.
 pub fn read(image: &GrayImage) -> ReadOutcome {
     if image.width() < 32 || image.height() < 32 {
         return ReadOutcome::NoCode;
+    }
+    if image.width() > MAX_WIDTH {
+        return read(&shrink(image, image.width().div_ceil(MAX_WIDTH)));
     }
     let pic = Picture::new(image);
     let finders = find_finders(&pic);
@@ -67,28 +94,44 @@ pub fn read(image: &GrayImage) -> ReadOutcome {
     let mut used = vec![false; finders.len()];
     let mut attempts = 0;
 
-    for fit in fits(&finders) {
+    for triple in triples(&finders) {
         if attempts >= MAX_ATTEMPTS {
             break;
         }
-        if fit.finders.iter().any(|&i| used[i]) {
+        if triple.finders.iter().any(|&i| used[i]) {
             continue;
         }
-        attempts += 1;
-        let [tl, tr, bl] = fit.finders.map(|i| (finders[i].x, finders[i].y));
-        let Some(h) = locate(&pic, tl, tr, bl, fit.spec.cells) else {
+        if !quiet_outside(&pic, triple.finders.map(|i| finders[i])) {
+            continue;
+        }
+        // Fit the grid sizes the spacing allows, closest first, until one
+        // is a code in view (a wrong size misses the timing lines).
+        let three = triple.finders.map(|i| finders[i]);
+        let mut found = None;
+        for spec in &triple.specs {
+            if attempts >= MAX_ATTEMPTS {
+                break;
+            }
+            attempts += 1;
+            let Some(h) = locate(&pic, three, spec.cells) else {
+                continue;
+            };
+            let grid = Grid::new(*spec, sample_cells(&pic, &h, spec.cells));
+            if grid.fixed_cells().in_view() {
+                found = Some(grid);
+                break;
+            }
+        }
+        let Some(grid) = found else {
             continue;
         };
-        let values = sample_cells(&pic, &h, fit.spec.cells);
-        let grid = Grid::new(fit.spec, values);
-        if grid.fixed_match() < FIXED_MATCH {
-            continue;
-        }
+        // A code is here: its finders belong to it, read or not, so they
+        // cannot spend more attempts.
         seen_code = true;
+        for &i in &triple.finders {
+            used[i] = true;
+        }
         if let Some(bytes) = grid.decode() {
-            for &i in &fit.finders {
-                used[i] = true;
-            }
             if !frames.contains(&bytes) {
                 frames.push(bytes);
             }
@@ -104,23 +147,90 @@ pub fn read(image: &GrayImage) -> ReadOutcome {
     }
 }
 
-/// One way to fit a code to three finders: which is top left, top right
-/// and bottom left, and the grid size.
-struct Fit {
+/// Whether each finder of a triple (top left, top right, bottom left) has
+/// light quiet zone on its outer sides, a cell or two beyond its edge,
+/// measured in its own cell size and so unaffected by perspective. Light
+/// means nearer the finder's own light ring than its dark centre, so a
+/// dim screen in a bright room still counts. Three finders taken from
+/// different codes nearly always put one finder's outer side on another
+/// code's data.
+fn quiet_outside(pic: &Picture, [tl, tr, bl]: [Finder; 3]) -> bool {
+    let unit = |p: &Finder| {
+        let (dx, dy) = (p.x - tl.x, p.y - tl.y);
+        let len = dx.hypot(dy).max(1.0);
+        (dx / len, dy / len)
+    };
+    let (u, v) = (unit(&tr), unit(&bl));
+    let mut light = 0;
+    let mut total = 0;
+    for (f, su, sv) in [(tl, -1.0, -1.0), (tr, 1.0, -1.0), (bl, -1.0, 1.0)] {
+        let sample =
+            |dx: f32, dy: f32, d: f32| pic.at(f.x + dx * d * f.module, f.y + dy * d * f.module);
+        let dark = sample(0.0, 0.0, 0.0);
+        let ring = [(u.0, u.1), (-u.0, -u.1), (v.0, v.1), (-v.0, -v.1)]
+            .iter()
+            .map(|&(dx, dy)| sample(dx, dy, 2.0))
+            .fold(f32::MIN, f32::max);
+        let mid = (dark + ring) / 2.0;
+        // Straight out past each outer edge, and out past the corner (the
+        // corner direction is one cell along each axis per step).
+        let dirs = [
+            (su * u.0, su * u.1),
+            (sv * v.0, sv * v.1),
+            (su * u.0 + sv * v.0, su * u.1 + sv * v.1),
+        ];
+        for (dx, dy) in dirs {
+            for d in [4.75, 5.5] {
+                light += (sample(dx, dy, d) > mid) as u32;
+                total += 1;
+            }
+        }
+    }
+    light * 6 >= total * 5
+}
+
+/// `image` shrunk by `factor` on each side, each output pixel the mean of
+/// a `factor` by `factor` square.
+fn shrink(image: &GrayImage, factor: u32) -> GrayImage {
+    let f = factor as usize;
+    let (sw, w, h) = (
+        image.width() as usize,
+        image.width() as usize / f,
+        image.height() as usize / f,
+    );
+    let src = image.as_raw();
+    let mut sums = vec![0u32; w];
+    let mut out = Vec::with_capacity(w * h);
+    let area = (f * f) as u32;
+    for y in 0..h {
+        sums.fill(0);
+        for row in src[y * f * sw..].chunks(sw).take(f) {
+            for (x, sum) in sums.iter_mut().enumerate() {
+                *sum += row[x * f..x * f + f].iter().map(|&p| p as u32).sum::<u32>();
+            }
+        }
+        out.extend(sums.iter().map(|&s| ((s + area / 2) / area) as u8));
+    }
+    GrayImage::from_raw(w as u32, h as u32, out).unwrap_or_default()
+}
+
+/// Three finders that could be one code's, as top left, top right and
+/// bottom left, with the grid sizes their spacing allows.
+struct Triple {
     finders: [usize; 3],
-    spec: CodeSpec,
+    specs: Vec<CodeSpec>,
     /// Lower is more plausible.
     cost: f32,
 }
 
-/// Every plausible fit, most plausible first.
-fn fits(finders: &[Finder]) -> Vec<Fit> {
+/// Every plausible triple among the best finders, most plausible first.
+fn triples(finders: &[Finder]) -> Vec<Triple> {
     let k = finders.len().min(MAX_CANDIDATES);
     let mut out = Vec::new();
     for a in 0..k {
         for b in a + 1..k {
             for c in b + 1..k {
-                triple_fits([a, b, c], finders, &mut out);
+                out.extend(triple([a, b, c], finders));
             }
         }
     }
@@ -128,8 +238,8 @@ fn fits(finders: &[Finder]) -> Vec<Fit> {
     out
 }
 
-/// The fits three finders allow, if they could be one code's.
-fn triple_fits(idx: [usize; 3], finders: &[Finder], out: &mut Vec<Fit>) {
+/// The triple three finders make, if they could be one code's.
+fn triple(idx: [usize; 3], finders: &[Finder]) -> Option<Triple> {
     let f = idx.map(|i| finders[i]);
     let modules = f.map(|f| f.module);
     let (lo, hi) = (
@@ -137,7 +247,7 @@ fn triple_fits(idx: [usize; 3], finders: &[Finder], out: &mut Vec<Fit>) {
         modules.iter().cloned().fold(f32::MIN, f32::max),
     );
     if hi > 1.8 * lo {
-        return;
+        return None;
     }
     let d = |p: &Finder, q: &Finder| (p.x - q.x).hypot(p.y - q.y);
     // The top left finder is the one opposite the longest side.
@@ -150,11 +260,11 @@ fn triple_fits(idx: [usize; 3], finders: &[Finder], out: &mut Vec<Fit>) {
     let (u, v) = ((p.x - o.x, p.y - o.y), (q.x - o.x, q.y - o.y));
     let (lu, lv) = (u.0.hypot(u.1), v.0.hypot(v.1));
     if lu < 1.0 || lv < 1.0 || lu.max(lv) > 1.8 * lu.min(lv) {
-        return;
+        return None;
     }
     let cos = (u.0 * v.0 + u.1 * v.1) / (lu * lv);
     if cos.abs() > 0.5 {
-        return;
+        return None;
     }
     // Top right is the one a quarter turn anticlockwise of bottom left as
     // drawn (y down); a mirrored picture is caught by the orientation mark.
@@ -162,17 +272,40 @@ fn triple_fits(idx: [usize; 3], finders: &[Finder], out: &mut Vec<Fit>) {
     let (tr, bl) = if cross > 0.0 { (pi, qi) } else { (qi, pi) };
     let module = (modules[0] + modules[1] + modules[2]) / 3.0;
     let spacing = (lu + lv) / 2.0 / module;
-    for spec in CodeSpec::presets() {
-        let want = (spec.cells - 7) as f32;
-        let off = (spacing / want).ln().abs();
-        if off < 0.35 {
-            let shape = cos.abs() + (lu / lv).ln().abs() + (hi / lo).ln();
-            out.push(Fit {
-                finders: [idx[corner], tr, bl],
-                spec,
-                cost: shape + off,
-            });
-        }
+    let mut specs: Vec<(f32, CodeSpec)> = CodeSpec::presets()
+        .into_iter()
+        .map(|spec| ((spacing / (spec.cells - 7) as f32).ln().abs(), spec))
+        .filter(|&(off, _)| off < 0.35)
+        .collect();
+    specs.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let off = specs.first()?.0;
+    let shape = cos.abs() + (lu / lv).ln().abs() + (hi / lo).ln();
+    let quality: f32 = f.iter().map(|f| f.rank()).sum();
+    Some(Triple {
+        finders: [idx[corner], tr, bl],
+        specs: specs.into_iter().map(|(_, s)| s).collect(),
+        cost: shape + off + quality,
+    })
+}
+
+/// How well a fit's fixed cells read, by kind, each as the share right.
+#[derive(Debug, Clone, Copy)]
+struct FixedCells {
+    /// The three finders and their separators.
+    finders: f32,
+    /// The two timing lines.
+    timing: f32,
+    /// The orientation mark, whichever way round reads better.
+    mark: f32,
+}
+
+impl FixedCells {
+    /// Whether this is a light code in view. Each kind of fixed cell must
+    /// mostly read right on its own: QR codes share the finders and the
+    /// timing lines but not the orientation mark, and a grid fitted at the
+    /// wrong size gets the finders but not the timing.
+    fn in_view(&self) -> bool {
+        self.finders >= 0.85 && self.timing >= 0.75 && self.mark >= 0.8
     }
 }
 
@@ -236,30 +369,44 @@ impl Grid {
         (self.values[i] - self.thresholds[i]).abs()
     }
 
-    /// Share of the finder, timing and separator cells that read as
-    /// drawn (the orientation mark either way round).
-    fn fixed_match(&self) -> f32 {
+    /// How well the finder, timing and orientation mark cells read.
+    fn fixed_cells(&self) -> FixedCells {
         let layout = layout(&self.spec);
         let n = self.spec.cells;
-        let (mut right, mut total) = (0u32, 0u32);
+        let o = n - 5;
+        let share = |(right, total): (u32, u32)| right as f32 / total.max(1) as f32;
+        let (mut finders, mut timing) = ((0, 0), (0, 0));
         for row in 0..n {
             for col in 0..n {
-                if row >= n - 5 && col >= n - 5 {
+                if row >= o && col >= o {
                     continue;
                 }
                 if let Cell::Fixed(dark) = layout.cell(row, col) {
-                    total += 1;
-                    right += (self.dark(row, col) == dark) as u32;
+                    let tally = if row < 8 && (col < 8 || col >= n - 8) || row >= n - 8 && col < 8 {
+                        &mut finders
+                    } else {
+                        &mut timing
+                    };
+                    tally.0 += (self.dark(row, col) == dark) as u32;
+                    tally.1 += 1;
                 }
             }
         }
-        let mark = orientation(&self.spec, |r, c| self.dark(r, c)).is_some();
-        let mark_cells = 25;
-        total += mark_cells;
-        if mark {
-            right += mark_cells;
+        // The mark as drawn, and reflected across its diagonal.
+        let (mut normal, mut mirrored) = (0, 0);
+        for r in 0..5 {
+            for c in 0..5 {
+                let seen = self.dark(o + r, o + c);
+                let drawn = |r, c| matches!(layout.cell(o + r, o + c), Cell::Fixed(true));
+                normal += (seen == drawn(r, c)) as u32;
+                mirrored += (seen == drawn(c, r)) as u32;
+            }
         }
-        right as f32 / total.max(1) as f32
+        FixedCells {
+            finders: share(finders),
+            timing: share(timing),
+            mark: share((normal.max(mirrored), 25)),
+        }
     }
 
     /// The frame this grid carries, repaired, or `None`.

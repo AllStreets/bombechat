@@ -10,10 +10,16 @@
 //! in the ratio 1:1:3:1:1, the signature a finder shows along any line
 //! through its centre at any rotation or scale; each hit is then refined
 //! at full resolution by crossing the mark vertically, horizontally again
-//! and diagonally through the centre found, each crossing checked for the
-//! same ratio. Hits on the same mark from neighbouring rows merge, so a
-//! real finder collects several and a chance pattern in clutter or in the
-//! data cells usually only one.
+//! and along both diagonals through the centre found, each crossing
+//! checked for the same ratio. Hits on the same mark from neighbouring
+//! rows merge. Candidates are ranked by how closely their crossings keep
+//! the ratio, with a little credit for rows agreeing, and the best 256
+//! are kept wherever in the picture they are.
+//!
+//! The work is bounded for any picture: each half of a crossing stops at three
+//! times the length of the row pattern that set it off, and at most
+//! [`CONFIRMS_PER_ROW`] hits per row are checked, which only periodic
+//! textures (stripes, blinds, checkerboards) ever reach.
 //!
 //! # Perspective
 //!
@@ -25,9 +31,11 @@
 //! orientation mark (either way round, so a mirrored picture scores the
 //! same), its separator, the quiet zone beside it and the strips of quiet
 //! zone along the whole bottom and right edges, so the best candidate is
-//! the one that puts the code's far edges where they are. The search runs
-//! a cell at a time over a fifth of the code's width, then refines to an
-//! eighth of a cell.
+//! the one that puts the code's far edges where they are. The first guess
+//! allows for perspective from the finders' sizes (the far side of a
+//! tilted screen looks smaller); the search runs a cell at a time over an
+//! eighth of the code's width around it, then refines to an eighth of a
+//! cell.
 //!
 //! # Cells
 //!
@@ -42,10 +50,21 @@ use crate::code::QUIET;
 /// Rows the coarse finder pass steps by.
 const ROW_STEP: usize = 2;
 
-/// Most finder candidates kept from one picture.
+/// Most finder candidates kept from one picture: the best by quality.
 const MAX_FINDERS: usize = 256;
 
-/// A grey picture with its summed-area table.
+/// Most row hits checked at full resolution per scanned row. A real
+/// finder gives one hit per row it crosses, so this only bites on
+/// periodic textures (stripes, blinds, checkerboards), and it bounds the
+/// work per picture at about this times the rows scanned.
+const CONFIRMS_PER_ROW: usize = 12;
+
+/// A crossing may run to this many times the length of the row pattern
+/// that triggered it; a real finder's crossings differ by perspective
+/// alone.
+const CROSS_REACH: usize = 3;
+
+/// A grey picture with its summed-area table and its thresholded form.
 pub(crate) struct Picture<'a> {
     w: usize,
     h: usize,
@@ -55,6 +74,8 @@ pub(crate) struct Picture<'a> {
     sum: Vec<u32>,
     /// Half the side of the local mean window.
     half: usize,
+    /// Each pixel thresholded against its local mean, `true` dark.
+    dark: Vec<bool>,
 }
 
 impl<'a> Picture<'a> {
@@ -72,13 +93,32 @@ impl<'a> Picture<'a> {
                 here[x + 1] = above[x + 1].wrapping_add(row);
             }
         }
-        Picture {
+        let mut pic = Picture {
             w,
             h,
             px,
             sum,
             half: (w.min(h) / 16).clamp(8, 64),
+            dark: Vec::new(),
+        };
+        // Dark when 16 * pixel * area < 15 * window sum: no division.
+        let mut dark = vec![false; w * h];
+        let half = pic.half;
+        for y in 0..h {
+            let (y0, y1) = (y.saturating_sub(half), (y + half + 1).min(h));
+            let (top, bottom) = (&pic.sum[y0 * stride..], &pic.sum[y1 * stride..]);
+            for x in 0..w {
+                let (x0, x1) = (x.saturating_sub(half), (x + half + 1).min(w));
+                let total = bottom[x1]
+                    .wrapping_sub(top[x1])
+                    .wrapping_sub(bottom[x0])
+                    .wrapping_add(top[x0]) as u64;
+                let area = ((x1 - x0) * (y1 - y0)) as u64;
+                dark[y * w + x] = 16 * px[y * w + x] as u64 * area < 15 * total;
+            }
         }
+        pic.dark = dark;
+        pic
     }
 
     /// Mean of the window `x0..x1`, `y0..y1`, clamped to the picture.
@@ -103,10 +143,10 @@ impl<'a> Picture<'a> {
         )
     }
 
-    /// Whether pixel `x`, `y` reads dark against its surroundings.
+    /// Whether pixel `x`, `y` reads dark against its surroundings: under
+    /// 15/16 of its local mean.
     fn dark(&self, x: usize, y: usize) -> bool {
-        let m = self.local_mean(x, y);
-        (self.px[y * self.w + x] as u32) * 16 < m * 15
+        self.dark[y * self.w + x]
     }
 
     /// Bilinear grey value at `x`, `y` (pixel centres at whole numbers),
@@ -140,26 +180,38 @@ pub(crate) struct Finder {
     pub module: f32,
     /// Rows of the coarse pass that hit this mark.
     pub hits: u32,
+    /// Mean departure of its crossings from the 1:1:3:1:1 ratio, 0 for
+    /// perfect.
+    pub error: f32,
 }
 
-/// Every finder-like mark in the picture, most hits first.
+impl Finder {
+    /// How likely this is a real finder; lower is better. Close to the
+    /// ratio matters most; a few rows agreeing helps, many more does not
+    /// (a big mark in clutter must not outrank a small real one).
+    pub fn rank(&self) -> f32 {
+        self.error - 0.04 * self.hits.min(5) as f32
+    }
+}
+
+/// Every finder-like mark in the picture, best first (see
+/// [`Finder::rank`]).
 pub(crate) fn find_finders(pic: &Picture) -> Vec<Finder> {
     let mut found: Vec<Finder> = Vec::new();
     let mut runs: Vec<(usize, usize, bool)> = Vec::with_capacity(pic.w / 2);
     for y in (ROW_STEP / 2..pic.h).step_by(ROW_STEP) {
         runs.clear();
+        let row = &pic.dark[y * pic.w..(y + 1) * pic.w];
         let mut start = 0;
-        let mut colour = pic.dark(0, y);
         for x in 1..pic.w {
-            let d = pic.dark(x, y);
-            if d != colour {
-                runs.push((start, x - start, colour));
+            if row[x] != row[x - 1] {
+                runs.push((start, x - start, row[start]));
                 start = x;
-                colour = d;
             }
         }
-        runs.push((start, pic.w - start, colour));
+        runs.push((start, pic.w - start, row[start]));
 
+        let mut confirms = 0;
         for i in 0..runs.len().saturating_sub(4) {
             if !runs[i].2 {
                 continue;
@@ -171,44 +223,54 @@ pub(crate) fn find_finders(pic: &Picture) -> Vec<Finder> {
                 runs[i + 3].1,
                 runs[i + 4].1,
             ];
-            if !ratio_ok(&lens) {
+            if ratio_error(&lens).is_none() {
                 continue;
             }
+            if confirms == CONFIRMS_PER_ROW {
+                break;
+            }
+            confirms += 1;
             let cx = runs[i + 2].0 + runs[i + 2].1 / 2;
-            if let Some(f) = confirm(pic, cx, y) {
+            let reach = CROSS_REACH * lens.iter().sum::<usize>();
+            if let Some(f) = confirm(pic, cx, y, reach) {
                 merge(&mut found, f);
-                if found.len() >= MAX_FINDERS {
-                    break;
-                }
             }
         }
-        if found.len() >= MAX_FINDERS {
-            break;
-        }
     }
-    found.sort_by_key(|f| std::cmp::Reverse(f.hits));
+    found.sort_by(|a, b| a.rank().total_cmp(&b.rank()));
     found
 }
 
-/// Whether five run lengths read dark, light, dark, light, dark in the
-/// ratio 1:1:3:1:1, loosely enough for blur and threshold bias.
-fn ratio_ok(lens: &[usize; 5]) -> bool {
+/// How far five run lengths are from dark, light, dark, light, dark in
+/// the ratio 1:1:3:1:1, as a share of their total, or `None` if they are
+/// too far (the tolerance allows for blur and threshold bias).
+fn ratio_error(lens: &[usize; 5]) -> Option<f32> {
     let total: usize = lens.iter().sum();
     if total < 7 {
-        return false;
+        return None;
     }
     let m = total as f32 / 7.0;
     let tol = m * 0.7;
-    (0..5).all(|i| {
-        let want = if i == 2 { 3.0 * m } else { m };
-        let slack = if i == 2 { 2.0 * tol } else { tol };
-        (lens[i] as f32 - want).abs() < slack
-    })
+    let mut error = 0.0;
+    for (i, &len) in lens.iter().enumerate() {
+        let (want, slack) = if i == 2 {
+            (3.0 * m, 2.0 * tol)
+        } else {
+            (m, tol)
+        };
+        let off = (len as f32 - want).abs();
+        if off >= slack {
+            return None;
+        }
+        error += off;
+    }
+    Some(error / total as f32)
 }
 
-/// Cross the mark through pixel `x`, `y` along `(dx, dy)`: the five run
-/// lengths and the centre of the middle run, as an offset from `x`, `y` in
-/// steps. `None` if the runs do not show a finder or leave the picture.
+/// Cross the mark through pixel `x`, `y` along `(dx, dy)`: the total
+/// length of the five runs, the centre of the middle run as an offset
+/// from `x`, `y` in steps, and the ratio error. `None` if the runs do not
+/// show a finder, leave the picture, or run past `max` steps altogether.
 fn cross(
     pic: &Picture,
     x: usize,
@@ -216,7 +278,7 @@ fn cross(
     dx: isize,
     dy: isize,
     max: usize,
-) -> Option<([usize; 5], f32)> {
+) -> Option<(usize, f32, f32)> {
     if !pic.dark(x, y) {
         return None;
     }
@@ -230,6 +292,7 @@ fn cross(
     let walk = |sign: isize| -> Option<([usize; 3], isize)> {
         let mut counts = [0usize; 3];
         let mut t = sign;
+        let mut walked = 0;
         let mut core_end = 0;
         for (k, want_dark) in [true, false, true].into_iter().enumerate() {
             loop {
@@ -238,7 +301,8 @@ fn cross(
                     break;
                 }
                 counts[k] += 1;
-                if counts[k] > max {
+                walked += 1;
+                if walked > max {
                     return None;
                 }
                 t += sign;
@@ -252,40 +316,49 @@ fn cross(
     let (neg, neg_end) = walk(-1)?;
     let (pos, pos_end) = walk(1)?;
     let lens = [neg[2], neg[1], neg[0] + pos[0] + 1, pos[1], pos[2]];
-    ratio_ok(&lens).then_some((lens, (neg_end + pos_end) as f32 / 2.0))
+    let error = ratio_error(&lens)?;
+    Some((lens.iter().sum(), (neg_end + pos_end) as f32 / 2.0, error))
 }
 
 /// Check a row hit at full resolution: vertically, horizontally again and
-/// diagonally through the refined centre.
-fn confirm(pic: &Picture, cx: usize, y: usize) -> Option<Finder> {
-    let max = pic.w.max(pic.h) / 4;
-    let (v_lens, dy) = cross(pic, cx, y, 0, 1, max)?;
+/// along both diagonals through the refined centre, no crossing running
+/// past `reach` pixels.
+fn confirm(pic: &Picture, cx: usize, y: usize, reach: usize) -> Option<Finder> {
+    let (tv, dy, ev) = cross(pic, cx, y, 0, 1, reach)?;
     let cy = (y as f32 + dy).round() as usize;
-    let (h_lens, dx) = cross(pic, cx, cy, 1, 0, max)?;
+    let (th, dx, eh) = cross(pic, cx, cy, 1, 0, reach)?;
     let fx = cx as f32 + dx;
     let fy = y as f32 + dy;
     let rx = fx.round() as usize;
-    let (d1, _) = cross(pic, rx, cy, 1, 1, max)?;
-    let (d2, _) = cross(pic, rx, cy, 1, -1, max)?;
-    let (tv, th) = (
-        v_lens.iter().sum::<usize>() as f32,
-        h_lens.iter().sum::<usize>() as f32,
-    );
-    let td = (d1.iter().sum::<usize>() + d2.iter().sum::<usize>()) as f32 / 2.0;
+    let (d1, _, e1) = cross(pic, rx, cy, 1, 1, reach)?;
+    let (d2, _, e2) = cross(pic, rx, cy, 1, -1, reach)?;
+    let (tv, th) = (tv as f32, th as f32);
+    // Diagonal steps are longer than straight ones.
+    let td = (d1 + d2) as f32 / 2.0 * std::f32::consts::SQRT_2;
     // Perspective and rotation stretch the crossings, but not wildly.
     let (lo, hi) = (tv.min(th).min(td), tv.max(th).max(td));
     if hi > 2.0 * lo {
         return None;
     }
+    // A crossing at angle a to the mark's own axes is 1 / cos(a) too
+    // long; of four crossings 45 degrees apart one is within 22.5 degrees
+    // of an axis, so the shortest is within 8 percent of the truth at any
+    // rotation.
+    let shortest = tv
+        .min(th)
+        .min(d1 as f32 * std::f32::consts::SQRT_2)
+        .min(d2 as f32 * std::f32::consts::SQRT_2);
     Some(Finder {
         x: fx,
         y: fy,
-        module: (tv + th) / 14.0,
+        module: shortest / 7.0,
         hits: 1,
+        error: (ev + eh + e1 + e2) / 4.0,
     })
 }
 
-/// Add a hit to the candidates, merging it into one it repeats.
+/// Add a hit to the candidates, merging it into one it repeats. When the
+/// list is full, a new mark replaces the worst-ranked one if it is better.
 fn merge(found: &mut Vec<Finder>, f: Finder) {
     for g in found.iter_mut() {
         let near = (g.x - f.x).hypot(g.y - f.y) < 2.0 * g.module.max(f.module);
@@ -295,11 +368,22 @@ fn merge(found: &mut Vec<Finder>, f: Finder) {
             g.x = (g.x * n + f.x) / (n + 1.0);
             g.y = (g.y * n + f.y) / (n + 1.0);
             g.module = (g.module * n + f.module) / (n + 1.0);
+            g.error = (g.error * n + f.error) / (n + 1.0);
             g.hits += 1;
             return;
         }
     }
-    found.push(f);
+    if found.len() < MAX_FINDERS {
+        found.push(f);
+        return;
+    }
+    if let Some(worst) =
+        (0..found.len()).max_by(|&i, &j| found[i].rank().total_cmp(&found[j].rank()))
+    {
+        if f.rank() < found[worst].rank() {
+            found[worst] = f;
+        }
+    }
 }
 
 /// A plane-to-picture perspective map.
@@ -370,7 +454,9 @@ struct Template {
 }
 
 impl Template {
-    fn new(n: u16) -> Self {
+    /// The template for an `n`-cell grid, with every `strip`th cell of the
+    /// quiet zone strips (a sparser template is cheaper to score).
+    fn new(n: u16, strip: usize) -> Self {
         let nf = n as f64;
         let cell = |row: f64, col: f64, dark: bool| TemplateCell {
             u: col + 0.5,
@@ -395,7 +481,7 @@ impl Template {
             }
         }
         // Quiet zone strips along the bottom and right edges.
-        for k in (0..n as usize - 6).step_by(2) {
+        for k in (0..n as usize - 6).step_by(strip) {
             let k = k as f64;
             common.push(cell(nf, k, false));
             common.push(cell(nf + 1.0, k, false));
@@ -428,25 +514,30 @@ impl Template {
 
 /// Where a code's grid sits in the picture: the homography from grid
 /// coordinates (columns across, rows down, a cell one unit) to pixels.
-pub(crate) fn locate(
-    pic: &Picture,
-    tl: (f32, f32),
-    tr: (f32, f32),
-    bl: (f32, f32),
-    n: u16,
-) -> Option<Homography> {
+pub(crate) fn locate(pic: &Picture, finders: [Finder; 3], n: u16) -> Option<Homography> {
     let nf = n as f64;
     let (a, b) = (3.5, nf - 3.5);
     let corner = nf - 2.5;
-    let p = |q: (f32, f32)| (q.0 as f64, q.1 as f64);
-    let (tl, tr, bl) = (p(tl), p(tr), p(bl));
+    let [tl, tr, bl] = finders.map(|f| (f.x as f64, f.y as f64));
     let span = b - a;
-    // The affine guess for the orientation mark's centre.
+    // The first guess for the orientation mark's centre. Under
+    // perspective the far side of the code looks smaller, and a finder's
+    // size shows how much: a homography scales lengths near a point by
+    // roughly its denominator w to the power -1.5, so each finder's size
+    // against the top left's gives w at the top right and bottom left
+    // (w = 1 at the top left), and w fixes where the fourth corner falls.
+    let w = |f: &Finder| {
+        let ratio = (finders[0].module / f.module) as f64;
+        ratio.powf(1.0 / 1.5).clamp(0.6, 1.6)
+    };
+    let (wu, wv) = (w(&finders[1]), w(&finders[2]));
     let t = (corner - a) / span;
-    let guess = (
-        tl.0 + t * (tr.0 - tl.0) + t * (bl.0 - tl.0),
-        tl.1 + t * (tr.1 - tl.1) + t * (bl.1 - tl.1),
-    );
+    let along = |k: usize| {
+        let (o, u, v) = ([tl.0, tl.1][k], [tr.0, tr.1][k], [bl.0, bl.1][k]);
+        o + t * (u * wu - o) + t * (v * wv - o)
+    };
+    let denominator = 1.0 + t * (wu - 1.0) + t * (wv - 1.0);
+    let guess = (along(0) / denominator, along(1) / denominator);
     let leg = (tr.0 - tl.0)
         .hypot(tr.1 - tl.1)
         .max((bl.0 - tl.0).hypot(bl.1 - tl.1));
@@ -456,44 +547,53 @@ pub(crate) fn locate(
         return None;
     }
 
-    let template = Template::new(n);
-    let contrast = finder_contrast(pic, tl, cell);
+    // The wide search scores a sparser template; the refinement the full
+    // one.
+    let (coarse, fine) = (Template::new(n, 4), Template::new(n, 2));
+    let axes = [
+        ((tr.0 - tl.0) / span, (tr.1 - tl.1) / span),
+        ((bl.0 - tl.0) / span, (bl.1 - tl.1) / span),
+    ];
+    let contrast = finder_contrast(pic, tl, axes);
     let from = [(a, a), (b, a), (a, b), (corner, corner)];
-    let score_at = |q: (f64, f64)| -> Option<f32> {
-        let h = Homography::from_points(from, [tl, tr, bl, q])?;
-        Some(score(pic, &h, &template, contrast))
+    let score_at = |q: (f64, f64), template: &Template| -> f32 {
+        Homography::from_points(from, [tl, tr, bl, q])
+            .map_or(f32::MIN, |h| score(pic, &h, template, contrast))
     };
-
-    let mut best = (guess, score_at(guess).unwrap_or(f32::MIN));
-    let reach = (0.2 * span).ceil() as i32;
-    let search = |centre: (f64, f64), steps: i32, step: f64, best: &mut ((f64, f64), f32)| {
+    // The best point within `steps` steps of `centre`, by `template`.
+    let search = |centre: (f64, f64), steps: i32, step: f64, template: &Template| {
+        let mut best = (centre, score_at(centre, template));
         for i in -steps..=steps {
             for j in -steps..=steps {
                 let q = (centre.0 + i as f64 * step, centre.1 + j as f64 * step);
-                if let Some(s) = score_at(q) {
-                    if s > best.1 {
-                        *best = (q, s);
-                    }
+                let s = score_at(q, template);
+                if s > best.1 {
+                    best = (q, s);
                 }
             }
         }
+        best.0
     };
-    search(guess, reach, cell, &mut best);
-    search(best.0, 2, cell / 2.0, &mut best);
-    search(best.0, 2, cell / 4.0, &mut best);
-    search(best.0, 1, cell / 8.0, &mut best);
-    Homography::from_points(from, [tl, tr, bl, best.0])
+    // From the perspective-aware guess, the mark is within 2 cells up to
+    // 30 degrees of tilt and within 7 for 99 percent of tilts to 45.
+    let reach = (0.12 * span).ceil() as i32;
+    let mut best = search(guess, reach, cell, &coarse);
+    best = search(best, 2, cell / 2.0, &fine);
+    best = search(best, 2, cell / 4.0, &fine);
+    best = search(best, 1, cell / 8.0, &fine);
+    Homography::from_points(from, [tl, tr, bl, best])
 }
 
-/// Half the grey difference between light and dark near a finder, from
-/// its dark centre and the light ring around it; at least a few levels.
-fn finder_contrast(pic: &Picture, centre: (f64, f64), cell: f64) -> f32 {
-    let (x, y) = (centre.0 as f32, centre.1 as f32);
-    let dark = pic.at(x, y);
-    let r = (2.0 * cell) as f32;
-    let light = [(r, 0.0), (-r, 0.0), (0.0, r), (0.0, -r)]
+/// Half the grey difference between light and dark at a finder: its dark
+/// centre against its light ring, two cells out along the grid's own axes
+/// (one cell along each, in pixels, is `axes`); at least a few levels.
+fn finder_contrast(pic: &Picture, centre: (f64, f64), axes: [(f64, f64); 2]) -> f32 {
+    let (x, y) = centre;
+    let dark = pic.at(x as f32, y as f32);
+    let light = axes
         .iter()
-        .map(|&(dx, dy)| pic.at(x + dx, y + dy))
+        .flat_map(|&(ax, ay)| [(2.0 * ax, 2.0 * ay), (-2.0 * ax, -2.0 * ay)])
+        .map(|(dx, dy)| pic.at((x + dx) as f32, (y + dy) as f32))
         .fold(f32::MIN, f32::max);
     ((light - dark) / 2.0).max(4.0)
 }
@@ -562,9 +662,9 @@ mod tests {
 
     #[test]
     fn finder_ratio() {
-        assert!(ratio_ok(&[3, 3, 9, 3, 3]));
-        assert!(ratio_ok(&[2, 4, 8, 3, 3]));
-        assert!(!ratio_ok(&[3, 3, 3, 3, 3]));
-        assert!(!ratio_ok(&[9, 3, 9, 3, 3]));
+        assert_eq!(ratio_error(&[3, 3, 9, 3, 3]), Some(0.0));
+        assert!(ratio_error(&[2, 4, 8, 3, 3]).is_some_and(|e| e > 0.0));
+        assert_eq!(ratio_error(&[3, 3, 3, 3, 3]), None);
+        assert_eq!(ratio_error(&[9, 3, 9, 3, 3]), None);
     }
 }

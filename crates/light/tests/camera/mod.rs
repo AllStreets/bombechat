@@ -16,8 +16,10 @@
 //! (Gaussian), hand shake (motion blur), screen moire (the screen's pixel
 //! grid aliasing against the sensor's: a fine sinusoid whose strength
 //! beats slowly across the screen, applied after the lens because it is
-//! made at the sensor), the camera's black and white levels and gamma,
-//! sensor noise, 8-bit
+//! made at the sensor), slow moire banding, bloom from light over full
+//! scale, shot noise in linear light, sensor clipping, the camera's
+//! response curve (gamma), read noise, demosaic grain (spatially
+//! correlated noise), ISP sharpening (unsharp mask, with halos), 8-bit
 //! quantisation, an optional front-camera mirror, and optional JPEG
 //! compression (8 by 8 DCT quantised with the standard luminance table).
 
@@ -26,6 +28,8 @@
 #![allow(clippy::needless_range_loop)]
 
 use image::{GrayImage, Luma};
+
+pub mod textures;
 
 /// Focal length in pixels for a 65 degree horizontal view at 1280 px.
 const FOCAL_AT_1280: f64 = 1005.0;
@@ -109,6 +113,22 @@ pub struct Camera {
     pub moire_angle: f64,
     /// JPEG quality, if compressed.
     pub jpeg: Option<u8>,
+    /// Low-frequency moire banding: amplitude (share of brightness),
+    /// period in pixels (tens to hundreds) and direction.
+    pub band: f64,
+    pub band_period: f64,
+    pub band_angle: f64,
+    /// Share of light above the sensor's full scale (`white` over 1)
+    /// that bleeds into the surroundings (bloom), spread over about 2 px.
+    pub bloom: f64,
+    /// Shot noise: standard deviation `shot * sqrt(signal)` in linear
+    /// light, as a share of full scale.
+    pub shot: f64,
+    /// Spatially correlated noise from demosaicing, grey levels.
+    pub grain: f64,
+    /// ISP unsharp-mask sharpening amount (radius about 1 px), with the
+    /// halos it brings.
+    pub sharpen: f64,
     /// Radial lens distortion: a point at radius `r` (in focal lengths)
     /// from the centre lands at `r * (1 + k1 * r^2)`; negative is barrel.
     pub k1: f64,
@@ -135,6 +155,13 @@ impl Default for Camera {
             moire_angle: 0.0,
             jpeg: None,
             k1: 0.0,
+            band: 0.0,
+            band_period: 100.0,
+            band_angle: 0.0,
+            bloom: 0.0,
+            shot: 0.0,
+            grain: 0.0,
+            sharpen: 0.0,
         }
     }
 }
@@ -213,12 +240,14 @@ pub fn homography(code: &Code, cam: &Camera) -> Mat3 {
         m[i][1] = r[i][1] * k;
         m[i][2] = t[i] - r[i][0] * half - r[i][1] * half;
     }
-    let kmat: Mat3 = [[f, 0.0, w / 2.0], [0.0, f, h / 2.0], [0.0, 0.0, 1.0]];
+    // Pixel centres are whole numbers, so the frame spans -0.5 to w - 0.5.
+    let (cx, cy) = ((w - 1.0) / 2.0, (h - 1.0) / 2.0);
+    let kmat: Mat3 = [[f, 0.0, cx], [0.0, f, cy], [0.0, 0.0, 1.0]];
     mul(&kmat, &m)
 }
 
-/// Whether the code and its whole quiet zone land inside the frame, with
-/// a few pixels to spare.
+/// Whether the code and its whole quiet zone land inside the frame
+/// (touching the edge counts).
 pub fn in_view(code: &Code, cam: &Camera) -> bool {
     let m = homography(code, cam);
     let (lo, hi) = (-QUIET, code.n as f64 + QUIET);
@@ -226,7 +255,9 @@ pub fn in_view(code: &Code, cam: &Camera) -> bool {
         .iter()
         .all(|&(u, v)| {
             apply(&m, u, v).is_some_and(|(x, y)| {
-                x > 3.0 && y > 3.0 && x < cam.width as f64 - 4.0 && y < cam.height as f64 - 4.0
+                let (w, h) = (cam.width as f64, cam.height as f64);
+                let slack = 0.5 + 1e-6;
+                x >= -slack && y >= -slack && x <= w - 1.0 + slack && y <= h - 1.0 + slack
             })
         })
 }
@@ -441,17 +472,70 @@ pub fn shoot(codes: &[Code], cam: &Camera, seed: u64) -> GrayImage {
         }
     }
 
+    // Banding moire: slow bands of brightness across the screen.
+    if cam.band > 0.0 {
+        let (ba, bs) = (
+            cam.band_angle.to_radians().cos(),
+            cam.band_angle.to_radians().sin(),
+        );
+        for y in 0..h {
+            for x in 0..w {
+                let s = screen[y * w + x];
+                if s == 0.0 {
+                    continue;
+                }
+                let t = (x as f64 * ba + y as f64 * bs) / cam.band_period;
+                let m = cam.band * (std::f64::consts::TAU * t).sin();
+                img[y * w + x] *= 1.0 + (m as f32) * s;
+            }
+        }
+    }
+
+    // Bloom: light over full scale bleeds into its surroundings.
+    if cam.bloom > 0.0 {
+        let excess: Vec<f32> = img.iter().map(|v| (v - 1.0).max(0.0)).collect();
+        let spread = gaussian(&excess, w, h, 2.0);
+        for (v, e) in img.iter_mut().zip(&spread) {
+            *v += cam.bloom as f32 * e;
+        }
+    }
+
+    // Shot noise in linear light, then the sensor clips and the response
+    // curve applies, then read noise.
+    let mut sig = vec![0f32; w * h];
+    for (out, &v) in sig.iter_mut().zip(&img) {
+        let mut v = v as f64;
+        if cam.shot > 0.0 {
+            v += cam.shot * v.max(0.0).sqrt() * rng.gauss();
+        }
+        let v = v.clamp(0.0, 1.0).powf(cam.gamma);
+        *out = (v * 255.0 + cam.noise * rng.gauss()) as f32;
+    }
+
+    // Demosaic grain: blurred white noise, rescaled to `grain` levels.
+    if cam.grain > 0.0 {
+        let white: Vec<f32> = (0..w * h).map(|_| rng.gauss() as f32).collect();
+        let soft = gaussian(&white, w, h, 0.8);
+        // A sigma-0.8 Gaussian leaves white noise about 0.35 as strong.
+        for (v, g) in sig.iter_mut().zip(&soft) {
+            *v += cam.grain as f32 * g / 0.35;
+        }
+    }
+
+    // ISP sharpening: unsharp mask, overshooting at edges.
+    if cam.sharpen > 0.0 {
+        let soft = gaussian(&sig, w, h, 1.0);
+        for (v, s) in sig.iter_mut().zip(&soft) {
+            *v += cam.sharpen as f32 * (*v - s);
+        }
+    }
+
     let mut out = GrayImage::new(w as u32, h as u32);
     for y in 0..h {
         for x in 0..w {
-            let v = (img[y * w + x].clamp(0.0, 1.0) as f64).powf(cam.gamma);
-            let noisy = v * 255.0 + cam.noise * rng.gauss();
             let sx = if cam.mirror { w - 1 - x } else { x };
-            out.put_pixel(
-                sx as u32,
-                y as u32,
-                Luma([noisy.round().clamp(0.0, 255.0) as u8]),
-            );
+            let v = sig[y * w + x].round().clamp(0.0, 255.0) as u8;
+            out.put_pixel(sx as u32, y as u32, Luma([v]));
         }
     }
     if let Some(q) = cam.jpeg {
