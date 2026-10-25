@@ -291,8 +291,18 @@ impl Device {
     /// Delete messages after. If the keychain will not keep the key, the
     /// lock goes back on, so it is never shown off while launch would
     /// still ask.
+    ///
+    /// The machine's age is taken to be at least the largest age any kept
+    /// row was stored at: if [`AGE_FILE`] was lost the age would start
+    /// again from 0 while rows keep their larger ages, and their deletion
+    /// would wait without bound.
     fn install(&mut self, store: Store, key: StoreKey) {
         self.my_name = Some(store.my_name());
+        if let Some(latest) = store.latest_age().filter(|a| *a > self.age_ms) {
+            eprintln!("bombechat: the machine's age was behind its store; carrying on from the store's");
+            self.age_ms = latest;
+            self.save_age();
+        }
         store.set_age(self.age_ms);
         if let Err(e) = store.adopt_unaged(self.age_ms) {
             eprintln!("bombechat: messages from before ages were kept have none: {e}");
@@ -347,6 +357,10 @@ impl Device {
     /// Delete stored messages kept longer than Delete messages after
     /// allows, in running age ([`Device::age_ms`]); never by the wall
     /// clock. Nothing while locked or at Never. Returns how many went.
+    ///
+    /// A message is stamped with the age at the last tick, up to one
+    /// [`crate::TICK`] younger than it really is, so the keep is one tick
+    /// longer: never early.
     fn purge(&mut self) -> usize {
         let days = self
             .setting("expire")
@@ -355,7 +369,8 @@ impl Device {
         match days {
             Some(days) if self.unlocked => {
                 self.save_age();
-                let keep_ms = u64::from(days) * 24 * 60 * 60 * 1000;
+                let keep_ms = u64::from(days) * 24 * 60 * 60 * 1000
+                    + crate::TICK.as_millis() as u64;
                 self.node.forget_older_than(self.age_ms, keep_ms)
             }
             _ => 0,
@@ -619,8 +634,11 @@ impl Machine for Device {
     }
 }
 
-/// The age is written down when the machine is let go (the app quits),
-/// so the next launch carries on from it.
+/// The age is written down when the machine is let go, so a launch after
+/// it carries on from it. The app itself never lets it go: Tauri ends the
+/// process at quit without dropping its state, so a quit loses up to
+/// [`AGE_SAVE_EVERY_MS`] of age, as a crash does (the age then runs
+/// behind, and deletion later, never earlier).
 impl Drop for Device {
     fn drop(&mut self) {
         if self.age_ms != self.age_saved {
@@ -976,5 +994,24 @@ mod tests {
             vec![1],
             "23 hours kept, so far as anyone can tell"
         );
+    }
+
+    #[test]
+    fn a_lost_age_file_never_holds_deletion_back() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (path, _) = aged_store(&dir, &[]);
+        let mut device = opened(&path, 0);
+        device.tick(10 * DAY);
+        arrive(&device, 1, 0);
+        drop(device);
+        fs::remove_file(age_path(&path)).unwrap();
+
+        let mut device = opened(&path, 0);
+        assert_eq!(device.age_ms(), 10 * DAY, "carried on from the store's own ages");
+        assert_eq!(load_age(&age_path(&path)), 10 * DAY, "and written down again");
+        device.tick(DAY - HOUR);
+        assert_eq!(ids(&device), vec![1], "not early");
+        device.tick(DAY + HOUR);
+        assert!(ids(&device).is_empty(), "a day of running time after, it goes");
     }
 }

@@ -694,6 +694,22 @@ impl Store {
         Ok(n)
     }
 
+    /// The largest machine age any kept message or broadcast was stored
+    /// at, if any has one. The machine's age can be no younger than this,
+    /// even if the file that keeps it was lost.
+    pub fn latest_age(&self) -> Option<u64> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let age: Option<i64> = conn
+            .query_row(
+                "SELECT MAX(a) FROM (SELECT MAX(age_at) AS a FROM messages
+                                     UNION ALL SELECT MAX(age_at) FROM broadcasts)",
+                [],
+                |row| row.get(0),
+            )
+            .expect("querying latest age");
+        age.map(|a| u64::try_from(a).unwrap_or(0))
+    }
+
     /// Keep a broadcast: one this device sent, with the sealed envelope
     /// that carries it while it is [`Delivery::Waiting`] (so it can be
     /// queued again after a restart, [`Store::waiting_broadcasts`]), or
@@ -1356,5 +1372,24 @@ mod tests {
         assert_eq!(kept[0], own, "our own stays");
         assert_eq!(kept[1].text, format!("heard {extra}"), "the oldest heard went");
         assert_eq!(kept.last().unwrap().text, format!("heard {}", HEARD_BROADCASTS_KEPT as u16 + extra - 1));
+    }
+
+    #[test]
+    fn the_latest_age_is_the_largest_any_row_was_stored_at() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.db");
+        let store = Store::create(&path, "pw", &Identity::generate(), "me").unwrap();
+        assert_eq!(store.latest_age(), None);
+        let c = store
+            .add_contact("Marisol", &Identity::generate().public(), true)
+            .unwrap();
+        store.set_age(7_000);
+        store.put_message(&message_to(c, 1, "a")).unwrap();
+        store.set_age(3_000);
+        store.put_message(&message_to(c, 2, "b")).unwrap();
+        assert_eq!(store.latest_age(), Some(7_000));
+        store.set_age(9_000);
+        store.put_broadcast(&heard(1), None).unwrap();
+        assert_eq!(store.latest_age(), Some(9_000));
     }
 }

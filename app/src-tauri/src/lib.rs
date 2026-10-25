@@ -22,7 +22,7 @@ pub use device::Device;
 use commands::{bridge_event, Shared};
 
 /// How often the pump ticks the node.
-const TICK: Duration = Duration::from_millis(20);
+pub(crate) const TICK: Duration = Duration::from_millis(20);
 
 /// The store's file name in the app data folder.
 const STORE_FILE: &str = "bombechat.db";
