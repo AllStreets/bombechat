@@ -352,3 +352,73 @@ impl Machine for Device {
         events
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bombechat_modem::FakeAudio;
+
+    fn sound_states(events: &[NodeEvent]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                NodeEvent::ChannelState {
+                    channel: Channel::Sound,
+                    state,
+                } => Some(state.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A device with the Sound switch persisted at Off, as it would be
+    /// for someone who quit the app with it there: the microphone must
+    /// never open on the next launch, not even once.
+    #[test]
+    fn a_persisted_sound_off_never_opens_the_microphone() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store_path = dir.path().join("m.db");
+        std::fs::write(settings_path(&store_path), r#"{"sound":0}"#).unwrap();
+
+        let audio = FakeAudio::new(48_000);
+        let heard = audio.clone();
+        let mut device = Device::with_audio(store_path, Box::new(audio));
+
+        for ms in [0, 1, 1_000] {
+            device.tick(ms);
+        }
+        assert_eq!(heard.starts(), 0, "the microphone was never opened");
+    }
+
+    /// Turning the Sound switch to Off through `set_setting` (as the
+    /// settings page does) really closes the microphone, at once, not
+    /// only once the app happens to quit; turning it back on reopens it.
+    #[test]
+    fn turning_sound_off_closes_the_microphone_and_on_reopens_it() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let audio = FakeAudio::new(48_000);
+        let heard = audio.clone();
+        let mut device = Device::with_audio(dir.path().join("m.db"), Box::new(audio));
+
+        device.tick(0);
+        assert_eq!(heard.starts(), 1, "listening by default, mic opened");
+        assert!(heard.is_listening());
+
+        device.set_setting("sound", 0); // Off
+        assert_eq!(heard.stops(), 1, "closed at once, not on the next tick");
+        assert!(!heard.is_listening());
+
+        let events = device.tick(1);
+        assert_eq!(heard.starts(), 1, "stayed closed");
+        assert!(
+            sound_states(&events).contains(&"off".to_string()),
+            "the channel reports off, not a stale listening"
+        );
+
+        device.set_setting("sound", 2); // Listen and send
+        assert!(!heard.is_listening(), "not reopened until the next tick");
+        device.tick(2);
+        assert_eq!(heard.starts(), 2, "reopened");
+        assert!(heard.is_listening());
+    }
+}

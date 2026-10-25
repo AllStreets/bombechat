@@ -51,6 +51,13 @@ pub trait AudioIo: Send {
     #[allow(clippy::type_complexity)]
     fn start_input(&mut self, sink: Box<dyn FnMut(&[f32]) + Send>) -> Result<(), AudioError>;
 
+    /// Stop capturing from the input device and release it, so the
+    /// hardware (and any OS recording indicator) goes quiet. Does nothing
+    /// if input was never started, or was already stopped.
+    /// [`start_input`](AudioIo::start_input) opens the device again. The
+    /// default does nothing, for doubles with no device to release.
+    fn stop_input(&mut self) {}
+
     /// Queue `samples` to be played on the output device. Returns once the
     /// samples are queued, without waiting for them to actually play.
     fn play(&mut self, samples: Vec<f32>) -> Result<(), AudioError>;
@@ -237,6 +244,13 @@ impl AudioIo for CpalAudio {
         Ok(())
     }
 
+    /// Drops the input stream, which stops it (cpal stops a stream when
+    /// it is dropped) and releases the microphone. A later
+    /// [`start_input`](AudioIo::start_input) opens a fresh one.
+    fn stop_input(&mut self) {
+        self.input_stream = None;
+    }
+
     fn play(&mut self, samples: Vec<f32>) -> Result<(), AudioError> {
         let mut queue = self
             .output_queue
@@ -303,6 +317,47 @@ mod tests {
         record_stream_error(&slot, cpal::ErrorKind::DeviceNotAvailable.into());
 
         assert_eq!(slot.lock().unwrap().take(), Some(AudioError::NoDevice));
+    }
+
+    /// `stop_input` drops the real input stream, and `start_input` after
+    /// it rebuilds a fresh one: the only way to check, without hardware
+    /// mocks, that stopping actually releases the device rather than just
+    /// muting the sink.
+    ///
+    /// Ignored by default, for the same reason as
+    /// `plays_and_records_a_tone`; it needs a real microphone and (on
+    /// macOS) a permission grant for the test binary. This is the
+    /// evidence for Task 2's "the stream handle is gone" requirement that
+    /// a built app and a glance at the recording indicator can't give on
+    /// their own. Run it manually with:
+    ///
+    /// ```sh
+    /// cargo test -p bombechat-modem --release audio::tests::stop_input_drops_the_stream_and_start_input_rebuilds_it -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    fn stop_input_drops_the_stream_and_start_input_rebuilds_it() {
+        let mut audio = CpalAudio::new().expect("open default audio devices");
+        assert!(audio.input_stream.is_none(), "not started yet");
+
+        audio
+            .start_input(Box::new(|_| {}))
+            .expect("start microphone input");
+        assert!(audio.input_stream.is_some(), "the stream is open");
+
+        audio.stop_input();
+        assert!(
+            audio.input_stream.is_none(),
+            "stop_input drops the stream, releasing the microphone"
+        );
+
+        audio
+            .start_input(Box::new(|_| {}))
+            .expect("start microphone input again");
+        assert!(
+            audio.input_stream.is_some(),
+            "start_input after stop rebuilds a fresh stream"
+        );
     }
 
     /// Opens the real default input and output devices, plays a 0.5 s 1

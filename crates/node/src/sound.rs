@@ -28,8 +28,15 @@ pub const QUEUE_FULL: &str = "send queue full, message not sent";
 
 /// Whether the microphone has been opened yet.
 enum Input {
+    /// Never started, and will be as soon as [`SoundTransport::poll`] next
+    /// runs (unless listening is off, in which case it goes straight to
+    /// [`Input::Stopped`] instead).
     NotStarted,
     Listening,
+    /// Stopped by [`Transport::set_listening`] turning off, with the
+    /// stream (and the microphone) released. Goes back to
+    /// [`Input::NotStarted`] when listening turns on again.
+    Stopped,
     Failed,
 }
 
@@ -42,8 +49,7 @@ enum Input {
 /// [`AudioIo::take_error`]) are reported the same way.
 ///
 /// With [`set_listening`](Transport::set_listening) off, the microphone
-/// stays open but what it hears is let go without being demodulated (so
-/// no frames and no room level); with
+/// is closed (no frames and no room level) until it turns on again; with
 /// [`set_sending`](Transport::set_sending) off the queue waits and nothing
 /// plays.
 ///
@@ -161,8 +167,21 @@ impl Transport for SoundTransport {
         Some(measured_rate(&self.cfg))
     }
 
+    /// Off, the microphone is actually closed (the input stream is
+    /// dropped), not just ignored: so the OS recording indicator goes
+    /// out too. On again, [`SoundTransport::poll`] opens a fresh stream
+    /// on its next run.
     fn set_listening(&mut self, on: bool) {
         self.listening = on;
+        match (on, &self.input) {
+            (false, Input::Listening) => {
+                self.io.stop_input();
+                self.input = Input::Stopped;
+            }
+            (false, Input::NotStarted) => self.input = Input::Stopped,
+            (true, Input::Stopped) => self.input = Input::NotStarted,
+            _ => {}
+        }
     }
 
     fn set_sending(&mut self, on: bool) {
@@ -287,6 +306,8 @@ mod tests {
         error: Arc<Mutex<Option<AudioError>>>,
         played: Arc<Mutex<Vec<Vec<f32>>>>,
         fail_play: Arc<Mutex<bool>>,
+        starts: Arc<Mutex<u32>>,
+        stops: Arc<Mutex<u32>>,
     }
 
     impl Scripted {
@@ -296,12 +317,30 @@ mod tests {
                 sink(&vec![0.0; 9_600]);
             }
         }
+
+        fn starts(&self) -> u32 {
+            *self.starts.lock().unwrap()
+        }
+
+        fn stops(&self) -> u32 {
+            *self.stops.lock().unwrap()
+        }
+
+        /// Whether the stream is open: a sink is registered.
+        fn is_open(&self) -> bool {
+            self.sink.lock().unwrap().is_some()
+        }
     }
 
     impl AudioIo for Scripted {
         fn start_input(&mut self, sink: Sink) -> Result<(), AudioError> {
+            *self.starts.lock().unwrap() += 1;
             *self.sink.lock().unwrap() = Some(sink);
             Ok(())
+        }
+        fn stop_input(&mut self) {
+            *self.stops.lock().unwrap() += 1;
+            *self.sink.lock().unwrap() = None;
         }
         fn play(&mut self, samples: Vec<f32>) -> Result<(), AudioError> {
             if *self.fail_play.lock().unwrap() {
@@ -535,13 +574,109 @@ mod tests {
             }
         };
 
+        assert_eq!(io.starts(), 1, "poll(0) opened the microphone");
         t.set_listening(false);
+        assert_eq!(io.stops(), 1, "off closes the stream, not just the ear");
+        assert!(!io.is_open());
         say(&io);
         assert_eq!(heard(&t.poll(100)), 0, "nothing demodulated while off");
         t.set_listening(true);
         assert_eq!(heard(&t.poll(200)), 0, "nor kept for later");
+        assert_eq!(io.starts(), 2, "listen reopens the microphone");
         say(&io);
         assert!(t.poll(300).contains(&TransportEvent::Frame(frame.clone())));
+    }
+
+    #[test]
+    fn off_closes_the_microphone_and_the_stream_is_gone() {
+        let io = Scripted::default();
+        let mut t = transport(&io);
+        t.poll(0);
+        assert_eq!((io.starts(), io.stops()), (1, 0));
+        assert!(io.is_open(), "the stream is open after poll starts it");
+
+        t.set_listening(false);
+        assert_eq!((io.starts(), io.stops()), (1, 1), "stop_input was called");
+        assert!(!io.is_open(), "the stream is gone");
+
+        // Polling again while off does not reopen it.
+        t.poll(100);
+        assert_eq!(io.starts(), 1, "still off, nothing to restart");
+    }
+
+    #[test]
+    fn listen_starts_the_microphone_again() {
+        let io = Scripted::default();
+        let mut t = transport(&io);
+        t.poll(0);
+        t.set_listening(false);
+        assert_eq!((io.starts(), io.stops()), (1, 1));
+
+        t.set_listening(true);
+        assert!(!io.is_open(), "not reopened until the next poll");
+        t.poll(100);
+        assert_eq!((io.starts(), io.stops()), (2, 1), "start_input ran again");
+        assert!(io.is_open());
+    }
+
+    #[test]
+    fn rapid_toggles_end_in_the_right_state() {
+        let io = Scripted::default();
+        let mut t = transport(&io);
+
+        // Off, on, off again before the microphone was ever opened: it
+        // should never open at all.
+        t.set_listening(false);
+        t.set_listening(true);
+        t.set_listening(false);
+        t.poll(0);
+        assert_eq!((io.starts(), io.stops()), (0, 0), "stayed off throughout");
+        assert!(!io.is_open());
+
+        // On, and several redundant flips to the same state, settle on
+        // exactly one real start and one real stop.
+        t.set_listening(true);
+        t.set_listening(true);
+        t.poll(10);
+        assert_eq!((io.starts(), io.stops()), (1, 0));
+        t.set_listening(false);
+        t.set_listening(false);
+        assert_eq!((io.starts(), io.stops()), (1, 1));
+        assert!(!io.is_open());
+
+        // And back on settles the microphone open again.
+        t.set_listening(true);
+        t.poll(20);
+        assert_eq!((io.starts(), io.stops()), (2, 1));
+        assert!(io.is_open());
+    }
+
+    #[test]
+    fn a_frame_already_playing_is_allowed_to_finish_and_the_outbox_stays_truthful() {
+        let io = Scripted::default();
+        let mut t = SoundTransport::new(
+            Box::new(io.clone()),
+            ModemConfig::default(),
+            QuietGate::new(40.0, 0, 90),
+        );
+        t.poll(0);
+        let frame = split(b"hello", 7).remove(0);
+        t.send(frame);
+        io.quiet();
+        assert_eq!(progress(t.poll(100)), vec![TransportEvent::Playing(7)]);
+
+        // The Sound switch goes to Off mid-playback: the microphone
+        // closes, but what is already on its way to the speaker is not
+        // torn up, and finishing it is reported truthfully rather than
+        // as a drop.
+        t.set_listening(false);
+        t.set_sending(false);
+        assert!(!io.is_open(), "the microphone closed");
+        assert_eq!(
+            progress(t.poll(200_000)),
+            vec![TransportEvent::Sent(7)],
+            "finished playing truthfully, not dropped for being off"
+        );
     }
 
     #[test]

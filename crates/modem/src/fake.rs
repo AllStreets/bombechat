@@ -13,6 +13,7 @@ use crate::audio::{AudioError, AudioIo};
 type Sink = Box<dyn FnMut(&[f32]) + Send>;
 type NoiseFn = Box<dyn FnMut() -> f32 + Send>;
 
+#[derive(Clone)]
 enum Mode {
     /// `start_input` always fails with `PermissionDenied`, as if the user
     /// declined a microphone permission prompt.
@@ -26,6 +27,12 @@ enum Mode {
 /// [`FakeAudio::played`]) and can be fed simulated microphone samples
 /// directly (see [`FakeAudio::feed`]). Use [`LoopbackAudio::pair`] to get
 /// two instances that feed each other automatically.
+///
+/// [`Clone`] shares its state (an [`Arc`] per field), so a test can keep
+/// a handle to check [`FakeAudio::starts`], [`FakeAudio::stops`] or
+/// [`FakeAudio::played`] after a clone has been moved into whatever owns
+/// it as a `Box<dyn AudioIo>`.
+#[derive(Clone)]
 pub struct FakeAudio {
     mode: Mode,
     sample_rate: u32,
@@ -36,6 +43,10 @@ pub struct FakeAudio {
     forward_to: Option<Arc<Mutex<Option<Sink>>>>,
     /// Ambient noise mixed into samples forwarded to the partner.
     noise: Option<Arc<Mutex<NoiseFn>>>,
+    /// Times [`AudioIo::start_input`] was called, successful or not.
+    starts: Arc<Mutex<u32>>,
+    /// Times [`AudioIo::stop_input`] was called.
+    stops: Arc<Mutex<u32>>,
 }
 
 impl FakeAudio {
@@ -49,6 +60,8 @@ impl FakeAudio {
             sink: Arc::new(Mutex::new(None)),
             forward_to: None,
             noise: None,
+            starts: Arc::new(Mutex::new(0)),
+            stops: Arc::new(Mutex::new(0)),
         }
     }
 
@@ -62,6 +75,8 @@ impl FakeAudio {
             sink: Arc::new(Mutex::new(None)),
             forward_to: None,
             noise: None,
+            starts: Arc::new(Mutex::new(0)),
+            stops: Arc::new(Mutex::new(0)),
         }
     }
 
@@ -86,10 +101,27 @@ impl FakeAudio {
     pub fn played(&self) -> Vec<f32> {
         self.played.lock().unwrap().clone()
     }
+
+    /// Times [`AudioIo::start_input`] has been called, successful or not.
+    pub fn starts(&self) -> u32 {
+        *self.starts.lock().unwrap()
+    }
+
+    /// Times [`AudioIo::stop_input`] has been called.
+    pub fn stops(&self) -> u32 {
+        *self.stops.lock().unwrap()
+    }
+
+    /// Whether a sink is currently registered: true once `start_input`
+    /// succeeds, false again once `stop_input` releases it.
+    pub fn is_listening(&self) -> bool {
+        self.sink.lock().unwrap().is_some()
+    }
 }
 
 impl AudioIo for FakeAudio {
     fn start_input(&mut self, sink: Sink) -> Result<(), AudioError> {
+        *self.starts.lock().unwrap() += 1;
         match self.mode {
             Mode::Denied => Err(AudioError::PermissionDenied),
             Mode::Normal => {
@@ -97,6 +129,11 @@ impl AudioIo for FakeAudio {
                 Ok(())
             }
         }
+    }
+
+    fn stop_input(&mut self) {
+        *self.stops.lock().unwrap() += 1;
+        *self.sink.lock().unwrap() = None;
     }
 
     fn play(&mut self, samples: Vec<f32>) -> Result<(), AudioError> {
@@ -186,6 +223,31 @@ mod tests {
         a.play(vec![0.0, 0.0]).unwrap();
 
         assert_eq!(*heard.lock().unwrap(), vec![1.0, 1.0]);
+    }
+
+    #[test]
+    fn start_and_stop_input_are_counted_and_stop_clears_the_sink() {
+        let mut a = FakeAudio::new(8_000);
+        assert_eq!((a.starts(), a.stops()), (0, 0));
+
+        a.start_input(Box::new(|_| {})).unwrap();
+        assert_eq!((a.starts(), a.stops()), (1, 0));
+        assert!(a.is_listening());
+
+        a.stop_input();
+        assert_eq!((a.starts(), a.stops()), (1, 1));
+        assert!(!a.is_listening(), "stop_input releases the sink");
+
+        a.start_input(Box::new(|_| {})).unwrap();
+        assert_eq!((a.starts(), a.stops()), (2, 1));
+        assert!(a.is_listening());
+    }
+
+    #[test]
+    fn a_denied_start_is_still_counted() {
+        let mut a = FakeAudio::denied();
+        assert!(a.start_input(Box::new(|_| {})).is_err());
+        assert_eq!(a.starts(), 1);
     }
 
     #[test]

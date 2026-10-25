@@ -109,6 +109,9 @@ const RECEIPT_GAP_MS: u64 = 60_000;
 /// A channel's reception states, as reported in [`NodeEvent::ChannelState`].
 const RECEIVING: &str = "receiving";
 const LISTENING: &str = "listening";
+/// Sound only, at [`SoundSwitch::Off`]: the microphone is closed, not
+/// merely idle, so this is reported instead of [`LISTENING`].
+const OFF: &str = "off";
 
 /// Returned by [`Node::send`] and [`Node::broadcast`] when nothing was
 /// sent. No real envelope has this id.
@@ -802,7 +805,10 @@ impl Node {
     }
 
     /// Report each transport's reception state if it changed, after a
-    /// "failed" if an arrival failed on it this tick.
+    /// "failed" if an arrival failed on it this tick. Sound at
+    /// [`SoundSwitch::Off`] reports [`OFF`], never [`LISTENING`] or
+    /// [`RECEIVING`]: the microphone is closed, so nothing can arrive on
+    /// it either.
     fn report_reception(&mut self, events: &mut Vec<NodeEvent>) {
         for ti in 0..self.transports.len() {
             let channel = self.channel(ti);
@@ -813,7 +819,9 @@ impl Node {
                     state: "failed".to_string(),
                 });
             }
-            let now = if self.arriving.iter().any(|(t, _)| *t == ti) {
+            let now = if channel == Channel::Sound && self.sound == SoundSwitch::Off {
+                OFF
+            } else if self.arriving.iter().any(|(t, _)| *t == ti) {
                 RECEIVING
             } else {
                 LISTENING
@@ -1879,8 +1887,13 @@ mod tests {
         assert!(!events
             .iter()
             .any(|e| matches!(e, NodeEvent::ChunkLanded { .. })));
+        // The channel reports itself off, not a stale "listening": the
+        // microphone really is closed, not just letting what it hears go.
+        assert_eq!(states(&events), vec!["off".to_string()]);
         node.send(&ids, "refused", Channel::Sound);
-        assert!(states(&node.tick(2)).contains(&SOUND_OFF.to_string()));
+        let states = states(&node.tick(2));
+        assert!(states.contains(&SOUND_OFF.to_string()));
+        assert!(!states.contains(&"listening".to_string()));
         assert!(wire.sent.lock().unwrap().is_empty());
     }
 

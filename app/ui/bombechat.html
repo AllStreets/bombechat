@@ -700,9 +700,12 @@ function setOut(it,state){const was=it.state;it.state=state;status(it);
   if(state==='playing'&&was==='waiting'&&!RM.matches){it.leaving=true;const slip=outboxEl.querySelector(`[data-id="${it.id}"]`);if(slip)slip.classList.add('gone');setTimeout(()=>{it.leaving=false;drawOutbox()},460)}
   else drawOutbox();
   if(state==='sent'||state==='failed'){outbox.delete(it.id);finished.set(it.id,state);if(it.why)finishedWhy.set(it.id,it.why);setTimeout(()=>{finished.delete(it.id);finishedWhy.delete(it.id)},60000)}}
-// the reason the switch gave goes with the failure it caused (the channel event comes first)
+// the reason the switch gave goes with the failure it caused (the channel event comes first);
+// cleared on every outbox event, failed or not, so a stale reason never attaches to a later,
+// unrelated failure
 bridge.on('outbox',o=>{const it=outItem(o.id);if(o.text&&!it.text){it.text=o.text;it.public=!!o.public}
-  if(o.state==='failed'&&refusedWhy){it.why=refusedWhy;refusedWhy=null}setOut(it,o.state)});
+  if(o.state==='failed'&&refusedWhy)it.why=refusedWhy;
+  refusedWhy=null;setOut(it,o.state)});
 const nowtime=document.getElementById('nowtime');
 const tick=()=>{nowtime.firstChild.nodeValue=hhmm(bridge.now())};
 const reply=document.getElementById('reply'),form=document.getElementById('compose');

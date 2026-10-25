@@ -28,6 +28,9 @@ impl AudioIo for Card {
     fn start_input(&mut self, sink: Sink) -> Result<(), AudioError> {
         self.0.lock().unwrap().start_input(sink)
     }
+    fn stop_input(&mut self) {
+        self.0.lock().unwrap().stop_input();
+    }
     fn play(&mut self, samples: Vec<f32>) -> Result<(), AudioError> {
         self.0.lock().unwrap().play(samples)
     }
@@ -43,6 +46,12 @@ impl Card {
     /// 200 ms of the room at `level` (a steady sample value).
     fn room(&self, level: f32) {
         self.0.lock().unwrap().feed(&vec![level; 9_600]);
+    }
+    /// Whether the microphone is actually open right now: a sink is
+    /// registered with the loopback card, not just the transport's own
+    /// `listening` flag.
+    fn is_listening(&self) -> bool {
+        self.0.lock().unwrap().is_listening()
     }
 }
 
@@ -195,12 +204,20 @@ fn at_off_nothing_is_demodulated() {
     let dir = TempDir::new().unwrap();
     let ana = Identity::generate();
     let (mut b, _) = bench(&dir, &ana);
+    assert!(b.card.is_listening(), "listening by default");
     commands::set_setting(&b.shared, "sound".into(), 0).unwrap();
+    assert!(!b.card.is_listening(), "off really closes the microphone");
     let me = b.me();
     b.hear(&ana, &me, "Water is at the church.");
     assert!(b.messages().is_empty());
     assert_eq!(b.chunks(), 0);
     assert_eq!(b.card.played(), 0);
+    assert!(
+        b.events.iter().any(
+            |e| matches!(e, NodeEvent::ChannelState { channel: Channel::Sound, state } if state == "off")
+        ),
+        "the channel reports off, not a stale listening"
+    );
 }
 
 #[test]

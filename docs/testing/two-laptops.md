@@ -165,7 +165,15 @@ Look for: it asks for the passphrase ("Enter your passphrase"). A wrong one read
 
 Result: ______________________________________________
 
-### 9. A broadcast from a third, unpaired laptop
+### 9. Turn the Sound switch to Off and watch the recording indicator
+
+On A, turn the Sound knob to "Off". Look at the Mac's own microphone indicator: the orange dot in the menu bar (next to the clock, or in Control Centre) that macOS shows while any app is recording.
+
+Look for: the top reads "Not listening", and within a second or two the orange recording dot goes out. Turn the knob back to "Listen and send": the dot comes back. This is the one check in this document a human has to make by eye; nothing in the test suite can read the menu bar.
+
+Result: ______________________________________________
+
+### 10. A broadcast from a third, unpaired laptop
 
 Bring in C, a third Mac with its own fresh store (name it `Cal`), paired with nobody. Plan 1 has no screen for writing a broadcast, so on C build the app with `cargo tauri build --debug` (debug builds keep the Web Inspector: right-click the window, Inspect), unlock it, and in the inspector's console run `window.__TAURI__.core.invoke('broadcast', { text: 'Road north is open.' })`. It waits for quiet like any send.
 
