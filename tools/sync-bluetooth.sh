@@ -13,7 +13,12 @@
 #   bash tools/sync-bluetooth.sh --check   fail with a diff if bluetooth/ is not what the first would write
 #
 # Only tracked files travel: a new root file is shared once it is added
-# (git add), and ignored or untracked files never are.
+# (git add), and ignored or untracked files never are. A file's mode travels
+# as git records it: executable or not.
+#
+# bluetooth/Cargo.lock belongs to the edition: the sync never writes it and
+# --check ignores it. CI builds the edition with --locked, so the lock must
+# match the edition's manifests (update it with cargo inside bluetooth/).
 set -euo pipefail
 export LC_ALL=C
 
@@ -37,6 +42,19 @@ excluded() {
     "$OUT"/*|.github/*|docs/*|mockups/*|README.md|tools/sync-bluetooth.sh|tools/test-sync-bluetooth.sh) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+# Paths in bluetooth/ the edition owns outright, outside edition/.
+owned() {
+  case "$1" in
+    Cargo.lock) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Whether two files agree on the one mode bit git records.
+same_mode() {
+  if [ -x "$1" ]; then [ -x "$2" ]; else [ ! -x "$2" ]; fi
 }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/bombechat-sync.XXXXXX")"
@@ -64,7 +82,9 @@ TOUCHED="$WORK/touched"
 : > "$TOUCHED"
 for p in "$EDITION"/patches/*.patch; do
   [ -f "$p" ] || continue
-  sed -n 's#^+++ b/\([^[:space:]]*\).*#\1#p' "$p" >> "$TOUCHED"
+  # the path after "+++ b/", up to a tab (diff -u puts the date after one);
+  # spaces are part of the path
+  sed -n 's#^+++ b/##p' "$p" | cut -f1 >> "$TOUCHED"
   # the build directory is outside any repository, so git apply works as patch(1) does
   if ! (cd "$BUILT" && GIT_CEILING_DIRECTORIES="$WORK" git apply --whitespace=nowarn "$ROOT/$p"); then
     echo "sync-bluetooth: $p no longer applies to the root; update it" >&2
@@ -89,8 +109,9 @@ CURRENT="$WORK/current"
 WANTED="$WORK/wanted"
 git ls-files -z --cached --others --exclude-standard -- "$OUT" \
   | tr '\0' '\n' | { grep -v "^$EDITION/" || true; } | sed "s#^$OUT/##" \
-  | while IFS= read -r f; do if [ -f "$OUT/$f" ]; then printf '%s\n' "$f"; fi; done | sort -u > "$CURRENT"
-(cd "$BUILT" && find . -type f | sed 's#^\./##' | sort) > "$WANTED"
+  | while IFS= read -r f; do if [ -f "$OUT/$f" ] && ! owned "$f"; then printf '%s\n' "$f"; fi; done | sort -u > "$CURRENT"
+(cd "$BUILT" && find . -type f | sed 's#^\./##') \
+  | while IFS= read -r f; do if ! owned "$f"; then printf '%s\n' "$f"; fi; done | sort > "$WANTED"
 
 if [ "$MODE" = check ]; then
   status=0
@@ -104,6 +125,11 @@ if [ "$MODE" = check ]; then
     if ! cmp -s "$BUILT/$f" "$OUT/$f"; then
       echo "sync-bluetooth: $OUT/$f differs from what the sync writes:" >&2
       diff -u -L "sync writes $f" -L "$OUT/$f" "$BUILT/$f" "$OUT/$f" >&2 || true
+      status=1
+    fi
+    if ! same_mode "$BUILT/$f" "$OUT/$f"; then
+      if [ -x "$BUILT/$f" ]; then want=executable; else want="not executable"; fi
+      echo "sync-bluetooth: $OUT/$f should be $want" >&2
       status=1
     fi
   done < <(comm -12 "$WANTED" "$CURRENT")
@@ -126,6 +152,10 @@ while IFS= read -r f; do
   if ! cmp -s "$BUILT/$f" "$OUT/$f"; then
     mkdir -p "$OUT/$(dirname "$f")"
     cp "$BUILT/$f" "$OUT/$f"
+  fi
+  # cp onto an existing file keeps that file's mode, so set it either way
+  if ! same_mode "$BUILT/$f" "$OUT/$f"; then
+    if [ -x "$BUILT/$f" ]; then chmod a+x "$OUT/$f"; else chmod a-x "$OUT/$f"; fi
   fi
 done < "$WANTED"
 echo "sync-bluetooth: wrote $OUT/ ($(wc -l < "$WANTED" | tr -d ' ') files)"

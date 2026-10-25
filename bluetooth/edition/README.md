@@ -27,6 +27,12 @@ What lives here:
 
 Prefer adding a file here over patching a shared one.
 
+`bluetooth/Cargo.lock` is the edition's own: the sync never writes it and
+`--check` ignores it, because the edition's dependencies will differ from
+the root's. When a manifest changes (at the root or here), run cargo inside
+`bluetooth/` to update the lock and commit it. CI builds the edition with
+`--locked`, so a stale lock fails there.
+
 Building and checking:
 
     cd bluetooth

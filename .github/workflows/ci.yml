@@ -99,8 +99,10 @@ jobs:
           key: ${{ runner.os }}-cargo-bluetooth-${{ hashFiles('bluetooth/**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-bluetooth-
 
-      - name: cargo test --workspace (Bluetooth edition)
-        run: cd bluetooth && cargo test --workspace
+      # bluetooth/Cargo.lock is the edition's own (the sync never writes it);
+      # --locked fails if it no longer matches the edition's manifests.
+      - name: cargo test --workspace --locked (Bluetooth edition)
+        run: cd bluetooth && cargo test --workspace --locked
 
   # Note: `npm run check:front` and `npm run check:settings` need a GPU-backed
   # Chrome to render the WebGL/Metal interface and are not run here; see the
