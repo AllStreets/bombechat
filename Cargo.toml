@@ -5,6 +5,7 @@ members = [
     "crates/modem",
     "crates/store",
     "crates/node",
+    "app/src-tauri",
 ]
 
 # The modem's signal processing (FFT matched filters, per-sample filtering)

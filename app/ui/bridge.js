@@ -2,12 +2,16 @@
 // in a plain browser it runs simulator.js, the conversation the mockups showed.
 //
 // Commands (Tauri command names in brackets, arguments camelCase as Tauri expects):
-//   send(contactIds, text)       [send { contactIds, text }]        resolves to the message id, as hex
+//   send(contactIds, text, channel)  [send { contactIds, text, channel }]  resolves to the message id, as hex;
+//                                channel 'sound' (the default) or 'light'. Rejects with 'not sent' when nothing
+//                                went: in this plan only sound sends, and light reports channel 'unavailable: ...'
 //   broadcast(text)              [broadcast { text }]               resolves to the message id, as hex
 //   pair()                       [pair]
 //   confirmPair(peerHex, name)   [confirm_pair { peerHex, name }]   resolves to the new contact id
 //   setSetting(id, valueIndex)   [set_setting { id, valueIndex }]
-//   unlock(passphrase)           [unlock { passphrase }]
+//   unlock(passphrase)           [unlock { passphrase }]            rejects with a sentence to show, e.g. 'wrong passphrase'
+//   contacts()                   [contacts]                         resolves to [{ id, name, short, checked }]; rejects
+//                                with 'locked' (ask for the passphrase) or 'no store yet' (the first passphrase sets it)
 //
 // Events (on(name, fn)), as the node's NodeEvent after normalising:
 //   chunk      { tag, index, of, view: { plain, heard, key }, text }
@@ -20,11 +24,12 @@
 //   pairOffer  { peer, name, safety }                           peer: hex of sign key then dh key
 //   roomDb     number
 //   channel    { channel, state }       state 'receiving' while a message arrives by sound; 'failed' when one
-//                                       stops arriving; anything else (e.g. 'listening', 'unavailable: ...') otherwise
+//                                       stops arriving or fails its checks (the state it is then in follows);
+//                                       anything else (e.g. 'listening', 'unavailable: ...') otherwise
 //   outbox     { id, state, text?, public? }   a send's progress: 'waiting' (for the room to fall under Send under),
 //                                       'playing', 'sent'. text and public come with the first report of a send
-//                                       this page didn't make (one queued before it opened).
-// The node emits channel 'receiving'/'listening'/'failed' and outbox from Task 11 on; the simulator emits them now.
+//                                       this page didn't make (one queued before it opened); the simulator sends
+//                                       them, the node does not yet, so in the app such a send shows no slip.
 // Ids arrive as byte arrays or hex and leave as lowercase hex. Channels arrive as "Sound" or "sound" and leave lower case.
 //
 // A chunk is only known to come from a holder of the content key until the
@@ -45,6 +50,7 @@ const hex = v => typeof v === 'string' ? v.toLowerCase() : Array.from(v || [], b
 const lower = c => String(c || '').toLowerCase();
 const contactId = c => c && typeof c === 'object' && '0' in c ? +c[0] : +c;
 const identity = p => p && typeof p === 'object' && !Array.isArray(p) && 'sign' in p ? hex(p.sign) + hex(p.dh) : hex(p);
+const person = c => ({ id: contactId(c.id), name: String(c.name), short: String(c.name).split(' ')[0], checked: !!c.checked });
 
 // The sealed inner plaintext is: sender sign [32], sender dh [32], sent_min [4],
 // the text in UTF-8, then the Ed25519 signature [64] (crates/core/src/seal.rs).
@@ -96,12 +102,13 @@ function tauriBackend() {
   const listening = new Set();
   return {
     listen(event) { if (listening.has(event)) return; listening.add(event); tauri.event.listen(event, e => deliver(event, e.payload)); },
-    send: (contactIds, text) => invoke('send', { contactIds, text }).then(hex),
+    send: (contactIds, text, channel) => invoke('send', { contactIds, text, channel }).then(hex),
     broadcast: text => invoke('broadcast', { text }).then(hex),
     pair: () => invoke('pair'),
     confirmPair: (peerHex, name) => invoke('confirm_pair', { peerHex, name }).then(contactId),
     setSetting: (id, valueIndex) => invoke('set_setting', { id, valueIndex }),
     unlock: passphrase => invoke('unlock', { passphrase }),
+    contacts: () => invoke('contacts').then(list => list.map(person)),
     start() {},
     now: () => Date.now(),
   };
@@ -112,12 +119,13 @@ function simulatedBackend() {
   window.__sim = sim.test;
   return {
     listen() {},
-    send: (contactIds, text) => sim.send(contactIds, text).then(hex),
+    send: (contactIds, text, channel) => sim.send(contactIds, text, channel).then(hex),
     broadcast: text => sim.broadcast(text).then(hex),
     pair: () => sim.pair(),
     confirmPair: (peerHex, name) => sim.confirmPair(peerHex, name).then(contactId),
     setSetting: (id, valueIndex) => sim.setSetting(id, valueIndex),
     unlock: passphrase => sim.unlock(passphrase),
+    contacts: () => sim.contacts().then(list => list.map(person)),
     start: () => sim.start(),
     now: () => sim.now(),
   };
@@ -127,12 +135,13 @@ const backend = tauri ? tauriBackend() : simulatedBackend();
 
 export const bridge = {
   simulated: !tauri,
-  send: (contactIds, text) => backend.send(contactIds, text),
+  send: (contactIds, text, channel = 'sound') => backend.send(contactIds, text, lower(channel)),
   broadcast: text => backend.broadcast(text),
   pair: () => backend.pair(),
   confirmPair: (peerHex, name) => backend.confirmPair(peerHex, name),
   setSetting: (id, valueIndex) => backend.setSetting(id, valueIndex),
   unlock: passphrase => backend.unlock(passphrase),
+  contacts: () => backend.contacts(),
   on(event, fn) {
     if (!handlers[event]) throw new Error('unknown bridge event: ' + event);
     handlers[event].add(fn); backend.listen(event);

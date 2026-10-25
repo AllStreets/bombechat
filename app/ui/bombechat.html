@@ -27,6 +27,16 @@ body{min-height:100vh;background:var(--enamel);-webkit-font-smoothing:antialiase
 button{font:inherit;color:inherit}
 :focus-visible{outline:1.5px solid var(--amber);outline-offset:3px}
 
+/* the passphrase, asked before the sheet opens (the app only) */
+.unlock{position:fixed;inset:0;z-index:20;display:grid;place-items:center;background:rgba(12,12,11,.94)}
+.unlock .card{width:min(380px,calc(100vw - 32px));display:grid;gap:12px;padding:24px 26px 22px;background:#151614;border:1px solid rgba(236,230,214,.16);border-radius:6px;color:var(--plate-ink)}
+.unlock h2{font-family:var(--print);font-weight:400;font-size:21px;line-height:1.15}
+.unlock p{font-family:var(--print);font-size:14px;line-height:1.45;color:#c9c2b0}
+.unlock label{display:grid;gap:5px;font-family:var(--engr);font-size:13px;letter-spacing:.06em;color:var(--lab)}
+.unlock input{font-family:var(--type);font-size:15px;color:#1c1a16;background:var(--tape);border:0;border-radius:2px;padding:7px 10px}
+.unlock .err{min-height:20px;font-family:var(--type);font-size:13px;color:#e0a08f}
+.unlock .key{justify-self:end;cursor:pointer;border:0}
+
 /* the whole app is one wrinkle-finish enamel panel */
 .app{position:relative;min-height:100vh;min-width:980px;display:grid;grid-template-rows:auto auto minmax(410px,1fr);background:var(--enamel);
   transform-origin:50% 50vh;backface-visibility:hidden;transition:transform .65s cubic-bezier(.55,.05,.35,1),filter .65s}
@@ -356,6 +366,39 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
 
 <script type="module">
 import { bridge } from './bridge.js';
+/* ---------- passphrase and contact ----------
+   contacts() refuses until the store is open, saying whether one exists yet; then the
+   page asks for the passphrase (the first time, chooses one) and asks again. */
+const sentence=s=>{s=String(s);return s.charAt(0).toUpperCase()+s.slice(1)+(/[.!?]$/.test(s)?'':'.')};
+function askPassphrase(first){return new Promise(done=>{
+  const f=document.createElement('form');f.className='unlock';f.autocomplete='off';
+  f.innerHTML=`<div class="card" role="dialog" aria-modal="true" aria-labelledby="unlock-h">
+    <h2 id="unlock-h">${first?'Choose a passphrase':'Enter your passphrase'}</h2>
+    <p>${first?'It locks the contacts and messages kept on this laptop. Nobody can recover it for you.':'Contacts and messages on this laptop are locked with it.'}</p>
+    <label>Passphrase<input type="password" name="pass" autocomplete="${first?'new-password':'current-password'}" required></label>
+    ${first?'<label>Again<input type="password" name="again" autocomplete="new-password" required></label>':''}
+    <p class="err" role="alert"></p>
+    <button class="key" type="submit">${first?'Lock and open':'Open'}</button></div>`;
+  document.body.appendChild(f);const pass=f.elements.pass,err=f.querySelector('.err'),btn=f.querySelector('button');pass.focus();
+  f.addEventListener('submit',async e=>{e.preventDefault();
+    if(first&&pass.value!==f.elements.again.value){err.textContent='The two do not match.';return}
+    btn.disabled=true;err.textContent=first?'Locking':'Opening';
+    try{await bridge.unlock(pass.value);f.remove();done()}
+    catch(why){err.textContent=sentence(why);btn.disabled=false;pass.select()}})})}
+async function sheetContact(){
+  for(;;){let list;
+    try{list=await bridge.contacts()}catch(why){if(why!=='locked'&&why!=='no store yet')throw why;await askPassphrase(why==='no store yet');continue}
+    return list[0]||{id:0,name:'No one yet',short:'no one yet',checked:false}}}
+// the sheet's printed name, aria labels and station plate follow the contact
+function nameTheSheet(c){const at=s=>document.querySelector(s);
+  at('.sheet').setAttribute('aria-label',`Message sheet with ${c.name}`);
+  at('.fields div:first-child b').textContent=c.name;
+  at('#reply').placeholder=`Reply to ${c.short}`;
+  at('#reply').setAttribute('aria-label',`Reply to ${c.short}. Enter sends by sound, Shift and Enter starts a new line.`);
+  at('.menu').setAttribute('aria-label',`Key check with ${c.short}`);
+  at('.menu h2 span').textContent=`menu 7, ${c.short}`;
+  at('.bankfoot .rd:last-child').title=`Each frame is checked against ${c.short}'s key as it lands`;
+  at('.row3 .stn .holder > span').firstChild.nodeValue=c.name}
 const Q=new URLSearchParams(location.search);
 const STILL=Q.has('still');
 const RM=matchMedia('(prefers-reduced-motion: reduce)');
@@ -363,8 +406,9 @@ const A='ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 const RIMS=['#7a2a22','#2c4a3a','#a5822e','#33465b','#b4a789','#5a3a24','#6e2a3c','#2c4a3a','#a5822e','#7a2a22','#33465b','#5a3a24'];
 const NS='http://www.w3.org/2000/svg';let did=0;
 const ENGR="'Bombechat Engraving',serif";
-// the one person this sheet is with; the bridge has no contact list yet
-const CONTACT={id:1,name:'Marisol Ortega',short:'Marisol'};
+// the one person this sheet is with: the first contact. In the app the store opens first.
+const CONTACT=await sheetContact();
+nameTheSheet(CONTACT);
 // true while the page replays what happened before it opened: nothing animates
 let booting=true;
 
@@ -594,10 +638,11 @@ function send(how){const text=reply.value.trim();
   const ent=entry(bridge.now(),how);ent.classList.add('mine');const what=ent.querySelector('.what');what.append(el('div','typed',text),el('div','state'));
   grow(()=>log.appendChild(ent),true);
   reply.value='';fit();
-  bridge.send([CONTACT.id],text).then(id=>{sent.set(id,{ent,how});
+  bridge.send([CONTACT.id],text,how).then(id=>{sent.set(id,{ent,how});
     if(finished.has(id)){status({state:'sent',ent,how});tick();return}
     const it=outItem(id);Object.assign(it,{text,ent,how});
-    if(it.state)setOut(it,it.state);tick()})}
+    if(it.state)setOut(it,it.state);tick()},
+    why=>{ent.classList.add('failed');ent.querySelector('.state').textContent=String(why)})}
 
 /* ---------- key check menu ---------- */
 (function(){const svg=document.getElementById('menusvg');

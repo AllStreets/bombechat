@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "The page may listen for the node's events. Its own commands need no permission.",
+  "windows": ["main"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+}

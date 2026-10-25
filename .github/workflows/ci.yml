@@ -10,8 +10,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # ALSA for the modem, OpenSSL for SQLCipher, WebKitGTK and friends for
+      # the Tauri shell (app/src-tauri), as Tauri's Linux prerequisites list.
       - name: Install system libraries
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libssl-dev pkg-config
+        run: >-
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends
+          libasound2-dev libssl-dev pkg-config build-essential
+          libwebkit2gtk-4.1-dev libxdo-dev libayatana-appindicator3-dev librsvg2-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable

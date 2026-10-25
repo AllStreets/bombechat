@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Proves the airgapped build (--no-default-features) carries no Bluetooth
-# or networking crates, and no Bluetooth framework in the built binary.
+# or networking crates, and no Bluetooth framework in the built app.
 #
 # Usage:
 #   bash tools/check-airgapped.sh
@@ -28,20 +28,35 @@ if [ -n "$OFFENDERS" ]; then
   exit 1
 fi
 
-# On macOS, once the app binary exists (Task 11), also check that it does
-# not link CoreBluetooth or IOBluetooth. Skip gracefully until then.
+# On macOS, also check that the built app does not link CoreBluetooth or
+# IOBluetooth: the release binary of the Cargo package bombechat-app, and
+# the executable inside the .app bundle, whichever exist (build with
+# `cargo tauri build` in app/src-tauri; `--debug` builds land under
+# target/debug and are checked too). Only Bluetooth frameworks fail the
+# check: WebKit itself links the system networking frameworks.
 if [ "$(uname)" = "Darwin" ]; then
-  APP_BINARY="target/release/bombechat-node"
-  if [ -f "$APP_BINARY" ]; then
-    BAD_LIBS="$(otool -L "$APP_BINARY" | grep -E -i 'CoreBluetooth|IOBluetooth' || true)"
+  BINARIES=()
+  for candidate in \
+    target/release/bombechat-app \
+    target/release/bundle/macos/Bombechat.app/Contents/MacOS/bombechat-app \
+    target/debug/bombechat-app \
+    target/debug/bundle/macos/Bombechat.app/Contents/MacOS/bombechat-app; do
+    if [ -f "$candidate" ]; then
+      BINARIES+=("$candidate")
+    fi
+  done
+  if [ "${#BINARIES[@]}" -eq 0 ]; then
+    echo "airgapped: skipping otool binary check, no bombechat-app binary built yet (cargo tauri build in app/src-tauri)"
+  fi
+  for binary in ${BINARIES[@]+"${BINARIES[@]}"}; do
+    BAD_LIBS="$(otool -L "$binary" | grep -E -i 'CoreBluetooth|IOBluetooth' || true)"
     if [ -n "$BAD_LIBS" ]; then
-      echo "airgapped: dirty, binary links a Bluetooth framework:" >&2
+      echo "airgapped: dirty, $binary links a Bluetooth framework:" >&2
       printf '%s\n' "$BAD_LIBS" >&2
       exit 1
     fi
-  else
-    echo "airgapped: skipping otool binary check, $APP_BINARY does not exist yet (see Task 11)"
-  fi
+    echo "airgapped: $binary links no Bluetooth framework"
+  done
 fi
 
 echo "airgapped: clean"

@@ -1,0 +1,30 @@
+[package]
+name = "bombechat-app"
+version = "0.1.0"
+edition = "2021"
+description = "Bombechat, airgapped build: the desktop shell around the node."
+
+[lib]
+name = "bombechat_app"
+path = "src/lib.rs"
+
+[[bin]]
+name = "bombechat-app"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+bombechat-core = { path = "../../crates/core" }
+bombechat-modem = { path = "../../crates/modem" }
+bombechat-node = { path = "../../crates/node" }
+bombechat-store = { path = "../../crates/store" }
+# No plugins: no updater, no shell, no http. The page reaches the node only
+# through the commands in src/commands.rs.
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"

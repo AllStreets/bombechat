@@ -145,10 +145,10 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
   return {
     start,
     now: () => clock,
-    send(contactIds, text) {
+    send(contactIds, text, channel) {
       const m = { id: bytes(16), text };
       clock += 60000;
-      if (settings.sound < 2 && settings.light === 2) {
+      if (channel === 'light') {
         later(() => outbox(m, 'playing'));
         later(() => { outbox(m, 'sent'); emit('heard', { id: m.id, by: MARISOL }); }, 1500);
       } else { queue.push(m); later(() => outbox(m, 'waiting')); }
@@ -159,6 +159,7 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
     confirmPair: () => Promise.resolve(2),
     setSetting(id, valueIndex) { settings[id] = valueIndex; return Promise.resolve(); },
     unlock: () => Promise.resolve(),
+    contacts: () => Promise.resolve([{ id: MARISOL, name: 'Marisol Ortega', checked: true }]),
     test,
   };
 }
