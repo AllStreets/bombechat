@@ -76,18 +76,66 @@
 //! centre (the centre and four points a fifth of a cell away), which
 //! averages sensor noise without reaching into the neighbouring cells.
 
+use std::cell::Cell;
 use std::time::{Duration, Instant};
 
 use image::GrayImage;
 
 use crate::code::QUIET;
 
+thread_local! {
+    /// While set, on this thread, the time a reading has taken is counted
+    /// in looks at the clock, a microsecond each, not read off the wall:
+    /// see [`count_looks_as_time`].
+    static LOOKS: Cell<Option<u64>> = const { Cell::new(None) };
+}
+
+/// For tests that must not depend on how busy the machine is: while `on`,
+/// on the calling thread, every look a reading takes at its deadline
+/// counts as one microsecond of its budget, whatever the wall clock does.
+/// A budget then buys the same work every run, so how a budget is shared
+/// out (between following known codes and searching) can be asserted
+/// exactly. Off, the wall clock counts, as it always does in use.
+#[doc(hidden)]
+pub fn count_looks_as_time(on: bool) {
+    LOOKS.with(|l| l.set(on.then_some(0)));
+}
+
+/// Where a reading's time is counted from.
+#[derive(Debug, Clone, Copy)]
+enum Since {
+    Wall(Instant),
+    /// The number of looks at the clock, see [`count_looks_as_time`].
+    Looks(u64),
+}
+
+impl Since {
+    fn now() -> Self {
+        LOOKS.with(|l| match l.get() {
+            Some(n) => Since::Looks(n),
+            None => Since::Wall(Instant::now()),
+        })
+    }
+
+    /// Time since: on the wall clock, or one microsecond a look.
+    fn elapsed(&self) -> Duration {
+        match *self {
+            Since::Wall(at) => at.elapsed(),
+            Since::Looks(from) => LOOKS.with(|l| {
+                let n = l.get().unwrap_or(from) + 1;
+                l.set(Some(n));
+                Duration::from_micros(n.saturating_sub(from))
+            }),
+        }
+    }
+}
+
 /// When the reading of one picture must stop. Each stage of a reading
 /// stops at its own share of the budget, so a slow stage leaves the later
 /// ones their time.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Deadline {
-    start: Instant,
+    start: Since,
     /// Time from `start` to stop at.
     end: Duration,
 }
@@ -96,7 +144,7 @@ impl Deadline {
     /// A deadline `budget` from now.
     pub fn new(budget: Duration) -> Self {
         Deadline {
-            start: Instant::now(),
+            start: Since::now(),
             end: budget,
         }
     }

@@ -209,7 +209,9 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
     history(emit, setClock);
     for (const m of queue) outbox(m, 'waiting', true);
     // a notice of this machine's still waiting when the page last closed goes again, as the node queues it on unlock
-    for (const k of keptNotices().filter(k => k.state === 'waiting')) { const m = { id: k.id, text: k.text, public: true, kept: k }; queue.push(m); outbox(m, 'waiting'); }
+    // on the channel it was sent on, as the node keeps it
+    for (const k of keptNotices().filter(k => k.state === 'waiting')) { const m = { id: k.id, text: k.text, public: true, kept: k };
+      if (k.channel === 'light') { if (settings.light < 2) refuseLight(m); else flash(m, false); } else { queue.push(m); outbox(m, 'waiting'); } }
     setClock(9, 14);
     if (settings.sound > 0) { sound('receiving'); for (let i = 0; i <= c; i++) land(i); }
     setClock(9, 15);
@@ -268,7 +270,7 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
       if (n > MAX_BROADCAST) return Promise.reject(`Too long to broadcast: ${n} bytes, at most ${MAX_BROADCAST}`);
       const m = { id: bytes(16), text, public: true };
       clock += 60000;
-      m.kept = { id: m.id, outgoing: true, signer: SELF_KEY.slice(0, 64), text, verified: true, hops: 0, at_min: Math.floor(clock / 60000), state: 'waiting' };
+      m.kept = { id: m.id, outgoing: true, signer: SELF_KEY.slice(0, 64), text, verified: true, hops: 0, at_min: Math.floor(clock / 60000), state: 'waiting', channel };
       keepNotice(m.kept);
       if (channel === 'light') { if (settings.light < 2) refuseLight(m); else flash(m, false); }
       else if (settings.sound < 2) later(() => { sound(settings.sound === 0 ? 'not sent: sound is off' : 'not sent: sound is set to listen only'); outbox(m, 'failed'); sound(settings.sound === 0 ? 'off' : 'listening'); });

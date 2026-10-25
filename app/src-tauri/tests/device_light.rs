@@ -10,38 +10,74 @@ use bombechat_app::commands::{self, Shared};
 use bombechat_app::Device;
 use bombechat_light::{encode, render, CameraError, CodeSpec, FakeCamera};
 use bombechat_modem::FakeAudio;
-use bombechat_node::{NodeEvent, TILT_OR_DIM};
+use bombechat_node::{NodeEvent, ReaderWatch, TILT_OR_DIM};
 use bombechat_store::Channel;
 use image::{GrayImage, Luma};
 use serde_json::json;
 use tempfile::TempDir;
 
-/// A machine over a quiet fake sound card and `cam`, its store at `path`.
-fn machine(path: &Path, cam: &FakeCamera) -> Shared {
-    Shared::new(Box::new(Device::with_audio_and_camera(
-        path.to_path_buf(),
-        Box::new(FakeAudio::new(48_000)),
-        Box::new(cam.clone()),
-    )))
+/// A machine over a quiet fake sound card and a fake camera, ticked by
+/// hand every 20 ms; after each tick it waits for the camera thread to
+/// finish what it was given, so what the next tick takes is fixed.
+struct Bench {
+    s: Shared,
+    watch: ReaderWatch,
+    now: u64,
+}
+
+impl Bench {
+    fn new(path: &Path, cam: &FakeCamera) -> Bench {
+        let device = Device::with_audio_and_camera(
+            path.to_path_buf(),
+            Box::new(FakeAudio::new(48_000)),
+            Box::new(cam.clone()),
+        );
+        let watch = device.light_watch().expect("a light channel");
+        Bench {
+            s: Shared::new(Box::new(device)),
+            watch,
+            now: 0,
+        }
+    }
+
+    /// One tick, then the camera thread caught up.
+    fn step(&mut self) -> Vec<NodeEvent> {
+        self.now += 20;
+        let events = commands::tick(&self.s, self.now);
+        let until = Instant::now() + Duration::from_secs(10);
+        while !self.watch.idle() {
+            assert!(Instant::now() < until, "the camera thread never caught up");
+            thread::sleep(Duration::from_millis(1));
+        }
+        events
+    }
+
+    /// `n` ticks, and what they reported.
+    fn steps(&mut self, n: usize) -> Vec<NodeEvent> {
+        (0..n).flat_map(|_| self.step()).collect()
+    }
+
+    fn light(&self) -> serde_json::Value {
+        light(&self.s)
+    }
+
+    fn set(&self, id: &str, value: usize) {
+        commands::set_setting(&self.s, id.into(), value).unwrap();
+    }
 }
 
 fn store(dir: &TempDir) -> PathBuf {
     dir.path().join("bombechat.db")
 }
 
-/// Tick every 20 ms from `*now` until `done` or ten seconds of wall
-/// time pass (the camera opens and reads on a thread of its own), and
-/// what the ticks reported.
-fn tick_until(s: &Shared, now: &mut u64, done: impl Fn(&Shared) -> bool) -> Vec<NodeEvent> {
+/// Until the camera thread has noticed `cam` failed and closed it: it
+/// checks at least every 100 ms.
+fn wait_until_closed(cam: &FakeCamera) {
     let until = Instant::now() + Duration::from_secs(10);
-    let mut events = Vec::new();
-    while !done(s) {
-        assert!(Instant::now() < until, "never happened");
-        *now += 20;
-        events.extend(commands::tick(s, *now));
-        thread::sleep(Duration::from_millis(2));
+    while cam.is_running() {
+        assert!(Instant::now() < until, "the failure was never noticed");
+        thread::sleep(Duration::from_millis(5));
     }
-    events
 }
 
 fn light(s: &Shared) -> serde_json::Value {
@@ -60,102 +96,122 @@ fn a_persisted_light_off_never_opens_the_camera() {
     let dir = TempDir::new().unwrap();
     std::fs::write(dir.path().join("settings.json"), r#"{"light":0}"#).unwrap();
     let cam = FakeCamera::new(Vec::new());
-    let s = machine(&store(&dir), &cam);
-    for now in (0..2_000).step_by(20) {
-        commands::tick(&s, now);
-    }
-    thread::sleep(Duration::from_millis(50));
+    let mut b = Bench::new(&store(&dir), &cam);
+    b.steps(100);
     assert_eq!(cam.starts(), 0, "the camera was never opened");
-    assert_eq!(light(&s)["state"], "off");
+    assert_eq!(b.light()["state"], "off");
 }
 
 #[test]
 fn the_light_switch_opens_and_closes_the_camera_and_is_kept() {
     let dir = TempDir::new().unwrap();
     let cam = FakeCamera::new(Vec::new());
-    let s = machine(&store(&dir), &cam);
-    let mut now = 0;
-    commands::tick(&s, now);
-    assert_eq!(commands::settings(&s)["light"], 0, "Off until turned");
+    let mut b = Bench::new(&store(&dir), &cam);
+    b.step();
+    assert_eq!(commands::settings(&b.s)["light"], 0, "Off until turned");
 
-    commands::set_setting(&s, "light".into(), 1).unwrap();
+    b.set("light", 1);
     assert_eq!(cam.starts(), 0, "not opened by the command itself");
-    tick_until(&s, &mut now, |_| cam.is_running());
-    tick_until(&s, &mut now, |s| light(s)["state"] == "listening");
+    b.steps(2);
+    assert!(cam.is_running());
+    assert_eq!(b.light()["state"], "listening");
 
-    commands::set_setting(&s, "light".into(), 0).unwrap();
-    tick_until(&s, &mut now, |_| !cam.is_running());
+    b.set("light", 0);
+    b.step();
+    assert!(!cam.is_running());
     assert_eq!(cam.stops(), 1, "closed, so its light goes off");
-    tick_until(&s, &mut now, |s| light(s)["state"] == "off");
+    assert_eq!(b.light()["state"], "off");
 
-    commands::set_setting(&s, "light".into(), 2).unwrap();
-    drop(s);
-    let again = machine(&store(&dir), &cam);
+    b.set("light", 2);
+    drop(b);
+    let mut again = Bench::new(&store(&dir), &cam);
     assert_eq!(
-        commands::settings(&again)["light"],
+        commands::settings(&again.s)["light"],
         2,
         "kept for next launch"
     );
-    tick_until(&again, &mut now, |_| cam.is_running());
+    again.steps(2);
+    assert!(cam.is_running());
 }
 
 #[test]
 fn a_camera_the_person_has_not_allowed_shows_as_unavailable() {
     let dir = TempDir::new().unwrap();
     let cam = FakeCamera::denied();
-    let s = machine(&store(&dir), &cam);
-    commands::set_setting(&s, "light".into(), 1).unwrap();
-    let mut now = 0;
-    tick_until(&s, &mut now, |s| {
-        light(s)["state"] == "unavailable: camera permission denied"
-    });
+    let mut b = Bench::new(&store(&dir), &cam);
+    b.set("light", 1);
+    b.steps(2);
+    assert_eq!(b.light()["state"], "unavailable: camera permission denied");
+    b.steps(100);
+    assert_eq!(
+        cam.starts(),
+        1,
+        "not asked again until the switch is turned"
+    );
 }
 
 #[test]
-fn a_camera_taken_by_another_app_shows_as_unavailable() {
+fn a_camera_taken_by_another_app_shows_as_unavailable_until_it_is_back() {
     let dir = TempDir::new().unwrap();
     let cam = FakeCamera::new(Vec::new());
-    let s = machine(&store(&dir), &cam);
-    commands::set_setting(&s, "light".into(), 1).unwrap();
-    let mut now = 0;
-    tick_until(&s, &mut now, |_| cam.is_running());
+    let mut b = Bench::new(&store(&dir), &cam);
+    b.set("light", 1);
+    b.steps(2);
+    assert_eq!(b.light()["state"], "listening");
+    // Taken, and still taken at the first try a second later.
+    cam.refuse_starts(1, CameraError::Interrupted);
     cam.fail(CameraError::Interrupted);
-    tick_until(&s, &mut now, |s| {
-        light(s)["state"] == "unavailable: camera in use by another app"
-    });
+    wait_until_closed(&cam);
+    b.step();
+    assert_eq!(
+        b.light()["state"],
+        "unavailable: camera in use by another app"
+    );
+    b.steps(55);
+    assert_eq!(cam.starts(), 2, "tried again after a second");
+    assert_eq!(
+        b.light()["state"],
+        "unavailable: camera in use by another app"
+    );
+    // Let go of: back, with no switch turned.
+    let events = b.steps(110);
+    assert_eq!(cam.starts(), 3, "and again two seconds after that");
+    assert!(cam.is_running());
+    assert_eq!(b.light()["state"], "listening");
+    assert!(events.iter().any(|e| matches!(
+        e,
+        NodeEvent::ChannelState { channel: Channel::Light, state } if state == "listening"
+    )));
 }
 
 #[test]
 fn the_flash_speed_sets_the_light_rate_and_is_kept() {
     let dir = TempDir::new().unwrap();
     let cam = FakeCamera::new(Vec::new());
-    let s = machine(&store(&dir), &cam);
-    assert_eq!(commands::settings(&s)["flash"], 1);
-    assert_eq!(light(&s)["rate"], json!(2290.0));
-    commands::set_setting(&s, "flash".into(), 0).unwrap();
-    assert_eq!(light(&s)["rate"], json!(948.0));
-    commands::set_setting(&s, "flash".into(), 2).unwrap();
-    assert_eq!(light(&s)["rate"], json!(4680.0));
-    drop(s);
-    let again = machine(&store(&dir), &cam);
-    assert_eq!(light(&again)["rate"], json!(4680.0), "Fast, as kept");
+    let b = Bench::new(&store(&dir), &cam);
+    assert_eq!(commands::settings(&b.s)["flash"], 1);
+    assert_eq!(b.light()["rate"], json!(2290.0));
+    b.set("flash", 0);
+    assert_eq!(b.light()["rate"], json!(948.0));
+    b.set("flash", 2);
+    assert_eq!(b.light()["rate"], json!(4680.0));
+    drop(b);
+    let again = Bench::new(&store(&dir), &cam);
+    assert_eq!(again.light()["rate"], json!(4680.0), "Fast, as kept");
 }
 
 #[test]
 fn a_notice_by_light_is_handed_to_the_page_as_frames_at_the_flash_speed() {
     let dir = TempDir::new().unwrap();
     let cam = FakeCamera::new(Vec::new());
-    let s = machine(&store(&dir), &cam);
-    commands::unlock(&s, "correct horse".into(), Some("Ana".into())).unwrap();
-    commands::set_setting(&s, "flash".into(), 0).unwrap();
+    let mut b = Bench::new(&store(&dir), &cam);
+    commands::unlock(&b.s, "correct horse".into(), Some("Ana".into())).unwrap();
+    b.set("flash", 0);
 
     // At Read, refused as the switch says.
-    commands::set_setting(&s, "light".into(), 1).unwrap();
-    commands::broadcast(&s, "Water at the church.".into(), "light".into()).unwrap();
-    let events: Vec<_> = commands::tick(&s, 0)
-        .iter()
-        .map(commands::bridge_event)
-        .collect();
+    b.set("light", 1);
+    commands::broadcast(&b.s, "Water at the church.".into(), "light".into()).unwrap();
+    let events: Vec<_> = b.step().iter().map(commands::bridge_event).collect();
     assert!(events.contains(&(
         "channel",
         json!({ "channel": "light", "state": "not sent: light is set to read only" })
@@ -164,17 +220,15 @@ fn a_notice_by_light_is_handed_to_the_page_as_frames_at_the_flash_speed() {
 
     // At Read and flash, shown: Slow is 6 frames a second of a 48-cell
     // grid, for at least four seconds, then the screen clears.
-    commands::set_setting(&s, "light".into(), 2).unwrap();
-    commands::broadcast(&s, "Water at the church.".into(), "light".into()).unwrap();
+    b.set("light", 2);
+    commands::broadcast(&b.s, "Water at the church.".into(), "light".into()).unwrap();
     let mut shown = Vec::new();
     let mut stopped = None;
-    for now in (20..6_000).step_by(20) {
-        for e in commands::tick(&s, now) {
-            match commands::bridge_event(&e) {
-                ("display", d) => shown.push(d),
-                ("displayStopped", d) => stopped = Some(d),
-                _ => {}
-            }
+    for e in b.steps(300) {
+        match commands::bridge_event(&e) {
+            ("display", d) => shown.push(d),
+            ("displayStopped", d) => stopped = Some(d),
+            _ => {}
         }
     }
     assert_eq!(shown.len(), 24, "4 s at 6 a second");
@@ -205,16 +259,23 @@ fn covered_code() -> GrayImage {
 fn a_code_that_cannot_be_read_asks_to_tilt_or_dim_the_screen() {
     let dir = TempDir::new().unwrap();
     let cam = FakeCamera::new(vec![covered_code()]);
-    let s = machine(&store(&dir), &cam);
-    commands::set_setting(&s, "light".into(), 1).unwrap();
-    let mut now = 0;
-    tick_until(&s, &mut now, |_| cam.is_running());
+    let mut b = Bench::new(&store(&dir), &cam);
+    b.set("light", 1);
+    b.steps(2);
     assert!(cam.show_next());
-    let events = tick_until(&s, &mut now, |s| light(s)["state"] == TILT_OR_DIM);
+    // the picture is read on the camera thread, taken on the next tick
+    while !b.watch.idle() {
+        thread::sleep(Duration::from_millis(1));
+    }
+    let events = b.step();
+    assert_eq!(b.light()["state"], TILT_OR_DIM);
     assert!(events.iter().any(|e| matches!(
         e,
         NodeEvent::ChannelState { channel: Channel::Light, state } if state == TILT_OR_DIM
     )));
-    // With no unreadable code in view for a while, it gives way.
-    tick_until(&s, &mut now, |s| light(s)["state"] == "listening");
+    // With no unreadable code in view for three seconds, it gives way.
+    b.steps(140);
+    assert_eq!(b.light()["state"], TILT_OR_DIM, "not yet");
+    b.steps(20);
+    assert_eq!(b.light()["state"], "listening");
 }

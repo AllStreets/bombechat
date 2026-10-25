@@ -21,6 +21,8 @@ pub use camera::{CameraAccess, CameraError, CameraIo};
 
 pub use code::{orientation, Cell, CodeSpec, Layout, Orientation};
 pub use decode::{read, read_within, ReadOutcome, Reader, DEFAULT_BUDGET};
+#[doc(hidden)]
+pub use detect::count_looks_as_time;
 #[cfg(feature = "fake-camera")]
 pub use fake::FakeCamera;
 pub use fountain::{encode, Collector, Encoder, LightEvent};

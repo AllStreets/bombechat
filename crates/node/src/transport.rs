@@ -21,6 +21,9 @@ pub enum TransportEvent {
     /// The carrier cannot work, with a short human-readable reason such as
     /// "microphone permission denied". Reported once per failure.
     Unavailable(String),
+    /// The carrier works again after [`TransportEvent::Unavailable`],
+    /// without being turned off and on (a camera another app let go of).
+    Recovered,
     /// Something the user should know that does not make the carrier
     /// unavailable, e.g. "send queue full, message not sent".
     Notice(String),

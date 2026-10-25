@@ -282,9 +282,27 @@ enum Camera {
     /// Closed because reading is off. Goes back to
     /// [`Camera::NotStarted`] when reading turns on again.
     Stopped,
-    /// Would not open, or failed while open. Turning reading off and on
-    /// again tries afresh.
+    /// Would not open, or failed while open, for a reason that will not
+    /// pass by itself (permission). Turning reading off and on again
+    /// tries afresh.
     Failed,
+    /// Taken by another app, or unplugged: to be opened again at this
+    /// `now_ms`, see [`RETRY_FIRST_MS`].
+    Retrying(u64),
+}
+
+/// A camera taken by another app or unplugged is tried again this long
+/// after, then twice as long after each failed try, up to
+/// [`RETRY_MOST_MS`], for as long as reading is on.
+const RETRY_FIRST_MS: u64 = 1_000;
+
+/// The longest wait between two tries of a camera that is not there.
+const RETRY_MOST_MS: u64 = 30_000;
+
+/// Whether a camera failure can pass by itself, so is worth trying again
+/// without the person turning the switch.
+fn passes(e: &CameraError) -> bool {
+    matches!(e, CameraError::Interrupted | CameraError::NoDevice)
 }
 
 /// One envelope on screen, or paused part way through.
@@ -355,6 +373,11 @@ pub struct LightTransport {
     /// The tag of the envelope whose frame is on screen now, if any.
     lit: Option<u16>,
     pending: Vec<TransportEvent>,
+    /// How long to wait before the next try of a camera that is not
+    /// there, see [`Camera::Retrying`].
+    retry_ms: u64,
+    /// The reason last reported unavailable, while it still is.
+    unavailable: Option<String>,
     listening: bool,
     sending: bool,
     now_ms: u64,
@@ -408,6 +431,8 @@ impl LightTransport {
             pace: None,
             lit: None,
             pending: Vec::new(),
+            retry_ms: RETRY_FIRST_MS,
+            unavailable: None,
             listening: true,
             sending: true,
             now_ms: 0,
@@ -466,12 +491,28 @@ impl LightTransport {
                 Report::Started(start) if start == self.start => {
                     if matches!(self.camera, Camera::Starting) {
                         self.camera = Camera::Running;
+                        self.retry_ms = RETRY_FIRST_MS;
+                        if self.unavailable.take().is_some() {
+                            events.push(TransportEvent::Recovered);
+                        }
                     }
                 }
                 Report::Failed(start, e) if start == self.start => {
                     if matches!(self.camera, Camera::Starting | Camera::Running) {
-                        self.camera = Camera::Failed;
-                        events.push(TransportEvent::Unavailable(reason(&e)));
+                        self.camera = if passes(&e) {
+                            let at = now_ms.saturating_add(self.retry_ms);
+                            self.retry_ms = (self.retry_ms * 2).min(RETRY_MOST_MS);
+                            Camera::Retrying(at)
+                        } else {
+                            Camera::Failed
+                        };
+                        // Said once, not again at each try that fails the
+                        // same way.
+                        let why = reason(&e);
+                        if self.unavailable.as_ref() != Some(&why) {
+                            self.unavailable = Some(why.clone());
+                            events.push(TransportEvent::Unavailable(why));
+                        }
                     }
                 }
                 Report::Read(start, outcome) if start == self.start && self.listening => {
@@ -610,12 +651,19 @@ impl Transport for LightTransport {
     /// is let go. On again, the next poll opens it afresh.
     fn set_listening(&mut self, on: bool) {
         self.listening = on;
+        if !on {
+            // Off is said instead; on again, a failure is said afresh.
+            self.unavailable = None;
+            self.retry_ms = RETRY_FIRST_MS;
+        }
         match (on, &self.camera) {
             (false, Camera::Starting | Camera::Running) => {
                 self.command(Command::Stop);
                 self.camera = Camera::Stopped;
             }
-            (false, Camera::NotStarted | Camera::Failed) => self.camera = Camera::Stopped,
+            (false, Camera::NotStarted | Camera::Failed | Camera::Retrying(_)) => {
+                self.camera = Camera::Stopped
+            }
             (true, Camera::Stopped) => self.camera = Camera::NotStarted,
             _ => {}
         }
@@ -685,12 +733,17 @@ impl Transport for LightTransport {
         self.now_ms = now_ms;
         let mut events = std::mem::take(&mut self.pending);
 
+        // What the worker said first, then any start: a start asked for in
+        // this poll is always answered in a later one.
+        self.take_reports(now_ms, &mut events);
+        if matches!(self.camera, Camera::Retrying(at) if now_ms >= at) {
+            self.camera = Camera::NotStarted;
+        }
         if matches!(self.camera, Camera::NotStarted) {
             self.start += 1;
             self.command(Command::Start(self.start));
             self.camera = Camera::Starting;
         }
-        self.take_reports(now_ms, &mut events);
 
         self.collector.expire(now_ms);
         let mut gone: Vec<u16> = self
@@ -924,19 +977,16 @@ mod tests {
         t.poll(0);
         settle(&t);
         assert!(cam.is_running());
-        cam.fail(CameraError::NoDevice);
-        // The worker checks the camera at least every ERROR_CHECK.
-        let until = Instant::now() + Duration::from_secs(10);
-        while cam.is_running() {
-            assert!(Instant::now() < until, "the failure was never noticed");
-            thread::sleep(Duration::from_millis(5));
-        }
+        cam.fail(CameraError::Unsupported("broken".into()));
+        wait_until_closed(&cam);
         settle(&t);
         assert_eq!(
             t.poll(20),
-            vec![TransportEvent::Unavailable("no camera".to_string())]
+            vec![TransportEvent::Unavailable(
+                "camera unsupported (broken)".to_string()
+            )]
         );
-        t.poll(40);
+        t.poll(60_000);
         settle(&t);
         assert_eq!(cam.starts(), 1, "failed stays failed");
 
@@ -946,6 +996,84 @@ mod tests {
         settle(&t);
         assert_eq!(cam.starts(), 2, "off and on tries afresh");
         assert!(cam.is_running());
+    }
+
+    /// Until the worker has noticed the camera failed and closed it: it
+    /// checks at least every ERROR_CHECK.
+    fn wait_until_closed(cam: &FakeCamera) {
+        let until = Instant::now() + Duration::from_secs(10);
+        while cam.is_running() {
+            assert!(Instant::now() < until, "the failure was never noticed");
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn a_camera_taken_away_is_tried_again_ever_less_often_until_it_is_back() {
+        let cam = FakeCamera::new(Vec::new());
+        let mut t = transport(&cam);
+        t.poll(0);
+        settle(&t);
+        cam.refuse_starts(2, CameraError::Interrupted);
+        cam.fail(CameraError::Interrupted);
+        wait_until_closed(&cam);
+        settle(&t);
+        let in_use = TransportEvent::Unavailable("camera in use by another app".to_string());
+        assert_eq!(t.poll(20), vec![in_use.clone()]);
+
+        // Tried again a second later, refused: said once only.
+        let tries = |t: &mut LightTransport, now: u64| {
+            let events = t.poll(now);
+            settle(t);
+            (cam.starts(), events)
+        };
+        assert_eq!(tries(&mut t, 1_019), (1, vec![]));
+        assert_eq!(tries(&mut t, 1_020), (2, vec![]));
+        assert!(t.poll(1_040).is_empty(), "refused again, not said again");
+        // Then two seconds after that, then four.
+        assert_eq!(tries(&mut t, 3_039).0, 2);
+        assert_eq!(tries(&mut t, 3_040).0, 3);
+        assert!(t.poll(3_060).is_empty());
+        assert_eq!(tries(&mut t, 7_059).0, 3);
+        assert_eq!(tries(&mut t, 7_060).0, 4);
+        assert_eq!(t.poll(7_080), vec![TransportEvent::Recovered]);
+        assert!(cam.is_running());
+
+        // Back at a second for the next time.
+        cam.fail(CameraError::NoDevice);
+        wait_until_closed(&cam);
+        settle(&t);
+        assert_eq!(
+            t.poll(8_000),
+            vec![TransportEvent::Unavailable("no camera".to_string())]
+        );
+        assert_eq!(tries(&mut t, 9_000).0, 5);
+        assert_eq!(t.poll(9_020), vec![TransportEvent::Recovered]);
+    }
+
+    #[test]
+    fn the_wait_between_tries_stops_growing_at_thirty_seconds() {
+        let cam = FakeCamera::new(Vec::new());
+        let mut t = transport(&cam);
+        cam.refuse_starts(u32::MAX, CameraError::NoDevice);
+        let mut now = 0;
+        let mut gaps = Vec::new();
+        let mut last = None;
+        while gaps.len() < 8 {
+            t.poll(now);
+            settle(&t);
+            if last != Some(cam.starts()) {
+                gaps.push(now);
+                last = Some(cam.starts());
+            }
+            now += 20;
+        }
+        let gaps: Vec<u64> = gaps.windows(2).map(|w| w[1] - w[0]).collect();
+        // Each failure is taken a poll after its try.
+        assert_eq!(
+            gaps,
+            vec![1_020, 2_020, 4_020, 8_020, 16_020, 30_020, 30_020]
+        );
     }
 
     /// A picture of the one frame envelope `b"hi"` under tag 3, on a

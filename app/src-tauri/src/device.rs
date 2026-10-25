@@ -10,7 +10,8 @@ use bombechat_core::{Identity, PublicIdentity};
 use bombechat_light::{CameraIo, CodeSpec};
 use bombechat_modem::{AudioIo, Band, CpalAudio, ModemConfig, QuietGate};
 use bombechat_node::{
-    LightSwitch, LightTransport, Node, NodeEvent, SoundSwitch, SoundTransport, Transport,
+    LightSwitch, LightTransport, Node, NodeEvent, ReaderWatch, SoundSwitch, SoundTransport,
+    Transport,
 };
 use bombechat_store::{
     Channel, Contact, ContactId, Store, StoreError, StoreKey, StoredBroadcast, StoredMessage,
@@ -100,9 +101,11 @@ fn sound_transport(audio: Box<dyn AudioIo>) -> Result<Box<dyn Transport>, NodeEv
 }
 
 /// The light transport over `camera`, showing codes at Normal until the
-/// Flash speed setting says otherwise.
-fn light_transport(camera: Box<dyn CameraIo>) -> Box<dyn Transport> {
-    Box::new(LightTransport::new(camera, CodeSpec::normal()))
+/// Flash speed setting says otherwise, and a handle on its reader.
+fn light_transport(camera: Box<dyn CameraIo>) -> (Box<dyn Transport>, ReaderWatch) {
+    let light = LightTransport::new(camera, CodeSpec::normal());
+    let watch = light.watch();
+    (Box::new(light), watch)
 }
 
 /// The flash speed preset at Flash speed `value_index`: 0 Slow, 1 Normal,
@@ -239,6 +242,8 @@ pub struct Device {
     /// Set when the Keychain would not keep the key at unlock and the
     /// lock went back on; cleared once the person sets the lock again.
     lock_note: Option<&'static str>,
+    /// The light channel's reader, if there is one.
+    light_watch: Option<ReaderWatch>,
 }
 
 impl Device {
@@ -261,14 +266,21 @@ impl Device {
                 state: format!("unavailable: {e}"),
             }),
         }
+        let mut watch = None;
         match system_camera() {
-            Some(camera) => transports.push(light_transport(camera)),
+            Some(camera) => {
+                let (light, w) = light_transport(camera);
+                transports.push(light);
+                watch = Some(w);
+            }
             None => pending.push(NodeEvent::ChannelState {
                 channel: Channel::Light,
                 state: NO_CAMERA_HERE.to_string(),
             }),
         }
-        Device::new(store_path, transports, pending)
+        let mut device = Device::new(store_path, transports, pending);
+        device.light_watch = watch;
+        device
     }
 
     /// A machine listening and playing through `audio`, with no light
@@ -294,8 +306,17 @@ impl Device {
             Ok(t) => transports.push(t),
             Err(e) => pending.push(e),
         }
-        transports.push(light_transport(camera));
-        Device::new(store_path, transports, pending)
+        let (light, watch) = light_transport(camera);
+        transports.push(light);
+        let mut device = Device::new(store_path, transports, pending);
+        device.light_watch = Some(watch);
+        device
+    }
+
+    /// A handle on the light channel's reader, if there is one: for a
+    /// test to wait until the camera thread has done what it was asked.
+    pub fn light_watch(&self) -> Option<ReaderWatch> {
+        self.light_watch.clone()
     }
 
     /// A machine over `transports`, reporting `pending` on its first tick,
@@ -323,6 +344,7 @@ impl Device {
             age_saved: age_ms,
             now_ms: None,
             lock_note: None,
+            light_watch: None,
         };
         for (id, _, default) in SETTINGS {
             let value = device.setting(id).unwrap_or(default);
@@ -374,7 +396,9 @@ impl Device {
     fn install(&mut self, store: Store, key: StoreKey) {
         self.my_name = Some(store.my_name());
         if let Some(latest) = store.latest_age().filter(|a| *a > self.age_ms) {
-            eprintln!("bombechat: the machine's age was behind its store; carrying on from the store's");
+            eprintln!(
+                "bombechat: the machine's age was behind its store; carrying on from the store's"
+            );
             self.age_ms = latest;
             self.save_age();
         }
@@ -445,8 +469,8 @@ impl Device {
         match days {
             Some(days) if self.unlocked => {
                 self.save_age();
-                let keep_ms = u64::from(days) * 24 * 60 * 60 * 1000
-                    + crate::TICK.as_millis() as u64;
+                let keep_ms =
+                    u64::from(days) * 24 * 60 * 60 * 1000 + crate::TICK.as_millis() as u64;
                 self.node.forget_older_than(self.age_ms, keep_ms)
             }
             _ => 0,
@@ -1102,11 +1126,22 @@ mod tests {
         fs::remove_file(age_path(&path)).unwrap();
 
         let mut device = opened(&path, 0);
-        assert_eq!(device.age_ms(), 10 * DAY, "carried on from the store's own ages");
-        assert_eq!(load_age(&age_path(&path)), 10 * DAY, "and written down again");
+        assert_eq!(
+            device.age_ms(),
+            10 * DAY,
+            "carried on from the store's own ages"
+        );
+        assert_eq!(
+            load_age(&age_path(&path)),
+            10 * DAY,
+            "and written down again"
+        );
         device.tick(DAY - HOUR);
         assert_eq!(ids(&device), vec![1], "not early");
         device.tick(DAY + HOUR);
-        assert!(ids(&device).is_empty(), "a day of running time after, it goes");
+        assert!(
+            ids(&device).is_empty(),
+            "a day of running time after, it goes"
+        );
     }
 }

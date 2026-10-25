@@ -28,6 +28,8 @@ pub struct FakeCamera {
     error: Arc<Mutex<Option<CameraError>>>,
     starts: Arc<Mutex<u32>>,
     stops: Arc<Mutex<u32>>,
+    /// Starts still to refuse, and with what.
+    refusing: Arc<Mutex<(u32, Option<CameraError>)>>,
 }
 
 impl FakeCamera {
@@ -40,6 +42,7 @@ impl FakeCamera {
             error: Arc::new(Mutex::new(None)),
             starts: Arc::new(Mutex::new(0)),
             stops: Arc::new(Mutex::new(0)),
+            refusing: Arc::new(Mutex::new((0, None))),
         }
     }
 
@@ -94,6 +97,13 @@ impl FakeCamera {
         *lock(&self.error) = Some(error);
     }
 
+    /// Have the next `n` calls to [`CameraIo::start`] return `error`, as
+    /// a camera still in use by another app, or not plugged back in yet,
+    /// would.
+    pub fn refuse_starts(&self, n: u32, error: CameraError) {
+        *lock(&self.refusing) = (n, Some(error));
+    }
+
     /// Times [`CameraIo::start`] has been called, successful or not.
     pub fn starts(&self) -> u32 {
         *lock(&self.starts)
@@ -117,6 +127,12 @@ impl CameraIo for FakeCamera {
         if self.denied {
             return Err(CameraError::PermissionDenied);
         }
+        let mut refusing = lock(&self.refusing);
+        if refusing.0 > 0 {
+            refusing.0 -= 1;
+            return Err(refusing.1.clone().expect("set with the count"));
+        }
+        drop(refusing);
         *lock(&self.sink) = Some(sink);
         Ok(())
     }

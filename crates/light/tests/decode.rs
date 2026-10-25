@@ -1544,14 +1544,18 @@ fn a_spent_budget_stops_the_search() {
 
 /// A reader gives more time only when time ran out. Blank pictures are
 /// searched to the end and found empty, so the budget stays put however
-/// many there are. Pictures of dense fake code corners use up a 2 ms
-/// budget and a 4 ms one: after 3 in a row the budget doubles, and again
-/// after each 3 more. A picture searched to the end with nothing in it,
-/// or one it reads, puts the budget back. A reader whose own budget is
-/// over 40 ms, the most it raises a budget to, keeps it.
+/// many there are. Pictures of dense fake code corners use up a budget
+/// and twice it: after 3 in a row the budget doubles, and again after
+/// each 3 more. A picture searched to the end with nothing in it, or one
+/// it reads, puts the budget back. A reader whose own budget is over
+/// 40 ms, the most it raises a budget to, keeps it. Time is counted in
+/// looks at the clock ([`bombechat_light::count_looks_as_time`]), so
+/// which pictures run out of it does not depend on how busy the machine
+/// is; the budgets are in those units (40 looks, then 80, 160).
 #[test]
 fn a_reader_gives_more_time_only_when_time_runs_out() {
-    let ms = Duration::from_millis;
+    bombechat_light::count_looks_as_time(true);
+    let ms = |n: u64| Duration::from_micros(20 * n);
     let blank = GrayImage::from_pixel(1280, 720, image::Luma([128]));
     let walky = fake_corners_on_checks(1280, 720, 2, 16, 2, 7);
     let mut reader = Reader::with_budget(ms(2));
@@ -1561,11 +1565,11 @@ fn a_reader_gives_more_time_only_when_time_runs_out() {
     }
     let mut budgets = Vec::new();
     for _ in 0..6 {
-        budgets.push(reader.budget().as_millis());
+        budgets.push(reader.budget());
         reader.read(&walky);
     }
-    budgets.push(reader.budget().as_millis());
-    assert_eq!(budgets, [2, 2, 2, 4, 4, 4, 8]);
+    budgets.push(reader.budget());
+    assert_eq!(budgets, [ms(2), ms(2), ms(2), ms(4), ms(4), ms(4), ms(8)]);
     assert_eq!(reader.read(&blank), ReadOutcome::NoCode);
     assert_eq!(reader.budget(), ms(2), "a finished search puts it back");
 
@@ -1588,6 +1592,7 @@ fn a_reader_gives_more_time_only_when_time_runs_out() {
         patient.read(&blank);
     }
     assert_eq!(patient.budget(), UNHURRIED);
+    bombechat_light::count_looks_as_time(false);
 }
 
 /// A reader follows a code it cannot read for 8 pictures, then lets it
@@ -1613,18 +1618,31 @@ fn a_reader_lets_go_of_a_code_it_cannot_read() {
     assert_eq!(followed, want);
 }
 
-/// A reader on a small budget (5 ms) following two codes it cannot read
-/// still finds a readable code that comes into view, within 12 pictures
-/// however busy the machine (by then the budget has had time to rise to
-/// 40 ms); `following_is_capped`, run alone in
-/// release, asserts the first picture.
+/// A reader following two codes it cannot read still finds a readable
+/// code that comes into view. Counted in looks at the clock rather than
+/// wall time ([`bombechat_light::count_looks_as_time`]), so the same
+/// budget buys the same work however busy the machine: with room for one
+/// whole search, following both takes no more than its share and the
+/// code reads at the first picture; with a quarter of that, the budget
+/// rises after pictures cut short and the code still reads within 12.
+/// `following_is_capped` checks the same on the wall clock, alone, in
+/// release.
 #[test]
 fn followed_unreadable_codes_leave_the_search_its_time() {
+    bombechat_light::count_looks_as_time(true);
     for (_, spec) in presets() {
-        let (mut reader, target, frame) = following_two_garbage_codes(&spec, 5);
+        let (mut reader, target, frame) = following_two_garbage_codes_us(&spec, 40);
         let n = pictures_to_read(&mut reader, &target, &frame, 12);
-        assert!(n <= 12, "{} cells: not read in 12 pictures", spec.cells);
+        assert_eq!(n, 1, "{} cells, room for one search", spec.cells);
+        let (mut reader, target, frame) = following_two_garbage_codes_us(&spec, 10);
+        let n = pictures_to_read(&mut reader, &target, &frame, 12);
+        assert!(
+            n <= 12,
+            "{} cells, a quarter of that: not read in 12",
+            spec.cells
+        );
     }
+    bombechat_light::count_looks_as_time(false);
 }
 
 /// Run alone in release: two codes a reader follows but cannot read take
@@ -1650,7 +1668,12 @@ fn following_is_capped() {
 /// own budget; then a picture with a readable code of `spec` beside them,
 /// and its frame.
 fn following_two_garbage_codes(spec: &CodeSpec, ms: u64) -> (Reader, GrayImage, Vec<u8>) {
-    let budget = Duration::from_millis(ms);
+    following_two_garbage_codes_us(spec, ms * 1000)
+}
+
+/// As [`following_two_garbage_codes`], the budget in microseconds.
+fn following_two_garbage_codes_us(spec: &CodeSpec, us: u64) -> (Reader, GrayImage, Vec<u8>) {
+    let budget = Duration::from_micros(us);
     let (garbage, target, frame) = two_garbage_and_a_target(spec);
     let mut reader = Reader::with_budget(budget);
     // Until both are followed, and any budget raised meanwhile is back.

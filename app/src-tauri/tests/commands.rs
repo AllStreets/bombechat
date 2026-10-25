@@ -150,6 +150,7 @@ impl Machine for Fake {
                 text: "Water at the church.".into(),
                 at_min: 29_000_002,
                 delivery: Delivery::Waiting,
+                channel: Channel::Sound,
             },
             StoredBroadcast {
                 id: [4; 16],
@@ -160,6 +161,7 @@ impl Machine for Fake {
                 text: "Road north is open.".into(),
                 at_min: 29_000_003,
                 delivery: Delivery::Sent,
+                channel: Channel::Light,
             },
         ]
     }
@@ -762,10 +764,18 @@ fn a_tick_that_keeps_panicking_is_reported_once_in_a_while() {
         .lock()
         .unwrap()
         .extend([None, None, None, Some(vec![NodeEvent::RoomDb(39.0)])]);
-    assert_eq!(commands::tick(&r.shared, 20).len(), 1, "the first is reported");
+    assert_eq!(
+        commands::tick(&r.shared, 20).len(),
+        1,
+        "the first is reported"
+    );
     assert!(commands::tick(&r.shared, 40).is_empty(), "the next is not");
     assert!(commands::tick(&r.shared, 60).is_empty());
-    assert_eq!(commands::tick(&r.shared, 80).len(), 1, "and a good tick still is");
+    assert_eq!(
+        commands::tick(&r.shared, 80).len(),
+        1,
+        "and a good tick still is"
+    );
 }
 
 #[test]

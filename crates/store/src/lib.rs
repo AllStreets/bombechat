@@ -68,17 +68,20 @@ CREATE TABLE broadcasts (
     at_min INTEGER NOT NULL,
     delivery INTEGER NOT NULL,
     envelope BLOB,
-    age_at INTEGER
+    age_at INTEGER,
+    channel INTEGER NOT NULL DEFAULT 0
 );
-PRAGMA user_version = 4;
+PRAGMA user_version = 5;
 ";
 
 /// The schema version [`SCHEMA`] makes, kept in `PRAGMA user_version`.
 /// Version 0 is the first schema, before messages kept their delivery;
 /// version 1 is before messages kept the machine's age; version 2 is
 /// before public broadcasts were kept; version 3 is before the store gave
-/// back the pages erased rows leave ([`MIGRATE_TO_4`]).
-const SCHEMA_VERSION: i64 = 4;
+/// back the pages erased rows leave ([`MIGRATE_TO_4`]); version 4 is
+/// before broadcasts kept the channel they went or came by
+/// ([`MIGRATE_TO_5`]).
+const SCHEMA_VERSION: i64 = 5;
 
 /// Brings a version 0 store up to version 1: outgoing messages gain a
 /// delivery state and, while waiting, their sealed envelope. Rows from
@@ -139,6 +142,13 @@ PRAGMA auto_vacuum = INCREMENTAL;
 VACUUM;
 PRAGMA user_version = 4;
 ";
+
+/// Brings a store up to version 5: broadcasts keep the channel they went
+/// out or came in on, so one waiting at quit goes again the same way.
+/// Rows from before went by sound (the only channel broadcasts had). The
+/// column is added whatever became of the v3-to-v4 `VACUUM` (a store left
+/// at v3 by a failed one has it too); the version moves to 5 only from 4.
+const MIGRATE_TO_5: &str = "ALTER TABLE broadcasts ADD COLUMN channel INTEGER NOT NULL DEFAULT 0;";
 
 /// How many heard broadcasts (not this device's own) are kept: the newest
 /// this many. Anyone in range can broadcast, so without a cap strangers
@@ -254,6 +264,8 @@ pub struct StoredBroadcast {
     pub text: String,
     pub at_min: u32,
     pub delivery: Delivery,
+    /// The channel it went out on, or came in on.
+    pub channel: Channel,
 }
 
 /// Errors returned by [`Store`] operations.
@@ -362,7 +374,8 @@ impl Store {
         let conn = open_existing(path)?;
         key_connection(&conn, &key)?;
 
-        conn.execute_batch(SCHEMA).map_err(|_| StoreError::Corrupt)?;
+        conn.execute_batch(SCHEMA)
+            .map_err(|_| StoreError::Corrupt)?;
         store_identity(&conn, me, my_name)?;
 
         guard.disarm();
@@ -586,16 +599,18 @@ impl Store {
             .expect("querying conversation");
 
         rows.map(|r| r.expect("reading message row"))
-            .map(|(id, contact, outgoing, text, channel, at_min, heard, delivery)| StoredMessage {
-                id: id.try_into().expect("message id is 16 bytes"),
-                contact: ContactId(contact),
-                outgoing: outgoing != 0,
-                text,
-                channel: Channel::from_i64(channel).expect("valid channel"),
-                at_min,
-                heard: heard != 0,
-                delivery: Delivery::from_i64(delivery),
-            })
+            .map(
+                |(id, contact, outgoing, text, channel, at_min, heard, delivery)| StoredMessage {
+                    id: id.try_into().expect("message id is 16 bytes"),
+                    contact: ContactId(contact),
+                    outgoing: outgoing != 0,
+                    text,
+                    channel: Channel::from_i64(channel).expect("valid channel"),
+                    at_min,
+                    heard: heard != 0,
+                    delivery: Delivery::from_i64(delivery),
+                },
+            )
             .collect()
     }
 
@@ -736,8 +751,8 @@ impl Store {
         let envelope = envelope.filter(|_| b.delivery == Delivery::Waiting);
         conn.execute(
             "INSERT INTO broadcasts
-                 (id, outgoing, signer, verified, hops, text, at_min, delivery, envelope, age_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                 (id, outgoing, signer, verified, hops, text, at_min, delivery, envelope, age_at, channel)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
              ON CONFLICT(id) DO UPDATE SET
                  outgoing = excluded.outgoing,
                  signer = excluded.signer,
@@ -746,7 +761,8 @@ impl Store {
                  text = excluded.text,
                  at_min = excluded.at_min,
                  delivery = excluded.delivery,
-                 envelope = excluded.envelope",
+                 envelope = excluded.envelope,
+                 channel = excluded.channel",
             params![
                 b.id.as_slice(),
                 b.outgoing as i64,
@@ -758,6 +774,7 @@ impl Store {
                 b.delivery.to_i64(),
                 envelope,
                 self.age(),
+                b.channel.to_i64(),
             ],
         )
         .map_err(|_| StoreError::Corrupt)?;
@@ -797,7 +814,7 @@ impl Store {
         let conn = self.conn.lock().expect("store mutex poisoned");
         let mut stmt = conn
             .prepare(&format!(
-                "SELECT id, outgoing, signer, verified, hops, text, at_min, delivery, envelope
+                "SELECT id, outgoing, signer, verified, hops, text, at_min, delivery, envelope, channel
                  FROM broadcasts WHERE {filter} ORDER BY rowid"
             ))
             .expect("preparing broadcasts query");
@@ -813,25 +830,40 @@ impl Store {
                     row.get::<_, u32>(6)?,
                     row.get::<_, i64>(7)?,
                     row.get::<_, Option<Vec<u8>>>(8)?,
+                    row.get::<_, i64>(9)?,
                 ))
             })
             .expect("querying broadcasts");
         rows.map(|r| r.expect("reading broadcast row"))
-            .filter_map(|(id, outgoing, signer, verified, hops, text, at_min, delivery, envelope)| {
-                Some((
-                    StoredBroadcast {
-                        id: id.try_into().ok()?,
-                        outgoing: outgoing != 0,
-                        signer: signer.try_into().ok()?,
-                        verified: verified != 0,
-                        hops: u8::try_from(hops).unwrap_or(u8::MAX),
-                        text,
-                        at_min,
-                        delivery: Delivery::from_i64(delivery),
-                    },
+            .filter_map(
+                |(
+                    id,
+                    outgoing,
+                    signer,
+                    verified,
+                    hops,
+                    text,
+                    at_min,
+                    delivery,
                     envelope,
-                ))
-            })
+                    channel,
+                )| {
+                    Some((
+                        StoredBroadcast {
+                            id: id.try_into().ok()?,
+                            outgoing: outgoing != 0,
+                            signer: signer.try_into().ok()?,
+                            verified: verified != 0,
+                            hops: u8::try_from(hops).unwrap_or(u8::MAX),
+                            text,
+                            at_min,
+                            delivery: Delivery::from_i64(delivery),
+                            channel: Channel::from_i64(channel).ok()?,
+                        },
+                        envelope,
+                    ))
+                },
+            )
             .collect()
     }
 
@@ -850,7 +882,10 @@ impl Store {
 
 /// Derive the 32-byte SQLCipher key from `passphrase` and `salt` with
 /// Argon2id (`m = 64 MiB`, `t = 3`, `p = 1`).
-fn derive_key(passphrase: &str, salt: &[u8; SALT_LEN]) -> Result<Zeroizing<[u8; ARGON2_KEY_LEN]>, StoreError> {
+fn derive_key(
+    passphrase: &str,
+    salt: &[u8; SALT_LEN],
+) -> Result<Zeroizing<[u8; ARGON2_KEY_LEN]>, StoreError> {
     let params = Params::new(
         ARGON2_MEMORY_KIB,
         ARGON2_ITERATIONS,
@@ -871,7 +906,10 @@ fn derive_key(passphrase: &str, salt: &[u8; SALT_LEN]) -> Result<Zeroizing<[u8; 
 /// literal (`x'...'`) so SQLCipher does not re-derive a key from it. The hex
 /// string and the pragma statement that embeds it both live in `Zeroizing`
 /// buffers.
-fn key_connection(conn: &Connection, key: &Zeroizing<[u8; ARGON2_KEY_LEN]>) -> Result<(), StoreError> {
+fn key_connection(
+    conn: &Connection,
+    key: &Zeroizing<[u8; ARGON2_KEY_LEN]>,
+) -> Result<(), StoreError> {
     let mut hex = Zeroizing::new(String::with_capacity(ARGON2_KEY_LEN * 2));
     for byte in key.iter() {
         write!(hex, "{byte:02x}").expect("writing to a String cannot fail");
@@ -926,7 +964,9 @@ fn verify_key(conn: &Connection) -> Result<(), StoreError> {
         row.get::<_, i64>(0)
     }) {
         Ok(_) => Ok(()),
-        Err(rusqlite::Error::SqliteFailure(e, _)) if e.code == rusqlite::ErrorCode::NotADatabase => {
+        Err(rusqlite::Error::SqliteFailure(e, _))
+            if e.code == rusqlite::ErrorCode::NotADatabase =>
+        {
             Err(StoreError::WrongPassphrase)
         }
         Err(_) => Err(StoreError::Corrupt),
@@ -974,6 +1014,27 @@ fn migrate(conn: &Connection) -> Result<(), StoreError> {
                 "bombechat-store: could not reclaim free space (v3 to v4 migration); \
                  opening at v3 and retrying on the next open: {e}"
             );
+        }
+    }
+    if version < 5 {
+        let has_channel = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('broadcasts') WHERE name = 'channel'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|_| StoreError::Corrupt)?
+            > 0;
+        if !has_channel {
+            conn.execute_batch(MIGRATE_TO_5)
+                .map_err(|_| StoreError::Corrupt)?;
+        }
+        let now: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .map_err(|_| StoreError::Corrupt)?;
+        if now == 4 {
+            conn.execute_batch("PRAGMA user_version = 5;")
+                .map_err(|_| StoreError::Corrupt)?;
         }
     }
     Ok(())
@@ -1161,7 +1222,10 @@ mod tests {
 
         let store = Store::open(&path, "pw").unwrap();
         let old = store.message(&[7u8; 16]).unwrap();
-        assert_eq!((old.text.as_str(), old.delivery), ("Bring water.", Delivery::Sent));
+        assert_eq!(
+            (old.text.as_str(), old.delivery),
+            ("Bring water.", Delivery::Sent)
+        );
         assert!(store.waiting().is_empty());
         let new = StoredMessage {
             id: [8u8; 16],
@@ -1217,8 +1281,16 @@ mod tests {
         let store = Store::open(&path, "pw").unwrap();
         assert_eq!(store.forget_older_than(u64::MAX, 0).unwrap(), 0);
         assert_eq!(store.adopt_unaged(3_600_000).unwrap(), 1);
-        assert_eq!(store.forget_older_than(3_600_000 + 86_400_000, 86_400_000).unwrap(), 0);
-        assert!(store.message(&[7u8; 16]).is_some(), "a day of running time, not more");
+        assert_eq!(
+            store
+                .forget_older_than(3_600_000 + 86_400_000, 86_400_000)
+                .unwrap(),
+            0
+        );
+        assert!(
+            store.message(&[7u8; 16]).is_some(),
+            "a day of running time, not more"
+        );
         drop(store);
         // opening it again does not migrate twice
         let store = Store::open(&path, "pw").unwrap();
@@ -1274,6 +1346,7 @@ mod tests {
             text: "Road north is open.".into(),
             at_min: 6,
             delivery: Delivery::Sent,
+            channel: Channel::Sound,
         };
         store.put_broadcast(&b, None).unwrap();
         drop(store);
@@ -1306,7 +1379,11 @@ mod tests {
         let path = dir.path().join("s.db");
         let store = Store::create(&path, "pw", &Identity::generate(), "me").unwrap();
         assert_eq!(pragma(&store, "secure_delete"), 1, "made");
-        assert_eq!(pragma(&store, "auto_vacuum"), 2, "incremental, from the start");
+        assert_eq!(
+            pragma(&store, "auto_vacuum"),
+            2,
+            "incremental, from the start"
+        );
         drop(store);
         let store = Store::open(&path, "pw").unwrap();
         assert_eq!(pragma(&store, "secure_delete"), 1, "opened");
@@ -1352,12 +1429,22 @@ mod tests {
         assert!(holds(&before, b"Quokka-7731") && holds(&before, b"Overflow-Pangolin-4410"));
 
         assert_eq!(store.forget_older_than(1_000, 500).unwrap(), 2);
-        assert_eq!(pragma(&store, "freelist_count"), 0, "the freed pages were given back");
+        assert_eq!(
+            pragma(&store, "freelist_count"),
+            0,
+            "the freed pages were given back"
+        );
         drop(store);
 
         let after = std::fs::read(&path).unwrap();
-        assert!(!holds(&after, b"Quokka-7731"), "the short message is gone from the file");
-        assert!(!holds(&after, b"Overflow-Pangolin-4410"), "and so is the long one");
+        assert!(
+            !holds(&after, b"Quokka-7731"),
+            "the short message is gone from the file"
+        );
+        assert!(
+            !holds(&after, b"Overflow-Pangolin-4410"),
+            "and so is the long one"
+        );
         assert!(holds(&after, b"Still here."), "the one kept is still there");
         assert!(after.len() < before.len(), "the file shrank");
     }
@@ -1373,17 +1460,65 @@ mod tests {
             let conn = open_existing(&path).unwrap();
             key_connection(&conn, &derive_key("pw", &salt).unwrap()).unwrap();
             // the version 3 schema: today's, without auto_vacuum
-            conn.execute_batch(&SCHEMA.replace("PRAGMA auto_vacuum = INCREMENTAL;", "")
-                .replace("user_version = 4", "user_version = 3"))
-                .unwrap();
+            conn.execute_batch(
+                &SCHEMA
+                    .replace("PRAGMA auto_vacuum = INCREMENTAL;", "")
+                    .replace(",\n    channel INTEGER NOT NULL DEFAULT 0", "")
+                    .replace("user_version = 5", "user_version = 3"),
+            )
+            .unwrap();
             store_identity(&conn, &Identity::generate(), "me").unwrap();
-            let v: i64 = conn.query_row("PRAGMA auto_vacuum", [], |r| r.get(0)).unwrap();
+            let v: i64 = conn
+                .query_row("PRAGMA auto_vacuum", [], |r| r.get(0))
+                .unwrap();
             assert_eq!(v, 0);
         }
         let store = Store::open(&path, "pw").unwrap();
         assert_eq!(pragma(&store, "auto_vacuum"), 2);
-        assert_eq!(pragma(&store, "user_version"), 4);
+        assert_eq!(pragma(&store, "user_version"), 5);
         assert_eq!(store.my_name(), "me");
+    }
+
+    #[test]
+    fn a_store_from_before_broadcasts_kept_their_channel_takes_old_ones_as_sound() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v4.db");
+        {
+            let salt = random_salt();
+            write_salt_sidecar(&path, &salt).unwrap();
+            create_private_db_file(&path).unwrap();
+            let conn = open_existing(&path).unwrap();
+            key_connection(&conn, &derive_key("pw", &salt).unwrap()).unwrap();
+            // the version 4 schema: today's, without the channel column
+            conn.execute_batch(
+                &SCHEMA
+                    .replace(",\n    channel INTEGER NOT NULL DEFAULT 0", "")
+                    .replace("user_version = 5", "user_version = 4"),
+            )
+            .unwrap();
+            store_identity(&conn, &Identity::generate(), "me").unwrap();
+            conn.execute(
+                "INSERT INTO broadcasts (id, outgoing, signer, verified, hops, text, at_min, delivery, envelope)
+                 VALUES (?1, 1, ?2, 1, 0, 'Old.', 5, 0, ?3)",
+                params![[1u8; 16].as_slice(), [2u8; 32].as_slice(), [9u8; 4].as_slice()],
+            )
+            .unwrap();
+        }
+        let store = Store::open(&path, "pw").unwrap();
+        assert_eq!(pragma(&store, "user_version"), 5);
+        let waiting = store.waiting_broadcasts();
+        assert_eq!(waiting.len(), 1);
+        assert_eq!(waiting[0].0.channel, Channel::Sound, "went by sound, then");
+        let light = StoredBroadcast {
+            id: [3u8; 16],
+            text: "By light.".into(),
+            channel: Channel::Light,
+            ..waiting[0].0.clone()
+        };
+        store.put_broadcast(&light, Some(&[7u8; 4])).unwrap();
+        drop(store);
+        let store = Store::open(&path, "pw").unwrap();
+        assert_eq!(store.waiting_broadcasts()[1].0.channel, Channel::Light);
     }
 
     /// Sets [`FORCE_VACUUM_FAILURE_FOR_TESTS`] for the life of the guard,
@@ -1416,23 +1551,40 @@ mod tests {
             let conn = open_existing(&path).unwrap();
             key_connection(&conn, &derive_key("pw", &salt).unwrap()).unwrap();
             // the version 3 schema: today's, without auto_vacuum
-            conn.execute_batch(&SCHEMA.replace("PRAGMA auto_vacuum = INCREMENTAL;", "")
-                .replace("user_version = 4", "user_version = 3"))
-                .unwrap();
+            conn.execute_batch(
+                &SCHEMA
+                    .replace("PRAGMA auto_vacuum = INCREMENTAL;", "")
+                    .replace(",\n    channel INTEGER NOT NULL DEFAULT 0", "")
+                    .replace("user_version = 5", "user_version = 3"),
+            )
+            .unwrap();
             store_identity(&conn, &Identity::generate(), "me").unwrap();
         }
 
         let guard = ForcedVacuumFailure::engage();
-        let store = Store::open(&path, "pw").expect("a failed VACUUM must not stop the store opening");
-        assert_eq!(pragma(&store, "user_version"), 3, "left at v3 for the next open to retry");
-        assert_eq!(pragma(&store, "secure_delete"), 1, "still on; the store is fully usable at v3");
+        let store =
+            Store::open(&path, "pw").expect("a failed VACUUM must not stop the store opening");
+        assert_eq!(
+            pragma(&store, "user_version"),
+            3,
+            "left at v3 for the next open to retry"
+        );
+        assert_eq!(
+            pragma(&store, "secure_delete"),
+            1,
+            "still on; the store is fully usable at v3"
+        );
         assert_eq!(store.my_name(), "me", "the data is readable");
         drop(store);
         drop(guard);
 
         // the next open, without the forced failure, completes the migration
         let store = Store::open(&path, "pw").unwrap();
-        assert_eq!(pragma(&store, "user_version"), 4, "retried and completed on the next open");
+        assert_eq!(
+            pragma(&store, "user_version"),
+            5,
+            "retried and completed on the next open"
+        );
         assert_eq!(pragma(&store, "auto_vacuum"), 2);
     }
 
@@ -1467,6 +1619,7 @@ mod tests {
             text: format!("heard {n}"),
             at_min: 1,
             delivery: Delivery::Sent,
+            channel: Channel::Sound,
         }
     }
 
@@ -1491,8 +1644,15 @@ mod tests {
         let kept = store.broadcasts();
         assert_eq!(kept.len(), HEARD_BROADCASTS_KEPT + 1);
         assert_eq!(kept[0], own, "our own stays");
-        assert_eq!(kept[1].text, format!("heard {extra}"), "the oldest heard went");
-        assert_eq!(kept.last().unwrap().text, format!("heard {}", HEARD_BROADCASTS_KEPT as u16 + extra - 1));
+        assert_eq!(
+            kept[1].text,
+            format!("heard {extra}"),
+            "the oldest heard went"
+        );
+        assert_eq!(
+            kept.last().unwrap().text,
+            format!("heard {}", HEARD_BROADCASTS_KEPT as u16 + extra - 1)
+        );
     }
 
     #[test]
@@ -1513,8 +1673,15 @@ mod tests {
 
         let kept = store.broadcasts();
         assert_eq!(kept.len(), HEARD_BROADCASTS_KEPT, "the cap held");
-        assert!(kept.iter().all(|b| b.id != overflowing.id), "the oldest, overflowing one was pushed out");
-        assert_eq!(pragma(&store, "freelist_count"), 0, "the cap gave back the pages it freed");
+        assert!(
+            kept.iter().all(|b| b.id != overflowing.id),
+            "the oldest, overflowing one was pushed out"
+        );
+        assert_eq!(
+            pragma(&store, "freelist_count"),
+            0,
+            "the cap gave back the pages it freed"
+        );
     }
 
     #[test]

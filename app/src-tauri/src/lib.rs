@@ -136,8 +136,7 @@ pub fn run() {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
             let store = dir.join(STORE_FILE);
-            let device =
-                Device::with_hardware(store.clone()).with_keeper(keychain::system(&store));
+            let device = Device::with_hardware(store.clone()).with_keeper(keychain::system(&store));
             app.manage(Shared::new(Box::new(device)));
             let handle = app.handle().clone();
             thread::Builder::new()
