@@ -63,7 +63,7 @@ const PARTS = { top: '.top', bank: '.bank', sheet: '.sheet', compose: '.compose'
 // would; `refuseBroadcast` is a reason the machine gives for refusing every broadcast.
 // Unlocking: `keychain` opens the store before the page asks (the Lock Off launch); `unlockMs` is how long
 // working out the key takes (0 if not given); the first `wrong` unlocks are refused as 'wrong passphrase'.
-function tauriStub({ hello, safety, people, talk, afterUnlock, settings, broadcastMax = 3939, kept = [], refuseBroadcast, keychain, unlockMs = 0, wrong = 0 }) {
+function tauriStub({ hello, safety, people, talk, afterUnlock, settings, broadcastMax = 3939, kept = [], refuseBroadcast, keychain, unlockMs = 0, wrong = 0, wrongWhy = 'wrong passphrase' }) {
   let unlocked = !!keychain, refusals = wrong;
   const KEPT = 'stub.notices';
   const notices = () => JSON.parse(sessionStorage.getItem(KEPT) || 'null') || kept;
@@ -78,7 +78,7 @@ function tauriStub({ hello, safety, people, talk, afterUnlock, settings, broadca
       switch (cmd) {
         case 'contacts': return unlocked ? Promise.resolve(people || []) : Promise.reject(people ? 'locked' : 'no store yet');
         case 'unlock': return new Promise(r => setTimeout(r, unlockMs)).then(() => {
-          if (refusals > 0) { refusals--; return Promise.reject('wrong passphrase'); }
+          if (refusals > 0) { refusals--; return Promise.reject(wrongWhy); }
           unlocked = true; for (const [name, payload] of afterUnlock || []) window.__emit(name, payload); return null; });
         case 'machine': return Promise.resolve({ name: 'Machine No. 1', key: 'a3f09c1e'.repeat(16), you: 'Ana Lima', held: 0, version: '0.1.0', broadcast_max: broadcastMax });
         case 'conversation': return Promise.resolve((talk || {})[args.contactId] || []);
@@ -617,6 +617,23 @@ function measureText() {
       await lr.keyboard.type('correct horse'); await lr.keyboard.press('Enter');
       await lr.waitForFunction(() => !document.querySelector('.unlock'), null, { timeout: 10000 });
       await lr.close();
+    }
+    // a store made by a newer build: the unlock form says so, in its own words, under the passphrase
+    {
+      const nw = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 });
+      watch(nw, 'unlock newer store');
+      await nw.addInitScript(tauriStub, { people: LATER, wrong: 1, wrongWhy: 'This store was made by a newer Bombechat.' });
+      await nw.goto(url('still'));
+      await nw.waitForSelector('.unlock input[name=pass]');
+      await nw.fill('.unlock input[name=pass]', 'correct horse');
+      await nw.click('.unlock button');
+      await nw.waitForFunction(() => !document.querySelector('.unlock.working') && document.querySelector('.unlock .err').textContent, null, { timeout: 10000 });
+      const newer = await nw.evaluate(() => ({ err: document.querySelector('.unlock .err').textContent, bad: (document.querySelector('.unlock .row.bad input') || {}).name }));
+      if (newer.err !== 'This store was made by a newer Bombechat.' || newer.bad !== 'pass') problems.push(`unlock newer store: ${JSON.stringify(newer)}`);
+      const r = await nw.locator('.unlock .stand').boundingBox();
+      await nw.screenshot({ path: path.join(out, 'unlock-1440-newer.png'), clip: { x: r.x - 12, y: r.y - 12, width: r.width + 24, height: r.height + 24 } });
+      report.unlockForm.newer = newer;
+      await nw.close();
     }
     // the Keychain launch (Lock Off): the store is open before the page asks, and no form appears
     {

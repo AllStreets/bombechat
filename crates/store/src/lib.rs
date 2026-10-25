@@ -265,6 +265,9 @@ pub enum StoreError {
     /// unrelated) is reported identically by SQLCipher, so it also comes
     /// back as `WrongPassphrase` here rather than `Corrupt`.
     WrongPassphrase,
+    /// The store opened, but a newer build made it (its schema version is
+    /// past this build's), so this build leaves it untouched.
+    Newer,
     /// The database (or its sidecar, or the derived key material) is
     /// present but malformed, e.g. a missing identity row or a short salt.
     Corrupt,
@@ -278,6 +281,7 @@ impl std::fmt::Display for StoreError {
         match self {
             StoreError::AlreadyExists => write!(f, "a store already exists at this path"),
             StoreError::WrongPassphrase => write!(f, "wrong passphrase"),
+            StoreError::Newer => write!(f, "This store was made by a newer Bombechat."),
             StoreError::Corrupt => write!(f, "store is corrupt"),
             StoreError::Io => write!(f, "store i/o error"),
         }
@@ -939,7 +943,7 @@ fn migrate(conn: &Connection) -> Result<(), StoreError> {
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .map_err(|_| StoreError::Corrupt)?;
     if version > SCHEMA_VERSION {
-        return Err(StoreError::Corrupt);
+        return Err(StoreError::Newer);
     }
     for (to, step) in [
         (1, MIGRATE_TO_1),
@@ -1332,6 +1336,25 @@ mod tests {
         assert_eq!(pragma(&store, "auto_vacuum"), 2);
         assert_eq!(pragma(&store, "user_version"), 4);
         assert_eq!(store.my_name(), "me");
+    }
+
+    #[test]
+    fn a_store_from_a_newer_build_is_refused_as_such_and_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("new.db");
+        let store = Store::create(&path, "pw", &Identity::generate(), "me").unwrap();
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute_batch("PRAGMA user_version = 99;")
+            .unwrap();
+        drop(store);
+        let Err(e) = Store::open(&path, "pw") else {
+            panic!("a newer store opened");
+        };
+        assert!(matches!(e, StoreError::Newer), "{e:?}");
+        assert_eq!(e.to_string(), "This store was made by a newer Bombechat.");
     }
 
     fn heard(n: u16) -> StoredBroadcast {
