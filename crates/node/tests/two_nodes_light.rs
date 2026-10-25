@@ -363,8 +363,9 @@ fn pair_message_and_receipt_by_light_alone() {
     );
 
     // Both screens are clear once the windows end (the receipt runs its
-    // full 4 s floor), and the message is never delivered twice.
-    room.run(5_000);
+    // full 4 s floor after the page's still moment), and the message is
+    // never delivered twice.
+    room.run(6_200);
     assert!(room.peers.iter().all(|p| p.screen.is_none()));
     assert_eq!(messages(&room.peers[1].log).len(), 1);
 }

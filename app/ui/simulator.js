@@ -25,8 +25,8 @@
 // change, which setSetting refuses with the device's sentence.
 //
 // Light: a send or notice by light at Read and flash is shown as the node shows one: display frames at the Flash
-// speed's rate (synthetic bits, the size of that preset's grid) for at least four seconds, then displayStopped, then
-// sent. At Read or Off it is refused as the node refuses it. Turning Light down mid-flash clears the screen and the
+// speed's rate (synthetic bits, the size of that preset's grid) for at least four seconds after the page's still
+// moment, then displayStopped, then sent. At Read or Off it is refused as the node refuses it. Turning Light down mid-flash clears the screen and the
 // send waits; turning it back to Read and flash carries on.
 //
 // The eyepiece: while asked for and Light reads, a made-up grey room (a window, a desk, someone moving) four times a
@@ -78,6 +78,8 @@ const LIGHT_CELLS = [48, 56, 64];
 const LIGHT_FPS = [6, 10, 15];
 // the shortest an envelope is shown, as the light transport's HUMAN_FLOOR_MS
 const LIGHT_FLOOR_MS = 4000;
+// the page's still moment (its READY_MS), which the node adds each time the screen lights from clear, as STILL_MS
+const LIGHT_STILL_MS = 1200;
 // the light refusals and states, as the node's
 const LIGHT_SAYS = ['not sent: light is off', 'not sent: light is set to read only'];
 // a code in view the camera cannot read, as the node's TILT_OR_DIM
@@ -193,6 +195,9 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
   const flashes = [];
   let flashing = null;// { m, spec, shown, window, lit, announced, heard }
   let flashT = null;
+  // whether a code is on screen (between a display and its displayStopped)
+  let screenLit = false;
+  const cleared = tag => { screenLit = false; emit('displayStopped', { tag }); };
   // the pairing hello on show by light, if any: a flash with no message, shown window after window
   let hello = null, helloCap = null;
   const lightWindow = spec => Math.ceil(LIGHT_FLOOR_MS * LIGHT_FPS[spec] / 1000);
@@ -202,7 +207,7 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
     const h = hello; hello = null;
     if (!h) return;
     const i = flashes.indexOf(h); if (i >= 0) flashes.splice(i, 1);
-    if (flashing === h) { flashing = null; if (h.lit) emit('displayStopped', { tag: h.tag }); }
+    if (flashing === h) { flashing = null; if (h.lit) cleared(h.tag); }
   }
   const frameBits = (spec, tag, index) => { const r = seeded((tag << 12) ^ index ^ (spec << 28)); return Array.from({ length: Math.ceil(LIGHT_CELLS[spec] ** 2 / 8) }, r); };
   function flashTick() {
@@ -211,17 +216,20 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
     if (!f) { flashT = null; return; }
     if (settings.light < 2) {
       // Light turned down: the screen clears and the send waits, carrying on where it stopped
-      if (f.lit) { f.lit = false; emit('displayStopped', { tag: f.tag }); }
+      if (f.lit) { f.lit = false; cleared(f.tag); }
       if (f.announced && f.m) { f.announced = false; outbox(f.m, 'waiting'); }
       flashT = later(flashTick, 200); return;
     }
     if (!f.announced && f.m) { f.announced = true; outbox(f.m, 'playing'); }
+    // lighting a clear screen: the page stands still first, so the frames it hides are added to the window
+    if (!screenLit && !f.hello) f.window += Math.ceil(LIGHT_STILL_MS * LIGHT_FPS[f.spec] / 1000);
+    screenLit = true;
     emit('display', { tag: f.tag, bits: frameBits(f.spec, f.tag, f.shown), spec: f.spec, index: f.shown, hello: !!f.hello });
     f.lit = true; f.shown += 1;
     if (f.shown >= f.window) {
       flashing = null;
-      if (f.hello) { if (hello === f) { hello = null; clearTimeout(helloCap); } later(() => { if (!flashing) emit('displayStopped', { tag: f.tag }); }, 1000 / LIGHT_FPS[f.spec]); }
-      else later(() => { if (!flashing) emit('displayStopped', { tag: f.tag }); outbox(f.m, 'sent'); if (f.heard) emit('heard', { id: f.m.id, by: MARISOL }); }, 1000 / LIGHT_FPS[f.spec]);
+      if (f.hello) { if (hello === f) { hello = null; clearTimeout(helloCap); } later(() => { if (!flashing) cleared(f.tag); }, 1000 / LIGHT_FPS[f.spec]); }
+      else later(() => { if (!flashing) cleared(f.tag); outbox(f.m, 'sent'); if (f.heard) emit('heard', { id: f.m.id, by: MARISOL }); }, 1000 / LIGHT_FPS[f.spec]);
     }
     flashT = later(flashTick, 1000 / LIGHT_FPS[f.spec]);
   }

@@ -553,7 +553,7 @@ function measureText() {
             return got; })
         : () => import('./bridge.js').then(async ({ bridge }) => { const got = { frames: [], stopped: [] };
             bridge.on('display', d => got.frames.push(d)); bridge.on('displayStopped', d => got.stopped.push(d));
-            await bridge.broadcast('Water at the church.', 'light'); await new Promise(r => setTimeout(r, 4600));
+            await bridge.broadcast('Water at the church.', 'light'); await new Promise(r => setTimeout(r, 5800));
             const light = (await bridge.channels()).find(c => c.channel === 'light');
             return { ...got, rate: light && light.rate }; }));
       const lightSets = where === 'app' ? light.sets.length : light.sets;
@@ -572,7 +572,7 @@ function measureText() {
         problems.push(`${where}: turning the Light switch twice did not reach Read and flash: ${JSON.stringify(light)}, kept ${JSON.stringify(kept)}`);
       const frames = shown.frames, tag = frames.length && frames[0].tag;
       if (!frames.length || frames.some(f => f.tag !== tag || f.bits.length !== 392 || f.spec !== 1) || frames.some((f, i) => f.index !== i)
-        || JSON.stringify(shown.stopped) !== JSON.stringify([{ tag }]) || (where === 'browser' && (frames.length !== 40 || shown.rate !== 2290)))
+        || JSON.stringify(shown.stopped) !== JSON.stringify([{ tag }]) || (where === 'browser' && (frames.length !== 52 || shown.rate !== 2290)))
         problems.push(`${where}: a notice by light did not reach the page as frames: ${frames.length} frames, first ${JSON.stringify(frames[0] && { ...frames[0], bits: frames[0].bits.length })}, stopped ${JSON.stringify(shown.stopped)}, rate ${shown.rate}`);
       if (flipped.lever !== 'true' || !flipped.on || (where === 'app' ? JSON.stringify(flipped.sets) !== JSON.stringify([{ id: 'machine', valueIndex: 1 }]) : flipped.sets !== 1 || kept.machine !== 1))
         problems.push(`${where}: the lever sent ${JSON.stringify(flipped)}, kept ${JSON.stringify(kept)}`);

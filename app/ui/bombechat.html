@@ -1302,7 +1302,8 @@ yesBtn.addEventListener('click',()=>{const o=offer;if(!o)return;
    plain field of the code's own mean grey, so nothing jumps when the frames start), then the frames follow,
    each drawn exactly as the light crate's render_bits draws it: a white quiet zone three cells wide, cells of
    whole device pixels, the leftover split evenly round the grid. Frames that come during the still moment are
-   let go; the node shows each message for at least four seconds and three times what a camera needs.
+   let go; the node adds the still moment to the window whenever the screen lights from clear (its STILL_MS, the same
+   as READY_MS), so each message still shows code for at least four seconds and three times what a camera needs.
    Escape (or Stop) turns the Light switch to Read, the machine's own way to stop flashing: the screen clears at
    once, the message waits, and nothing more flashes until the switch is back at Read and flash. When the frames
    are your pairing hello (display's hello), the lamp says to hold the screens face to face, and Escape (or Stop)
@@ -1311,7 +1312,7 @@ const lampEl=document.getElementById('lamp'),lampCv=document.getElementById('lam
 const lampSay=document.getElementById('lampsay'),lampStop=document.getElementById('lampstop'),deckEl=document.querySelector('.deck'),sheetEl=document.querySelector('.sheet');
 // cells a side for each preset (0 slow, 1 normal, 2 fast), and the quiet zone, as crates/light CodeSpec and QUIET
 const LAMP_CELLS=[48,56,64],LAMP_QUIET=3;
-// the still moment before the first frame; the grey of a half-dark grid (linear luminance 0.5)
+// the still moment before the first frame (the node's STILL_MS: change both); the grey of a half-dark grid (linear luminance 0.5)
 const READY_MS=Q.has('ready')?+Q.get('ready'):1200,LAMP_GREY='#bcbcbc';
 // closed, ready (still) or flashing; for: whose camera to hold it up to (a name, or null for anyone's)
 // next: whose camera the next message to go on screen is for (set by a send from this page); for: the one showing

@@ -29,7 +29,10 @@
 //! up to [`MAX_QUEUED_ENVELOPES`]. Each envelope is shown for a sending
 //! window of [`SEND_WINDOW`] times the frames a receiver needs at least,
 //! but never less than [`HUMAN_FLOOR_MS`] of frames, so a person has time
-//! to hold the screen up; [`Transport::delivered`] (everyone it was for
+//! to hold the screen up. Each time the screen lights from clear the page
+//! stands still for [`STILL_MS`] before the code shows, and the window
+//! grows by that much, so the floor counts code a camera can see.
+//! [`Transport::delivered`] (everyone it was for
 //! has it) cuts the window short. An envelope is coded in the preset
 //! current when it goes on screen ([`Transport::set_preset`]).
 
@@ -62,6 +65,18 @@ pub const SEND_WINDOW: u32 = 3;
 /// the other camera. A receipt (which nobody reports hearing) is shown
 /// this long in full.
 pub const HUMAN_FLOOR_MS: u32 = 4_000;
+
+/// How long the page holds a still grey field, before the first code
+/// frame, each time the screen lights up from clear (`READY_MS` in
+/// `app/ui/bombechat.html`). The frames shown meanwhile are seen by no
+/// one, so an envelope that lights a clear screen is shown this much
+/// longer: the floor and the window count code a camera can see.
+pub const STILL_MS: u32 = 1_200;
+
+/// The frames the page's still moment takes at `spec`'s rate.
+fn still_frames(spec: &CodeSpec) -> u32 {
+    (STILL_MS * spec.frames_per_second()).div_ceil(1000)
+}
 
 /// The notice for an envelope too long to show.
 pub const TOO_LONG: &str = "message too long for light";
@@ -694,6 +709,11 @@ impl LightTransport {
             out.announced = true;
             events.push(TransportEvent::Playing(out.tag));
         }
+        // Lighting a clear screen: the page stands still first, so the
+        // frames it hides are added to the window.
+        if self.lit.is_none() {
+            out.window += still_frames(&out.spec);
+        }
         let frame = out.encoder.next_frame();
         events.push(TransportEvent::Display {
             tag: out.tag,
@@ -920,7 +940,8 @@ mod tests {
         let cam = FakeCamera::new(Vec::new());
         let mut t = transport(&cam);
         // 1000 bytes is 5 symbols of 229 at one symbol a frame, so 3x the
-        // need is 15 frames; the floor, 4 s at 10 a second, is 40.
+        // need is 15 frames; the floor, 4 s at 10 a second, is 40, and
+        // the page's still moment lighting a clear screen 12 more.
         send(&mut t, 7, 1000);
         let (shown, rest) = run(&mut t, 0, 1_000);
         assert_eq!(
@@ -930,10 +951,10 @@ mod tests {
         );
         assert_eq!(rest, vec![TransportEvent::Playing(7)]);
 
-        let (shown, rest) = run(&mut t, 1_000, 3_980);
-        assert_eq!(shown, (10..40).map(|i| (7, i)).collect::<Vec<_>>());
-        assert_eq!(rest, vec![TransportEvent::Sent(7)], "sent with frame 40");
-        let (shown, rest) = run(&mut t, 3_980, 5_000);
+        let (shown, rest) = run(&mut t, 1_000, 5_180);
+        assert_eq!(shown, (10..52).map(|i| (7, i)).collect::<Vec<_>>());
+        assert_eq!(rest, vec![TransportEvent::Sent(7)], "sent with frame 52");
+        let (shown, rest) = run(&mut t, 5_180, 6_200);
         assert!(shown.is_empty());
         assert_eq!(
             rest,
@@ -974,16 +995,39 @@ mod tests {
             ..CodeSpec::fast()
         }); // not a preset: ignored
         let mut seen = first;
-        for now in (20..9_000).step_by(20) {
+        for now in (20..12_000).step_by(20) {
             seen.extend(specs(t.poll(now)));
         }
-        assert!(
-            seen.iter().filter(|s| s.0 == 7).all(|s| s.1 == 1),
-            "7 stays normal"
-        );
+        let normal: Vec<_> = seen.iter().filter(|s| s.0 == 7).collect();
+        assert!(normal.iter().all(|s| s.1 == 1), "7 stays normal");
+        assert_eq!(normal.len(), 52, "the still moment and 4 s, at 10 a second");
         let fast: Vec<_> = seen.iter().filter(|s| s.0 == 8).collect();
-        assert_eq!(fast.len(), 60, "4 s at 15 a second");
+        assert_eq!(
+            fast.len(),
+            60,
+            "4 s at 15 a second: the screen was lit, so no still moment"
+        );
         assert!(fast.iter().all(|s| s.1 == 2), "8 goes fast");
+    }
+
+    #[test]
+    fn the_still_moment_is_added_each_time_the_screen_lights_from_clear() {
+        let cam = FakeCamera::new(Vec::new());
+        let mut t = transport(&cam);
+        send(&mut t, 7, 1000);
+        let (shown, _) = run(&mut t, 0, 1_000);
+        assert_eq!(shown.len(), 10);
+        // Light turned down: the screen clears, and the send waits.
+        t.set_sending(false);
+        let (shown, _) = run(&mut t, 1_000, 2_000);
+        assert!(shown.is_empty());
+        // Back on: the page stands still again, so 12 more frames than
+        // the 42 left.
+        t.set_sending(true);
+        let (shown, rest) = run(&mut t, 2_000, 12_000);
+        assert_eq!(shown, (10..64).map(|i| (7, i)).collect::<Vec<_>>());
+        assert!(rest.contains(&TransportEvent::Sent(7)));
+        assert_eq!(STILL_MS, 1_200, "as the page's READY_MS");
     }
 
     #[test]

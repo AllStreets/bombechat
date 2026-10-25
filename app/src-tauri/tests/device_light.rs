@@ -219,7 +219,8 @@ fn a_notice_by_light_is_handed_to_the_page_as_frames_at_the_flash_speed() {
     assert!(!events.iter().any(|(name, _)| *name == "display"));
 
     // At Read and flash, shown: Slow is 6 frames a second of a 48-cell
-    // grid, for at least four seconds, then the screen clears.
+    // grid, for the page's still moment (1.2 s, 8 frames at 6 a second)
+    // and then at least four seconds, then the screen clears.
     b.set("light", 2);
     commands::broadcast(&b.s, "Water at the church.".into(), "light".into()).unwrap();
     let mut shown = Vec::new();
@@ -231,11 +232,15 @@ fn a_notice_by_light_is_handed_to_the_page_as_frames_at_the_flash_speed() {
             _ => {}
         }
     }
-    assert_eq!(shown.len(), 24, "4 s at 6 a second");
+    assert_eq!(
+        shown.len(),
+        8 + 24,
+        "the still moment, then 4 s at 6 a second"
+    );
     assert!(shown.iter().all(|d| d["spec"] == 0
         && d["bits"].as_array().unwrap().len() == 48 * 48 / 8
         && d["tag"] == shown[0]["tag"]));
-    assert_eq!(shown[23]["index"], 23);
+    assert_eq!(shown[31]["index"], 31);
     assert_eq!(stopped, Some(json!({ "tag": shown[0]["tag"] })));
 }
 
@@ -288,6 +293,23 @@ fn escape_stops_flashing_even_when_the_setting_cannot_be_saved() {
     assert!(commands::set_setting(&b.s, "light".into(), 2).is_err());
     assert_eq!(commands::settings(&b.s)["light"], 1);
     assert_eq!(shown(b.steps(50)), 0);
+}
+
+#[test]
+fn the_node_allows_for_the_pages_still_moment() {
+    // The page holds a still field for READY_MS before the first code
+    // frame; the node lengthens the window by STILL_MS for it. They agree.
+    let page =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/bombechat.html"))
+            .unwrap();
+    let ready = page
+        .split("const READY_MS=")
+        .nth(1)
+        .and_then(|rest| rest.split([',', ';']).next())
+        .and_then(|value| value.rsplit(':').next())
+        .and_then(|ms| ms.trim().parse::<u32>().ok())
+        .expect("READY_MS in bombechat.html");
+    assert_eq!(ready, bombechat_node::STILL_MS);
 }
 
 /// A picture of a light code with a finger over its middle: in view, but

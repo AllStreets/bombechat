@@ -104,7 +104,7 @@ use bombechat_store::{
 };
 use rand_core::{OsRng, RngCore};
 
-pub use light::{LightTransport, ReaderWatch, PICTURES_HELD, SEND_WINDOW};
+pub use light::{LightTransport, ReaderWatch, PICTURES_HELD, SEND_WINDOW, STILL_MS};
 pub use sound::{SoundTransport, MAX_QUEUED_ENVELOPES, QUEUE_FULL};
 pub use transport::{Transport, TransportEvent};
 
@@ -2636,9 +2636,10 @@ mod tests {
         assert_eq!((tags.len(), frames), (1, 10));
         node.finish_pairing();
         assert!(node.pairing(), "still in progress until the window ends");
-        // The rest of the 4 s window, and no more.
+        // The rest of the window (the page's still moment and 4 s), and
+        // no more.
         let (more, frames, clear) = shown(&mut node, 1_000, 20_000);
-        assert_eq!((more, frames, clear), (tags, 30, true));
+        assert_eq!((more, frames, clear), (tags, 42, true));
         assert!(!node.pairing());
 
         // Finished with no hello on screen (sound only), it ends at once.
