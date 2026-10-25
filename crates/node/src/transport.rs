@@ -47,4 +47,10 @@ pub trait Transport: Send {
     /// `now_ms` is a monotonic millisecond clock, the same one passed to
     /// [`crate::Node::tick`].
     fn poll(&mut self, now_ms: u64) -> Vec<TransportEvent>;
+
+    /// Payload bytes a second this carrier moves, overhead counted, as
+    /// the interface shows it; `None` if it has no measured rate.
+    fn rate(&self) -> Option<f32> {
+        None
+    }
 }

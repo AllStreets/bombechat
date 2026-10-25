@@ -101,6 +101,9 @@ pub trait Machine: Send {
     /// of it: install the store, or pass the error on. The error is shown
     /// to the person as it stands.
     fn finish_unlock(&mut self, opened: Result<Opened, String>) -> Result<(), String>;
+    /// Each channel's measured rate, in payload bytes a second, for the
+    /// channels that have one: what the page's bytes-a-second readout shows.
+    fn rates(&self) -> Vec<(Channel, f32)>;
     fn tick(&mut self, now_ms: u64) -> Vec<NodeEvent>;
 }
 
@@ -135,11 +138,14 @@ pub struct ContactView {
     pub safety: String,
 }
 
-/// A channel's last reported state.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// A channel's last reported state, and its measured rate in payload
+/// bytes a second if it has one.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ChannelView {
     pub channel: &'static str,
     pub state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rate: Option<f32>,
 }
 
 /// This machine as the page sees it: its name, its public identity (sign
@@ -313,16 +319,23 @@ pub fn machine(s: &Shared) -> Result<MachineView, String> {
 
 /// `channels`: the last state each channel reported, so a page that
 /// opens (or reloads) after the event knows it: "unavailable: ...",
-/// "receiving" mid-message, and so on. Channels that have reported
-/// nothing are listening.
+/// "receiving" mid-message, and so on, with each channel's measured rate
+/// where it has one. A channel with a rate that has reported nothing yet
+/// is listening.
 pub fn channels(s: &Shared) -> Vec<ChannelView> {
-    s.channels
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .iter()
+    let rates = s.machine().rates();
+    let mut seen: Vec<(Channel, String)> =
+        s.channels.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    for (c, _) in &rates {
+        if !seen.iter().any(|(k, _)| k == c) {
+            seen.push((*c, "listening".to_string()));
+        }
+    }
+    seen.into_iter()
         .map(|(c, state)| ChannelView {
-            channel: channel_name(*c),
-            state: state.clone(),
+            channel: channel_name(c),
+            state,
+            rate: rates.iter().find(|(k, _)| *k == c).map(|(_, r)| *r),
         })
         .collect()
 }

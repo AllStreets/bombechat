@@ -6,8 +6,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use bombechat_modem::{
-    dbfs_to_room_db, modulate, AudioError, AudioIo, DemodEvent, Demodulator, ModemConfig,
-    QuietGate, DEFAULT_CALIBRATION_OFFSET,
+    dbfs_to_room_db, measured_rate, modulate, AudioError, AudioIo, DemodEvent, Demodulator,
+    ModemConfig, QuietGate, DEFAULT_CALIBRATION_OFFSET,
 };
 use bombechat_store::Channel;
 
@@ -142,6 +142,11 @@ fn reason(e: &AudioError) -> String {
 impl Transport for SoundTransport {
     fn name(&self) -> Channel {
         Channel::Sound
+    }
+
+    /// The modem's [`measured_rate`] at the configuration it runs at.
+    fn rate(&self) -> Option<f32> {
+        Some(measured_rate(&self.cfg))
     }
 
     fn send(&mut self, frame: Vec<u8>) {
@@ -294,6 +299,15 @@ mod tests {
             ModemConfig::default(),
             QuietGate::new(40.0, 0, 90),
         )
+    }
+
+    #[test]
+    fn the_rate_it_reports_is_the_modems_measured_rate() {
+        let io = Scripted::default();
+        let rate = bombechat_modem::measured_rate(&ModemConfig::default());
+        assert_eq!(transport(&io).rate(), Some(rate));
+        let node = Node::new(None, vec![Box::new(transport(&io))]);
+        assert_eq!(node.rates(), vec![(Channel::Sound, rate)]);
     }
 
     #[test]

@@ -8,6 +8,9 @@
 // keystream and ciphertext. The keys and signature are made up, but seeded, so
 // every visit (and every screenshot) shows the same letters.
 //
+// Pairing: pair() hears Teodor's machine say hello 2.4 s later (a pairOffer with
+// a made-up key and a seeded safety number); confirmPair adds him to contacts().
+//
 // Query parameters: ?f=N starts the incoming message at chunk N (0 based),
 // ?still holds everything where it lands (no room meter, no further chunks).
 const SHOWN = 'Water is at the church on Fifth. Bring the radio, we leave at dusk.';
@@ -15,6 +18,10 @@ const CHUNK = 48;
 const MARISOL = 1;
 const TAG = 0x5a1e;
 
+const TEODOR = 2;
+// bytes of message a second over sound, as the modem measures it at its defaults (crates/modem measured_rate)
+const RATE = 16.1;
+const PAIR_MS = 2400;
 const at = (h, m) => Math.floor(new Date(2026, 9, 24, h, m).getTime() / 60000);
 const bytes = n => Array.from(crypto.getRandomValues(new Uint8Array(n)));
 const signer = (a, b) => ({ sign: [a, b, ...bytes(30)], dh: bytes(32) });
@@ -118,6 +125,8 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
     if (!done) later(nextChunk, 4200);
   }
 
+  const people = [{ id: MARISOL, name: 'Marisol Ortega', checked: true }];
+  const safety = (() => { const r = seeded(2207); return Array.from({ length: 12 }, () => Array.from({ length: 5 }, () => r() % 10).join('')).join(' '); })();
   let testTag = 0x7e00;
   const test = {
     // number of chunks in the scripted incoming message
@@ -156,15 +165,18 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
       return Promise.resolve(m.id);
     },
     broadcast(text) { const m = { id: bytes(16), text, public: true }; queue.push(m); later(() => outbox(m, 'waiting')); return Promise.resolve(m.id); },
-    pair: () => Promise.resolve(),
-    confirmPair: () => Promise.resolve(2),
+    pair() { later(() => emit('pairOffer', { peer: signer(0x2c, 0x91), name: 'Teodor Vance', safety }), PAIR_MS); return Promise.resolve(); },
+    confirmPair(peerHex, name) {
+      if (!people.some(p => p.id === TEODOR)) people.push({ id: TEODOR, name, checked: true, safety });
+      return Promise.resolve(TEODOR);
+    },
     setSetting(id, valueIndex) { settings[id] = valueIndex; return Promise.resolve(); },
     unlock: () => Promise.resolve(),
-    contacts: () => Promise.resolve([{ id: MARISOL, name: 'Marisol Ortega', checked: true }]),
+    contacts: () => Promise.resolve(people.map(p => ({ ...p }))),
     // the sheet's history arrives as events when the conversation starts, as the mockups showed it
     conversation: () => Promise.resolve([]),
     machine: () => Promise.resolve({ name: 'Machine No. 1', key: '', held: 6, version: '0.4' }),
-    channels: () => Promise.resolve(soundState ? [{ channel: 'Sound', state: soundState }] : []),
+    channels: () => Promise.resolve([{ channel: 'Sound', state: soundState || 'listening', rate: RATE }]),
     test,
   };
 }

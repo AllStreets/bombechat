@@ -215,6 +215,10 @@ impl Machine for Device {
         Ok(())
     }
 
+    fn rates(&self) -> Vec<(Channel, f32)> {
+        self.node.rates()
+    }
+
     fn tick(&mut self, now_ms: u64) -> Vec<NodeEvent> {
         let mut events = std::mem::take(&mut self.pending);
         events.extend(self.node.tick(now_ms));

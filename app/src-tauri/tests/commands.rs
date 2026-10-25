@@ -27,11 +27,15 @@ struct Calls {
 /// What each tick returns, in turn: events, or `None` to panic.
 type Script = Arc<Mutex<VecDeque<Option<Vec<NodeEvent>>>>>;
 
+type Rates = Arc<Mutex<Vec<(Channel, f32)>>>;
+
 struct Fake {
     calls: Arc<Mutex<Calls>>,
     lock: Lock,
     unlocking: bool,
     script: Script,
+    /// The rate each channel reports, bytes a second.
+    rates: Rates,
     /// When set, the next unlock's key derivation says it has started,
     /// then waits to be let go.
     slow: Option<(Sender<()>, Receiver<()>)>,
@@ -160,6 +164,9 @@ impl Machine for Fake {
         self.lock = Lock::Unlocked;
         Ok(())
     }
+    fn rates(&self) -> Vec<(Channel, f32)> {
+        self.rates.lock().unwrap().clone()
+    }
     fn tick(&mut self, _now_ms: u64) -> Vec<NodeEvent> {
         match self.script.lock().unwrap().pop_front() {
             Some(Some(events)) => events,
@@ -173,22 +180,26 @@ struct Rig {
     shared: Arc<Shared>,
     calls: Arc<Mutex<Calls>>,
     script: Script,
+    rates: Rates,
 }
 
 fn rig(lock: Lock, slow: Option<(Sender<()>, Receiver<()>)>) -> Rig {
     let calls = Arc::new(Mutex::new(Calls::default()));
     let script = Script::default();
+    let rates = Rates::default();
     let machine: Box<dyn Machine> = Box::new(Fake {
         calls: calls.clone(),
         lock,
         unlocking: false,
         script: script.clone(),
+        rates: rates.clone(),
         slow,
     });
     Rig {
         shared: Arc::new(Shared::new(machine)),
         calls,
         script,
+        rates,
     }
 }
 
@@ -405,6 +416,34 @@ fn a_channel_state_reported_before_the_page_listens_is_kept_for_it() {
         }]));
     commands::tick(&r.shared, 80);
     assert_eq!(commands::channels(&r.shared)[0].state, "receiving");
+}
+
+#[test]
+fn channels_carry_the_rate_each_measures_listening_until_it_reports_otherwise() {
+    let r = rig(Lock::Unlocked, None);
+    r.rates.lock().unwrap().push((Channel::Sound, 16.1));
+    assert_eq!(
+        serde_json::to_value(commands::channels(&r.shared)).unwrap(),
+        json!([{ "channel": "sound", "state": "listening", "rate": 16.1f32 }])
+    );
+    r.script.lock().unwrap().push_back(Some(vec![
+        NodeEvent::ChannelState {
+            channel: Channel::Light,
+            state: "unavailable: not in this plan".to_string(),
+        },
+        NodeEvent::ChannelState {
+            channel: Channel::Sound,
+            state: "receiving".to_string(),
+        },
+    ]));
+    commands::tick(&r.shared, 20);
+    assert_eq!(
+        serde_json::to_value(commands::channels(&r.shared)).unwrap(),
+        json!([
+            { "channel": "light", "state": "unavailable: not in this plan" },
+            { "channel": "sound", "state": "receiving", "rate": 16.1f32 }
+        ])
+    );
 }
 
 #[test]

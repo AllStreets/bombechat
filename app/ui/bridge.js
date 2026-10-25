@@ -6,7 +6,8 @@
 //                                channel 'sound' (the default) or 'light'. Rejects with 'not sent' when nothing
 //                                went: in this plan only sound sends, and light reports channel 'unavailable: ...'
 //   broadcast(text)              [broadcast { text }]               resolves to the message id, as hex
-//   pair()                       [pair]
+//   pair()                       [pair]                             plays this machine's hello (once the room is quiet); a
+//                                peer's hello arrives as pairOffer
 //   confirmPair(peerHex, name)   [confirm_pair { peerHex, name }]   resolves to the new contact id
 //   setSetting(id, valueIndex)   [set_setting { id, valueIndex }]
 //   unlock(passphrase)           [unlock { passphrase }]            rejects with a sentence to show, e.g. 'wrong passphrase'
@@ -17,8 +18,10 @@
 //                                shaped as the message event
 //   machine()                    [machine]                          resolves to { name, key, held, version }: key is
 //                                this machine's public identity as hex, held the messages it carries for others
-//   channels()                   [channels]                         resolves to [{ channel, state }]: the last state each
-//                                channel reported, for a page that opened after the event. None reported: listening
+//   channels()                   [channels]                         resolves to [{ channel, state, rate? }]: the last state each
+//                                channel reported, for a page that opened after the event. None reported: listening.
+//                                rate: the payload bytes a second the channel's modem measures (sound has one), for the
+//                                bytes-a-second readout
 //
 // Events (on(name, fn)), as the node's NodeEvent after normalising:
 //   chunk      { tag, index, of, view: { plain, heard, key }, text }

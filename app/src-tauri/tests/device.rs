@@ -6,7 +6,7 @@ use std::path::Path;
 
 use bombechat_app::commands::{self, Lock, Machine, Shared};
 use bombechat_app::Device;
-use bombechat_node::NodeEvent;
+use bombechat_node::{NodeEvent, Transport, TransportEvent};
 use bombechat_store::Channel;
 use tempfile::TempDir;
 
@@ -119,5 +119,39 @@ fn why_there_is_no_sound_is_kept_for_a_page_that_opens_later() {
     assert_eq!(
         (kept[0].channel, kept[0].state.as_str()),
         ("sound", "unavailable: no audio device available")
+    );
+}
+
+/// A carrier that only reports a rate.
+struct Measured;
+
+impl Transport for Measured {
+    fn name(&self) -> Channel {
+        Channel::Sound
+    }
+    fn send(&mut self, _frame: Vec<u8>) {}
+    fn poll(&mut self, _now_ms: u64) -> Vec<TransportEvent> {
+        Vec::new()
+    }
+    fn rate(&self) -> Option<f32> {
+        Some(16.1)
+    }
+}
+
+#[test]
+fn the_page_learns_the_rate_the_sound_transport_measures() {
+    let dir = TempDir::new().unwrap();
+    let d = Device::new(
+        dir.path().join("bombechat.db"),
+        vec![Box::new(Measured)],
+        Vec::new(),
+    );
+    assert_eq!(d.rates(), vec![(Channel::Sound, 16.1)]);
+    let s = Shared::new(Box::new(d));
+    let kept = commands::channels(&s);
+    assert_eq!(kept.len(), 1);
+    assert_eq!(
+        (kept[0].channel, kept[0].state.as_str(), kept[0].rate),
+        ("sound", "listening", Some(16.1))
     );
 }

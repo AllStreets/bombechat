@@ -423,6 +423,15 @@ impl Node {
             .unwrap_or_default()
     }
 
+    /// Each channel's rate, in payload bytes a second, for the channels
+    /// whose transport measures one ([`Transport::rate`]).
+    pub fn rates(&self) -> Vec<(Channel, f32)> {
+        self.transports
+            .iter()
+            .filter_map(|t| Some((t.name(), t.rate()?)))
+            .collect()
+    }
+
     /// The contacts in the store, or none while locked.
     pub fn contacts(&self) -> Vec<Contact> {
         self.store.as_ref().map(Store::contacts).unwrap_or_default()
@@ -1035,6 +1044,12 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn a_transport_that_measures_no_rate_is_left_out_of_rates() {
+        let node = Node::new(None, vec![Box::new(Wire::default())]);
+        assert!(node.rates().is_empty());
     }
 
     #[test]

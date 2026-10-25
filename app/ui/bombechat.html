@@ -219,7 +219,37 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
 .menu .stmp div{font-family:var(--print);font-size:13px;color:var(--violet);border:1.8px double var(--violet);border-radius:50%;width:86px;height:86px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;line-height:1.2;opacity:.8;
   -webkit-mask:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='90' height='90'><filter id='s'><feTurbulence baseFrequency='1.1' numOctaves='2'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 -2 1.6'/></filter><rect width='90' height='90' filter='url(%23s)'/></svg>")}
 .menu .stmp small{font-size:12px}
-.ptlab{margin-top:14px;font-family:var(--type);font-size:12.5px;color:#3d3d3b;margin-bottom:4px;background:rgba(241,238,229,.85);align-self:flex-start;padding-right:4px}
+.ptlab{font-family:var(--type);font-size:12.5px;color:#3d3d3b;margin-bottom:4px;background:rgba(241,238,229,.85);align-self:flex-start;padding-right:4px}
+/* pairing: rubber stamps pressed on the card, and the safety number pencilled in a ruled grid */
+.ptrow{display:flex;align-items:flex-end;justify-content:space-between;gap:10px;margin-top:12px;margin-bottom:6px;position:relative;z-index:1}
+.ptrow .ptlab{margin:0}
+.rs{appearance:none;background:transparent;cursor:pointer;font-family:var(--print);font-size:14px;line-height:1.15;color:var(--ink);border:1.6px solid currentColor;border-radius:3px;padding:4px 9px 3px;
+  --ink:#2b3a47;--tilt:-2deg;transform:rotate(var(--tilt));opacity:.84;white-space:nowrap;transition:opacity .12s,transform .08s;
+  -webkit-mask:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='90' height='40'><filter id='s'><feTurbulence baseFrequency='1.4' numOctaves='2'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 -2.2 1.7'/></filter><rect width='90' height='40' filter='url(%23s)'/></svg>");mask:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='90' height='40'><filter id='s'><feTurbulence baseFrequency='1.4' numOctaves='2'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 -2.2 1.7'/></filter><rect width='90' height='40' filter='url(%23s)'/></svg>")}
+.rs:hover{opacity:1}
+.rs:active{transform:rotate(var(--tilt)) translateY(1px) scale(.97)}
+.rs:focus-visible{outline:1.5px dotted var(--graphite);outline-offset:3px}
+.rs[disabled]{cursor:default;opacity:.4}
+.rs.ok{--ink:var(--violet);border-style:double;border-width:3px;padding:3px 9px 2px}
+.rs.no{--ink:#8a2a22;--tilt:1.5deg}
+.pairact{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;margin-top:10px;padding-left:2px;position:relative;z-index:1}
+.pairact[hidden],.rs[hidden]{display:none}
+.pencil{position:absolute;inset:0;z-index:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:6px 0;font-family:var(--type);color:#353431;text-shadow:0 0 .6px rgba(53,52,49,.55)}
+.pencil[hidden]{display:none}
+.menu:not([data-pair]) .pencil,.menu[data-pair=""] .pencil{justify-content:flex-start;padding-top:18px}
+.pencil p{background:rgba(241,238,229,.85);padding:0 4px;text-align:center}
+.pencil .pfrom{font-size:15px;transform:rotate(-1deg)}
+.pencil .ph{font-size:16px;transform:rotate(-2deg)}
+.pencil .psub{font-size:12.5px;color:#4b4a47;max-width:230px;line-height:1.4}
+.sn{list-style:none;width:100%;max-width:300px;display:grid;grid-template-columns:repeat(4,1fr);
+  background:no-repeat 0 0/100% 100% url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 120' preserveAspectRatio='none'><filter id='p' x='-2%' y='-5%' width='104%' height='110%'><feTurbulence baseFrequency='.045' numOctaves='2' seed='7' result='t'/><feDisplacementMap in='SourceGraphic' in2='t' scale='3.2'/></filter><g filter='url(%23p)' fill='none' stroke='%234b4a47' stroke-opacity='.72' stroke-linecap='round'><path vector-effect='non-scaling-stroke' stroke-width='1.1' d='M3 2.5 L397 3.5 L398 118 L2.5 117.5 Z M2 40.5 L398 39 M3 79.5 L397 81 M100.5 3 L99.5 117 M200 2 L201 118 M300 3.5 L299.5 117'/></g></svg>")}
+.sn li{font-size:15px;letter-spacing:.07em;text-align:center;padding:7px 2px 6px;color:#2e2d2a;transform:rotate(var(--t,0deg))}
+.menu .graph .pencil svg.ears{position:static;flex:none;width:64px;height:40px;overflow:visible}
+.ears path{animation:ear 2.4s steps(1) infinite}
+.ears path:nth-of-type(2){animation-delay:.4s}.ears path:nth-of-type(3){animation-delay:.8s}
+@keyframes ear{0%{opacity:.15}20%{opacity:1}80%{opacity:.15}}
+.menu .stmp.new div{animation:stmpin .34s cubic-bezier(.3,1.4,.5,1)}
+@keyframes stmpin{0%{transform:scale(1.35);opacity:0}100%{transform:scale(1);opacity:.8}}
 .ptape{height:30px;flex:none;background:#e8dcbc;position:relative;box-shadow:0 1px 2px rgba(0,0,0,.3);transform:rotate(-.8deg);clip-path:polygon(0 0,100% 4%,99% 100%,1% 96%)}
 
 /* control panel */
@@ -266,7 +296,8 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
 @media (prefers-reduced-motion:reduce){
   .rotor,.knob .cap,.slip,.app{transition:none!important}
   .ent.fresh,.stamp.new{animation:none}
-  .cur,.state.live::after{animation:none}
+  .cur,.state.live::after,.ears path{animation:none}
+  .menu .stmp.new div{animation:none}
 }
 </style>
 <script>/* in the app, the panel stays hidden until it shows this machine rather than the mockups' story */if(window.__TAURI__)document.documentElement.classList.add('in-app')</script>
@@ -299,7 +330,7 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
     <div class="srmirror" id="mirror"><p aria-live="polite" id="mirror-plain"></p><p id="mirror-heard"></p><p id="mirror-key"></p></div>
     <div class="bankfoot">
       <span class="rd" title="Messages arrive in frames of twelve letters"><span class="pl">Frame</span><span class="odo"><i id="fno">4</i></span><span class="of">of <span id="fnt">6</span></span></span>
-      <span class="rd"><span class="pl">Bytes a second</span><span class="odo"><i>0</i><i>6</i><i>4</i></span></span>
+      <span class="rd" id="raterd" title="Bytes of message a second over sound, as the modem measures it, counting the preamble, framing and error correction around them"><span class="pl">Bytes a second</span><span class="odo" id="rate"><i>0</i><i>0</i><i>0</i></span></span>
       <span class="rd" title="How far the signal stands above the noise in the room"><span class="pl">Over the room, dB</span><span class="odo"><i>1</i><i>4</i></span></span>
       <span class="rd" title="Each frame is checked against Marisol's key as it lands"><span class="pl">Frames checked</span><span class="lampset" id="chk"></span></span>
     </div>
@@ -336,15 +367,16 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
     <aside class="menu" aria-label="Key check with Marisol">
       <span class="pin" aria-hidden="true"></span>
       <h2>Key check <span>menu 7, Marisol</span></h2>
-      <div class="graph"><div class="stmp" aria-hidden="true"><div>Matched<small>2 Oct</small></div></div><svg id="menusvg" viewBox="0 0 296 214" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Pencil menu linking letters of the shared key"></svg></div>
+      <div class="graph"><div class="stmp" aria-hidden="true"><div>Matched<small>2 Oct</small></div></div><svg id="menusvg" viewBox="0 0 296 214" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Pencil menu linking letters of the shared key"></svg><div class="pencil" id="pencil" hidden></div></div>
       <div class="fpwrap">
         <table class="fp">
           <tr><th scope="row">Her key</th><td>4821</td><td>0937</td><td>7710</td><td class="tk" aria-label="matches"></td></tr>
           <tr><th scope="row">Mine</th><td>4821</td><td>0937</td><td>7710</td><td class="tk" aria-label="matches"></td></tr>
         </table>
-        <div class="note">Checked in person, by light.</div>
+        <div class="note" aria-live="polite">Checked in person, by light.</div>
       </div>
-      <div class="ptlab">Your key, punched</div>
+      <div class="pairact" id="pairact" hidden><button type="button" class="rs ok" id="pairyes">Matched, add</button><button type="button" class="rs no" id="pairno">Doesn't match</button></div>
+      <div class="ptrow"><div class="ptlab">Your key, punched</div><button type="button" class="rs pair" id="pairbtn" title="Plays a hello with this machine's key once the room is quiet, and listens for theirs">Pair by sound</button></div>
       <div class="ptape" id="ptape" role="img" aria-label="Your key as punched tape, for pairing in person by camera"></div>
     </aside>
 
@@ -411,7 +443,8 @@ const NS='http://www.w3.org/2000/svg';let did=0;
 const ENGR="'Bombechat Engraving',serif";
 // the one person this sheet is with: the first contact. In the app the store opens first.
 const PEOPLE=await openContacts();
-const CONTACT=PEOPLE[0]||{id:0,name:'No one yet',short:'no one yet',checked:false,safety:''};
+// let: in the app, the first person paired becomes the sheet's contact
+let CONTACT=PEOPLE[0]||{id:0,name:'No one yet',short:'no one yet',checked:false,safety:''};
 nameTheSheet(CONTACT);
 // in the app, this machine: its key punches the tape, its name signs the sheet (realSheet, below)
 const ME=bridge.simulated?null:await bridge.machine();
@@ -656,7 +689,7 @@ function send(how){const text=reply.value.trim();
     why=>{ent.classList.add('failed');ent.querySelector('.state').textContent=sentence(why)})}
 
 /* ---------- key check menu ---------- */
-// the pencil menu is the mockups' story; in the app the card shows the real safety number (keyCheck, below)
+// the pencil menu is the mockups' story; in the app the card shows the real safety number (cardRest, below)
 if(bridge.simulated)(function(){const svg=document.getElementById('menusvg');
   const N=[['M',20,48],['O',82,18],['R',148,58],['T',212,24],['E',272,70],['G',46,140],['A',128,170],['S',202,132],['U',264,190]];
   const E=[[0,1,4],[1,2,8],[2,3,2],[3,4,1],[0,5,10],[5,6,9],[6,2,3],[6,7,7],[7,4,5],[7,8,11],[2,7,6]];
@@ -776,37 +809,93 @@ async function realSheet(){
   const foot=document.querySelectorAll('.sh-foot b');foot[0].textContent=ME.name;foot[1].textContent='the microphone';
   at('.top .build').textContent=`Build ${ME.version}`;
   document.getElementById('fno').textContent='0';document.getElementById('fnt').textContent='0';
+  // the rate shows once the node says what it measures (showRate); the room's margin is not measured yet
   document.querySelectorAll('.bankfoot .rd').forEach((r,i)=>{if(i===1||i===2)r.hidden=true});
-  // stations: the contacts, with when each was last heard
-  const row=at('.row3'),counter=row.querySelector('.counter');row.querySelectorAll('.stn').forEach(s=>s.remove());
-  for(const p of PEOPLE.length?PEOPLE.slice(0,3):[null]){
-    const last=p&&[...(talk.get(p.id)||[])].reverse().find(m=>!m.outgoing);
-    const stn=el('div','stn');stn.innerHTML='<span class="jewel off" aria-hidden="true"></span><span class="holder"><span></span></span>';
-    stn.querySelector('.holder span').append(p?p.name:'No contacts yet',el('small',null,!p?'pair in person to add one':last?`${last.channel}, ${hhmm(last.at_min*60000)}`:'not heard yet'));
-    row.insertBefore(stn,counter)}
+  TALK=talk;drawStations();
+  const counter=at('.row3 .counter');
   counter.querySelector('.odo').innerHTML=String(Math.min(999,ME.held)).padStart(3,'0').split('').map((d,i)=>`<i${i===2?' id="held"':''}>${d}</i>`).join('');
-  keyCheck();
   document.documentElement.classList.add('real')}
-function keyCheck(){const svg=document.getElementById('menusvg'),paired=!!(CONTACT.id&&CONTACT.checked&&CONTACT.safety);
-  const pencil='font-family="Cutive Mono,Courier New,monospace" text-anchor="middle"';
-  let body;
-  if(paired){const g=CONTACT.safety.trim().split(/\s+/);
-    body=[0,1,2].map(r=>`<text x="148" y="${70+r*40}" ${pencil} font-size="17" letter-spacing=".5" fill="#2e2d2a">${g.slice(r*4,r*4+4).join(' ')}</text>`).join('')}
-  else body=`<text x="148" y="112" ${pencil} font-size="22" fill="#55534e" transform="rotate(-3 148 112)">not yet paired</text>`;
-  svg.innerHTML=`<defs><filter id="pen" x="-5%" y="-5%" width="110%" height="110%"><feTurbulence baseFrequency=".04" numOctaves="2" seed="4" result="t"/><feDisplacementMap in="SourceGraphic" in2="t" scale="1.6"/></filter>
-   <filter id="gr"><feTurbulence baseFrequency="1.2" numOctaves="1" seed="2" result="n"/><feColorMatrix in="n" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 -1.6 1.5" result="m"/><feComposite in="SourceGraphic" in2="m" operator="in"/></filter></defs><g filter="url(#pen)"><g filter="url(#gr)">${body}</g></g>`;
-  svg.setAttribute('aria-label',paired?`Safety number shared with ${CONTACT.short}: ${CONTACT.safety}`:'Not yet paired');
-  document.querySelector('.menu .fp').hidden=true;
-  const note=document.querySelector('.menu .note');if(paired)note.textContent='Checked in person.';else note.hidden=true;
-  const stamp=document.querySelector('.menu .stmp');if(paired)stamp.querySelector('div').textContent='Matched';else stamp.hidden=true}
+// stations: the contacts, with when each was last heard
+let TALK=new Map();
+function drawStations(){const row=document.querySelector('.row3'),counter=row.querySelector('.counter');row.querySelectorAll('.stn').forEach(s=>s.remove());
+  for(const p of PEOPLE.length?PEOPLE.slice(0,3):[null]){
+    const last=p&&[...(TALK.get(p.id)||[])].reverse().find(m=>!m.outgoing);
+    const stn=el('div','stn');stn.innerHTML='<span class="jewel off" aria-hidden="true"></span><span class="holder"><span></span></span>';
+    stn.querySelector('.holder span').append(p?p.name:'No contacts yet',el('small',null,!p?'pair by sound to add one':last?`${last.channel}, ${hhmm(last.at_min*60000)}`:'not heard yet'));
+    row.insertBefore(stn,counter)}}
+// the bytes-a-second readout: the rate the node measures for sound, or nothing when it has none
+function showRate(list){const s=list.find(c=>c.channel==='sound'),rd=document.getElementById('raterd');
+  if(!s||!(s.rate>0)){rd.hidden=true;return}
+  document.getElementById('rate').innerHTML=String(Math.min(999,Math.round(s.rate))).padStart(3,'0').split('').map(d=>`<i>${d}</i>`).join('');
+  rd.title=`${s.rate.toFixed(1)} bytes of message a second over sound, as the modem measures it, counting the preamble, framing and error correction around them`;rd.hidden=false}
+/* ---------- the key check card, and pairing by sound ----------
+   At rest the card shows the last key check: in a plain browser the mockups' pencil menu,
+   in the app the safety number shared with the contact. Pair by sound plays this machine's
+   hello and listens for one; an offer pencils the peer's name and the 60-digit safety number
+   for the two people to compare. Matched, add stores the contact; Doesn't match keeps nothing.
+   A hello heard while not listening is held for two minutes, so the second to press sees the
+   first's straight away. */
+const menu=document.querySelector('.menu'),pencilEl=document.getElementById('pencil'),pairBtn=document.getElementById('pairbtn'),pairAct=document.getElementById('pairact');
+const menuNote=menu.querySelector('.note'),menuStamp=menu.querySelector('.stmp'),menuSvg=document.getElementById('menusvg'),menuWho=menu.querySelector('h2 span');
+const day=ms=>{const d=new Date(ms);return `${d.getDate()} ${MONTHS[d.getMonth()]}`};
+const HOLD_OFFER=120000;
+let checkedWith=null;// the key check made on this page: {name, safety, at}
+let offer=null,heldOffer=null;
+const TILTS=[-.6,.4,-.2,.7,-.5,.2,.5,-.7,.3,-.3,.6,-.4];
+function safetyGrid(safety){const g=safety.trim().split(/\s+/);
+  return `<ol class="sn" aria-label="Safety number, 12 groups of five">${g.map((x,i)=>`<li style="--t:${TILTS[i%12]}deg">${esc(x)}</li>`).join('')}</ol>`}
+function pencil(html){menuSvg.style.visibility='hidden';pencilEl.innerHTML=html;pencilEl.hidden=false}
+function noteSays(text){menuNote.hidden=!text;menuNote.textContent=text||''}
+function stampSays(date,fresh){menuStamp.hidden=false;const d=menuStamp.querySelector('div');d.textContent='Matched';if(date)d.appendChild(el('small',null,date));
+  menuStamp.classList.toggle('new',!!fresh&&!RM.matches)}
+function cardRest(note){menu.dataset.pair='';offer=null;pairAct.hidden=true;pairBtn.hidden=false;pairBtn.textContent='Pair by sound';
+  menu.querySelector('.fp').hidden=true;menuStamp.classList.remove('new');
+  const who=checkedWith||(!bridge.simulated&&CONTACT.id&&CONTACT.checked&&CONTACT.safety?{name:CONTACT.short,safety:CONTACT.safety}:null);
+  if(who){pencil(safetyGrid(who.safety));menuWho.textContent=who.name;noteSays(who.at?'Checked in person, by sound.':'Checked in person.');stampSays(who.at?day(who.at):'')}
+  else if(bridge.simulated){// the mockups' story
+    pencilEl.hidden=true;menuSvg.style.visibility='';menu.querySelector('.fp').hidden=false;menuWho.textContent=`menu 7, ${CONTACT.short}`;noteSays('Checked in person, by light.');stampSays('2 Oct')}
+  else{pencil('<p class="ph">not yet paired</p>');menuWho.textContent='';noteSays('Press Pair by sound here and on their machine.');menuStamp.hidden=true}
+  if(note)noteSays(note)}
+async function pairBySound(){
+  if(menu.dataset.pair==='listening'){cardRest();return}
+  pairBtn.disabled=true;
+  try{await bridge.pair()}catch(why){pairBtn.disabled=false;cardRest(sentence(why));return}
+  pairBtn.disabled=false;menu.dataset.pair='listening';menuStamp.hidden=true;menu.querySelector('.fp').hidden=true;
+  pencil(`<svg class="ears" viewBox="0 0 64 40" aria-hidden="true"><defs><filter id="penh" x="-10%" y="-10%" width="120%" height="120%"><feTurbulence baseFrequency=".08" numOctaves="2" seed="5" result="t"/><feDisplacementMap in="SourceGraphic" in2="t" scale="1.6"/></filter></defs>
+    <g filter="url(#penh)" fill="none" stroke="#4b4a47" stroke-width="1.3" stroke-linecap="round"><circle cx="10" cy="20" r="2.4" fill="#4b4a47" stroke="none"/><path d="M20 10 Q27 20 20 30"/><path d="M30 4 Q41 20 30 36"/><path d="M40 -1 Q55 20 40 41"/></g></svg>
+    <p class="ph">listening for a hello…</p><p class="psub">Your hello plays once the room is quiet. Ask them to press Pair by sound too.</p>`);
+  noteSays('');pairBtn.textContent='Stop listening';
+  if(heldOffer&&performance.now()-heldOffer.t<HOLD_OFFER)showOffer(heldOffer.o)}
+function showOffer(o){offer=o;heldOffer=null;menu.dataset.pair='offer';menuStamp.hidden=true;menu.querySelector('.fp').hidden=true;
+  const inCard=menu.contains(document.activeElement);
+  pairBtn.hidden=true;pairAct.hidden=false;pairAct.querySelectorAll('button').forEach(b=>b.disabled=false);
+  menuWho.textContent=o.name;
+  pencil(`<p class="pfrom">${esc(o.name)} said hello</p>${safetyGrid(o.safety)}`);
+  noteSays('Compare these with theirs, out loud or side by side.');
+  if(inCard)document.getElementById('pairyes').focus()}
+bridge.on('pairOffer',o=>{
+  if(menu.dataset.pair==='listening')showOffer(o);
+  else if(!menu.dataset.pair){heldOffer={o,t:performance.now()};noteSays(`${o.name} said hello. Press Pair by sound to answer.`)}});
+pairBtn.addEventListener('click',pairBySound);
+document.getElementById('pairno').addEventListener('click',()=>{cardRest('Not added. Nothing was kept.');pairBtn.focus()});
+document.getElementById('pairyes').addEventListener('click',()=>{const o=offer;if(!o)return;
+  pairAct.querySelectorAll('button').forEach(b=>b.disabled=true);
+  bridge.confirmPair(o.peer,o.name).then(id=>{
+    checkedWith={name:o.name,safety:o.safety,at:bridge.now()};
+    const p={id,name:o.name,short:o.name.split(' ')[0],checked:true,safety:o.safety};
+    if(!PEOPLE.some(x=>x.id===id))PEOPLE.push(p);
+    if(!CONTACT.id){CONTACT=p;nameTheSheet(CONTACT)}
+    if(!bridge.simulated)drawStations();
+    cardRest();stampSays(day(checkedWith.at),true);pairBtn.focus()},
+  why=>{pairAct.querySelectorAll('button').forEach(b=>b.disabled=false);noteSays(sentence(why))})});
 
 /* ---------- open: replay what came before, then listen ---------- */
-drawOutbox();applyChannels();
+drawOutbox();applyChannels();cardRest();
 for(const k of Object.values(KNOBS))bridge.setSetting(k.setting,k.pos);
 if(!bridge.simulated)await realSheet();
 bridge.start();
 // a page opened (or reloaded) after the channel last changed still learns its state
-bridge.channels().then(list=>list.forEach(onChannel));
+bridge.channels().then(list=>{list.forEach(onChannel);showRate(list)});
 booting=false;tick();setInterval(tick,20000);
 syncMirror();
 requestAnimationFrame(()=>toBottom(false));

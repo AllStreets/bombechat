@@ -14,6 +14,9 @@
 // audio, or drum sound leaking into the 17.6 to 19.8 kHz listening band.
 // For the app's interface it also fails when the drums don't follow an injected
 // chunk, when the drums make a sound while a message is arriving by sound, when
+// pairing by sound doesn't run (pair, a 60-digit offer legible at 1024x768, Matched, add
+// stamping the card, Doesn't match keeping nothing), when the bytes-a-second readout
+// doesn't show the rate the bridge reports, when
 // the page asks for anything off this machine, or when an http(s) URL appears
 // anywhere in app/ui (licence texts and comments in vendored three.js aside).
 const path = require('path');
@@ -300,6 +303,54 @@ function measureText() {
     if (done.arriving || done.lastText !== 'Bring water.' || done.lastProvisional) problems.push(`the message did not replace its provisional tape: ${JSON.stringify(done)}`);
     report.provisional = { hanging, stalled, other, done };
     await pv.close();
+
+    // pairing by sound on the key check card: pair, listen, the offer's 60 digits in 12
+    // pencilled groups (legible at 1024x768), Matched, add stamps the card; Doesn't match keeps nothing.
+    // And the bytes-a-second readout shows the rate the bridge reports, not a fixed number.
+    const pr = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+    watch(pr, 'pairing');
+    await pr.goto(url('still'));
+    await pr.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
+    const card = () => {
+      const m = document.querySelector('.menu'), sn = [...m.querySelectorAll('.sn li')];
+      const vis = e => e && !e.hidden && !e.closest('[hidden]') && e.getBoundingClientRect().width > 0;
+      return { state: m.dataset.pair, pencil: (m.querySelector('#pencil:not([hidden])') || { innerText: '' }).innerText.replace(/\s+/g, ' ').trim(),
+        groups: sn.map(li => li.textContent), groupPx: sn.map(li => parseFloat(getComputedStyle(li).fontSize)), groupsFit: sn.every(li => { const r = li.getBoundingClientRect(), c = m.getBoundingClientRect(); return r.left >= c.left && r.right <= c.right && li.scrollWidth <= li.clientWidth + 1; }),
+        note: vis(m.querySelector('.note')) ? m.querySelector('.note').textContent : '', stamp: vis(m.querySelector('.stmp')) ? m.querySelector('.stmp').innerText.replace(/\s+/g, ' ') : '',
+        yes: vis(document.getElementById('pairyes')), pairBtn: vis(document.getElementById('pairbtn')) ? document.getElementById('pairbtn').textContent : '', who: m.querySelector('h2 span').textContent };
+    };
+    report.rate = await pr.evaluate(() => ({ shown: document.getElementById('rate').textContent, hidden: document.getElementById('raterd').hidden }));
+    if (report.rate.hidden || report.rate.shown !== '016') problems.push(`bytes a second reads ${JSON.stringify(report.rate)}, wanted the reported 16.1 as 016`);
+    await pr.click('#pairbtn');
+    await pr.waitForTimeout(300);
+    const listening = await pr.evaluate(`(${card})()`);
+    if (listening.state !== 'listening' || !/listening for a hello/.test(listening.pencil) || listening.pairBtn !== 'Stop listening') problems.push(`Pair by sound did not start listening: ${JSON.stringify(listening)}`);
+    await pr.locator('.menu').screenshot({ path: path.join(out, 'pair-listening.png') });
+    await pr.waitForFunction(() => document.querySelector('.menu').dataset.pair === 'offer', null, { timeout: 8000 }).catch(() => {});
+    const offered = await pr.evaluate(`(${card})()`);
+    if (offered.state !== 'offer') problems.push('no offer reached the card after Pair by sound');
+    if (offered.groups.length !== 12 || offered.groups.some(g => !/^\d{5}$/.test(g))) problems.push(`the offer's safety number is not 12 groups of five: ${offered.groups.join(' ')}`);
+    if (offered.groupPx.some(px => px < 12)) problems.push(`safety number drawn under 12px: ${offered.groupPx}`);
+    if (!offered.groupsFit) problems.push('safety number groups spill out of the card at 1024x768');
+    if (!/Teodor Vance/.test(offered.pencil) || offered.note !== 'Compare these with theirs, out loud or side by side.' || !offered.yes) problems.push(`the offer card reads wrong: ${JSON.stringify(offered)}`);
+    await pr.locator('.menu').screenshot({ path: path.join(out, 'pair-offer.png') });
+    await pr.click('#pairyes');
+    await pr.waitForTimeout(500);
+    const matched = await pr.evaluate(`(${card})()`);
+    if (matched.state !== '' || !/^Matched 24 Oct$/.test(matched.stamp.trim()) || matched.groups.join(' ') !== offered.groups.join(' ') || matched.who !== 'Teodor Vance') problems.push(`Matched, add did not stamp the card: ${JSON.stringify(matched)}`);
+    const added = await pr.evaluate(() => window.__TAURI__ ? [] : import('./bridge.js').then(m => m.bridge.contacts()).then(l => l.map(c => c.name)));
+    if (!added.includes('Teodor Vance')) problems.push(`confirmPair did not add the contact: ${added}`);
+    await pr.locator('.menu').screenshot({ path: path.join(out, 'pair-matched.png') });
+    // the other way: an offer that doesn't match leaves the card as it was, and says nothing was kept
+    await pr.click('#pairbtn');
+    await pr.waitForFunction(() => document.querySelector('.menu').dataset.pair === 'offer', null, { timeout: 8000 }).catch(() => {});
+    await pr.click('#pairno');
+    await pr.waitForTimeout(300);
+    const refused = await pr.evaluate(`(${card})()`);
+    if (refused.state !== '' || refused.note !== 'Not added. Nothing was kept.' || refused.yes || refused.pairBtn !== 'Pair by sound') problems.push(`Doesn't match did not discard the offer: ${JSON.stringify(refused)}`);
+    await pr.locator('.menu').screenshot({ path: path.join(out, 'pair-refused.png') });
+    report.pairing = { listening, offered: { ...offered, groupPx: [...new Set(offered.groupPx)] }, matched: matched.stamp, refused: refused.note };
+    await pr.close();
   }
 
   // 7. offline audio
