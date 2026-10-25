@@ -5,6 +5,7 @@
 //! knows nothing of envelopes, keys or contacts. The node reassembles and
 //! opens what the frames carry.
 
+use bombechat_light::CodeSpec;
 use bombechat_modem::Band;
 use bombechat_store::Channel;
 
@@ -92,6 +93,10 @@ pub trait Transport: Send {
     /// sending it. A carrier that keeps sending until told (light) reports
     /// it [`TransportEvent::Sent`]; others ignore this.
     fn delivered(&mut self, _tag: u16) {}
+
+    /// For light: show what goes on screen from now on in this code
+    /// preset (the flash speed). What is on screen finishes as it started.
+    fn set_preset(&mut self, _spec: CodeSpec) {}
 
     /// For sound: play only while the room is quieter than `db`.
     fn set_send_under(&mut self, _db: f32) {}

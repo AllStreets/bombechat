@@ -246,6 +246,13 @@ pub const READ_ONLY: &str = "not sent: light is set to read only";
 /// The light channel's state when a send is refused with light Off.
 pub const LIGHT_OFF: &str = "not sent: light is off";
 
+/// How long pairing stays in progress at most, in ms: three minutes.
+pub const PAIRING_CAP_MS: u64 = 180_000;
+
+/// Returned by [`Node::start_pairing`] when there is no sound or light
+/// transport at all to send the hello on.
+pub const NOTHING_TO_SEND_ON: &str = "not sent: no sound or light to send on";
+
 /// The channel state reported when a send asks for a channel this plan
 /// does not build.
 pub const NOT_IN_THIS_PLAN: &str = "unavailable: not in this plan";
@@ -468,6 +475,15 @@ fn random_id() -> [u8; 16] {
     id
 }
 
+/// A pairing in progress: see [`Node::start_pairing`].
+struct Pairing {
+    hello: Envelope,
+    /// When it started, by `now_ms`.
+    since_ms: u64,
+    /// The tag the hello is showing under by light, if it is.
+    light_tag: Option<u16>,
+}
+
 /// The node: one device's view of the network.
 pub struct Node {
     store: Option<Store>,
@@ -507,6 +523,8 @@ pub struct Node {
     sound: SoundSwitch,
     /// Where the Light switch is.
     light: LightSwitch,
+    /// The pairing in progress, if any.
+    pairing: Option<Pairing>,
     /// The machine's clock for stamping stored messages: the wall minute
     /// read once, at the `now_ms` it was read, and moved on only by
     /// `now_ms` after that. See [`Node::stamp`].
@@ -543,6 +561,7 @@ impl Node {
             reception,
             sound: SoundSwitch::ListenAndSend,
             light: LightSwitch::Off,
+            pairing: None,
             clock: None,
             wall: now_min,
         };
@@ -611,6 +630,14 @@ impl Node {
                 t.set_listening(switch != LightSwitch::Off);
                 t.set_sending(switch == LightSwitch::ReadAndFlash);
             }
+        }
+    }
+
+    /// Show light codes in `spec` (the flash speed: slow, normal or fast)
+    /// from the next envelope on. Not a preset: ignored.
+    pub fn set_light_preset(&mut self, spec: bombechat_light::CodeSpec) {
+        for t in &mut self.transports {
+            t.set_preset(spec);
         }
     }
 
@@ -952,33 +979,94 @@ impl Node {
     /// [`Node::unlock`], and, when no switch allows sending, with the
     /// state the Sound channel reports (light's is reported too, if there
     /// is a light transport).
+    ///
+    /// Pairing is then in progress until [`Node::stop_pairing`],
+    /// [`Node::confirm_pairing`] or [`PAIRING_CAP_MS`] later, whichever
+    /// comes first. While it is, the hello keeps showing by light (each
+    /// time its sending window ends it goes on screen again); sound plays
+    /// it once. Starting again ends the pairing in progress first.
     pub fn start_pairing(&mut self, my_name: &str) -> Result<(), &'static str> {
         let Some(me) = &self.me else {
             return Err("locked");
         };
         let env = control::pair_hello(me, my_name, random_id(), now_min(), TTL_MIN);
-        let open: Vec<Channel> = [Channel::Sound, Channel::Light]
+        let carried: Vec<Channel> = [Channel::Sound, Channel::Light]
             .into_iter()
+            .filter(|c| self.transports.iter().any(|t| t.name() == *c))
+            .collect();
+        let open: Vec<Channel> = carried
+            .iter()
+            .copied()
             .filter(|c| self.refusal(*c).is_none())
             .collect();
         if open.is_empty() {
-            let has_light = self.transports.iter().any(|t| t.name() == Channel::Light);
-            if let Some(why) = self.refusal(Channel::Light).filter(|_| has_light) {
-                self.report_refusal(Channel::Light, why);
+            let refused: Vec<(Channel, &'static str)> = carried
+                .iter()
+                .filter_map(|c| Some((*c, self.refusal(*c)?)))
+                .collect();
+            for (channel, why) in &refused {
+                self.report_refusal(*channel, why);
             }
-            let why = self.refusal(Channel::Sound).expect("no channel is open");
-            self.report_refusal(Channel::Sound, why);
-            return Err(why);
+            return Err(refused.first().map_or(NOTHING_TO_SEND_ON, |(_, why)| why));
         }
-        self.transmit(&env, &open);
+        self.stop_pairing();
+        let tag = self.transmit(&env, &open);
+        self.pairing = Some(Pairing {
+            since_ms: self.now_ms,
+            light_tag: open.contains(&Channel::Light).then_some(tag),
+            hello: env,
+        });
         Ok(())
+    }
+
+    /// End the pairing in progress, if any: the hello stops showing.
+    pub fn stop_pairing(&mut self) {
+        let Some(pairing) = self.pairing.take() else {
+            return;
+        };
+        if let Some(tag) = pairing.light_tag {
+            for t in &mut self.transports {
+                if t.name() == Channel::Light {
+                    t.delivered(tag);
+                }
+            }
+        }
+    }
+
+    /// Whether pairing is in progress (see [`Node::start_pairing`]).
+    pub fn pairing(&self) -> bool {
+        self.pairing.is_some()
+    }
+
+    /// The light transport finished showing the hello under `tag`: show
+    /// it again under a fresh tag while pairing is in progress, unless it
+    /// was dropped rather than shown.
+    fn hello_shown(&mut self, tag: u16, dropped: bool) {
+        let Some(pairing) = self.pairing.as_mut() else {
+            return;
+        };
+        if pairing.light_tag != Some(tag) {
+            return;
+        }
+        pairing.light_tag = None;
+        let hello = pairing.hello.clone();
+        if dropped || self.refusal(Channel::Light).is_some() {
+            return;
+        }
+        let tag = self.transmit(&hello, &[Channel::Light]);
+        if let Some(pairing) = self.pairing.as_mut() {
+            pairing.light_tag = Some(tag);
+        }
     }
 
     /// Store `peer` as a contact named `name`, marked checked (the user
     /// has compared safety numbers). Returns the contact's id: the
     /// existing one if `peer` is already a contact, or [`NOT_STORED`] if
     /// locked, if `peer`'s key cannot be sealed to, or if the store fails.
+    ///
+    /// Ends the pairing in progress, if any.
     pub fn confirm_pairing(&mut self, peer: &PublicIdentity, name: &str) -> ContactId {
+        self.stop_pairing();
         let Some(store) = &self.store else {
             return NOT_STORED;
         };
@@ -1001,6 +1089,13 @@ impl Node {
         self.now_ms = now_ms;
         self.receipts_sent
             .retain(|_, at| now_ms.saturating_sub(*at) < RECEIPT_GAP_MS);
+        if self
+            .pairing
+            .as_ref()
+            .is_some_and(|p| now_ms.saturating_sub(p.since_ms) >= PAIRING_CAP_MS)
+        {
+            self.stop_pairing();
+        }
 
         if self.me.is_some() {
             while let Some((ti, tag, bytes)) = self.locked_inbox.pop_front() {
@@ -1042,12 +1137,18 @@ impl Node {
                         }
                     }
                     TransportEvent::Sent(tag) => {
+                        if channel == Channel::Light {
+                            self.hello_shown(tag, false);
+                        }
                         if let Some(id) = self.outbox.remove(&tag) {
                             self.heard_by.remove(&id);
                             self.settle(id, OutboxState::Sent, Some(&mut events));
                         }
                     }
                     TransportEvent::Dropped(tag) => {
+                        if channel == Channel::Light {
+                            self.hello_shown(tag, true);
+                        }
                         if let Some(id) = self.outbox.remove(&tag) {
                             self.heard_by.remove(&id);
                             self.settle(id, OutboxState::Failed, Some(&mut events));
@@ -2091,6 +2192,115 @@ mod tests {
         assert_eq!(light_states(node.tick(5)), vec!["failed", "listening"]);
     }
 
+    /// An unlocked node for `me` over a real light transport (its camera
+    /// never shows anything), Light at Read and flash.
+    fn light_node(dir: &tempfile::TempDir, me: &Identity) -> Node {
+        let store = Store::create(&dir.path().join("light.db"), "pass", me, "me").unwrap();
+        let camera = bombechat_light::FakeCamera::new(Vec::new());
+        let light = LightTransport::new(Box::new(camera), bombechat_light::CodeSpec::normal());
+        let mut node = Node::new(Some(store), vec![Box::new(light)]);
+        node.set_light(LightSwitch::ReadAndFlash);
+        node
+    }
+
+    /// Tick `node` every 20 ms over `from..to`: the tags shown, in order
+    /// of first showing, how many frames, and whether the screen ended
+    /// clear.
+    fn shown(node: &mut Node, from: u64, to: u64) -> (Vec<u16>, usize, bool) {
+        let (mut tags, mut frames, mut lit) = (Vec::new(), 0, false);
+        for now in (from..to).step_by(20) {
+            for e in node.tick(now) {
+                match e {
+                    NodeEvent::Display { tag, .. } => {
+                        frames += 1;
+                        lit = true;
+                        if !tags.contains(&tag) {
+                            tags.push(tag);
+                        }
+                    }
+                    NodeEvent::DisplayStopped => lit = false,
+                    _ => {}
+                }
+            }
+        }
+        (tags, frames, !lit)
+    }
+
+    #[test]
+    fn the_hello_keeps_showing_while_pairing_is_in_progress() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (a, b) = (Identity::generate(), Identity::generate());
+        let mut node = light_node(&dir, &a);
+        node.tick(0);
+        assert_eq!(node.start_pairing("Ann"), Ok(()));
+        assert!(node.pairing());
+
+        // Far past one 4 s window, it is still showing, under fresh tags.
+        let (tags, frames, _) = shown(&mut node, 20, 13_000);
+        assert!(tags.len() >= 3, "shown again each window: {tags:?}");
+        assert!(frames >= 120, "10 a second throughout, got {frames}");
+        let (_, frames, _) = shown(&mut node, 13_000, 14_000);
+        assert_eq!(frames, 10);
+
+        // Confirming ends it: the screen clears at once and stays clear.
+        node.confirm_pairing(&b.public(), "Ben");
+        assert!(!node.pairing());
+        let (_, frames, clear) = shown(&mut node, 14_000, 14_020);
+        assert_eq!((frames, clear), (0, true));
+        let (_, frames, clear) = shown(&mut node, 14_020, 30_000);
+        assert_eq!((frames, clear), (0, true));
+
+        // Stopping ends it too.
+        node.start_pairing("Ann").unwrap();
+        let (_, frames, _) = shown(&mut node, 30_000, 36_000);
+        assert_eq!(frames, 60);
+        node.stop_pairing();
+        let (_, frames, clear) = shown(&mut node, 36_000, 40_000);
+        assert_eq!((frames, clear), (0, true));
+    }
+
+    #[test]
+    fn pairing_ends_by_itself_after_three_minutes() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let a = Identity::generate();
+        let mut node = light_node(&dir, &a);
+        node.tick(0);
+        node.start_pairing("Ann").unwrap();
+        let (_, frames, _) = shown(&mut node, 20, PAIRING_CAP_MS - 1_000);
+        assert!(frames > 1_700, "shown all along: {frames}");
+        assert!(node.pairing());
+        let (_, _, clear) = shown(&mut node, PAIRING_CAP_MS - 1_000, PAIRING_CAP_MS + 200);
+        assert!(clear);
+        assert!(!node.pairing());
+        let (_, frames, _) = shown(&mut node, PAIRING_CAP_MS + 200, PAIRING_CAP_MS + 10_000);
+        assert_eq!(frames, 0);
+    }
+
+    #[test]
+    fn pairing_with_no_channel_that_can_send_is_refused() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let a = Identity::generate();
+        let mut node = light_node(&dir, &a);
+        node.set_light(LightSwitch::Read);
+        // Sound is at Listen and send, but there is no sound to send on.
+        assert_eq!(node.start_pairing("Ann"), Err(READ_ONLY));
+        assert!(!node.pairing());
+        let states: Vec<_> = node
+            .tick(1)
+            .into_iter()
+            .filter_map(|e| match e {
+                NodeEvent::ChannelState { channel, state } => Some((channel, state)),
+                _ => None,
+            })
+            .collect();
+        assert!(states.contains(&(Channel::Light, READ_ONLY.to_string())));
+        assert!(!states.iter().any(|(c, _)| *c == Channel::Sound));
+
+        let store = Store::create(&dir.path().join("none.db"), "pass", &a, "me").unwrap();
+        let mut bare = Node::new(Some(store), vec![]);
+        assert_eq!(bare.start_pairing("Ann"), Err(NOTHING_TO_SEND_ON));
+    }
+
     #[test]
     fn a_resent_message_gets_another_receipt_at_most_once_a_minute() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -2623,10 +2833,7 @@ mod tests {
         let (a, b) = (Identity::generate(), Identity::generate());
         let (mut node, wire, ids) = node(&dir, &b, &[&a]);
         node.set_sound(SoundSwitch::Off);
-        wire.hear(
-            &seal_private(&a, &[b.public()], "unheard", now_min(), 60),
-            1,
-        );
+        wire.hear(&seal_private(&a, &[b.public()], "unheard", now_min(), 60), 1);
         let events = node.tick(1);
         assert!(messages(&events).is_empty());
         assert!(!events
@@ -2694,11 +2901,7 @@ mod tests {
             heard: false,
             delivery: Delivery::Waiting,
         };
-        node.store
-            .as_ref()
-            .unwrap()
-            .put_outgoing(&stale, &old.encode())
-            .unwrap();
+        node.store.as_ref().unwrap().put_outgoing(&stale, &old.encode()).unwrap();
         drop(node);
 
         let wire = Wire::default();

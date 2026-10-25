@@ -28,13 +28,15 @@
 //! [`CodeSpec::frames_per_second`] by `now_ms`; others wait their turn,
 //! up to [`MAX_QUEUED_ENVELOPES`]. Each envelope is shown for a sending
 //! window of [`SEND_WINDOW`] times the frames a receiver needs at least,
-//! or until [`Transport::delivered`] says everyone it was for has it,
-//! whichever comes first.
+//! but never less than [`HUMAN_FLOOR_MS`] of frames, so a person has time
+//! to hold the screen up; [`Transport::delivered`] (everyone it was for
+//! has it) cuts the window short. An envelope is coded in the preset
+//! current when it goes on screen ([`Transport::set_preset`]).
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use bombechat_core::MAX_ENVELOPE;
@@ -50,8 +52,28 @@ use crate::sound::{MAX_QUEUED_ENVELOPES, QUEUE_FULL};
 use crate::transport::{Transport, TransportEvent};
 
 /// An envelope is shown for this many times the frames a receiver needs
-/// at least, unless everyone it was for reports hearing it first.
+/// at least, unless everyone it was for reports hearing it first, and for
+/// no less than [`HUMAN_FLOOR_MS`].
 pub const SEND_WINDOW: u32 = 3;
+
+/// The shortest an envelope is shown, in ms, unless everyone it was for
+/// reports hearing it first: time for a person to hold the screen up to
+/// the other camera. A receipt (which nobody reports hearing) is shown
+/// this long in full.
+pub const HUMAN_FLOOR_MS: u32 = 4_000;
+
+/// The notice for an envelope too long to show.
+pub const TOO_LONG: &str = "message too long for light";
+
+/// Frames to show an envelope of `symbols` source symbols for in `spec`:
+/// [`SEND_WINDOW`] times the frames it needs, or [`HUMAN_FLOOR_MS`] of
+/// frames, whichever is more.
+fn window(spec: &CodeSpec, symbols: u32) -> u32 {
+    let per_frame = spec.packets_per_frame().max(1) as u32;
+    let needed = symbols.div_ceil(per_frame).max(1);
+    let floor = (HUMAN_FLOOR_MS * spec.frames_per_second()).div_ceil(1000);
+    (needed * SEND_WINDOW).max(floor)
+}
 
 /// Camera pictures waiting for the reader at most; when another arrives,
 /// the oldest is let go.
@@ -60,6 +82,10 @@ pub const PICTURES_HELD: usize = 2;
 /// How often the worker asks a running camera whether it has failed,
 /// when nothing else wakes it.
 const ERROR_CHECK: Duration = Duration::from_millis(100);
+
+/// How long dropping the transport waits for the worker to close the
+/// camera and end.
+const WORKER_END_WAIT: Duration = Duration::from_secs(1);
 
 /// An envelope part way through arriving is given up this long after its
 /// last frame was read: the collector's own expiry.
@@ -157,6 +183,8 @@ fn work(
     out: Sender<Report>,
 ) {
     raise_priority();
+    // The reader's own budget, before any picture raised it.
+    let base = reader.budget();
     let mut running: Option<u64> = None;
     loop {
         let job = {
@@ -191,6 +219,10 @@ fn work(
                 return;
             }
             Job::Command(Command::Start(start)) => {
+                // A fresh start: a fresh reader at its own budget, and no
+                // picture from before.
+                reader = Reader::with_budget(base);
+                lock(&shared.work).pictures.clear();
                 let into = shared.clone();
                 // Never blocks for long: the worker holds this lock only to
                 // move a picture or a command, never while it reads.
@@ -255,9 +287,11 @@ enum Camera {
     Failed,
 }
 
-/// One envelope to show.
+/// One envelope on screen, or paused part way through.
 struct Outgoing {
     tag: u16,
+    /// The preset it is shown in, fixed once it goes on screen.
+    spec: CodeSpec,
     encoder: Encoder,
     /// Frames to show in all.
     window: u32,
@@ -292,6 +326,9 @@ fn reason(e: &CameraError) -> String {
 /// is reported [`TransportEvent::Waiting`]; turned on again, it carries
 /// on where it stopped.
 pub struct LightTransport {
+    worker: Option<JoinHandle<()>>,
+    /// Disconnects when the worker has ended.
+    ended: Receiver<()>,
     spec: CodeSpec,
     shared: Arc<Shared>,
     reports: Receiver<Report>,
@@ -304,12 +341,15 @@ pub struct LightTransport {
     arriving: HashMap<u16, u64>,
     /// The node's frames, put back together into envelopes.
     outgoing: Reassembler,
-    queue: VecDeque<Outgoing>,
+    /// Envelopes waiting their turn, by tag; each is coded in the preset
+    /// current when it goes on screen.
+    queue: VecDeque<(u16, Vec<u8>)>,
     /// The envelope on screen, or paused part way through.
     showing: Option<Outgoing>,
-    /// When the current run of frames started, and the index of the next
-    /// frame slot after the last one shown, counted from there.
-    pace: Option<(u64, u64)>,
+    /// When the current run of frames started, the index of the next
+    /// frame slot after the last one shown, counted from there, and the
+    /// frames a second of the run.
+    pace: Option<(u64, u64, u64)>,
     /// Whether a frame is on screen now.
     lit: bool,
     pending: Vec<TransportEvent>,
@@ -341,11 +381,18 @@ impl LightTransport {
         let shared = Arc::new(Shared::default());
         let (out, reports) = mpsc::channel();
         let theirs = shared.clone();
-        thread::Builder::new()
+        // Dropped when the worker ends, however it ends.
+        let (alive, ended) = mpsc::channel::<()>();
+        let worker = thread::Builder::new()
             .name("light reader".to_string())
-            .spawn(move || work(camera, reader, theirs, out))
+            .spawn(move || {
+                let _alive = alive;
+                work(camera, reader, theirs, out)
+            })
             .expect("start the light reader thread");
         LightTransport {
+            worker: Some(worker),
+            ended,
             spec,
             shared,
             reports,
@@ -377,23 +424,35 @@ impl LightTransport {
 
     /// Queue one whole envelope to show.
     fn enqueue(&mut self, tag: u16, envelope: Vec<u8>) {
-        let waiting = self.queue.len() + usize::from(self.showing.is_some());
-        if waiting >= MAX_QUEUED_ENVELOPES || envelope.len() > MAX_ENVELOPE {
-            self.pending
-                .push(TransportEvent::Notice(QUEUE_FULL.to_string()));
+        let refused = if envelope.len() > MAX_ENVELOPE {
+            Some(TOO_LONG)
+        } else if self.queue.len() + usize::from(self.showing.is_some()) >= MAX_QUEUED_ENVELOPES {
+            Some(QUEUE_FULL)
+        } else {
+            None
+        };
+        if let Some(why) = refused {
+            self.pending.push(TransportEvent::Notice(why.to_string()));
             self.pending.push(TransportEvent::Dropped(tag));
             return;
         }
-        let encoder = encode(&self.spec, &envelope, tag);
-        let per_frame = self.spec.packets_per_frame().max(1) as u32;
-        let needed = encoder.source_symbols().div_ceil(per_frame).max(1);
-        self.queue.push_back(Outgoing {
+        self.queue.push_back((tag, envelope));
+    }
+
+    /// Put the next waiting envelope on screen, coded in the current
+    /// preset.
+    fn next_up(&mut self) -> Option<Outgoing> {
+        let (tag, envelope) = self.queue.pop_front()?;
+        let spec = self.spec;
+        let encoder = encode(&spec, &envelope, tag);
+        Some(Outgoing {
             tag,
+            spec,
+            window: window(&spec, encoder.source_symbols()),
             encoder,
-            window: needed * SEND_WINDOW,
             shown: 0,
             announced: false,
-        });
+        })
     }
 
     /// Take what the worker reported.
@@ -448,19 +507,29 @@ impl LightTransport {
     /// Show the next frame if one is due.
     fn show(&mut self, now_ms: u64, events: &mut Vec<TransportEvent>) {
         if self.showing.is_none() {
-            self.showing = self.queue.pop_front();
+            self.showing = self.next_up();
         }
         if self.showing.is_none() && !self.lit {
             self.pace = None;
             return;
         }
-        let fps = u64::from(self.spec.frames_per_second());
-        let (from, next) = *self.pace.get_or_insert((now_ms, 0));
+        // A run keeps its rate; an envelope in another preset starts a new
+        // run at its own.
+        if let Some(out) = &self.showing {
+            let fps = u64::from(out.spec.frames_per_second());
+            if self.pace.is_some_and(|(_, _, f)| f != fps) {
+                self.pace = None;
+            }
+            self.pace.get_or_insert((now_ms, 0, fps));
+        }
+        let Some((from, next, fps)) = self.pace else {
+            return;
+        };
         let slot = now_ms.saturating_sub(from) * fps / 1000;
         if slot < next {
             return;
         }
-        self.pace = Some((from, slot + 1));
+        self.pace = Some((from, slot + 1, fps));
         let Some(out) = self.showing.as_mut() else {
             if self.lit {
                 self.lit = false;
@@ -477,8 +546,8 @@ impl LightTransport {
         events.push(TransportEvent::Display {
             tag: out.tag,
             index: out.shown,
-            spec: self.spec.preset().expect("checked in new"),
-            bits: grid_bits(&self.spec, &frame),
+            spec: out.spec.preset().expect("only presets are kept"),
+            bits: grid_bits(&out.spec, &frame),
         });
         self.lit = true;
         out.shown += 1;
@@ -490,11 +559,18 @@ impl LightTransport {
 }
 
 impl Drop for LightTransport {
-    /// The worker closes the camera and ends; this does not wait for it,
-    /// since it may be waiting on the permission prompt.
+    /// The worker closes the camera and ends. This waits for it up to
+    /// [`WORKER_END_WAIT`], so a transport built next does not race this
+    /// one for the camera; a worker still waiting on the permission
+    /// prompt is left to end by itself once it is answered.
     fn drop(&mut self) {
         lock(&self.shared.work).closed = true;
         self.shared.wake.notify_one();
+        if let Err(RecvTimeoutError::Disconnected) = self.ended.recv_timeout(WORKER_END_WAIT) {
+            if let Some(worker) = self.worker.take() {
+                let _ = worker.join();
+            }
+        }
     }
 }
 
@@ -508,6 +584,15 @@ impl Transport for LightTransport {
     fn rate(&self) -> Option<f32> {
         let per_frame = self.spec.packets_per_frame() * self.spec.symbol_size as usize;
         Some((per_frame as u32 * self.spec.frames_per_second()) as f32)
+    }
+
+    /// Show the envelopes that have not gone on screen yet in `spec`, from
+    /// the next one on; the one on screen finishes as it started. Not a
+    /// preset: ignored.
+    fn set_preset(&mut self, spec: CodeSpec) {
+        if spec.is_valid() {
+            self.spec = spec;
+        }
     }
 
     /// Off, the camera is closed (the worker stops it), not just ignored,
@@ -550,11 +635,19 @@ impl Transport for LightTransport {
     }
 
     /// Stop showing the envelope under `tag`, or drop it from the queue,
-    /// and report it sent: everyone it was for has it.
+    /// and report it sent: everyone it was for has it. If nothing else is
+    /// waiting, the screen clears at once.
     fn delivered(&mut self, tag: u16) {
         if self.showing.as_ref().is_some_and(|o| o.tag == tag) {
             self.showing = None;
-        } else if let Some(i) = self.queue.iter().position(|o| o.tag == tag) {
+            if self.queue.is_empty() && self.lit {
+                // Nothing follows: clear the screen now rather than at the
+                // end of the frame on it.
+                self.lit = false;
+                self.pace = None;
+                self.pending.push(TransportEvent::DisplayStopped);
+            }
+        } else if let Some(i) = self.queue.iter().position(|(t, _)| *t == tag) {
             self.queue.remove(i);
         } else {
             return;
@@ -644,10 +737,11 @@ mod tests {
     }
 
     #[test]
-    fn frames_are_paced_by_the_presets_rate_and_the_window_is_three_times_the_need() {
+    fn frames_are_paced_by_the_presets_rate_and_never_shown_under_the_human_floor() {
         let cam = FakeCamera::new(Vec::new());
         let mut t = transport(&cam);
-        // 1000 bytes is 5 symbols of 229 at one symbol a frame: 15 frames.
+        // 1000 bytes is 5 symbols of 229 at one symbol a frame, so 3x the
+        // need is 15 frames; the floor, 4 s at 10 a second, is 40.
         send(&mut t, 7, 1000);
         let (shown, rest) = run(&mut t, 0, 1_000);
         assert_eq!(
@@ -657,12 +751,73 @@ mod tests {
         );
         assert_eq!(rest, vec![TransportEvent::Playing(7)]);
 
-        let (shown, rest) = run(&mut t, 1_000, 3_000);
-        assert_eq!(shown, (10..15).map(|i| (7, i)).collect::<Vec<_>>());
+        let (shown, rest) = run(&mut t, 1_000, 3_980);
+        assert_eq!(shown, (10..40).map(|i| (7, i)).collect::<Vec<_>>());
+        assert_eq!(rest, vec![TransportEvent::Sent(7)], "sent with frame 40");
+        let (shown, rest) = run(&mut t, 3_980, 5_000);
+        assert!(shown.is_empty());
         assert_eq!(
             rest,
-            vec![TransportEvent::Sent(7), TransportEvent::DisplayStopped],
-            "sent with its last frame, cleared when that frame's time is up"
+            vec![TransportEvent::DisplayStopped],
+            "cleared when the last frame's time is up"
+        );
+    }
+
+    #[test]
+    fn the_floor_is_four_seconds_at_every_preset_and_a_big_envelope_gets_three_times_its_need() {
+        for spec in CodeSpec::presets() {
+            let fps = spec.frames_per_second();
+            assert_eq!(window(&spec, 1), 4 * fps, "{spec:?}");
+            let symbols = 4 * fps; // needs 4 s of frames: 3x is 12 s
+            assert_eq!(window(&spec, symbols), 3 * symbols, "{spec:?}");
+        }
+    }
+
+    #[test]
+    fn a_preset_change_applies_from_the_next_envelope() {
+        let cam = FakeCamera::new(Vec::new());
+        let mut t = transport(&cam);
+        send(&mut t, 7, 100);
+        send(&mut t, 8, 100);
+        let specs = |events: Vec<TransportEvent>| -> Vec<(u16, u8)> {
+            events
+                .into_iter()
+                .filter_map(|e| match e {
+                    TransportEvent::Display { tag, spec, .. } => Some((tag, spec)),
+                    _ => None,
+                })
+                .collect()
+        };
+        let first = specs(t.poll(0));
+        t.set_preset(CodeSpec::fast());
+        t.set_preset(CodeSpec {
+            cells: 40,
+            ..CodeSpec::fast()
+        }); // not a preset: ignored
+        let mut seen = first;
+        for now in (20..9_000).step_by(20) {
+            seen.extend(specs(t.poll(now)));
+        }
+        assert!(
+            seen.iter().filter(|s| s.0 == 7).all(|s| s.1 == 1),
+            "7 stays normal"
+        );
+        let fast: Vec<_> = seen.iter().filter(|s| s.0 == 8).collect();
+        assert_eq!(fast.len(), 60, "4 s at 15 a second");
+        assert!(fast.iter().all(|s| s.1 == 2), "8 goes fast");
+    }
+
+    #[test]
+    fn an_envelope_too_long_for_light_says_so() {
+        let cam = FakeCamera::new(Vec::new());
+        let mut t = transport(&cam);
+        send(&mut t, 9, MAX_ENVELOPE + 1);
+        assert_eq!(
+            t.poll(0),
+            vec![
+                TransportEvent::Notice(TOO_LONG.to_string()),
+                TransportEvent::Dropped(9)
+            ]
         );
     }
 
@@ -692,11 +847,11 @@ mod tests {
         let (shown, _) = run(&mut t, 0, 300);
         assert_eq!(shown, vec![(7, 0), (7, 1), (7, 2)]);
         t.delivered(7);
-        let (shown, rest) = run(&mut t, 300, 1_200);
+        let (shown, rest) = run(&mut t, 300, 5_000);
         assert_eq!(
             shown,
-            vec![(8, 0), (8, 1), (8, 2)],
-            "one symbol, three frames"
+            (0..40).map(|i| (8, i)).collect::<Vec<_>>(),
+            "one symbol, but the 4 s floor"
         );
         assert_eq!(
             rest,
@@ -709,7 +864,7 @@ mod tests {
         );
         t.delivered(8);
         assert!(
-            t.poll(2_000).is_empty(),
+            t.poll(6_000).is_empty(),
             "already sent: nothing more to say"
         );
     }
@@ -826,6 +981,24 @@ mod tests {
         settle(&t);
         assert_eq!(cam.starts(), 2);
         assert!(t.poll(80).is_empty());
+    }
+
+    #[test]
+    fn dropping_it_has_closed_the_camera_by_the_time_it_returns() {
+        let cam = FakeCamera::new(Vec::new());
+        let mut t = transport(&cam);
+        t.poll(0);
+        settle(&t);
+        assert!(cam.is_running());
+        drop(t);
+        assert!(!cam.is_running(), "closed before drop returned");
+        assert_eq!(cam.stops(), 1);
+        // So a transport built next has the camera to itself.
+        let mut again = transport(&cam);
+        again.poll(0);
+        settle(&again);
+        assert!(cam.is_running());
+        assert_eq!((cam.starts(), cam.stops()), (2, 1));
     }
 
     #[test]

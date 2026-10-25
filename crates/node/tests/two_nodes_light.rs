@@ -283,22 +283,32 @@ fn pair_message_and_receipt_by_light_alone() {
     let b = Peer::new(&dir, "ben", FakeCamera::new(Vec::new()));
     let mut room = Room::new(vec![a, b], vec![facing(0, 1), facing(1, 0)]);
 
-    // Ann's hello by light; Ben's camera reads it.
+    // Both hold up their hellos at once; each camera reads the other's,
+    // and each hello keeps showing until its person confirms.
     room.peers[0].node.start_pairing("Ann").unwrap();
-    assert!(room.run_until(5_000, |r| offer(&r.peers[1].log).is_some()));
+    room.peers[1].node.start_pairing("Ben").unwrap();
+    assert!(room.run_until(10_000, |r| offer(&r.peers[0].log).is_some()
+        && offer(&r.peers[1].log).is_some()));
     let (ann, name) = offer(&room.peers[1].log).unwrap();
     assert_eq!(
         (ann.clone(), name.as_str()),
         (room.peers[0].me.clone(), "Ann")
     );
+    let (ben, name) = offer(&room.peers[0].log).unwrap();
+    assert_eq!(
+        (ben.clone(), name.as_str()),
+        (room.peers[1].me.clone(), "Ben")
+    );
+    assert!(room.peers.iter().all(|p| p.node.pairing()));
     let ann_id = room.peers[1].node.confirm_pairing(&ann, "Ann");
-
-    // And Ben's back.
-    room.peers[1].node.start_pairing("Ben").unwrap();
-    assert!(room.run_until(5_000, |r| offer(&r.peers[0].log).is_some()));
-    let (ben, _) = offer(&room.peers[0].log).unwrap();
-    assert_eq!(ben, room.peers[1].me);
     let ben_id = room.peers[0].node.confirm_pairing(&ben, "Ben");
+    assert!(room.peers.iter().all(|p| !p.node.pairing()));
+    room.step();
+    room.step();
+    assert!(
+        room.peers.iter().all(|p| p.screen.is_none()),
+        "the hellos stop showing once confirmed"
+    );
 
     // A message, and its receipt, by light.
     let id = room.peers[0].node.send(&[ben_id], TEXT, Channel::Light);
@@ -331,9 +341,9 @@ fn pair_message_and_receipt_by_light_alone() {
             .heard
     );
 
-    // Both screens are clear once the windows end, and the message is
-    // never delivered twice.
-    room.run(2_000);
+    // Both screens are clear once the windows end (the receipt runs its
+    // full 4 s floor), and the message is never delivered twice.
+    room.run(5_000);
     assert!(room.peers.iter().all(|p| p.screen.is_none()));
     assert_eq!(messages(&room.peers[1].log).len(), 1);
 }
