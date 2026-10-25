@@ -16,7 +16,8 @@ use std::time::Instant;
 
 use bombechat_light::{encode, read, CodeSpec, Collector, Layout, LightEvent, ReadOutcome};
 use camera::textures::{
-    blinds, checkerboard, diagonal_stripes, finder_stripes, irregular, keyboard, qr_like, IRREGULAR,
+    blinds, box_blur, checkerboard, diagonal_stripes, dotted_lattice, finder_bars, finder_crosses,
+    finder_lattice, finder_stripes, irregular, keyboard, qr_like, scattered_finders, IRREGULAR,
 };
 use camera::{in_view, shoot, Camera, Code, Noise, Pose};
 use image::GrayImage;
@@ -981,6 +982,308 @@ fn a_code_beside_irregular_finder_textures_reads() {
     }
 }
 
+/// Finder-like clutter, by name: bars in the finder ratio just short of
+/// and just over the height a finder's cluster may have, leaning bars,
+/// lattices of real finder marks at many sizes and spacings (some with a
+/// dark mark beside each, so each looks like a code's corner), finder
+/// marks scattered at random, and crosses of finder-ratio bars.
+fn finder_clutter() -> Vec<(String, GrayImage)> {
+    let mut out = Vec::new();
+    for u in [2u32, 3, 4] {
+        let cut = (1.5 * 7.0 * u as f64) as u32;
+        for (what, height) in [("under", cut + 1), ("over", cut + 6)] {
+            out.push((
+                format!("bars {u}px, {height} tall ({what} the cut)"),
+                finder_bars(1280, 720, u, height, (9 * u, height + 2), 0),
+            ));
+        }
+        for shear in 1..=3 {
+            out.push((
+                format!("leaning bars {u}px, shear {shear}"),
+                finder_bars(1280, 720, u, 720, (9 * u, 721), shear),
+            ));
+        }
+        out.push((
+            format!("short leaning bars {u}px"),
+            finder_bars(1280, 720, u, cut + 1, (9 * u, cut + 3), 1),
+        ));
+    }
+    // The most crossing work found: short bars packed tight, leaning.
+    for (u, height) in [(2, 17), (3, 25), (3, 29), (4, 41)] {
+        out.push((
+            format!("packed leaning bars {u}px, {height} tall"),
+            finder_bars(1280, 720, u, height, (8 * u, height + 1), 1),
+        ));
+    }
+    out.push(("finder lattice 1px".into(), finder_lattice(1280, 720, 1, 1)));
+    for u in 2..=6 {
+        for gap in [0, 1, 2, 3, 4, 6] {
+            // A gap of no cells is still a pixel, so the marks stay apart.
+            let px = (gap * u).max(1);
+            out.push((
+                format!("finder lattice {u}px, {px}px apart"),
+                finder_lattice(1280, 720, u, px),
+            ));
+        }
+    }
+    for (u, gap) in [(2, 6), (3, 9), (3, 12), (4, 12), (4, 16), (5, 15), (6, 18)] {
+        out.push((
+            format!("dotted lattice {u}px, {gap}px apart"),
+            dotted_lattice(1280, 720, u, gap),
+        ));
+    }
+    let mut rng = Noise::new(77);
+    for (units, count) in [((3, 6), 40), ((3, 6), 150), ((4, 8), 400), ((2, 4), 1500)] {
+        out.push((
+            format!("{count} scattered finders {}-{}px", units.0, units.1),
+            scattered_finders(1280, 720, units, count, &mut rng),
+        ));
+    }
+    for u in [2, 3, 4] {
+        out.push((format!("crosses {u}px"), finder_crosses(1280, 720, u)));
+    }
+    out
+}
+
+/// Where clutter goes beside a code: its name, the code's pose, and
+/// which pixels the clutter covers given the code's quiet zone square
+/// (left, top, right, bottom, in pixels).
+type ClutterPlace = (&'static str, Pose, fn(u32, u32, [u32; 4]) -> bool);
+
+fn clutter_places() -> Vec<ClutterPlace> {
+    let pose = |x: f64, scale: f64, roll: f64| Pose {
+        scale,
+        centre: (x, 0.5),
+        roll,
+        ..Pose::default()
+    };
+    vec![
+        ("left 40%", pose(0.72, 0.5, 0.0), |x, _, _| x < 512),
+        ("right", pose(0.28, 0.5, 0.0), |x, _, _| x >= 768),
+        ("both sides", pose(0.5, 0.4, 0.0), |x, _, _| {
+            !(380..900).contains(&x)
+        }),
+        ("all round", pose(0.5, 0.4, 0.0), |x, y, [l, t, r, b]| {
+            !((l..=r).contains(&x) && (t..=b).contains(&y))
+        }),
+        (
+            "all round, small and turned",
+            pose(0.4, 0.3, 12.0),
+            |x, y, [l, t, r, b]| !((l..=r).contains(&x) && (t..=b).contains(&y)),
+        ),
+    ]
+}
+
+/// The square a posed code's quiet zone fills, turned with the code
+/// (its bounding box), in a 1280x720 picture: left, top, right, bottom.
+fn quiet_square(pose: &Pose) -> [u32; 4] {
+    let side = pose.scale * 720.0;
+    let turn = pose.roll.to_radians();
+    let half = side / 2.0 * (turn.cos().abs() + turn.sin().abs());
+    let (cx, cy) = (pose.centre.0 * 1280.0, pose.centre.1 * 720.0);
+    [cx - half, cy - half, cx + half, cy + half].map(|v| v.clamp(0.0, 1279.0) as u32)
+}
+
+/// Read `count` pictures, built by `picture(i)` as (what, picture,
+/// expected), on every core; the descriptions of those that read wrong.
+fn read_all(
+    count: usize,
+    picture: impl Fn(usize) -> (String, GrayImage, ReadOutcome) + Sync,
+) -> Vec<String> {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let wrong = std::sync::Mutex::new(Vec::new());
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+    std::thread::scope(|s| {
+        for _ in 0..threads {
+            s.spawn(|| loop {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if i >= count {
+                    break;
+                }
+                let (what, img, want) = picture(i);
+                let got = read(&img);
+                if got != want {
+                    wrong.lock().unwrap().push(format!("{what}: {got:?}"));
+                }
+            });
+        }
+    });
+    let mut wrong = wrong.into_inner().unwrap();
+    wrong.sort();
+    wrong
+}
+
+/// The code beside clutter case `i` of [`finder_clutter`] by
+/// [`clutter_places`] by preset, given the textures, the codes shot in
+/// each place, and their frames.
+fn clutter_case(
+    i: usize,
+    textures: &[(String, GrayImage)],
+    shots: &[Vec<GrayImage>],
+    frames: &[Vec<u8>],
+) -> (String, GrayImage, ReadOutcome) {
+    let places = clutter_places();
+    let (t, rest) = (i % textures.len(), i / textures.len());
+    let (p, preset) = (rest % places.len(), rest / places.len());
+    let (place, pose, covered) = &places[p];
+    let square = quiet_square(pose);
+    let (tex, base) = (&textures[t].1, &shots[preset][p]);
+    let img = GrayImage::from_fn(1280, 720, |x, y| {
+        if covered(x, y, square) {
+            *tex.get_pixel(x, y)
+        } else {
+            *base.get_pixel(x, y)
+        }
+    });
+    let what = format!("{}, {} {place}", presets()[preset].0, textures[t].0);
+    (what, img, ReadOutcome::Frames(vec![frames[preset].clone()]))
+}
+
+/// Each preset's frame and its code shot in each clutter place.
+fn clutter_shots() -> (Vec<Vec<GrayImage>>, Vec<Vec<u8>>) {
+    let (mut shots, mut frames) = (Vec::new(), Vec::new());
+    for (_, spec) in presets() {
+        let mut rng = Noise::new(102);
+        let frame = some_frame(&spec, &mut rng);
+        shots.push(
+            clutter_places()
+                .into_iter()
+                .map(|(_, pose, _)| shoot(&[code(&spec, &frame, pose)], &Camera::default(), 11))
+                .collect(),
+        );
+        frames.push(frame);
+    }
+    (shots, frames)
+}
+
+/// However much finder-like clutter surrounds a code, and however much
+/// cleaner its marks are than the code's own, the code reads; the clutter
+/// alone reads as no code.
+#[test]
+fn a_code_among_finder_clutter_reads() {
+    let textures = finder_clutter();
+    let (shots, frames) = clutter_shots();
+    let count = textures.len() * clutter_places().len() * 3;
+    let wrong = read_all(count, |i| clutter_case(i, &textures, &shots, &frames));
+    assert!(wrong.is_empty(), "{} of {count}: {wrong:#?}", wrong.len());
+    let wrong = read_all(textures.len(), |i| {
+        let (name, img) = &textures[i];
+        (format!("{name} alone"), img.clone(), ReadOutcome::NoCode)
+    });
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// Bars in the finder ratio over a growing share of the picture, sharp
+/// or blurred, beside a code: (what, picture, expected).
+fn blurred_bar_pictures() -> Vec<(String, GrayImage, ReadOutcome)> {
+    let spec = CodeSpec::normal();
+    let frame = some_frame(&spec, &mut Noise::new(103));
+    let pose = Pose {
+        scale: 0.5,
+        centre: (0.72, 0.5),
+        ..Pose::default()
+    };
+    let base = shoot(&[code(&spec, &frame, pose)], &Camera::default(), 12);
+    let sharp = finder_bars(1280, 720, 3, 32, (27, 34), 0);
+    let bars = [
+        ("sharp", sharp.clone()),
+        ("blurred 1px", box_blur(&sharp, 1)),
+        ("blurred 2px", box_blur(&sharp, 2)),
+    ];
+    let mut out = Vec::new();
+    for (blur, tex) in &bars {
+        for share in [0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.40] {
+            let edge = (1280.0 * share) as u32;
+            let img = GrayImage::from_fn(1280, 720, |x, y| {
+                *if x < edge { tex } else { &base }.get_pixel(x, y)
+            });
+            let what = format!("bars {blur} over {:.0}%", share * 100.0);
+            out.push((what, img, ReadOutcome::Frames(vec![frame.clone()])));
+        }
+    }
+    out
+}
+
+/// Sharp or blurred finder-ratio bars over a growing share of the
+/// picture never hide a code beside them.
+#[test]
+fn a_code_beside_blurred_finder_bars_reads() {
+    let pictures = blurred_bar_pictures();
+    let wrong = read_all(pictures.len(), |i| pictures[i].clone());
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// Finder-ratio texture right up to a code, above it or to its left,
+/// leaving at least most of the quiet zone: (what, picture, expected).
+fn quiet_zone_pictures() -> Vec<(String, GrayImage, ReadOutcome)> {
+    let textures = [
+        ("stripes 2px", finder_stripes(1280, 720, 2)),
+        ("stripes 3px", finder_stripes(1280, 720, 3)),
+        ("stripes 4px", finder_stripes(1280, 720, 4)),
+        ("stripes 5px", finder_stripes(1280, 720, 5)),
+        ("jitter", irregular("jitter", 1280, 720)),
+        ("alt 2/4", irregular("alt 2/4", 1280, 720)),
+    ];
+    let (shots, frames): (Vec<_>, Vec<_>) = presets()
+        .iter()
+        .map(|(_, spec)| {
+            let frame = some_frame(spec, &mut Noise::new(104));
+            let pose = Pose {
+                scale: 0.5,
+                centre: (0.6, 0.5),
+                ..Pose::default()
+            };
+            let shot = shoot(&[code(spec, &frame, pose)], &Camera::default(), 13);
+            (shot, frame)
+        })
+        .unzip();
+    // Texture stops this many pixels short of the code's grid, which
+    // starts a quiet zone (three cells, 15 to 20 pixels here) in from the
+    // edge of the square the pose gives.
+    let gaps = [16, 30];
+    let count = 3 * textures.len() * gaps.len() * 2;
+    (0..count)
+        .map(|i| {
+            let (p, rest) = (i % 3, i / 3);
+            let (t, rest) = (rest % textures.len(), rest / textures.len());
+            let (g, above) = (rest % gaps.len(), rest / gaps.len() == 1);
+            let spec = presets()[p].1;
+            let n = spec.cells as f64;
+            let half = 0.5 * 0.5 * 720.0 * n / (n + 6.0);
+            let (left, top, right) = (0.6 * 1280.0 - half, 360.0 - half, 0.6 * 1280.0 + half);
+            let gap = gaps[g] as f64;
+            let tex = &textures[t].1;
+            let img = GrayImage::from_fn(1280, 720, |x, y| {
+                let (x, y) = (x as f64, y as f64);
+                let covered = if above {
+                    y < top - gap && x + 20.0 >= left && x <= right + 20.0
+                } else {
+                    x < left - gap
+                };
+                let src = if covered { tex } else { &shots[p] };
+                *src.get_pixel(x as u32, y as u32)
+            });
+            let side = if above { "above" } else { "left" };
+            let what = format!(
+                "{}, {} {side}, {gap}px short",
+                presets()[p].0,
+                textures[t].0
+            );
+            (what, img, ReadOutcome::Frames(vec![frames[p].clone()]))
+        })
+        .collect()
+}
+
+/// Texture up to a code's quiet zone, leaving most of it, does not hide
+/// the code. (Texture further in, over the quiet zone itself, is a
+/// damaged code and may not read.)
+#[test]
+fn texture_up_to_the_quiet_zone_does_not_hide_a_code() {
+    let pictures = quiet_zone_pictures();
+    let wrong = read_all(pictures.len(), |i| pictures[i].clone());
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
 /// The top of the scale range: the quiet zone fills the frame height.
 #[test]
 fn a_code_filling_the_frame_reads() {
@@ -1476,7 +1779,7 @@ fn decode_time_per_frame() {
 
     let mut worst = (0f64, String::new());
     let mut by_kind: Vec<(&str, f64, u32)> = Vec::new();
-    for (kind, name, img) in &pictures {
+    let mut time = |kind: &'static str, name: &str, img: &GrayImage| {
         read(img); // warm up
         let runs = 5;
         let start = Instant::now();
@@ -1485,15 +1788,36 @@ fn decode_time_per_frame() {
         }
         let ms = start.elapsed().as_secs_f64() * 1000.0 / runs as f64;
         if ms > worst.0 {
-            worst = (ms, name.clone());
+            worst = (ms, name.to_string());
         }
-        match by_kind.iter_mut().find(|k| k.0 == *kind) {
+        match by_kind.iter_mut().find(|k| k.0 == kind) {
             Some(k) => {
                 k.1 += ms;
                 k.2 += 1;
             }
             None => by_kind.push((kind, ms, 1)),
         }
+    };
+    for (kind, name, img) in &pictures {
+        time(kind, name, img);
+    }
+    drop(pictures);
+    // Finder clutter: built one picture at a time (there are about a
+    // thousand).
+    let textures = finder_clutter();
+    let (shots, frames) = clutter_shots();
+    for i in 0..textures.len() * clutter_places().len() * 3 {
+        let (what, img, _) = clutter_case(i, &textures, &shots, &frames);
+        time("code among finder clutter", &what, &img);
+    }
+    for (name, img) in &textures {
+        time("finder clutter alone", name, img);
+    }
+    for (what, img, _) in blurred_bar_pictures() {
+        time("code beside blurred bars", &what, &img);
+    }
+    for (what, img, _) in quiet_zone_pictures() {
+        time("texture up to the quiet zone", &what, &img);
     }
     for (kind, total, count) in &by_kind {
         println!(

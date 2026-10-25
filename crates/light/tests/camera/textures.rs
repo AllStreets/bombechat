@@ -211,3 +211,114 @@ pub fn irregular(name: &str, w: u32, h: u32) -> GrayImage {
         .collect();
     GrayImage::from_fn(w, h, |x, y| Luma([rows[y as usize][x as usize]]))
 }
+
+/// Whether pixel `x`, `y` of a finder mark of `unit` pixel cells, its top
+/// left corner at 0, 0, is dark, or `None` outside the mark.
+fn finder_pixel(x: u32, y: u32, unit: u32) -> Option<bool> {
+    if x >= 7 * unit || y >= 7 * unit {
+        return None;
+    }
+    let (r, c) = (y / unit, x / unit);
+    Some(r.min(c).min(6 - r).min(6 - c) != 1)
+}
+
+/// Groups of vertical bars in the finder ratio, `unit` pixels per part
+/// and `height` tall, repeated every `pitch_x` by `pitch_y` pixels, each
+/// row moved `shear` pixels on from the last. Bars a little shorter than
+/// one and a half times their width chain into clusters a finder could
+/// make; with a shear they lean.
+pub fn finder_bars(
+    w: u32,
+    h: u32,
+    unit: u32,
+    height: u32,
+    (pitch_x, pitch_y): (u32, u32),
+    shear: u32,
+) -> GrayImage {
+    GrayImage::from_fn(w, h, |x, y| {
+        let (tx, ty) = ((x + shear * y) % pitch_x, y % pitch_y);
+        let k = tx / unit;
+        let dark = ty < height && tx < 7 * unit && (k == 0 || (2..5).contains(&k) || k == 6);
+        Luma([if dark { 0 } else { 255 }])
+    })
+}
+
+/// Real finder marks of `unit` pixel cells on a square lattice, `gap`
+/// light pixels apart.
+pub fn finder_lattice(w: u32, h: u32, unit: u32, gap: u32) -> GrayImage {
+    let pitch = 7 * unit + gap;
+    GrayImage::from_fn(w, h, |x, y| {
+        let dark = finder_pixel(x % pitch, y % pitch, unit) == Some(true);
+        Luma([if dark { 0 } else { 255 }])
+    })
+}
+
+/// A finder lattice with a dark square two cells beyond each mark's
+/// bottom right corner, so every mark has light on most sides and
+/// something dark on one, as a code's corner does.
+pub fn dotted_lattice(w: u32, h: u32, unit: u32, gap: u32) -> GrayImage {
+    let pitch = 7 * unit + gap;
+    GrayImage::from_fn(w, h, |x, y| {
+        let (tx, ty) = (x % pitch, y % pitch);
+        let dot = 8 * unit..10 * unit;
+        let dark = finder_pixel(tx, ty, unit).unwrap_or(dot.contains(&tx) && dot.contains(&ty));
+        Luma([if dark { 0 } else { 255 }])
+    })
+}
+
+/// `count` finder marks of `unit_lo` to `unit_hi` pixel cells dropped at
+/// random on a light ground, overlapping where they fall.
+pub fn scattered_finders(
+    w: u32,
+    h: u32,
+    (unit_lo, unit_hi): (u32, u32),
+    count: usize,
+    rng: &mut Noise,
+) -> GrayImage {
+    let mut img = GrayImage::from_pixel(w, h, Luma([255]));
+    for _ in 0..count {
+        let unit = unit_lo + (rng.next() % (unit_hi - unit_lo + 1) as u64) as u32;
+        let x0 = (rng.next() % (w - 7 * unit) as u64) as u32;
+        let y0 = (rng.next() % (h - 7 * unit) as u64) as u32;
+        for y in 0..7 * unit {
+            for x in 0..7 * unit {
+                if finder_pixel(x, y, unit) == Some(true) {
+                    img.put_pixel(x0 + x, y0 + y, Luma([0]));
+                }
+            }
+        }
+    }
+    img
+}
+
+/// Crosses of finder-ratio bars, one across and one down, `unit` pixels
+/// per part: the ratio along rows and columns but not the diagonals.
+pub fn finder_crosses(w: u32, h: u32, unit: u32) -> GrayImage {
+    let pitch = 8 * unit;
+    GrayImage::from_fn(w, h, |x, y| {
+        let (tx, ty) = (x % pitch, y % pitch);
+        let across =
+            (2 * unit..5 * unit).contains(&ty) && finder_pixel(tx, 3 * unit, unit) == Some(true);
+        let down =
+            (2 * unit..5 * unit).contains(&tx) && finder_pixel(3 * unit, ty, unit) == Some(true);
+        Luma([if across || down { 0 } else { 255 }])
+    })
+}
+
+/// A box blur of radius `r`, as a camera that is slightly out of focus.
+pub fn box_blur(img: &GrayImage, r: i64) -> GrayImage {
+    let (w, h) = (img.width() as i64, img.height() as i64);
+    GrayImage::from_fn(w as u32, h as u32, |x, y| {
+        let (mut sum, mut n) = (0u32, 0u32);
+        for dy in -r..=r {
+            for dx in -r..=r {
+                let (xx, yy) = (x as i64 + dx, y as i64 + dy);
+                if (0..w).contains(&xx) && (0..h).contains(&yy) {
+                    sum += img.get_pixel(xx as u32, yy as u32)[0] as u32;
+                    n += 1;
+                }
+            }
+        }
+        Luma([(sum / n) as u8])
+    })
+}

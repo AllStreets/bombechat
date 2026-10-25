@@ -5,11 +5,40 @@
 //! it tries each preset grid size the finder spacing allows, and the
 //! frame's own Reed-Solomon parity and CRC decide which reading is right.
 //!
-//! For each plausible triple of finder marks and each grid size that
-//! fits their spacing, it solves the perspective, samples every cell, and
-//! thresholds each cell against the mean of the cells around it. That local mean sits halfway between light and dark
-//! because every 8 by 8 block of a drawn code is 40 to 60 percent dark,
-//! so blur, glare and dim light move the threshold with the cells.
+//! # Which finders
+//!
+//! A picture can hold far more finder-like marks than a code has: tiles,
+//! a print of dots, the edge of a patterned cloth. Each mark is first
+//! tested for a code corner's surroundings (`code_corner`): light quiet
+//! zone round more than half of it, and the code's own cells, not all
+//! light, round the rest. A mark in a lattice of others, or alone on a
+//! blank ground, fails.
+//!
+//! Triples are then tried in two groups, each most plausible first:
+//!
+//! - Triples joined by timing lines. Among the marks that look like code
+//!   corners, every pair of about the same size whose distance apart
+//!   suits a preset is tested for the timing line a code's finders have
+//!   between them (`detect::timing_line`), and a mark with such lines to
+//!   two others, each on the side facing the third, makes a triple. So a
+//!   code whose finders look like corners is found among any number of
+//!   other marks, however much cleaner they are than its own blurred
+//!   finders, up to a bound on walking: the walks stop at `MAX_WALK`
+//!   (500 thousand) pixels, pairs closest to a preset's spacing first. A
+//!   pair that is not a code's costs a few cells' walk; the most any test
+//!   picture has needed is 155 thousand.
+//! - The best `MAX_CANDIDATES` (16) marks' triples by shape alone (code
+//!   corners first, then the rest, each by how well they keep the finder
+//!   ratio), for a code whose timing lines cannot be walked or whose
+//!   quiet zone is partly covered. Such a code can still be crowded out
+//!   by more than 16 marks that look better.
+//!
+//! For each triple and each grid size that fits its spacing, the reader
+//! solves the perspective, samples every cell, and thresholds each cell
+//! against the mean of the cells around it. That local mean sits halfway
+//! between light and dark because every 8 by 8 block of a drawn code is
+//! 40 to 60 percent dark, so blur, glare and dim light move the threshold
+//! with the cells.
 //!
 //! The orientation mark says whether the picture is mirrored (front
 //! cameras often mirror their feed); a mirrored picture is read
@@ -49,10 +78,13 @@ use std::sync::OnceLock;
 use image::GrayImage;
 
 use crate::code::{orientation, repair_frame, Cell, CodeSpec, Layout, Orientation};
-use crate::detect::{find_finders, locate, sample_cells, Finder, Picture};
+use crate::detect::{find_finders, locate, sample_cells, timing_line, Finder, Picture};
 
 /// Most finder candidates considered when forming triples.
 const MAX_CANDIDATES: usize = 16;
+
+/// Most pixels the timing-line walks of one picture may take together.
+const MAX_WALK: usize = 500_000;
 
 /// Most grid fits (one triple at one grid size) tried in one picture.
 const MAX_ATTEMPTS: usize = 12;
@@ -91,13 +123,26 @@ pub fn read(image: &GrayImage) -> ReadOutcome {
         return read(&shrink(image, side.div_ceil(MAX_SIDE)));
     }
     let pic = Picture::new(image);
-    let finders = find_finders(&pic);
+    // Marks that look like a code's corners first, the rest after.
+    let (mut finders, rest): (Vec<Finder>, Vec<Finder>) = find_finders(&pic)
+        .into_iter()
+        .partition(|f| code_corner(&pic, f));
+    let corners = finders.len();
+    finders.extend(rest);
+    // Triples joined by timing lines, then the best marks' triples by
+    // shape alone.
+    let mut candidates = linked_triples(&pic, &finders[..corners]);
+    for t in triples(&finders) {
+        if !candidates.iter().any(|c| c.finders == t.finders) {
+            candidates.push(t);
+        }
+    }
     let mut frames: Vec<Vec<u8>> = Vec::new();
     let mut seen_code = false;
     let mut used = vec![false; finders.len()];
     let mut attempts = 0;
 
-    for triple in triples(&finders) {
+    for triple in candidates {
         if attempts >= MAX_ATTEMPTS {
             break;
         }
@@ -148,6 +193,51 @@ pub fn read(image: &GrayImage) -> ReadOutcome {
     } else {
         ReadOutcome::NoCode
     }
+}
+
+/// Whether a mark has a code corner's surroundings. Just outside a code's
+/// finder, the quiet zone covers more than half a turn and the code's own
+/// cells the rest. Sixteen directions are tested at points five and a
+/// quarter and six of the mark's cells out (clear of its own corners,
+/// which reach just under five). A direction is light when both points
+/// are nearer the mark's light ring than its dark centre, and busy when
+/// either falls short of three quarters of the way from dark to light.
+/// At least seven light directions in a row (round the circle) and at
+/// least two busy ones are needed. A mark in a lattice of others with
+/// gaps under about two and a half cells has a neighbour's dark ring
+/// along each of its axes at one distance or the other; one with wider
+/// gaps, or alone on a blank ground, has nothing busy round it.
+fn code_corner(pic: &Picture, f: &Finder) -> bool {
+    const POINTS: usize = 16;
+    const RUN: usize = 7;
+    let at = |angle: f32, d: f32| {
+        let (s, c) = angle.sin_cos();
+        pic.at(f.x + c * d * f.module, f.y + s * d * f.module)
+    };
+    let turn = std::f32::consts::TAU;
+    let dark = at(0.0, 0.0);
+    // The light ring, two cells out, at whatever rotation.
+    let ring = (0..8)
+        .map(|k| at(turn * k as f32 / 8.0, 2.0))
+        .fold(f32::MIN, f32::max);
+    let mid = (dark + ring) / 2.0;
+    // Quiet zone is light past halfway; a busy direction is one whose
+    // nearer or further point falls short of three quarters of the way
+    // from dark to light (blur leaves the code's own cells grey).
+    let busy_below = dark + 0.75 * (ring - dark);
+    let (mut light, mut busy) = (Vec::with_capacity(POINTS), 0);
+    for k in 0..POINTS {
+        let angle = turn * k as f32 / POINTS as f32;
+        let (near, far) = (at(angle, 5.25), at(angle, 6.0));
+        light.push(near > mid && far > mid);
+        busy += (near.min(far) < busy_below) as usize;
+    }
+    let (mut run, mut best) = (0, 0);
+    for k in 0..2 * POINTS {
+        run = if light[k % POINTS] { run + 1 } else { 0 };
+        best = best.max(run);
+    }
+    best >= RUN && busy >= 2
 }
 
 /// Whether each finder of a triple (top left, top right, bottom left) has
@@ -224,6 +314,74 @@ struct Triple {
     specs: Vec<CodeSpec>,
     /// Lower is more plausible.
     cost: f32,
+}
+
+/// Every triple whose two legs each carry a timing line on the side
+/// facing the third finder, as a code's top left finder's legs do, most
+/// plausible first. Pairs of finders of nearly the same size whose
+/// distance apart suits a preset are walked, closest to a preset's
+/// spacing first, until [`MAX_WALK`] pixels have been walked.
+fn linked_triples(pic: &Picture, finders: &[Finder]) -> Vec<Triple> {
+    // How far a pair's spacing, in cells, is from the nearest preset's
+    // (as a log ratio). A tilted code's legs differ by up to 1.8 times,
+    // so the bound for walking a pair is loose.
+    let fit = |spacing: f32| {
+        CodeSpec::presets()
+            .iter()
+            .map(|s| (spacing / (s.cells - 7) as f32).ln().abs())
+            .fold(f32::MAX, f32::min)
+    };
+    let mut pairs: Vec<(f32, usize, usize)> = Vec::new();
+    for a in 0..finders.len() {
+        for b in a + 1..finders.len() {
+            let (p, q) = (&finders[a], &finders[b]);
+            if p.module.max(q.module) > 1.8 * p.module.min(q.module) {
+                continue;
+            }
+            let spacing = (p.x - q.x).hypot(p.y - q.y) / ((p.module + q.module) / 2.0);
+            let off = fit(spacing);
+            if off < 0.6 {
+                pairs.push((off, a, b));
+            }
+        }
+    }
+    pairs.sort_by(|x, y| x.0.total_cmp(&y.0).then((x.1, x.2).cmp(&(y.1, y.2))));
+    let counts_fit = |cells: usize| {
+        CodeSpec::presets()
+            .iter()
+            .any(|s| (cells as f32 / (s.cells - 14) as f32).ln().abs() < 0.25)
+    };
+    // Each finder's legs: the other finder, and the side its line is on.
+    let mut legs: Vec<Vec<(usize, f32)>> = vec![Vec::new(); finders.len()];
+    let mut work = MAX_WALK;
+    for (_, a, b) in pairs {
+        for side in [1.0, -1.0] {
+            if timing_line(pic, &finders[a], &finders[b], side, &mut work).is_some_and(counts_fit) {
+                legs[a].push((b, side));
+                legs[b].push((a, -side));
+            }
+        }
+        if work == 0 {
+            break;
+        }
+    }
+    let mut out = Vec::new();
+    for (a, mine) in legs.iter().enumerate() {
+        for (i, &(b, side_b)) in mine.iter().enumerate() {
+            for &(c, side_c) in &mine[i + 1..] {
+                let (p, q, r) = (&finders[a], &finders[b], &finders[c]);
+                let cross = (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
+                if side_b * cross <= 0.0 || side_c * -cross <= 0.0 {
+                    continue;
+                }
+                if let Some(t) = triple([a, b, c], finders).filter(|t| t.finders[0] == a) {
+                    out.push(t);
+                }
+            }
+        }
+    }
+    out.sort_by(|x, y| x.cost.total_cmp(&y.cost));
+    out
 }
 
 /// Every plausible triple among the best finders, most plausible first.

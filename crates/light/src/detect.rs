@@ -8,25 +8,36 @@
 //! and gamma do not matter, only local contrast. The search is coarse to
 //! fine: a coarse pass runs along every second row looking for five runs
 //! in the ratio 1:1:3:1:1, the signature a finder shows along any line
-//! through its centre at any rotation or scale; each hit is then refined
-//! at full resolution by crossing the mark vertically, horizontally again
-//! and along both diagonals through the centre found, each crossing
-//! checked for the same ratio. Candidates are ranked by how closely their
-//! crossings keep the ratio, with a little credit for rows agreeing, and
-//! the best 256 are kept wherever in the picture they are.
+//! through its centre at any rotation or scale (patterns under
+//! [`MIN_PATTERN`] pixels are too small to belong to a readable code).
+//! Each hit is checked at full resolution by crossing the mark
+//! vertically, horizontally again and along both diagonals through the
+//! centre found, each crossing checked for the same ratio.
 //!
-//! Every row hit is considered; none is passed over for where it lies.
-//! Hits are first chained down the picture (a hit joins one in the
-//! scanned row above at nearly the same place and pattern size), and
-//! each chain, a cluster, is checked hit by hit, the confirmed hits
-//! averaged into one mark. A finder gives
-//! hits over at most its own height, so a cluster taller than one and a
-//! half times its pattern is vertical texture (stripes, blinds) and is
-//! dropped without a check. The work is bounded for any picture: each
-//! half of a crossing stops at three times the length of the row pattern
-//! that set it off, and at most [`MAX_CONFIRMS`] checks are made, on
-//! the most finder-like clusters first, so a budget never falls on a
-//! region of the picture.
+//! Hits are chained down the picture into clusters (a hit joins one in
+//! the scanned row above at nearly the same place and pattern size). A
+//! finder gives hits over at most its own height, so a cluster taller
+//! than one and a half times its pattern is vertical texture (stripes,
+//! blinds) and is dropped without a check. Every other cluster is
+//! checked hit by hit, from its middle row outwards, and the hits that
+//! confirm are averaged into one mark, so one noisy crossing does not lose
+//! a finder and its centre and size are measured several times.
+//!
+//! The work is bounded for any picture: each half of a crossing stops at
+//! twice the length of the row pattern that set it off (a finder's
+//! half-crossing is at most about 1.4 times it, even foreshortened to
+//! half), and all crossings together stop at [`MAX_WORK`] pixels. A check
+//! that fails costs at most four pattern lengths, and hits in a scanned
+//! row are at least three quarters of a pattern apart, so failing checks
+//! cost about 2.4 million pixels at most over a whole 1280 by 720
+//! picture; the most any test picture has needed in all is 1.85 million
+//! (short finder-ratio bars packed tight and leaning). Should the bound
+//! ever be reached, it falls evenly, not on a place or a kind of mark:
+//! checks go in rounds, every cluster getting its next check before any
+//! gets another, so every cluster has had as many checks as any other,
+//! give or take one; within a round the 64-pixel squares of the picture
+//! take turns. Merging looks only at marks in nearby squares, so
+//! thousands of small marks cost little.
 //!
 //! # Perspective
 //!
@@ -42,7 +53,9 @@
 //! allows for perspective from the finders' sizes (the far side of a
 //! tilted screen looks smaller); the search runs a cell at a time over an
 //! eighth of the code's width around it, then refines to an eighth of a
-//! cell.
+//! cell. Marks just outside the quiet zone can draw that wide search off
+//! (its template is sparse), so the guess itself is refined too and the
+//! better of the two fits kept.
 //!
 //! # Cells
 //!
@@ -57,21 +70,27 @@ use crate::code::QUIET;
 /// Rows the coarse finder pass steps by.
 const ROW_STEP: usize = 2;
 
-/// Most finder candidates kept from one picture: the best by quality.
-const MAX_FINDERS: usize = 256;
+/// Shortest row pattern looked at, in pixels: a finder of cells under
+/// about 1.7 pixels cannot belong to a code that can be read.
+const MIN_PATTERN: usize = 12;
 
 /// A cluster of row hits taller than this many times its widest pattern
 /// cannot be a finder.
 const TALLEST: f32 = 1.5;
 
-/// Most checks at full resolution in one picture, spent on clusters best
-/// first.
-const MAX_CONFIRMS: usize = 4000;
+/// Most pixels the crossings of one picture may step over, all checks
+/// together, spent a round at a time (see [`find_finders`]). Above what
+/// failing checks can cost on a 1280 by 720 picture, and the 1.85
+/// million the most demanding test picture needs.
+const MAX_WORK: usize = 2_500_000;
 
 /// A crossing may run to this many times the length of the row pattern
 /// that triggered it; a real finder's crossings differ by perspective
 /// alone.
-const CROSS_REACH: usize = 3;
+const CROSS_REACH: usize = 2;
+
+/// Side, in pixels, of the squares clusters take turns by.
+const TILE: usize = 64;
 
 /// A grey picture with its summed-area table and its thresholded form.
 pub(crate) struct Picture<'a> {
@@ -154,7 +173,7 @@ impl<'a> Picture<'a> {
 
     /// Whether pixel `x`, `y` reads dark against its surroundings: under
     /// 15/16 of its local mean.
-    fn dark(&self, x: usize, y: usize) -> bool {
+    pub fn dark(&self, x: usize, y: usize) -> bool {
         self.dark[y * self.w + x]
     }
 
@@ -209,34 +228,129 @@ pub(crate) fn find_finders(pic: &Picture) -> Vec<Finder> {
     let hits = row_hits(pic);
     let mut clusters = cluster(&hits);
 
-    // A finder can only give row hits over its own height, a little more
-    // than the width of its pattern; taller columns of hits are stripes,
-    // blinds or other vertical texture, and are dropped unchecked.
+    // A finder gives row hits over its centre's height and a little more,
+    // less than the width of its pattern; taller columns of hits are
+    // stripes, blinds or other vertical texture, and are dropped
+    // unchecked.
     clusters.retain(|c| (c.bottom - c.top) as f32 <= TALLEST * c.widest as f32);
-    // Best first, so a budget, if reached, drops the least finder-like
-    // clusters wherever they are in the picture.
-    clusters.sort_by(|a, b| a.rank().total_cmp(&b.rank()));
+    let mut live = take_turns(&clusters, &hits);
 
-    // Every hit of a cluster is checked and each that confirms is merged
-    // in, so one noisy crossing does not lose the mark and its centre and
-    // size are averaged over several. Clusters that pass the height test
-    // are short, so this is a few checks each.
-    let mut found: Vec<Finder> = Vec::new();
-    let mut budget = MAX_CONFIRMS;
-    'clusters: for c in &clusters {
-        for &i in &c.members {
-            if budget == 0 {
-                break 'clusters;
+    // Checks go a round at a time: in each round every cluster with hits
+    // left gets one check, of its next hit from the middle out, before
+    // any gets another, so if the work bound is ever reached every
+    // cluster has had as many checks as any other with hits left.
+    let mut work = MAX_WORK;
+    let mut sums: Vec<Option<Sum>> = vec![None; clusters.len()];
+    let mut round = 0;
+    'rounds: while !live.is_empty() {
+        for &k in &live {
+            let c = &clusters[k];
+            if work == 0 {
+                break 'rounds;
             }
-            budget -= 1;
-            let h = hits[i];
-            if let Some(f) = confirm(pic, h.x, h.y, CROSS_REACH * h.total) {
-                merge(&mut found, f);
+            let h = hits[c.members[middle_out(round, c.members.len())]];
+            if let Some(f) = confirm(pic, h.x, h.y, CROSS_REACH * h.total, &mut work) {
+                sums[k].get_or_insert_with(Sum::default).add(&f);
             }
         }
+        round += 1;
+        live.retain(|&k| round < clusters[k].members.len());
     }
-    found.sort_by(|a, b| a.rank().total_cmp(&b.rank()));
+
+    let mut found = Marks::new(pic.w, pic.h);
+    for s in sums.iter().flatten() {
+        found.merge(s.mark());
+    }
+    let mut found = found.into_vec();
+    found.sort_by(|a, b| {
+        a.rank()
+            .total_cmp(&b.rank())
+            .then(a.error.total_cmp(&b.error))
+            .then(b.module.total_cmp(&a.module))
+    });
     found
+}
+
+/// The `round`th of `len` hits, counting out from the middle: middle,
+/// one above, one below, two above, and so on.
+fn middle_out(round: usize, len: usize) -> usize {
+    let mid = ((len - 1) / 2) as isize;
+    (0..2 * len as isize)
+        .map(|k| {
+            if k % 2 == 0 {
+                mid + k / 2
+            } else {
+                mid - (k + 1) / 2
+            }
+        })
+        .filter(|&i| i >= 0 && (i as usize) < len)
+        .nth(round)
+        .unwrap_or(0) as usize
+}
+
+/// The order clusters take their turns in within a round: the squares of
+/// a [`TILE`] grid take turns, one cluster each, and within a square the
+/// clusters go best first (see [`Cluster::rank`]). A cluster that is
+/// `k`th in its square goes before every cluster that is later than `k`th
+/// in its own, wherever that is.
+fn take_turns(clusters: &[Cluster], hits: &[Hit]) -> Vec<usize> {
+    let mut by_tile: Vec<((usize, usize), usize)> = clusters
+        .iter()
+        .enumerate()
+        .map(|(k, c)| {
+            let h = hits[c.members[(c.members.len() - 1) / 2]];
+            ((h.y / TILE, h.x / TILE), k)
+        })
+        .collect();
+    by_tile.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then(clusters[a.1].rank().total_cmp(&clusters[b.1].rank()))
+    });
+    // Each cluster's place within its tile, then deal by place.
+    let mut place = vec![0usize; by_tile.len()];
+    for i in 1..by_tile.len() {
+        if by_tile[i].0 == by_tile[i - 1].0 {
+            place[i] = place[i - 1] + 1;
+        }
+    }
+    let mut dealt: Vec<(usize, usize)> = by_tile
+        .iter()
+        .zip(&place)
+        .map(|(&(_, k), &p)| (p, k))
+        .collect();
+    dealt.sort_by_key(|&(p, _)| p);
+    dealt.into_iter().map(|(_, k)| k).collect()
+}
+
+/// A running total of one cluster's confirmations.
+#[derive(Debug, Clone, Copy, Default)]
+struct Sum {
+    n: u32,
+    x: f32,
+    y: f32,
+    module: f32,
+    error: f32,
+}
+
+impl Sum {
+    fn add(&mut self, f: &Finder) {
+        self.n += 1;
+        self.x += f.x;
+        self.y += f.y;
+        self.module += f.module;
+        self.error += f.error;
+    }
+
+    fn mark(&self) -> Finder {
+        let n = self.n as f32;
+        Finder {
+            x: self.x / n,
+            y: self.y / n,
+            module: self.module / n,
+            hits: self.n,
+            error: self.error / n,
+        }
+    }
 }
 
 /// A place in a scanned row where five runs read 1:1:3:1:1.
@@ -277,11 +391,15 @@ fn row_hits(pic: &Picture) -> Vec<Hit> {
                 runs[i + 3].1,
                 runs[i + 4].1,
             ];
+            let total = lens.iter().sum();
+            if total < MIN_PATTERN {
+                continue;
+            }
             if let Some(error) = ratio_error(&lens) {
                 hits.push(Hit {
                     x: runs[i + 2].0 + runs[i + 2].1 / 2,
                     y,
-                    total: lens.iter().sum(),
+                    total,
                     error,
                 });
             }
@@ -297,16 +415,16 @@ struct Cluster {
     bottom: usize,
     /// Widest pattern among its hits.
     widest: usize,
-    count: u32,
     error_sum: f32,
-    /// Indices of its hits.
+    /// Indices of its hits, top to bottom.
     members: Vec<usize>,
 }
 
 impl Cluster {
     /// Lower is more finder-like, as for [`Finder::rank`].
     fn rank(&self) -> f32 {
-        self.error_sum / self.count as f32 - 0.04 * self.count.min(5) as f32
+        let n = self.members.len();
+        self.error_sum / n as f32 - 0.04 * n.min(5) as f32
     }
 }
 
@@ -328,10 +446,12 @@ fn cluster(hits: &[Hit]) -> Vec<Cluster> {
             row_start = i;
         }
         let tolerance = (h.total / 4).max(2);
-        let joined = above.clone().find(|&j| {
-            let a = hits[j];
-            a.x.abs_diff(h.x) <= tolerance && a.total.abs_diff(h.total) <= tolerance
-        });
+        // Hits in a row are in x order, so the ones near enough are found
+        // by binary search rather than a scan of the whole row.
+        let from = above.start + hits[above.clone()].partition_point(|a| a.x + tolerance < h.x);
+        let joined = (from..above.end)
+            .take_while(|&j| hits[j].x <= h.x + tolerance)
+            .find(|&j| hits[j].total.abs_diff(h.total) <= tolerance);
         match joined.map(|j| id[j]) {
             Some(c) => {
                 id[i] = c;
@@ -339,7 +459,6 @@ fn cluster(hits: &[Hit]) -> Vec<Cluster> {
                 k.members.push(i);
                 k.bottom = h.y;
                 k.widest = k.widest.max(h.total);
-                k.count += 1;
                 k.error_sum += h.error;
             }
             None => {
@@ -348,7 +467,6 @@ fn cluster(hits: &[Hit]) -> Vec<Cluster> {
                     top: h.y,
                     bottom: h.y,
                     widest: h.total,
-                    count: 1,
                     error_sum: h.error,
                     members: vec![i],
                 });
@@ -395,6 +513,7 @@ fn cross(
     dx: isize,
     dy: isize,
     max: usize,
+    work: &mut usize,
 ) -> Option<(usize, f32, f32)> {
     if !pic.dark(x, y) {
         return None;
@@ -406,7 +525,7 @@ fn cross(
     };
     // Walks from the centre one way: [core, light, dark] lengths, and how
     // far the core reached.
-    let walk = |sign: isize| -> Option<([usize; 3], isize)> {
+    let mut walk = |sign: isize| -> Option<([usize; 3], isize)> {
         let mut counts = [0usize; 3];
         let mut t = sign;
         let mut walked = 0;
@@ -419,9 +538,10 @@ fn cross(
                 }
                 counts[k] += 1;
                 walked += 1;
-                if walked > max {
+                if walked > max || *work == 0 {
                     return None;
                 }
+                *work -= 1;
                 t += sign;
             }
             if k == 0 {
@@ -439,16 +559,16 @@ fn cross(
 
 /// Check a row hit at full resolution: vertically, horizontally again and
 /// along both diagonals through the refined centre, no crossing running
-/// past `reach` pixels.
-fn confirm(pic: &Picture, cx: usize, y: usize, reach: usize) -> Option<Finder> {
-    let (tv, dy, ev) = cross(pic, cx, y, 0, 1, reach)?;
+/// past `reach` pixels, each pixel stepped over taken from `work`.
+fn confirm(pic: &Picture, cx: usize, y: usize, reach: usize, work: &mut usize) -> Option<Finder> {
+    let (tv, dy, ev) = cross(pic, cx, y, 0, 1, reach, work)?;
     let cy = (y as f32 + dy).round() as usize;
-    let (th, dx, eh) = cross(pic, cx, cy, 1, 0, reach)?;
+    let (th, dx, eh) = cross(pic, cx, cy, 1, 0, reach, work)?;
     let fx = cx as f32 + dx;
     let fy = y as f32 + dy;
     let rx = fx.round() as usize;
-    let (d1, _, e1) = cross(pic, rx, cy, 1, 1, reach)?;
-    let (d2, _, e2) = cross(pic, rx, cy, 1, -1, reach)?;
+    let (d1, _, e1) = cross(pic, rx, cy, 1, 1, reach, work)?;
+    let (d2, _, e2) = cross(pic, rx, cy, 1, -1, reach, work)?;
     let (tv, th) = (tv as f32, th as f32);
     // Diagonal steps are longer than straight ones.
     let td = (d1 + d2) as f32 / 2.0 * std::f32::consts::SQRT_2;
@@ -474,34 +594,156 @@ fn confirm(pic: &Picture, cx: usize, y: usize, reach: usize) -> Option<Finder> {
     })
 }
 
-/// Add a hit to the candidates, merging it into one it repeats. When the
-/// list is full, a new mark replaces the worst-ranked one if it is better.
-fn merge(found: &mut Vec<Finder>, f: Finder) {
-    for g in found.iter_mut() {
-        let near = (g.x - f.x).hypot(g.y - f.y) < 2.0 * g.module.max(f.module);
-        let similar = g.module < 2.0 * f.module && f.module < 2.0 * g.module;
-        if near && similar {
-            let (n, m) = (g.hits as f32, f.hits as f32);
-            let mix = |a: f32, b: f32| (a * n + b * m) / (n + m);
-            g.x = mix(g.x, f.x);
-            g.y = mix(g.y, f.y);
-            g.module = mix(g.module, f.module);
-            g.error = mix(g.error, f.error);
-            g.hits += f.hits;
-            return;
+/// The marks found so far, with a grid of [`BUCKET`] pixel squares over
+/// the picture so a new mark meets only the marks near it.
+struct Marks {
+    marks: Vec<Finder>,
+    /// Indices of the marks whose centres lie in each square, row-major.
+    buckets: Vec<Vec<usize>>,
+    across: usize,
+    down: usize,
+}
+
+/// Side of a [`Marks`] grid square, in pixels.
+const BUCKET: usize = 32;
+
+impl Marks {
+    fn new(w: usize, h: usize) -> Self {
+        let (across, down) = (w.div_ceil(BUCKET).max(1), h.div_ceil(BUCKET).max(1));
+        Marks {
+            marks: Vec::new(),
+            buckets: vec![Vec::new(); across * down],
+            across,
+            down,
         }
     }
-    if found.len() < MAX_FINDERS {
-        found.push(f);
-        return;
+
+    fn bucket(&self, x: f32, y: f32) -> (usize, usize) {
+        let col = (x.max(0.0) as usize / BUCKET).min(self.across - 1);
+        let row = (y.max(0.0) as usize / BUCKET).min(self.down - 1);
+        (col, row)
     }
-    if let Some(worst) =
-        (0..found.len()).max_by(|&i, &j| found[i].rank().total_cmp(&found[j].rank()))
-    {
-        if f.rank() < found[worst].rank() {
-            found[worst] = f;
+
+    /// Add a mark, merging it into the earliest one it repeats (near, and
+    /// of a similar size), weighted by how many hits each holds.
+    fn merge(&mut self, f: Finder) {
+        // Two marks merge within twice the larger cell size, so a mark
+        // that could merge with `f` is at most four of its cells away,
+        // and a square further (a merged mark's centre moves a little).
+        let reach = 4.0 * f.module + BUCKET as f32;
+        let (c0, r0) = self.bucket(f.x - reach, f.y - reach);
+        let (c1, r1) = self.bucket(f.x + reach, f.y + reach);
+        let mut repeat = None;
+        for row in r0..=r1 {
+            for col in c0..=c1 {
+                for &i in &self.buckets[row * self.across + col] {
+                    let g = &self.marks[i];
+                    let near = (g.x - f.x).hypot(g.y - f.y) < 2.0 * g.module.max(f.module);
+                    let similar = g.module < 2.0 * f.module && f.module < 2.0 * g.module;
+                    if near && similar && repeat.is_none_or(|j| i < j) {
+                        repeat = Some(i);
+                    }
+                }
+            }
+        }
+        match repeat {
+            Some(i) => {
+                let g = &mut self.marks[i];
+                let (n, m) = (g.hits as f32, f.hits as f32);
+                let mix = |a: f32, b: f32| (a * n + b * m) / (n + m);
+                g.x = mix(g.x, f.x);
+                g.y = mix(g.y, f.y);
+                g.module = mix(g.module, f.module);
+                g.error = mix(g.error, f.error);
+                g.hits += f.hits;
+            }
+            None => {
+                let (col, row) = self.bucket(f.x, f.y);
+                self.buckets[row * self.across + col].push(self.marks.len());
+                self.marks.push(f);
+            }
         }
     }
+
+    fn into_vec(self) -> Vec<Finder> {
+        self.marks
+    }
+}
+
+/// How many cells a timing line between finders `a` and `b` has, if one
+/// runs there. On a code, two finders' centres are on row (or column) 3
+/// and their outer rings and the timing line between them on row 6, so
+/// the line walked is the one three cells to one side of the centres'
+/// (`side` 1 or -1 picks the side). It must read as a dark run (the
+/// finder's own outer ring) of at most six and a half cells, then short
+/// alternating runs, then another such dark run. Any run of more than
+/// four cells (cells sized by the two finders, blended along the line)
+/// ends the walk, so another finder, a gap or a bar on the line costs
+/// only a few cells' walk. Counting runs rather than predicting where
+/// each cell falls makes this indifferent to perspective. The count is
+/// the number of short runs, given if seven in ten are each between 0.4
+/// and 1.8 cells long. Each pixel walked is taken from `work`.
+pub(crate) fn timing_line(
+    pic: &Picture,
+    a: &Finder,
+    b: &Finder,
+    side: f32,
+    work: &mut usize,
+) -> Option<usize> {
+    let (dx, dy) = (b.x - a.x, b.y - a.y);
+    let d = dx.hypot(dy);
+    if d < 1.0 {
+        return None;
+    }
+    let (ex, ey) = (dx / d, dy / d);
+    let (nx, ny) = (-ey * side, ex * side);
+    let steps = d.round() as usize;
+    let module = |t: usize| a.module + (b.module - a.module) * t as f32 / d;
+    // (dark, length, cell size where it started) of each run so far.
+    let mut runs: Vec<(bool, usize, f32)> = Vec::new();
+    for t in 0..=steps {
+        if *work == 0 {
+            return None;
+        }
+        *work -= 1;
+        let m = module(t);
+        let off = 3.0 * m;
+        let (x, y) = (
+            a.x + ex * t as f32 + nx * off,
+            a.y + ey * t as f32 + ny * off,
+        );
+        if x < 0.0 || y < 0.0 || x > (pic.w - 1) as f32 || y > (pic.h - 1) as f32 {
+            return None;
+        }
+        let dark = pic.dark(x.round() as usize, y.round() as usize);
+        match runs.last_mut() {
+            Some(r) if r.0 == dark => r.1 += 1,
+            _ => {
+                if runs.is_empty() && !dark {
+                    return None;
+                }
+                runs.push((dark, 1, m));
+            }
+        }
+        let last = runs.len() - 1;
+        let (_, len, at) = runs[last];
+        let limit = if last == 0 { 6.5 } else { 4.0 } * at;
+        // The far finder's ring may be as long as the first run; it is
+        // judged once the walk is over.
+        if len as f32 > limit && !(dark && t as f32 > d - 6.5 * b.module) {
+            return None;
+        }
+    }
+    let (first, rest) = runs.split_first()?;
+    let (last, middle) = rest.split_last()?;
+    if !last.0 || last.1 as f32 > 6.5 * b.module || first.1 as f32 > 6.5 * a.module {
+        return None;
+    }
+    let good = middle
+        .iter()
+        .filter(|r| (0.4 * r.2..=1.8 * r.2).contains(&(r.1 as f32)))
+        .count();
+    (good * 10 >= middle.len() * 7).then_some(middle.len())
 }
 
 /// A plane-to-picture perspective map.
@@ -695,10 +937,21 @@ pub(crate) fn locate(pic: &Picture, finders: [Finder; 3], n: u16) -> Option<Homo
     // From the perspective-aware guess, the mark is within 2 cells up to
     // 30 degrees of tilt and within 7 for 99 percent of tilts to 45.
     let reach = (0.12 * span).ceil() as i32;
-    let mut best = search(guess, reach, cell, &coarse);
-    best = search(best, 2, cell / 2.0, &fine);
-    best = search(best, 2, cell / 4.0, &fine);
-    best = search(best, 1, cell / 8.0, &fine);
+    let refine = |start: (f64, f64)| {
+        let mut best = search(start, 2, cell / 2.0, &fine);
+        best = search(best, 2, cell / 4.0, &fine);
+        search(best, 1, cell / 8.0, &fine)
+    };
+    // The wide search can be drawn off by marks just outside the quiet
+    // zone, which the sparse template sees little of; the guess is
+    // refined too and the better fit kept.
+    let wide = refine(search(guess, reach, cell, &coarse));
+    let near = refine(guess);
+    let best = if score_at(near, &fine) > score_at(wide, &fine) {
+        near
+    } else {
+        wide
+    };
     Homography::from_points(from, [tl, tr, bl, best])
 }
 
