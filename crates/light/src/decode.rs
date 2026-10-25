@@ -9,36 +9,45 @@
 //!
 //! # Time
 //!
-//! Every reading has a wall-clock budget, [`DEFAULT_BUDGET`] (12 ms)
-//! unless given another ([`read_within`], [`Reader::with_budget`]). The
-//! budget is checked between stages and inside every loop: every sixteen
-//! finder checks, before each timing-line walk, each format-field check
-//! and each fit. Once it has passed, the reading stops and gives what it
-//! has: the frames read so far, else [`ReadOutcome::Unreadable`] if it saw
-//! a code (or had a fit whose format field read still to try), else
-//! [`ReadOutcome::NoCode`]. Each stage stops at its own share, so a slow
-//! stage leaves the later ones time: the finder search at 65 percent of
-//! the budget, the walks at half of what is left after it, the fits whose
-//! format field reads at four fifths of what is left after that.
+//! Every reading has a wall-clock budget for its search, [`DEFAULT_BUDGET`]
+//! (10 ms) unless given another ([`read_within`], [`Reader::with_budget`]).
+//! The clock starts once the picture is ready: shrunk, if it is over 1280
+//! pixels on its longer side, and thresholded. That preparation is a
+//! fixed cost the budget neither counts nor cuts (about 2.5 ms for
+//! 1280x720 and 7 ms for 4K on the machine the tests were measured on, an
+//! Apple M5 Pro), so a 4K picture gets as long to search as a 720p one.
+//! The budget is checked between stages and inside every loop: every
+//! sixteen finder checks, before each timing-line walk, each format-field
+//! check and each fit. Once it has passed, the reading stops and gives
+//! what it has: the frames read so far, else [`ReadOutcome::Unreadable`]
+//! if it saw a code (or had a fit whose format field read still to try),
+//! else [`ReadOutcome::NoCode`]. Each stage stops at its own share of the
+//! time left when it starts, so a slow stage leaves the later ones time:
+//! a [`Reader`] following the codes it has seen stops at 30 percent of the
+//! budget, the finder search at 65 percent of what is left after that,
+//! the walks at half of what is left after the finder search, the fits
+//! whose format field reads at four fifths of what is left after the
+//! walks.
 //!
 //! What this does and does not promise:
 //!
-//! - A reading runs over its budget by at most one unit of work, the
-//!   longest being one fit (under a millisecond), plus the fixed cost of
-//!   preparing the picture, which is not cut: thresholding it, and first
-//!   shrinking it if it is over 1280 pixels on its longer side (about
-//!   2.5 ms for 1280x720 and 7 ms for 4K on the machine the tests were
-//!   measured on, an Apple M5 Pro). The slowest reading of any test
-//!   picture, run alone in release, was 13.2 ms; `decode_time_per_frame`
-//!   asserts under 15.
+//! - A reading takes its preparation and its budget, and runs over by at
+//!   most one unit of work, the longest being one fit (under a
+//!   millisecond). `decode_time_per_frame` asserts that bound for every
+//!   test picture, run alone in release.
 //! - The budget is wall-clock time, not work: on a slower or busier core
 //!   less of the search gets done in it. A camera reader should run on a
 //!   thread that gets a performance core; on an efficiency core a picture
-//!   takes about three times as long.
+//!   takes about three times as long. A [`Reader`] makes up for it: after
+//!   3 pictures in a row it reads nothing from, it doubles its budget, and
+//!   again after each 3 more, up to 40 ms; the first picture it reads
+//!   from puts it back to its own budget. A code that a slow or busy
+//!   machine cannot find in the default budget is read a few pictures
+//!   later instead.
 //! - Running out of time is not an error and loses nothing for good: at
-//!   30 pictures a second the next picture comes 33 ms later, and a
-//!   [`Reader`] that has read a code once tries it first in every later
-//!   picture.
+//!   30 pictures a second the next picture comes 33 ms later, a [`Reader`]
+//!   that has read a code once tries it first in every later picture, and
+//!   one that has read nothing for a while gives each picture longer.
 //! - It does not promise that a code is found within the budget. The
 //!   search below is ordered so that clutter cannot push a code far back,
 //!   but every mark found costs a little, and enough of them can use the
@@ -57,9 +66,14 @@
 //! comes right up to the code, or that the search could not see past in
 //! the time, does not matter once the code has been found. The rest of
 //! the budget goes on a search of the rest of the picture for other codes.
+//! Following takes at most 30 percent of the budget, however many codes
+//! are followed and however they read, so the search always has the rest.
 //! A followed code missing from 15 pictures in a row is forgotten, as is
-//! everything when the picture size changes; at most two codes are
-//! followed.
+//! one in view but unread in 8 pictures in a row (a code that cannot be
+//! read, or something code-like that is not a code, does not hold its
+//! place for long), and everything when the picture size changes. At most
+//! two codes are followed, codes that read when last seen before codes
+//! that did not.
 //!
 //! # Which finders
 //!
@@ -161,14 +175,26 @@ use crate::detect::{
     Homography, Picture,
 };
 
-/// How long [`read`] and [`Reader::read`] spend on one picture: they stop
-/// once it has passed, over by at most one fit (about half a millisecond)
-/// and never less than the fixed cost of preparing the picture (see the
-/// module docs, Time).
-pub const DEFAULT_BUDGET: Duration = Duration::from_millis(12);
+/// How long [`read`] and [`Reader::read`] search one picture once it is
+/// prepared: they stop once it has passed, over by at most one fit (about
+/// half a millisecond). Preparing the picture comes before and is not
+/// counted (see the module docs, Time).
+pub const DEFAULT_BUDGET: Duration = Duration::from_millis(10);
 
-/// Share of the budget, in thousandths, the finder search may run to.
-const FINDERS_END: u32 = 650;
+/// Most a [`Reader`] raises its budget to after pictures it reads nothing
+/// from (unless its own budget is more).
+const MOST_BUDGET: Duration = Duration::from_millis(40);
+
+/// Pictures in a row a [`Reader`] reads nothing from before it doubles its
+/// budget.
+const RAISE_AFTER: u32 = 3;
+
+/// Share of the budget, in thousandths, following known codes may take.
+const FOLLOW_SHARE: u32 = 300;
+
+/// Share of the time left when the search starts, in thousandths, the
+/// finder search may take.
+const FINDERS_SHARE: u32 = 650;
 
 /// Share of the time left after the finder search, in thousandths, the
 /// timing-line walks may take.
@@ -198,6 +224,10 @@ const MAX_TRACKS: usize = 2;
 /// Pictures in a row a followed code may be missing from before a
 /// [`Reader`] forgets it.
 const LOST_AFTER: u32 = 15;
+
+/// Pictures in a row a followed code may be in view but unread before a
+/// [`Reader`] forgets it.
+const UNREAD_AFTER: u32 = 8;
 
 /// Pictures whose longer side is over this are shrunk by a whole factor
 /// before reading.
@@ -240,11 +270,11 @@ pub fn read(image: &GrayImage) -> ReadOutcome {
 /// saw a code or had a likely one still to try, else
 /// [`ReadOutcome::NoCode`].
 pub fn read_within(image: &GrayImage, budget: Duration) -> ReadOutcome {
-    let deadline = Deadline::new(budget);
     let Some(image) = prepare(image) else {
         return ReadOutcome::NoCode;
     };
     let pic = Picture::new(&image);
+    let deadline = Deadline::new(budget);
     let mut found = Found::default();
     search(&pic, deadline, &[], &mut found);
     found.outcome()
@@ -258,12 +288,26 @@ pub fn read_within(image: &GrayImage, budget: Duration) -> ReadOutcome {
 /// close to where it was (so a code that drifts a little is kept), fits
 /// the grid there, and only then searches the rest of the picture with
 /// what is left of the budget. However cluttered the picture, a code that
-/// has been seen once is tried first. A code missing from 15 pictures in
-/// a row is forgotten, as is everything when the picture size changes.
-/// Each picture takes at most the budget, as for [`read_within`].
+/// has been seen once is tried first, and following takes at most 30
+/// percent of the budget. A code missing from 15 pictures in a row is
+/// forgotten, as is one in view but unread in 8 pictures in a row, and
+/// everything when the picture size changes.
+///
+/// Each picture is searched for at most the reader's current budget, as
+/// for [`read_within`]. That starts as the budget it was made with; after
+/// 3 pictures in a row it reads nothing from, it doubles, and again after
+/// each 3 more, up to 40 ms (or the reader's own budget, if more), so a
+/// slow or busy machine still gets to a code; the first picture it reads
+/// from puts it back.
 #[derive(Debug, Clone)]
 pub struct Reader {
+    /// The budget it was made with.
+    base: Duration,
+    /// The budget the next picture gets.
     budget: Duration,
+    /// Pictures in a row it has read nothing from since the budget last
+    /// changed.
+    fruitless: u32,
     tracks: Vec<Track>,
     size: (u32, u32),
 }
@@ -275,6 +319,8 @@ struct Track {
     spec: CodeSpec,
     /// Pictures in a row it was not found in.
     misses: u32,
+    /// Pictures in a row it was found in but not read.
+    unread: u32,
 }
 
 impl Default for Reader {
@@ -292,15 +338,38 @@ impl Reader {
     /// A reader that takes at most `budget` per picture.
     pub fn with_budget(budget: Duration) -> Self {
         Reader {
+            base: budget,
             budget,
+            fruitless: 0,
             tracks: Vec::new(),
             size: (0, 0),
         }
     }
 
+    /// The budget the next picture gets: the reader's own, or more after
+    /// pictures it read nothing from.
+    pub fn budget(&self) -> Duration {
+        self.budget
+    }
+
     /// Read every light code in the next camera picture.
     pub fn read(&mut self, image: &GrayImage) -> ReadOutcome {
-        let deadline = Deadline::new(self.budget);
+        let outcome = self.read_picture(image);
+        if matches!(outcome, ReadOutcome::Frames(_)) {
+            self.budget = self.base;
+            self.fruitless = 0;
+        } else {
+            self.fruitless += 1;
+            if self.fruitless >= RAISE_AFTER {
+                let most = self.base.max(MOST_BUDGET);
+                self.budget = self.budget.saturating_mul(2).min(most);
+                self.fruitless = 0;
+            }
+        }
+        outcome
+    }
+
+    fn read_picture(&mut self, image: &GrayImage) -> ReadOutcome {
         let Some(image) = prepare(image) else {
             self.tracks.clear();
             return ReadOutcome::NoCode;
@@ -310,34 +379,45 @@ impl Reader {
             self.size = image.dimensions();
         }
         let pic = Picture::new(&image);
+        let deadline = Deadline::new(self.budget);
+        let follow_end = deadline.share(FOLLOW_SHARE);
         let mut found = Found::default();
         let mut known = Vec::new();
         for track in &mut self.tracks {
-            if deadline.passed() {
+            if follow_end.passed() {
                 break;
             }
-            match follow(&pic, track, deadline) {
+            match follow(&pic, track, follow_end) {
                 Some((finders, grid)) => {
                     track.finders = finders;
                     track.misses = 0;
                     known.push(finders);
-                    found.add(&grid, finders);
+                    let read = found.add(&grid, finders);
+                    track.unread = if read { 0 } else { track.unread + 1 };
                 }
+                // Not reached in the time is not missing.
+                None if follow_end.passed() => {}
                 None => track.misses += 1,
             }
         }
         let followed = found.codes.len();
         search(&pic, deadline, &known, &mut found);
-        for &(finders, spec) in &found.codes[followed..] {
+        for &(finders, spec, read) in &found.codes[followed..] {
             self.tracks.retain(|t| !same_place(&t.finders, &finders));
             self.tracks.push(Track {
                 finders,
                 spec,
                 misses: 0,
+                unread: (!read) as u32,
             });
         }
-        self.tracks.retain(|t| t.misses < LOST_AFTER);
-        self.tracks.sort_by_key(|t| t.misses);
+        self.tracks
+            .retain(|t| t.misses < LOST_AFTER && t.unread < UNREAD_AFTER);
+        // Codes last read when seen first, those missed fewest pictures
+        // first; then codes seen but not read. So two codes that cannot be
+        // read cannot crowd out one that can.
+        self.tracks
+            .sort_by_key(|t| (t.unread > 0, t.misses, t.unread));
         self.tracks.truncate(MAX_TRACKS);
         found.outcome()
     }
@@ -377,20 +457,24 @@ struct Found {
     /// The search ran out of time or attempts with a fit whose format
     /// field read still untried.
     pending: bool,
-    /// Every code in view, where it is and at what grid size.
-    codes: Vec<([Finder; 3], CodeSpec)>,
+    /// Every code in view: where it is, at what grid size, and whether it
+    /// was read.
+    codes: Vec<([Finder; 3], CodeSpec, bool)>,
 }
 
 impl Found {
-    /// A code in view at `finders`, read if it can be.
-    fn add(&mut self, grid: &Grid, finders: [Finder; 3]) {
+    /// A code in view at `finders`, read if it can be. Whether it was.
+    fn add(&mut self, grid: &Grid, finders: [Finder; 3]) -> bool {
         self.seen = true;
-        self.codes.push((finders, grid.spec));
-        if let Some(bytes) = grid.decode() {
+        let bytes = grid.decode();
+        self.codes.push((finders, grid.spec, bytes.is_some()));
+        if let Some(bytes) = bytes {
             if !self.frames.contains(&bytes) {
                 self.frames.push(bytes);
             }
+            return true;
         }
+        false
     }
 
     fn outcome(self) -> ReadOutcome {
@@ -418,6 +502,9 @@ fn follow(pic: &Picture, track: &Track, deadline: Deadline) -> Option<([Finder; 
         vec![near, track.finders]
     };
     tries.into_iter().find_map(|finders| {
+        if deadline.passed() {
+            return None;
+        }
         let h = locate(pic, finders, n)?;
         let grid = Grid::new(track.spec, sample_cells(pic, &h, n));
         grid.fixed_cells().in_view().then_some((finders, grid))
@@ -451,7 +538,7 @@ fn search(pic: &Picture, deadline: Deadline, known: &[[Finder; 3]], found: &mut 
     };
     // Marks that look like a code's corners first, the rest after.
     let (mut finders, rest): (Vec<Finder>, Vec<Finder>) =
-        find_finders(pic, pic.area(), deadline.share(FINDERS_END))
+        find_finders(pic, pic.area(), deadline.of_rest(FINDERS_SHARE))
             .into_iter()
             .filter(|m| !near_known(m))
             .partition(|f| code_corner(pic, f));

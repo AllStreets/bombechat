@@ -15,7 +15,8 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use bombechat_light::{
-    encode, read_within, CodeSpec, Collector, Layout, LightEvent, ReadOutcome, Reader,
+    encode, read_within, CameraIo, CodeSpec, Collector, FakeCamera, Layout, LightEvent,
+    ReadOutcome, Reader,
 };
 use camera::textures::{
     blinds, box_blur, checkerboard, diagonal_stripes, dotted_lattice, fake_corners,
@@ -1541,6 +1542,237 @@ fn a_spent_budget_stops_the_search() {
     );
 }
 
+/// A reader that reads nothing from 3 pictures in a row doubles its
+/// budget, and again after each 3 more, up to 40 ms; the first picture it
+/// reads from puts it back. A reader whose own budget is over 40 ms keeps
+/// it.
+#[test]
+fn a_reader_gives_more_time_after_pictures_it_cannot_read() {
+    let ms = Duration::from_millis;
+    let blank = GrayImage::from_pixel(1280, 720, image::Luma([128]));
+    let mut reader = Reader::with_budget(ms(4));
+    let mut budgets = Vec::new();
+    for _ in 0..15 {
+        budgets.push(reader.budget().as_millis());
+        assert_eq!(reader.read(&blank), ReadOutcome::NoCode);
+    }
+    assert_eq!(
+        budgets,
+        [4, 4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 32, 40, 40, 40]
+    );
+    let spec = CodeSpec::normal();
+    let frame = some_frame(&spec, &mut Noise::new(107));
+    let img = shoot(
+        &[code(&spec, &frame, Pose::default())],
+        &Camera::default(),
+        15,
+    );
+    assert_eq!(reader.read(&img), ReadOutcome::Frames(vec![frame]));
+    assert_eq!(reader.budget(), ms(4), "a read puts the budget back");
+
+    let mut patient = Reader::with_budget(UNHURRIED);
+    for _ in 0..4 {
+        patient.read(&blank);
+    }
+    assert_eq!(patient.budget(), UNHURRIED);
+}
+
+/// Pictures of a clean code, 1280x720 or 4K: (size, pictures, frames).
+fn clean_codes(width: usize, height: usize) -> Vec<(GrayImage, Vec<u8>)> {
+    let cam = Camera {
+        width,
+        height,
+        ..Camera::default()
+    };
+    let mut out = Vec::new();
+    for (_, spec) in presets() {
+        let mut enc = encode(&spec, &[0x6b; 900], 4);
+        for seed in 0..2u64 {
+            let frame = enc.next_frame();
+            let pose = Pose {
+                scale: 0.45,
+                ..Pose::default()
+            };
+            out.push((shoot(&[code(&spec, &frame, pose)], &cam, 900 + seed), frame));
+        }
+    }
+    out
+}
+
+/// How many pictures `reader` takes to read `frame` from `img` shown
+/// over and over, up to `most`.
+fn pictures_to_read(reader: &mut Reader, img: &GrayImage, frame: &[u8], most: usize) -> usize {
+    (1..=most)
+        .find(|_| matches!(reader.read(img), ReadOutcome::Frames(ref f) if f.contains(&frame.to_vec())))
+        .unwrap_or(usize::MAX)
+}
+
+/// The budget is time to search, not counting the fixed cost of
+/// preparing the picture, so a budget well under the default still reads
+/// a clean code: 4.5 ms at 1280x720 and 10.5 ms at 4K (where preparing
+/// alone takes about 7 ms). Through a reader, which gives more time after
+/// pictures it cannot read, it is read within 10 pictures however busy
+/// the machine (these tests run on every core at once); alone, in
+/// release, `small_budgets_read_at_once` asserts the first picture.
+#[test]
+fn a_reader_on_a_small_budget_reads_a_clean_code() {
+    for ((width, height), budget) in [((1280, 720), 4.5), ((3840, 2160), 10.5)] {
+        for (i, (img, frame)) in clean_codes(width, height).iter().enumerate() {
+            let mut reader = Reader::with_budget(Duration::from_secs_f64(budget / 1e3));
+            let n = pictures_to_read(&mut reader, img, frame, 10);
+            assert!(
+                n <= 10,
+                "{width}x{height} at {budget} ms, code {i}: not read in 10"
+            );
+        }
+    }
+}
+
+/// Keeps every core busy until dropped.
+struct Load(
+    Vec<std::thread::JoinHandle<()>>,
+    std::sync::Arc<std::sync::atomic::AtomicBool>,
+);
+
+impl Load {
+    /// `per_core` spinning threads for each core.
+    fn new(per_core: usize) -> Self {
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cores = std::thread::available_parallelism().map_or(8, |n| n.get());
+        let threads = (0..per_core * cores)
+            .map(|_| {
+                let stop = stop.clone();
+                std::thread::spawn(move || {
+                    let mut x = 1u64;
+                    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        x = std::hint::black_box(
+                            x.wrapping_mul(6364136223846793005).wrapping_add(1),
+                        );
+                    }
+                })
+            })
+            .collect();
+        Load(threads, stop)
+    }
+}
+
+impl Drop for Load {
+    fn drop(&mut self) {
+        self.1.store(true, std::sync::atomic::Ordering::Relaxed);
+        for t in self.0.drain(..) {
+            let _ = t.join();
+        }
+    }
+}
+
+/// With two spinning threads per core competing for the machine, a
+/// reader on the default budget still reads a code within 10 pictures,
+/// clean or beside fake code corners, at 1280x720 and 4K: it gives each
+/// picture more time until one reads.
+#[test]
+fn a_reader_reads_on_a_loaded_machine() {
+    let walky = fake_corners_on_checks(1280, 720, 2, 16, 2, 7);
+    let mut cases: Vec<(String, GrayImage, Vec<u8>)> = Vec::new();
+    for (width, height) in [(1280, 720), (3840, 2160)] {
+        for (i, (img, frame)) in clean_codes(width, height).into_iter().enumerate() {
+            cases.push((format!("{width}x{height} clean {i}"), img, frame));
+        }
+    }
+    for (name, spec) in presets() {
+        let pose = Pose {
+            scale: 0.45,
+            centre: (0.74, 0.5),
+            tilt: 20.0,
+            tilt_axis: 30.0,
+            ..Pose::default()
+        };
+        let (img, frame) = sequence(1, &spec, &pose, &Camera::default(), |_, x, y| {
+            (x < 720).then(|| *walky.get_pixel(x, y))
+        })
+        .remove(0);
+        cases.push((format!("{name} beside fake corners"), img, frame));
+    }
+    let load = Load::new(2);
+    let mut most = 0;
+    for (what, img, frame) in &cases {
+        let mut reader = Reader::new();
+        let n = pictures_to_read(&mut reader, img, frame, 10);
+        assert!(n <= 10, "{what}: not read in 10 pictures under load");
+        most = most.max(n);
+    }
+    drop(load);
+    println!("under load, every code read within {most} pictures");
+}
+
+/// A reader that has been following two codes it cannot read (on a
+/// screen of noise, say) still takes up a readable code that comes into
+/// view, and keeps it: the codes that read go first among those followed,
+/// so the unreadable two cannot crowd it out, and then it reads every
+/// picture of it even with its quiet zone covered, which the stateless
+/// search cannot.
+#[test]
+fn unreadable_codes_followed_do_not_crowd_out_a_readable_one() {
+    let stripes = finder_stripes(1280, 720, 3);
+    let mut rng = Noise::new(5);
+    for (_, spec) in presets() {
+        let layout = Layout::new(&spec);
+        let n = spec.cells as usize;
+        let garbage: Vec<Code> = [(0.15, 0.25), (0.15, 0.75)]
+            .into_iter()
+            .map(|centre| {
+                let junk: Vec<u8> = (0..spec.frame_bytes()).map(|_| rng.next() as u8).collect();
+                Code {
+                    n,
+                    grid: layout.grid(&junk),
+                    pose: Pose {
+                        scale: 0.3,
+                        centre,
+                        ..Pose::default()
+                    },
+                    occlude: None,
+                }
+            })
+            .collect();
+        let pose = Pose {
+            scale: 0.45,
+            centre: (0.72, 0.5),
+            ..Pose::default()
+        };
+        let half = 0.5 * 0.45 * 720.0 * n as f64 / (n as f64 + 6.0);
+        let left = 0.72 * 1280.0 - half;
+        let mut enc = encode(&spec, &[9; 900], 3);
+        let mut reader = Reader::with_budget(UNHURRIED);
+        let only_garbage = shoot(&garbage, &Camera::default(), 10);
+        for _ in 0..3 {
+            assert_eq!(reader.read(&only_garbage), ReadOutcome::Unreadable);
+        }
+        let mut stateless = 0;
+        for i in 0..6u64 {
+            let frame = enc.next_frame();
+            let mut codes = garbage.clone();
+            codes.push(code(&spec, &frame, pose.clone()));
+            let mut img = shoot(&codes, &Camera::default(), 20 + i);
+            // The first picture is clean; the rest have stripes right up
+            // to the code's left edge.
+            if i > 0 {
+                for (x, y, px) in img.enumerate_pixels_mut() {
+                    if (x as f64) < left - 3.0 && x > 560 {
+                        *px = *stripes.get_pixel(x, y);
+                    }
+                }
+                stateless += (read(&img) == ReadOutcome::Frames(vec![frame.clone()])) as u32;
+            }
+            assert_eq!(
+                reader.read(&img),
+                ReadOutcome::Frames(vec![frame]),
+                "{} cells, picture {i}",
+                spec.cells
+            );
+        }
+        println!("{} cells: stateless read {stateless} of 5", spec.cells);
+    }
+}
+
 /// Bars in the finder ratio over a growing share of the picture, sharp
 /// or blurred, beside a code: (what, picture, expected).
 fn blurred_bar_pictures() -> Vec<(String, GrayImage, ReadOutcome)> {
@@ -1874,6 +2106,61 @@ fn an_envelope_arrives_through_the_camera() {
     }
 }
 
+/// The whole way in, as the app will run it: a camera (the fake, playing
+/// pictures of an envelope's frames) hands each picture to its sink, a
+/// reader reads it, and the collector puts the envelope back together.
+/// Stopping the camera ends the pictures.
+#[test]
+fn an_envelope_arrives_through_a_camera_and_a_reader() {
+    let spec = CodeSpec::normal();
+    let envelope: Vec<u8> = (0..1500).map(|i| (i * 7 % 251) as u8).collect();
+    let mut enc = encode(&spec, &envelope, 78);
+    let pictures = (0..40u64)
+        .map(|i| {
+            let pose = Pose {
+                scale: 0.5,
+                roll: 3.0,
+                ..Pose::default()
+            };
+            shoot(
+                &[code(&spec, &enc.next_frame(), pose)],
+                &Camera::default(),
+                600 + i,
+            )
+        })
+        .collect();
+    let mut camera = FakeCamera::new(pictures);
+    let handle = camera.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    camera
+        .start(Box::new(move |img| {
+            let _ = tx.send(img);
+        }))
+        .unwrap();
+    let (mut reader, mut collector) = (Reader::with_budget(UNHURRIED), Collector::new());
+    let mut done = None;
+    let mut t = 0;
+    while done.is_none() && handle.show_next() {
+        let img = rx.recv().unwrap();
+        t += 33;
+        done = collector
+            .push_read(&reader.read(&img), t)
+            .into_iter()
+            .find_map(|e| match e {
+                LightEvent::Complete { tag: 78, bytes } => Some(bytes),
+                _ => None,
+            });
+    }
+    camera.stop();
+    assert_eq!(done.as_deref(), Some(&envelope[..]));
+    assert!(
+        handle.remaining() > 0,
+        "it arrived before the pictures ran out"
+    );
+    assert!(!handle.show_next(), "no pictures after stop");
+    assert_eq!((handle.starts(), handle.stops()), (1, 1));
+}
+
 /// Checked-in pictures: a handful of shots, kept as PNGs so a change to
 /// the camera model cannot quietly change what the reader is held to.
 /// Set `BOMBECHAT_WRITE_FIXTURES=1` to redraw them.
@@ -2005,6 +2292,25 @@ fn fixtures() -> Vec<(Fixture, ReadOutcome)> {
         ReadOutcome::NoCode,
     ));
     out
+}
+
+/// Run alone in release, a budget well under the default reads a clean
+/// code at the first picture, with no reader to give it more time: 4.5 ms
+/// at 1280x720 and 10.5 ms at 4K (the budget does not count preparing the
+/// picture).
+#[test]
+#[ignore = "timing; run alone in release with --ignored"]
+fn small_budgets_read_at_once() {
+    for ((width, height), budget) in [((1280, 720), 4.5), ((3840, 2160), 10.5)] {
+        let budget = Duration::from_secs_f64(budget / 1e3);
+        for (i, (img, frame)) in clean_codes(width, height).iter().enumerate() {
+            assert_eq!(
+                read_within(img, budget),
+                ReadOutcome::Frames(vec![frame.clone()]),
+                "{width}x{height} at {budget:?}, code {i}"
+            );
+        }
+    }
 }
 
 /// Decoding time per 1280x720 picture with the default budget, over
@@ -2151,15 +2457,21 @@ fn decode_time_per_frame() {
     // Each picture is read once without a deadline, for what it holds,
     // then four times as the camera would read it, with the default
     // budget: the first for its outcome (and to warm up), the rest timed.
-    // The slowest single reading of any picture is what must stay under
-    // 15 ms.
+    // A reading may take its preparation (timed as a reading with no
+    // budget at all) and its budget, and run over by at most one fit:
+    // the most any reading of any picture runs over that is what must
+    // stay under `OVER`.
+    const OVER: f64 = 2.0;
+    let budget_ms = bombechat_light::DEFAULT_BUDGET.as_secs_f64() * 1000.0;
     let mut worst = (0f64, String::new());
+    let mut over = (f64::MIN, String::new());
     // (kind, total of means, slowest single reading, pictures, read as
     // with no deadline)
     let mut by_kind: Vec<(&str, f64, f64, u32, u32)> = Vec::new();
     let mut time = |kind: &'static str, name: &str, img: &GrayImage| {
         let unhurried = read(img);
         let same = bombechat_light::read(img) == unhurried;
+        let prep = preparation(img);
         let (mut total, mut slowest) = (0.0, 0f64);
         for _ in 0..3 {
             let start = Instant::now();
@@ -2170,6 +2482,9 @@ fn decode_time_per_frame() {
         }
         if slowest > worst.0 {
             worst = (slowest, name.to_string());
+        }
+        if slowest - prep - budget_ms > over.0 {
+            over = (slowest - prep - budget_ms, name.to_string());
         }
         let i = match by_kind.iter().position(|k| k.0 == kind) {
             Some(i) => i,
@@ -2249,6 +2564,7 @@ fn decode_time_per_frame() {
                 let mut reader = Reader::new();
                 let mut locked = false;
                 for (i, (img, frame)) in pictures.iter().enumerate() {
+                    let allowed = preparation(img) + reader.budget().as_secs_f64() * 1000.0;
                     let start = Instant::now();
                     let got = reader.read(img);
                     let ms = start.elapsed().as_secs_f64() * 1000.0;
@@ -2259,6 +2575,9 @@ fn decode_time_per_frame() {
                     );
                     if ms > worst.0 {
                         worst = (ms, what.clone());
+                    }
+                    if ms - allowed > over.0 {
+                        over = (ms - allowed, what.clone());
                     }
                     let read = got == ReadOutcome::Frames(vec![frame.clone()]);
                     assert!(read || !locked, "{what}: {got:?}");
@@ -2278,12 +2597,29 @@ fn decode_time_per_frame() {
          read, {first_missed} pictures before it; slowest {slowest:.2} ms"
     );
     println!("worst: {:.2} ms ({})", worst.0, worst.1);
+    println!(
+        "most over preparation and budget: {:.2} ms ({})",
+        over.0, over.1
+    );
     if !cfg!(debug_assertions) {
         assert!(
-            worst.0 < 15.0,
-            "worst picture took {:.2} ms ({})",
-            worst.0,
-            worst.1
+            over.0 < OVER,
+            "a reading ran {:.2} ms over its preparation and budget ({})",
+            over.0,
+            over.1
         );
     }
+}
+
+/// How long preparing `img` for reading takes, in milliseconds: the
+/// fastest of three readings with no budget, which stop as soon as the
+/// picture is ready.
+fn preparation(img: &GrayImage) -> f64 {
+    (0..3)
+        .map(|_| {
+            let start = Instant::now();
+            std::hint::black_box(read_within(img, Duration::ZERO));
+            start.elapsed().as_secs_f64() * 1000.0
+        })
+        .fold(f64::MAX, f64::min)
 }
