@@ -1,0 +1,14 @@
+[package]
+name = "bombechat-light"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+crc32fast = "1"
+# Only the in-memory buffer types (GrayImage); no codecs, no I/O.
+image = { version = "0.25", default-features = false }
+raptorq = "2"
+
+[dev-dependencies]
+proptest = "1"
+rand = "0.8"

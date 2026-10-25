@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/core",
     "crates/modem",
+    "crates/light",
     "crates/store",
     "crates/node",
     "app/src-tauri",
@@ -15,6 +16,14 @@ members = [
 opt-level = 2
 
 [profile.dev.package.rustfft]
+opt-level = 2
+
+# The light code draws and fountain-codes hundreds of full frames in its
+# tests; optimise it and its RaptorQ coder in dev/test builds too.
+[profile.dev.package.bombechat-light]
+opt-level = 2
+
+[profile.dev.package.raptorq]
 opt-level = 2
 
 # Argon2id at the production parameters (64 MiB, t=3) is slow unoptimised,
