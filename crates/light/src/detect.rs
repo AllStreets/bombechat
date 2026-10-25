@@ -314,8 +314,9 @@ impl Finder {
 }
 
 /// Every finder-like mark in `area` of the picture, best first (see
-/// [`Finder::rank`]), as far as the checks get before `deadline`.
-pub(crate) fn find_finders(pic: &Picture, area: Area, deadline: Deadline) -> Vec<Finder> {
+/// [`Finder::rank`]), as far as the checks get before `deadline`, and
+/// whether `deadline` cut the checks short.
+pub(crate) fn find_finders(pic: &Picture, area: Area, deadline: Deadline) -> (Vec<Finder>, bool) {
     let hits = row_hits(pic, area);
     let mut clusters = cluster(&hits);
 
@@ -334,11 +335,16 @@ pub(crate) fn find_finders(pic: &Picture, area: Area, deadline: Deadline) -> Vec
     let mut sums: Vec<Option<Sum>> = vec![None; clusters.len()];
     let mut round = 0;
     let mut checks = 0usize;
+    let mut cut = false;
     'rounds: while !live.is_empty() {
         for &k in &live {
             let c = &clusters[k];
             checks += 1;
-            if work == 0 || checks.is_multiple_of(16) && deadline.passed() {
+            if work == 0 {
+                break 'rounds;
+            }
+            if checks.is_multiple_of(16) && deadline.passed() {
+                cut = true;
                 break 'rounds;
             }
             let h = hits[c.members[middle_out(round, c.members.len())]];
@@ -361,7 +367,7 @@ pub(crate) fn find_finders(pic: &Picture, area: Area, deadline: Deadline) -> Vec
             .then(a.error.total_cmp(&b.error))
             .then(b.module.total_cmp(&a.module))
     });
-    found
+    (found, cut)
 }
 
 /// The `round`th of `len` hits, counting out from the middle: middle,

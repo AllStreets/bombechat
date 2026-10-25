@@ -39,15 +39,17 @@
 //!   less of the search gets done in it. A camera reader should run on a
 //!   thread that gets a performance core; on an efficiency core a picture
 //!   takes about three times as long. A [`Reader`] makes up for it: after
-//!   3 pictures in a row it reads nothing from, it doubles its budget, and
-//!   again after each 3 more, up to 40 ms; the first picture it reads
-//!   from puts it back to its own budget. A code that a slow or busy
-//!   machine cannot find in the default budget is read a few pictures
-//!   later instead.
+//!   3 pictures in a row that it reads nothing from and whose reading the
+//!   budget cut short, it doubles its budget, and again after each 3 more,
+//!   up to 40 ms. A picture it reads from, or one searched to the end
+//!   with nothing to read (more time would not have helped), puts it back
+//!   to its own budget, so a camera looking at nothing stays cheap. A code
+//!   that a slow or busy machine cannot find in the default budget is
+//!   read a few pictures later instead.
 //! - Running out of time is not an error and loses nothing for good: at
 //!   30 pictures a second the next picture comes 33 ms later, a [`Reader`]
 //!   that has read a code once tries it first in every later picture, and
-//!   one that has read nothing for a while gives each picture longer.
+//!   one whose time keeps running out gives each picture longer.
 //! - It does not promise that a code is found within the budget. The
 //!   search below is ordered so that clutter cannot push a code far back,
 //!   but every mark found costs a little, and enough of them can use the
@@ -71,7 +73,8 @@
 //! A followed code missing from 15 pictures in a row is forgotten, as is
 //! one in view but unread in 8 pictures in a row (a code that cannot be
 //! read, or something code-like that is not a code, does not hold its
-//! place for long), and everything when the picture size changes. At most
+//! place for long, and is not taken up again for 30 pictures unless it
+//! reads), and everything when the picture size changes. At most
 //! two codes are followed, codes that read when last seen before codes
 //! that did not.
 //!
@@ -185,8 +188,8 @@ pub const DEFAULT_BUDGET: Duration = Duration::from_millis(10);
 /// from (unless its own budget is more).
 const MOST_BUDGET: Duration = Duration::from_millis(40);
 
-/// Pictures in a row a [`Reader`] reads nothing from before it doubles its
-/// budget.
+/// Pictures in a row a [`Reader`] reads nothing from, each cut short by
+/// its budget, before it doubles its budget.
 const RAISE_AFTER: u32 = 3;
 
 /// Share of the budget, in thousandths, following known codes may take.
@@ -228,6 +231,10 @@ const LOST_AFTER: u32 = 15;
 /// Pictures in a row a followed code may be in view but unread before a
 /// [`Reader`] forgets it.
 const UNREAD_AFTER: u32 = 8;
+
+/// Pictures after a [`Reader`] forgets a code for not reading before it
+/// will follow a code in the same place again, unless that code reads.
+const SHUNNED_FOR: u32 = 30;
 
 /// Pictures whose longer side is over this are shrunk by a whole factor
 /// before reading.
@@ -290,25 +297,29 @@ pub fn read_within(image: &GrayImage, budget: Duration) -> ReadOutcome {
 /// what is left of the budget. However cluttered the picture, a code that
 /// has been seen once is tried first, and following takes at most 30
 /// percent of the budget. A code missing from 15 pictures in a row is
-/// forgotten, as is one in view but unread in 8 pictures in a row, and
-/// everything when the picture size changes.
+/// forgotten, as is one in view but unread in 8 pictures in a row (not
+/// followed again for 30 pictures unless it reads), and everything when
+/// the picture size changes.
 ///
 /// Each picture is searched for at most the reader's current budget, as
 /// for [`read_within`]. That starts as the budget it was made with; after
-/// 3 pictures in a row it reads nothing from, it doubles, and again after
-/// each 3 more, up to 40 ms (or the reader's own budget, if more), so a
-/// slow or busy machine still gets to a code; the first picture it reads
-/// from puts it back.
+/// 3 pictures in a row that it reads nothing from and whose reading the
+/// budget cut short, it doubles, and again after each 3 more, up to 40 ms
+/// (or the reader's own budget, if more), so a slow or busy machine still
+/// gets to a code. A picture it reads from, or one searched to the end
+/// with nothing to read, puts it back.
 #[derive(Debug, Clone)]
 pub struct Reader {
     /// The budget it was made with.
     base: Duration,
     /// The budget the next picture gets.
     budget: Duration,
-    /// Pictures in a row it has read nothing from since the budget last
-    /// changed.
+    /// Pictures in a row it has read nothing from, each cut short by the
+    /// budget, since the budget last changed.
     fruitless: u32,
     tracks: Vec<Track>,
+    /// Codes dropped for not reading, and pictures since.
+    dropped: Vec<([Finder; 3], u32)>,
     size: (u32, u32),
 }
 
@@ -342,6 +353,7 @@ impl Reader {
             budget,
             fruitless: 0,
             tracks: Vec::new(),
+            dropped: Vec::new(),
             size: (0, 0),
         }
     }
@@ -354,8 +366,10 @@ impl Reader {
 
     /// Read every light code in the next camera picture.
     pub fn read(&mut self, image: &GrayImage) -> ReadOutcome {
-        let outcome = self.read_picture(image);
-        if matches!(outcome, ReadOutcome::Frames(_)) {
+        let (outcome, cut) = self.read_picture(image);
+        if matches!(outcome, ReadOutcome::Frames(_)) || !cut {
+            // Read, or searched to the end and nothing there to read:
+            // more time would not have helped.
             self.budget = self.base;
             self.fruitless = 0;
         } else {
@@ -369,15 +383,23 @@ impl Reader {
         outcome
     }
 
-    fn read_picture(&mut self, image: &GrayImage) -> ReadOutcome {
+    /// Read one picture: what it showed, and whether the budget cut the
+    /// reading short.
+    fn read_picture(&mut self, image: &GrayImage) -> (ReadOutcome, bool) {
         let Some(image) = prepare(image) else {
             self.tracks.clear();
-            return ReadOutcome::NoCode;
+            self.dropped.clear();
+            return (ReadOutcome::NoCode, false);
         };
         if image.dimensions() != self.size {
             self.tracks.clear();
+            self.dropped.clear();
             self.size = image.dimensions();
         }
+        for d in &mut self.dropped {
+            d.1 += 1;
+        }
+        self.dropped.retain(|d| d.1 < SHUNNED_FOR);
         let pic = Picture::new(&image);
         let deadline = Deadline::new(self.budget);
         let follow_end = deadline.share(FOLLOW_SHARE);
@@ -385,6 +407,7 @@ impl Reader {
         let mut known = Vec::new();
         for track in &mut self.tracks {
             if follow_end.passed() {
+                found.cut = true;
                 break;
             }
             match follow(&pic, track, follow_end) {
@@ -392,17 +415,30 @@ impl Reader {
                     track.finders = finders;
                     track.misses = 0;
                     known.push(finders);
+                    // Reading a code that did not read last time is the
+                    // dearest part of following it; past the share, it is
+                    // left for a later picture.
+                    if track.unread > 0 && follow_end.passed() {
+                        found.cut = true;
+                        found.in_view(&grid, finders);
+                        continue;
+                    }
                     let read = found.add(&grid, finders);
                     track.unread = if read { 0 } else { track.unread + 1 };
                 }
                 // Not reached in the time is not missing.
-                None if follow_end.passed() => {}
+                None if follow_end.passed() => found.cut = true,
                 None => track.misses += 1,
             }
         }
         let followed = found.codes.len();
         search(&pic, deadline, &known, &mut found);
         for &(finders, spec, read) in &found.codes[followed..] {
+            // A code just dropped for not reading is not taken up again
+            // until it has been left alone a while, unless it reads.
+            if !read && self.dropped.iter().any(|d| same_place(&d.0, &finders)) {
+                continue;
+            }
             self.tracks.retain(|t| !same_place(&t.finders, &finders));
             self.tracks.push(Track {
                 finders,
@@ -410,6 +446,11 @@ impl Reader {
                 misses: 0,
                 unread: (!read) as u32,
             });
+        }
+        for t in &self.tracks {
+            if t.unread >= UNREAD_AFTER {
+                self.dropped.push((t.finders, 0));
+            }
         }
         self.tracks
             .retain(|t| t.misses < LOST_AFTER && t.unread < UNREAD_AFTER);
@@ -419,7 +460,14 @@ impl Reader {
         self.tracks
             .sort_by_key(|t| (t.unread > 0, t.misses, t.unread));
         self.tracks.truncate(MAX_TRACKS);
-        found.outcome()
+        let cut = found.cut;
+        (found.outcome(), cut)
+    }
+
+    /// How many codes the reader is following. For tests.
+    #[doc(hidden)]
+    pub fn followed_codes(&self) -> usize {
+        self.tracks.len()
     }
 }
 
@@ -460,9 +508,17 @@ struct Found {
     /// Every code in view: where it is, at what grid size, and whether it
     /// was read.
     codes: Vec<([Finder; 3], CodeSpec, bool)>,
+    /// The budget, or a stage's share of it, cut the reading short.
+    cut: bool,
 }
 
 impl Found {
+    /// A code in view at `finders`, not read.
+    fn in_view(&mut self, grid: &Grid, finders: [Finder; 3]) {
+        self.seen = true;
+        self.codes.push((finders, grid.spec, false));
+    }
+
     /// A code in view at `finders`, read if it can be. Whether it was.
     fn add(&mut self, grid: &Grid, finders: [Finder; 3]) -> bool {
         self.seen = true;
@@ -516,6 +572,7 @@ fn follow(pic: &Picture, track: &Track, deadline: Deadline) -> Option<([Finder; 
 fn nearest_mark(pic: &Picture, f: &Finder, deadline: Deadline) -> Option<Finder> {
     let area = pic.around(f.x, f.y, 8.0 * f.module + 4.0);
     find_finders(pic, area, deadline)
+        .0
         .into_iter()
         .filter(|g| g.module < 1.5 * f.module && f.module < 1.5 * g.module)
         .map(|g| ((g.x - f.x).hypot(g.y - f.y), g))
@@ -528,6 +585,7 @@ fn nearest_mark(pic: &Picture, f: &Finder, deadline: Deadline) -> Option<Finder>
 /// already found in it (`known`).
 fn search(pic: &Picture, deadline: Deadline, known: &[[Finder; 3]], found: &mut Found) {
     if deadline.passed() {
+        found.cut = true;
         return;
     }
     let near_known = |m: &Finder| {
@@ -537,16 +595,18 @@ fn search(pic: &Picture, deadline: Deadline, known: &[[Finder; 3]], found: &mut 
             .any(|k| (k.x - m.x).hypot(k.y - m.y) < 2.0 * k.module)
     };
     // Marks that look like a code's corners first, the rest after.
-    let (mut finders, rest): (Vec<Finder>, Vec<Finder>) =
-        find_finders(pic, pic.area(), deadline.of_rest(FINDERS_SHARE))
-            .into_iter()
-            .filter(|m| !near_known(m))
-            .partition(|f| code_corner(pic, f));
+    let (marks, cut) = find_finders(pic, pic.area(), deadline.of_rest(FINDERS_SHARE));
+    found.cut |= cut;
+    let (mut finders, rest): (Vec<Finder>, Vec<Finder>) = marks
+        .into_iter()
+        .filter(|m| !near_known(m))
+        .partition(|f| code_corner(pic, f));
     let corners = finders.len();
     finders.extend(rest);
     // Triples joined by timing lines, then the best marks' triples by
     // shape alone.
-    let mut triples = linked_triples(pic, &finders, corners, deadline.of_rest(WALKS_SHARE));
+    let (mut triples, cut) = linked_triples(pic, &finders, corners, deadline.of_rest(WALKS_SHARE));
+    found.cut |= cut;
     let linked: HashSet<[usize; 3]> = triples.iter().map(|t| t.finders).collect();
     triples.extend(
         shape_triples(&finders)
@@ -563,6 +623,7 @@ fn search(pic: &Picture, deadline: Deadline, known: &[[Finder; 3]], found: &mut 
     let checks_end = deadline.of_rest(CHECKS_SHARE);
     for t in in_turns(&finders, triples) {
         if checks_end.passed() {
+            found.cut = true;
             break;
         }
         let three = t.finders.map(|i| finders[i]);
@@ -581,6 +642,7 @@ fn search(pic: &Picture, deadline: Deadline, known: &[[Finder; 3]], found: &mut 
             }
             if attempts >= MAX_ATTEMPTS || deadline.passed() {
                 found.pending = true;
+                found.cut |= deadline.passed();
                 return;
             }
             attempts += 1;
@@ -593,7 +655,11 @@ fn search(pic: &Picture, deadline: Deadline, known: &[[Finder; 3]], found: &mut 
     // Fits joined by timing lines first, each group in turns as above.
     later.sort_by_key(|&(unlinked, k, _, _)| (unlinked, k));
     for (_, _, idx, spec) in later {
-        if attempts >= MAX_ATTEMPTS || deadline.passed() {
+        if attempts >= MAX_ATTEMPTS {
+            return;
+        }
+        if deadline.passed() {
+            found.cut = true;
             return;
         }
         if idx.iter().any(|&i| used[i]) {
@@ -843,13 +909,14 @@ struct Triple {
 /// are walked in turns: each mark walks to its next partner (closest to a
 /// preset's spacing first) before any walks to another, the [`TILE`]
 /// squares of the picture taking turns within a turn, until [`MAX_WALK`]
-/// pixels have been walked or `deadline` passes.
+/// pixels have been walked or `deadline` passes; and whether `deadline`
+/// cut the walks short.
 fn linked_triples(
     pic: &Picture,
     finders: &[Finder],
     corners: usize,
     deadline: Deadline,
-) -> Vec<Triple> {
+) -> (Vec<Triple>, bool) {
     // How far a pair's spacing, in cells, is from the nearest preset's
     // (as a log ratio). A tilted code's legs differ by up to 1.8 times,
     // so the bound for walking a pair is loose.
@@ -869,7 +936,7 @@ fn linked_triples(
     let mut partners: Vec<Vec<(bool, f32, usize)>> = vec![Vec::new(); corners];
     for (a, mine) in partners.iter_mut().enumerate() {
         if a.is_multiple_of(64) && deadline.passed() {
-            return Vec::new();
+            return (Vec::new(), true);
         }
         let p = &finders[a];
         for (b, q) in finders.iter().enumerate() {
@@ -896,6 +963,7 @@ fn linked_triples(
     let mut legs: Vec<Vec<(usize, f32)>> = vec![Vec::new(); finders.len()];
     let mut walked = HashSet::new();
     let mut work = MAX_WALK;
+    let mut cut = false;
     'turns: for turn in 0.. {
         let mut more = false;
         for &a in &order {
@@ -907,7 +975,11 @@ fn linked_triples(
             if !walked.insert((p, q)) {
                 continue;
             }
-            if work == 0 || deadline.passed() {
+            if work == 0 {
+                break 'turns;
+            }
+            if deadline.passed() {
+                cut = true;
                 break 'turns;
             }
             let lines = timing_lines(pic, &finders[p], &finders[q], &mut work);
@@ -938,7 +1010,7 @@ fn linked_triples(
             }
         }
     }
-    out
+    (out, cut)
 }
 
 /// Every plausible triple among the first [`MAX_CANDIDATES`] finders, by

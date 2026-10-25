@@ -1542,24 +1542,37 @@ fn a_spent_budget_stops_the_search() {
     );
 }
 
-/// A reader that reads nothing from 3 pictures in a row doubles its
-/// budget, and again after each 3 more, up to 40 ms; the first picture it
-/// reads from puts it back. A reader whose own budget is over 40 ms keeps
-/// it.
+/// A reader gives more time only when time ran out. Blank pictures are
+/// searched to the end and found empty, so the budget stays put however
+/// many there are. Pictures of dense fake code corners use up a 2 ms
+/// budget and a 4 ms one: after 3 in a row the budget doubles, and again
+/// after each 3 more. A picture searched to the end with nothing in it,
+/// or one it reads, puts the budget back. A reader whose own budget is
+/// over 40 ms, the most it raises a budget to, keeps it.
 #[test]
-fn a_reader_gives_more_time_after_pictures_it_cannot_read() {
+fn a_reader_gives_more_time_only_when_time_runs_out() {
     let ms = Duration::from_millis;
     let blank = GrayImage::from_pixel(1280, 720, image::Luma([128]));
-    let mut reader = Reader::with_budget(ms(4));
-    let mut budgets = Vec::new();
-    for _ in 0..15 {
-        budgets.push(reader.budget().as_millis());
+    let walky = fake_corners_on_checks(1280, 720, 2, 16, 2, 7);
+    let mut reader = Reader::with_budget(ms(2));
+    for i in 0..15 {
         assert_eq!(reader.read(&blank), ReadOutcome::NoCode);
+        assert_eq!(reader.budget(), ms(2), "blank picture {i}");
     }
-    assert_eq!(
-        budgets,
-        [4, 4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 32, 40, 40, 40]
-    );
+    let mut budgets = Vec::new();
+    for _ in 0..6 {
+        budgets.push(reader.budget().as_millis());
+        reader.read(&walky);
+    }
+    budgets.push(reader.budget().as_millis());
+    assert_eq!(budgets, [2, 2, 2, 4, 4, 4, 8]);
+    assert_eq!(reader.read(&blank), ReadOutcome::NoCode);
+    assert_eq!(reader.budget(), ms(2), "a finished search puts it back");
+
+    for _ in 0..3 {
+        reader.read(&walky);
+    }
+    assert_eq!(reader.budget(), ms(4));
     let spec = CodeSpec::normal();
     let frame = some_frame(&spec, &mut Noise::new(107));
     let img = shoot(
@@ -1568,13 +1581,124 @@ fn a_reader_gives_more_time_after_pictures_it_cannot_read() {
         15,
     );
     assert_eq!(reader.read(&img), ReadOutcome::Frames(vec![frame]));
-    assert_eq!(reader.budget(), ms(4), "a read puts the budget back");
+    assert_eq!(reader.budget(), ms(2), "a read puts it back");
 
     let mut patient = Reader::with_budget(UNHURRIED);
     for _ in 0..4 {
         patient.read(&blank);
     }
     assert_eq!(patient.budget(), UNHURRIED);
+}
+
+/// A reader follows a code it cannot read for 8 pictures, then lets it
+/// go, and does not take it up again for 30 pictures: it still says it
+/// sees a code it cannot read, but no longer spends its time on it first.
+#[test]
+fn a_reader_lets_go_of_a_code_it_cannot_read() {
+    let img = shoot(
+        &garbage_codes(1, &mut Noise::new(108)),
+        &Camera::default(),
+        16,
+    );
+    let mut reader = Reader::with_budget(UNHURRIED);
+    let followed: Vec<usize> = (0..40)
+        .map(|i| {
+            assert_eq!(reader.read(&img), ReadOutcome::Unreadable, "picture {i}");
+            reader.followed_codes()
+        })
+        .collect();
+    let mut want = vec![1; 7];
+    want.extend([0; 30]);
+    want.extend([1; 3]);
+    assert_eq!(followed, want);
+}
+
+/// A reader on a small budget (5 ms) following two codes it cannot read
+/// still finds a readable code that comes into view, within 12 pictures
+/// however busy the machine (by then the budget has had time to rise to
+/// 40 ms); `following_is_capped`, run alone in
+/// release, asserts the first picture.
+#[test]
+fn followed_unreadable_codes_leave_the_search_its_time() {
+    for (_, spec) in presets() {
+        let (mut reader, target, frame) = following_two_garbage_codes(&spec, 5);
+        let n = pictures_to_read(&mut reader, &target, &frame, 12);
+        assert!(n <= 12, "{} cells: not read in 12 pictures", spec.cells);
+    }
+}
+
+/// Run alone in release: two codes a reader follows but cannot read take
+/// at most 30 percent of a 5 ms budget, so the search finds a readable
+/// code that comes into view at the first picture of it, while both are
+/// still followed. Following without the cap, the search runs out of time
+/// and the code is read only once the budget has been raised.
+#[test]
+#[ignore = "timing; run alone in release with --ignored"]
+fn following_is_capped() {
+    for (_, spec) in presets() {
+        let (mut reader, target, frame) = following_two_garbage_codes(&spec, 5);
+        assert_eq!(
+            reader.read(&target),
+            ReadOutcome::Frames(vec![frame]),
+            "{} cells",
+            spec.cells
+        );
+    }
+}
+
+/// A reader of `ms` milliseconds following two unreadable codes, at its
+/// own budget; then a picture with a readable code of `spec` beside them,
+/// and its frame.
+fn following_two_garbage_codes(spec: &CodeSpec, ms: u64) -> (Reader, GrayImage, Vec<u8>) {
+    let budget = Duration::from_millis(ms);
+    let (garbage, target, frame) = two_garbage_and_a_target(spec);
+    let mut reader = Reader::with_budget(budget);
+    // Until both are followed, and any budget raised meanwhile is back.
+    for _ in 0..12 {
+        if reader.followed_codes() == 2 && reader.budget() == budget {
+            break;
+        }
+        reader.read(&garbage);
+    }
+    assert_eq!(reader.followed_codes(), 2, "{} cells", spec.cells);
+    assert_eq!(reader.budget(), budget, "{} cells", spec.cells);
+    (reader, target, frame)
+}
+
+/// Two unreadable codes on the left of a 1280x720 picture, and the same
+/// with a readable code of `spec` on the right: (garbage only, garbage
+/// and target, the target's frame).
+fn two_garbage_and_a_target(spec: &CodeSpec) -> (GrayImage, GrayImage, Vec<u8>) {
+    let layout = Layout::new(spec);
+    let mut rng = Noise::new(109);
+    let mut codes: Vec<Code> = [(0.15, 0.25), (0.15, 0.75)]
+        .into_iter()
+        .map(|centre| {
+            let junk: Vec<u8> = (0..spec.frame_bytes()).map(|_| rng.next() as u8).collect();
+            Code {
+                n: spec.cells as usize,
+                grid: layout.grid(&junk),
+                pose: Pose {
+                    scale: 0.3,
+                    centre,
+                    ..Pose::default()
+                },
+                occlude: None,
+            }
+        })
+        .collect();
+    let garbage = shoot(&codes, &Camera::default(), 17);
+    let frame = some_frame(spec, &mut rng);
+    codes.push(code(
+        spec,
+        &frame,
+        Pose {
+            scale: 0.45,
+            centre: (0.72, 0.5),
+            ..Pose::default()
+        },
+    ));
+    (garbage, shoot(&codes, &Camera::default(), 18), frame)
 }
 
 /// Pictures of a clean code, 1280x720 or 4K: (size, pictures, frames).

@@ -17,7 +17,7 @@ pub mod render;
 
 #[cfg(target_os = "macos")]
 pub use camera::AvCamera;
-pub use camera::{CameraError, CameraIo};
+pub use camera::{CameraAccess, CameraError, CameraIo};
 
 pub use code::{orientation, Cell, CodeSpec, Layout, Orientation};
 pub use decode::{read, read_within, ReadOutcome, Reader, DEFAULT_BUDGET};

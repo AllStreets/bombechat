@@ -35,14 +35,33 @@ impl fmt::Display for CameraError {
 
 impl std::error::Error for CameraError {}
 
+/// Whether this app may use the camera, as far as the user has said.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CameraAccess {
+    /// The user has allowed it.
+    Allowed,
+    /// The user has refused it, or a policy keeps it from this app.
+    Denied,
+    /// The user has not been asked yet: starting the camera asks.
+    NotAsked,
+}
+
 /// A source of grey camera pictures.
 pub trait CameraIo: Send {
-    /// Open the camera and start delivering pictures. `sink` is called
-    /// from a capture thread with each picture as it arrives; while it
-    /// runs, later pictures are dropped rather than queued, so a slow
-    /// sink sees the newest picture next. Starting a camera that is
-    /// already running stops it first. The first start may ask the user
-    /// for camera permission and wait for the answer.
+    /// Open the camera and start delivering pictures. Starting a camera
+    /// that is already running stops it first.
+    ///
+    /// `sink` is called from a capture thread with each picture as it
+    /// arrives, and must never block: hand the picture on through an
+    /// unbounded channel or a `try_send`, not a send that can wait. While
+    /// it runs, later pictures are dropped rather than queued, so a slow
+    /// sink sees the newest picture next; and [`stop`](CameraIo::stop)
+    /// waits for it to return, so the sink must not call `stop` itself.
+    ///
+    /// If the user has not yet been asked for camera permission, this
+    /// asks (macOS shows its prompt) and waits for the answer, up to 90
+    /// seconds, so it must be called off the UI thread. A camera can be
+    /// checked first without asking (see `AvCamera::authorization_status`).
     #[allow(clippy::type_complexity)]
     fn start(&mut self, sink: Box<dyn FnMut(GrayImage) + Send>) -> Result<(), CameraError>;
 
@@ -52,10 +71,10 @@ pub trait CameraIo: Send {
     /// running.
     fn stop(&mut self);
 
-    /// An error since the last call (the camera unplugged, or capture
-    /// stopped on its own), if any; each one is returned once. `start`
-    /// only reports failures to open the camera, so a caller polls this
-    /// to learn that a running camera has died.
+    /// An error since the last call (the camera unplugged, taken by
+    /// another app, or capture stopped on its own), if any; each one is
+    /// returned once. `start` only reports failures to open the camera,
+    /// so a caller polls this to learn that a running camera has died.
     fn take_error(&mut self) -> Option<CameraError>;
 }
 
@@ -104,6 +123,7 @@ pub use avf::AvCamera;
 mod avf {
     use std::panic::{catch_unwind, AssertUnwindSafe};
     use std::sync::{mpsc, Arc, Mutex, MutexGuard};
+    use std::time::Duration;
 
     use block2::RcBlock;
     use dispatch2::{DispatchQueue, DispatchRetained};
@@ -130,7 +150,7 @@ mod avf {
     };
     use objc2_foundation::{NSDictionary, NSError, NSNumber, NSString};
 
-    use super::{from_bgra, from_luma, CameraError, CameraIo};
+    use super::{from_bgra, from_luma, CameraAccess, CameraError, CameraIo};
 
     type Sink = Box<dyn FnMut(GrayImage) + Send>;
 
@@ -139,6 +159,10 @@ mod avf {
     const LUMA_FULL: u32 = kCVPixelFormatType_420YpCbCr8BiPlanarFullRange;
     const LUMA_VIDEO: u32 = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
     const BGRA: u32 = kCVPixelFormatType_32BGRA;
+
+    /// How long [`authorize`] waits for the user to answer the camera
+    /// permission prompt.
+    const ANSWER_WITHIN: Duration = Duration::from_secs(90);
 
     /// `AVErrorApplicationIsNotAuthorizedToUseDevice`.
     const NOT_AUTHORIZED: isize = -11852;
@@ -151,7 +175,7 @@ mod avf {
 
     /// What the capture thread shares with the camera.
     pub(super) struct Shared {
-        sink: Mutex<Option<Sink>>,
+        sink: Arc<Mutex<Option<Sink>>>,
         error: Arc<Mutex<Option<CameraError>>>,
     }
 
@@ -283,13 +307,17 @@ mod avf {
             .ok_or_else(|| CameraError::Unsupported("no video media type".into()))
     }
 
-    /// Whether this app may use the camera, asking the user if it has not
-    /// been decided (and waiting for the answer).
-    fn authorize() -> Result<(), CameraError> {
+    fn status() -> Result<AVAuthorizationStatus, CameraError> {
         let media = video()?;
         // SAFETY: the video media type is one this accepts.
-        let status = unsafe { AVCaptureDevice::authorizationStatusForMediaType(media) };
-        decide(status, || {
+        Ok(unsafe { AVCaptureDevice::authorizationStatusForMediaType(media) })
+    }
+
+    /// Whether this app may use the camera, asking the user if it has not
+    /// been decided (and waiting up to [`ANSWER_WITHIN`] for the answer).
+    fn authorize() -> Result<(), CameraError> {
+        let media = video()?;
+        decide(status()?, || {
             let (tx, rx) = mpsc::channel();
             let answer = RcBlock::new(move |granted: Bool| {
                 let _ = tx.send(granted.as_bool());
@@ -297,20 +325,39 @@ mod avf {
             // SAFETY: the video media type, and a block AVFoundation
             // copies and calls once, on a queue of its own.
             unsafe { AVCaptureDevice::requestAccessForMediaType_completionHandler(media, &answer) };
-            rx.recv().unwrap_or(false)
+            match rx.recv_timeout(ANSWER_WITHIN) {
+                Ok(granted) => Ok(granted),
+                Err(mpsc::RecvTimeoutError::Timeout) => Err(CameraError::Unsupported(
+                    "no answer to the camera permission request".into(),
+                )),
+                Err(mpsc::RecvTimeoutError::Disconnected) => Ok(false),
+            }
         })
     }
 
     /// What an authorization status means for starting the camera; `ask`
-    /// asks the user, if no one has decided yet.
+    /// asks the user, if no one has decided yet, and says whether they
+    /// allowed it.
     pub(super) fn decide(
         status: AVAuthorizationStatus,
-        ask: impl FnOnce() -> bool,
+        ask: impl FnOnce() -> Result<bool, CameraError>,
     ) -> Result<(), CameraError> {
         match status {
             AVAuthorizationStatus::Authorized => Ok(()),
-            AVAuthorizationStatus::NotDetermined if ask() => Ok(()),
+            AVAuthorizationStatus::NotDetermined => match ask()? {
+                true => Ok(()),
+                false => Err(CameraError::PermissionDenied),
+            },
             _ => Err(CameraError::PermissionDenied),
+        }
+    }
+
+    /// What a status means to the app.
+    pub(super) fn access(status: AVAuthorizationStatus) -> CameraAccess {
+        match status {
+            AVAuthorizationStatus::Authorized => CameraAccess::Allowed,
+            AVAuthorizationStatus::NotDetermined => CameraAccess::NotAsked,
+            _ => CameraAccess::Denied,
         }
     }
 
@@ -331,6 +378,10 @@ mod avf {
         output: Retained<AVCaptureVideoDataOutput>,
         pub(super) frames: Retained<Frames>,
         queue: DispatchRetained<DispatchQueue>,
+        /// The input and output were added to the session (removing one
+        /// that was not raises an exception).
+        input_added: bool,
+        output_added: bool,
         /// The session's death has been reported by `take_error`.
         reported: bool,
     }
@@ -348,14 +399,19 @@ mod avf {
                 self.session.stopRunning();
                 self.output.setSampleBufferDelegate_queue(None, None);
                 self.session.beginConfiguration();
-                self.session.removeInput(&self.input);
-                self.session.removeOutput(&self.output);
+                if self.input_added {
+                    self.session.removeInput(&self.input);
+                }
+                if self.output_added {
+                    self.session.removeOutput(&self.output);
+                }
                 self.session.commitConfiguration();
             }
-            // A picture being delivered holds this lock; once it is ours,
-            // no picture is being delivered and none will be.
-            let sink = lock(&self.frames.ivars().sink).take();
-            drop(sink);
+            // Let any picture already queued for delivery run (it finds
+            // the sink gone, or delivers before it goes); after this the
+            // queue is empty and nothing adds to it.
+            let sink = self.frames.ivars().sink.clone();
+            self.queue.exec_sync(move || drop(lock(&sink).take()));
         }
     }
 
@@ -393,6 +449,13 @@ mod avf {
             }
         }
 
+        /// Whether this app may use the camera, without asking the user:
+        /// check this before [`CameraIo::start`], which asks if the user
+        /// has not been asked yet.
+        pub fn authorization_status() -> Result<CameraAccess, CameraError> {
+            status().map(access)
+        }
+
         fn open(&mut self, sink: Sink) -> Result<Running, CameraError> {
             authorize()?;
             let media = video()?;
@@ -403,23 +466,25 @@ mod avf {
             let input = unsafe { AVCaptureDeviceInput::deviceInputWithDevice_error(&device) }
                 .map_err(|e| from_ns_error(&e))?;
             let frames = Frames::new(Shared {
-                sink: Mutex::new(Some(sink)),
+                sink: Arc::new(Mutex::new(Some(sink))),
                 error: self.error.clone(),
             });
             let queue = DispatchQueue::new("app.bombechat.camera", None);
             // SAFETY: new objects with no requirements.
             let (session, output) =
                 unsafe { (AVCaptureSession::new(), AVCaptureVideoDataOutput::new()) };
-            let running = Running {
+            let mut running = Running {
                 session,
                 device,
                 input,
                 output,
                 frames,
                 queue,
+                input_added: false,
+                output_added: false,
                 reported: false,
             };
-            match Self::configure(&running) {
+            match Self::configure(&mut running) {
                 Ok(()) => Ok(running),
                 Err(e) => {
                     running.close();
@@ -429,7 +494,7 @@ mod avf {
         }
 
         /// Wire `r`'s input and output into its session and start it.
-        fn configure(r: &Running) -> Result<(), CameraError> {
+        fn configure(r: &mut Running) -> Result<(), CameraError> {
             let format = NSNumber::new_u32(LUMA_FULL);
             // SAFETY: kCVPixelBufferPixelFormatTypeKey is a CFString,
             // toll-free bridged to NSString.
@@ -443,7 +508,8 @@ mod avf {
             unsafe {
                 let session = &r.session;
                 session.beginConfiguration();
-                let added = session.canAddInput(&r.input) && {
+                r.input_added = session.canAddInput(&r.input);
+                if r.input_added {
                     session.addInput(&r.input);
                     // Which presets a session can take depends on its
                     // camera, so this comes after the input.
@@ -457,13 +523,13 @@ mod avf {
                         Some(ProtocolObject::from_ref(&*r.frames)),
                         Some(&r.queue),
                     );
-                    session.canAddOutput(&r.output)
-                };
-                if added {
+                    r.output_added = session.canAddOutput(&r.output);
+                }
+                if r.output_added {
                     session.addOutput(&r.output);
                 }
                 session.commitConfiguration();
-                if !added {
+                if !r.output_added {
                     return Err(CameraError::Unsupported(
                         "the camera cannot be captured from".into(),
                     ));
@@ -505,6 +571,10 @@ mod avf {
             let error = unsafe {
                 if !running.device.isConnected() {
                     Some(CameraError::NoDevice)
+                } else if running.session.isInterrupted() {
+                    Some(CameraError::Unsupported(
+                        "the camera is in use by another app".into(),
+                    ))
                 } else if !running.session.isRunning() {
                     Some(CameraError::Unsupported("the camera stopped".into()))
                 } else {
@@ -560,7 +630,7 @@ mod tests {
         use objc2::rc::Weak;
         use objc2_av_foundation::AVAuthorizationStatus;
 
-        use super::super::avf::decide;
+        use super::super::avf::{access, decide};
         use super::super::*;
 
         /// A camera the user has refused, or that a policy keeps from
@@ -569,7 +639,8 @@ mod tests {
         /// panics.
         #[test]
         fn a_denied_camera_gives_permission_denied() {
-            let never = || -> bool { panic!("asked although already decided") };
+            let never =
+                || -> Result<bool, CameraError> { panic!("asked although already decided") };
             assert_eq!(
                 decide(AVAuthorizationStatus::Denied, never),
                 Err(CameraError::PermissionDenied)
@@ -579,14 +650,50 @@ mod tests {
                 Err(CameraError::PermissionDenied)
             );
             assert_eq!(
-                decide(AVAuthorizationStatus::NotDetermined, || false),
+                decide(AVAuthorizationStatus::NotDetermined, || Ok(false)),
                 Err(CameraError::PermissionDenied)
             );
             assert_eq!(
-                decide(AVAuthorizationStatus::NotDetermined, || true),
+                decide(AVAuthorizationStatus::NotDetermined, || Ok(true)),
                 Ok(())
             );
             assert_eq!(decide(AVAuthorizationStatus::Authorized, never), Ok(()));
+        }
+
+        /// No answer to the permission prompt is its own error, not a
+        /// refusal and not a hang.
+        #[test]
+        fn no_answer_to_the_prompt_is_an_error() {
+            let unanswered = CameraError::Unsupported("no answer".into());
+            assert_eq!(
+                decide(AVAuthorizationStatus::NotDetermined, || Err(
+                    unanswered.clone()
+                )),
+                Err(unanswered)
+            );
+        }
+
+        /// The status, as the app sees it, without asking anyone.
+        #[test]
+        fn the_status_is_read_without_asking() {
+            assert_eq!(
+                access(AVAuthorizationStatus::Authorized),
+                CameraAccess::Allowed
+            );
+            assert_eq!(access(AVAuthorizationStatus::Denied), CameraAccess::Denied);
+            assert_eq!(
+                access(AVAuthorizationStatus::Restricted),
+                CameraAccess::Denied
+            );
+            assert_eq!(
+                access(AVAuthorizationStatus::NotDetermined),
+                CameraAccess::NotAsked
+            );
+            // The real one, for this process: whatever it is, reading it
+            // returns at once.
+            let start = Instant::now();
+            assert!(AvCamera::authorization_status().is_ok());
+            assert!(start.elapsed() < Duration::from_secs(2));
         }
 
         /// Whether any process has a camera running, as CoreMediaIO sees
