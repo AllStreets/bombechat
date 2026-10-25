@@ -17,6 +17,8 @@ The app lands at `target/release/bundle/macos/Bombechat.app` (relative to the re
 
 The first run asks for your name and a passphrase. Your name is what the people you pair with see; the passphrase locks the store. It creates the store in the app data folder (`~/Library/Application Support/app.bombechat.airgapped/bombechat.db`). To start a Mac over from first run, quit the app and delete that file and its `.salt` beside it.
 
+When a message is erased (Delete messages after), the store overwrites it with zeros and gives the space back, so nobody who opens the store, even with the passphrase, can read it again; on an SSD with APFS the drive may still keep older encrypted copies of those blocks until it reuses them, which only the store's key could ever read.
+
 Before you start:
 
 - Turn Wi-Fi off on both Macs if you want to be sure nothing else is talking. The app doesn't need it.

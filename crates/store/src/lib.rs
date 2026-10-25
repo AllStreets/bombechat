@@ -33,6 +33,7 @@ const ARGON2_KEY_LEN: usize = 32;
 const SALT_LEN: usize = 16;
 
 const SCHEMA: &str = "
+PRAGMA auto_vacuum = INCREMENTAL;
 CREATE TABLE identity (
     id INTEGER PRIMARY KEY CHECK (id = 0),
     secret BLOB NOT NULL,
@@ -69,14 +70,15 @@ CREATE TABLE broadcasts (
     envelope BLOB,
     age_at INTEGER
 );
-PRAGMA user_version = 3;
+PRAGMA user_version = 4;
 ";
 
 /// The schema version [`SCHEMA`] makes, kept in `PRAGMA user_version`.
 /// Version 0 is the first schema, before messages kept their delivery;
 /// version 1 is before messages kept the machine's age; version 2 is
-/// before public broadcasts were kept.
-const SCHEMA_VERSION: i64 = 3;
+/// before public broadcasts were kept; version 3 is before the store gave
+/// back the pages erased rows leave ([`MIGRATE_TO_4`]).
+const SCHEMA_VERSION: i64 = 4;
 
 /// Brings a version 0 store up to version 1: outgoing messages gain a
 /// delivery state and, while waiting, their sealed envelope. Rows from
@@ -118,6 +120,19 @@ CREATE TABLE broadcasts (
 );
 PRAGMA user_version = 3;
 COMMIT;
+";
+
+/// Brings a version 3 store up to version 4: from now on the pages that
+/// erased rows leave are given back to the file system at each purge
+/// (`auto_vacuum = INCREMENTAL`, then `PRAGMA incremental_vacuum`). An
+/// existing store only switches with a full `VACUUM`, which rewrites it
+/// once, leaving no free page behind. `VACUUM` cannot run inside a
+/// transaction; it is atomic on its own, and if it is cut short the
+/// version stays at 3 and the next open does it again.
+const MIGRATE_TO_4: &str = "
+PRAGMA auto_vacuum = INCREMENTAL;
+VACUUM;
+PRAGMA user_version = 4;
 ";
 
 /// The transport a message traveled over.
@@ -668,6 +683,9 @@ impl Store {
                 )
                 .map_err(|_| StoreError::Corrupt)?;
         }
+        if n > 0 {
+            give_back_free_pages(&conn);
+        }
         Ok(n)
     }
 
@@ -816,7 +834,39 @@ fn key_connection(conn: &Connection, key: &Zeroizing<[u8; ARGON2_KEY_LEN]>) -> R
 
     let pragma = Zeroizing::new(format!("PRAGMA key = \"x'{}'\";", hex.as_str()));
     conn.execute_batch(pragma.as_str())
-        .map_err(|_| StoreError::Io)
+        .map_err(|_| StoreError::Io)?;
+    erase_on_delete(conn)
+}
+
+/// Have SQLite overwrite what it deletes with zeros (`secure_delete`):
+/// the cells of erased rows and the pages they leave free. Without it an
+/// erased message stays in the file's free space, readable by anyone who
+/// can open the store. The bundled build is not compiled with it on, so
+/// every connection turns it on itself.
+fn erase_on_delete(conn: &Connection) -> Result<(), StoreError> {
+    let on: i64 = conn
+        .query_row("PRAGMA secure_delete = ON", [], |row| row.get(0))
+        .map_err(|_| StoreError::Io)?;
+    if on == 1 {
+        Ok(())
+    } else {
+        Err(StoreError::Io)
+    }
+}
+
+/// Give the pages erased rows left free back to the file system
+/// (`incremental_vacuum`), so the file shrinks to what it holds. Their
+/// contents were already overwritten ([`erase_on_delete`]); if this fails
+/// the pages only stay in the file, zeroed, to be used again. The pragma
+/// gives back one page per step, so it is stepped to the end.
+fn give_back_free_pages(conn: &Connection) {
+    let Ok(mut stmt) = conn.prepare("PRAGMA incremental_vacuum") else {
+        return;
+    };
+    let Ok(mut rows) = stmt.query([]) else {
+        return;
+    };
+    while let Ok(Some(_)) = rows.next() {}
 }
 
 /// After keying a freshly opened connection, force SQLCipher to actually
@@ -860,7 +910,12 @@ fn migrate(conn: &Connection) -> Result<(), StoreError> {
     if version > SCHEMA_VERSION {
         return Err(StoreError::Corrupt);
     }
-    for (to, step) in [(1, MIGRATE_TO_1), (2, MIGRATE_TO_2), (3, MIGRATE_TO_3)] {
+    for (to, step) in [
+        (1, MIGRATE_TO_1),
+        (2, MIGRATE_TO_2),
+        (3, MIGRATE_TO_3),
+        (4, MIGRATE_TO_4),
+    ] {
         if version < to && conn.execute_batch(step).is_err() {
             let _ = conn.execute_batch("ROLLBACK;");
             return Err(StoreError::Corrupt);
@@ -1142,5 +1197,109 @@ mod tests {
         // opening it again does not migrate twice, and keeps what it holds
         let store = Store::open(&path, "pw").unwrap();
         assert_eq!(store.broadcasts(), vec![b]);
+    }
+    fn message_to(contact: ContactId, id: u8, text: &str) -> StoredMessage {
+        StoredMessage {
+            id: [id; 16],
+            contact,
+            outgoing: false,
+            text: text.into(),
+            channel: Channel::Sound,
+            at_min: 5,
+            heard: false,
+            delivery: Delivery::Sent,
+        }
+    }
+
+    fn pragma(store: &Store, name: &str) -> i64 {
+        let conn = store.conn.lock().unwrap();
+        conn.query_row(&format!("PRAGMA {name}"), [], |row| row.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn a_store_made_or_opened_overwrites_what_it_deletes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.db");
+        let store = Store::create(&path, "pw", &Identity::generate(), "me").unwrap();
+        assert_eq!(pragma(&store, "secure_delete"), 1, "made");
+        assert_eq!(pragma(&store, "auto_vacuum"), 2, "incremental, from the start");
+        drop(store);
+        let store = Store::open(&path, "pw").unwrap();
+        assert_eq!(pragma(&store, "secure_delete"), 1, "opened");
+    }
+
+    /// A store set up exactly as [`Store::create`] sets one up, minus
+    /// SQLCipher's page encryption, so a test can read the file's bytes as
+    /// SQLite wrote them: whatever an erased row leaves there is what
+    /// anyone holding the key could read back from the real store.
+    fn unencrypted_store(path: &Path) -> Store {
+        create_private_db_file(path).unwrap();
+        let conn = open_existing(path).unwrap();
+        erase_on_delete(&conn).unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        store_identity(&conn, &Identity::generate(), "me").unwrap();
+        Store {
+            conn: Mutex::new(conn),
+            age_ms: Mutex::new(None),
+        }
+    }
+
+    fn holds(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack.windows(needle.len()).any(|w| w == needle)
+    }
+
+    #[test]
+    fn an_erased_message_leaves_nothing_readable_in_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("plain.db");
+        let store = unencrypted_store(&path);
+        let c = store
+            .add_contact("Marisol", &Identity::generate().public(), true)
+            .unwrap();
+        let short = "Meet at the quarry gate, Quokka-7731.";
+        // long enough to spill onto overflow pages, which a purge frees whole
+        let long = "Overflow-Pangolin-4410 ".repeat(400);
+        store.set_age(0);
+        store.put_message(&message_to(c, 1, short)).unwrap();
+        store.put_message(&message_to(c, 2, &long)).unwrap();
+        store.set_age(1_000);
+        store.put_message(&message_to(c, 3, "Still here.")).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        assert!(holds(&before, b"Quokka-7731") && holds(&before, b"Overflow-Pangolin-4410"));
+
+        assert_eq!(store.forget_older_than(1_000, 500).unwrap(), 2);
+        assert_eq!(pragma(&store, "freelist_count"), 0, "the freed pages were given back");
+        drop(store);
+
+        let after = std::fs::read(&path).unwrap();
+        assert!(!holds(&after, b"Quokka-7731"), "the short message is gone from the file");
+        assert!(!holds(&after, b"Overflow-Pangolin-4410"), "and so is the long one");
+        assert!(holds(&after, b"Still here."), "the one kept is still there");
+        assert!(after.len() < before.len(), "the file shrank");
+    }
+
+    #[test]
+    fn a_store_from_before_free_pages_were_given_back_is_rewritten_once_on_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v3.db");
+        {
+            let salt = random_salt();
+            write_salt_sidecar(&path, &salt).unwrap();
+            create_private_db_file(&path).unwrap();
+            let conn = open_existing(&path).unwrap();
+            key_connection(&conn, &derive_key("pw", &salt).unwrap()).unwrap();
+            // the version 3 schema: today's, without auto_vacuum
+            conn.execute_batch(&SCHEMA.replace("PRAGMA auto_vacuum = INCREMENTAL;", "")
+                .replace("user_version = 4", "user_version = 3"))
+                .unwrap();
+            store_identity(&conn, &Identity::generate(), "me").unwrap();
+            let v: i64 = conn.query_row("PRAGMA auto_vacuum", [], |r| r.get(0)).unwrap();
+            assert_eq!(v, 0);
+        }
+        let store = Store::open(&path, "pw").unwrap();
+        assert_eq!(pragma(&store, "auto_vacuum"), 2);
+        assert_eq!(pragma(&store, "user_version"), 4);
+        assert_eq!(store.my_name(), "me");
     }
 }
