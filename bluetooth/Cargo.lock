@@ -371,6 +371,7 @@ dependencies = [
  "bombechat-core",
  "ed25519-dalek",
  "snow",
+ "x25519-dalek",
  "zeroize",
 ]
 

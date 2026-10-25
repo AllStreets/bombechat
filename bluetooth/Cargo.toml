@@ -46,8 +46,14 @@ opt-level = 3
 [profile.dev.package.blake2]
 opt-level = 3
 
-# Every session handshake does several curve operations; unoptimised they
-# make the session crate's 10,000-round fuzz tests take many seconds.
-# Optimise the curve code even in dev/test builds.
+# Every session handshake does several curve operations and hashes; the
+# session crate's fuzz tests run 100,000 handshake steps. Optimise the
+# curve and hash code even in dev/test builds.
 [profile.dev.package.curve25519-dalek]
+opt-level = 3
+
+[profile.dev.package.x25519-dalek]
+opt-level = 3
+
+[profile.dev.package.sha2]
 opt-level = 3

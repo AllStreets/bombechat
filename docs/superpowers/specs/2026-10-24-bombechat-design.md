@@ -89,6 +89,17 @@ When two devices can talk both ways, they use a Noise-protocol session for forwa
 
 Identity is a long-term Ed25519 and X25519 pair per device. The safety number shown in the key check is derived from both parties' public keys, the same idea as Signal's.
 
+### Threat model: Bluetooth sessions
+
+Live Bluetooth sessions use Noise with `ChaChaPoly` and `SHA256` over X25519, through the `snow` library. Each device's Noise static key is its identity's X25519 key, and a static key certificate (its Ed25519 key signing "bombechat static key v1" and the X25519 key, made once) travels with the static key, so the other side learns a whole identity it can match against contacts and the safety number. The certificate says nothing about any one session, so sessions are as deniable as plain Noise: neither side can prove to anyone else that the other took part.
+
+- **Contacts** use `Noise_IK`. The initiator already holds the contact's key, so only that contact can read the first message, which names the initiator. A device that doesn't recognise the initiator sends nothing at all. Until it answers, nothing it sends reveals who it is.
+- **Requests to connect** use `Noise_XN`. The requester's identity goes to the recipient. The recipient never sends a static key, so it stays anonymous until the person accepts; then its hello goes inside the session. Whoever answers a request learns the requester's identity, so a request is only sent when the person chooses to send one.
+- `Noise_XX`, Bitchat's pattern, is kept for a future bridge and not used by the link layer. IK and XN use the prologue "bombechat v1", which keeps their transcripts apart from every other use of the same patterns.
+- Weak (low-order) X25519 keys from the other side are refused. Transport messages must arrive in order, and a replayed, reordered or altered one fails.
+- An IK first message can be replayed. The answer is useless to whoever replayed it, but the act of answering shows that the contact is in range. The link layer has to limit this, for example by refusing first messages it has already seen.
+- Memory: Bombechat's own copies of secret keys are wiped when dropped, but `snow` 0.10 does not wipe its copies of the static and ephemeral secrets, the chaining key or the transport keys. Someone who can later read the app's memory or a core dump might recover a finished session's keys. Closing that gap means a small `snow` resolver that wipes on drop, using the same primitives.
+
 ### Keys and contacts
 
 - **In person:** each device shows its key as a flashing light code (and a printed-tape style code on screen). The other device reads it with its camera. Both then show the same safety number to compare, and the contact is marked checked.

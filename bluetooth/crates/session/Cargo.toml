@@ -18,5 +18,7 @@ snow = { version = "=0.10.0", default-features = false, features = [
     "use-sha2",
     "use-getrandom",
 ] }
+# The weak-key probe on remote X25519 keys, as core checks was_contributory.
+x25519-dalek = { version = "2.0.1", features = ["static_secrets"] }
 zeroize = "1"
 
