@@ -63,7 +63,7 @@ const PARTS = { top: '.top', bank: '.bank', sheet: '.sheet', compose: '.compose'
 // would; `refuseBroadcast` is a reason the machine gives for refusing every broadcast.
 // Unlocking: `keychain` opens the store before the page asks (the Lock Off launch); `unlockMs` is how long
 // working out the key takes (0 if not given); the first `wrong` unlocks are refused as 'wrong passphrase'.
-function tauriStub({ hello, safety, people, talk, afterUnlock, settings, broadcastMax = 3939, kept = [], refuseBroadcast, keychain, unlockMs = 0, wrong = 0, wrongWhy = 'wrong passphrase' }) {
+function tauriStub({ hello, safety, people, talk, afterUnlock, settings, broadcastMax = 3939, kept = [], refuseBroadcast, keychain, unlockMs = 0, wrong = 0, wrongWhy = 'wrong passphrase', refuseSetting }) {
   let unlocked = !!keychain, refusals = wrong;
   const KEPT = 'stub.notices';
   const notices = () => JSON.parse(sessionStorage.getItem(KEPT) || 'null') || kept;
@@ -89,6 +89,7 @@ function tauriStub({ hello, safety, people, talk, afterUnlock, settings, broadca
         case 'channels': return Promise.resolve([{ channel: 'sound', state: 'listening', rate: 16.1 }]);
         case 'pair': setTimeout(() => window.__emit('pairOffer', { peer: { sign: Array(32).fill(5), dh: Array(32).fill(6) }, name: hello, safety }), 1200); return Promise.resolve(null);
         case 'confirm_pair': return Promise.resolve(7);
+        case 'set_setting': return refuseSetting ? Promise.reject(refuseSetting) : Promise.resolve(null);
         case 'send': return Promise.reject('not sent');
         // as the broadcast command answers; an accepted one waits, plays and is sent, as the node reports it
         case 'broadcast': {
@@ -473,6 +474,33 @@ function measureText() {
       await un.locator('.panel').screenshot({ path: path.join(out, 'settings-unread-panel.png') });
       report.settingsUnread = unread;
       await un.close();
+    }
+    // the machine won't take a turn of the Sound switch (the setting could not be saved): the knob goes back to where
+    // the machine keeps it, the switches say so, and the top bar says why, at 1024, 1440 and 1728
+    report.knobRefused = {};
+    for (const [w, h] of [[1024, 768], [1440, 900], [1728, 1117]]) {
+      const kr = await browser.newPage({ viewport: { width: w, height: h }, deviceScaleFactor: 2 });
+      watch(kr, `knob refused ${w}`);
+      const WHY = 'the setting was not saved: disk full';
+      await kr.addInitScript(tauriStub, { hello: 'Marisol Ortega', safety: '', people: [{ id: 1, name: 'Marisol Ortega', checked: true, safety: '' }], refuseSetting: WHY });
+      await kr.goto(url('still'));
+      await kr.waitForSelector('.unlock input[name=pass]');
+      await kr.fill('.unlock input[name=pass]', 'correct horse');
+      await kr.click('.unlock button');
+      await kr.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
+      await kr.waitForTimeout(300);
+      await kr.click('#k1');
+      await kr.waitForTimeout(500);
+      const got = await kr.evaluate(() => ({ sound: document.getElementById('k1').getAttribute('aria-valuenow'), cap: document.querySelector('#k1 .cap').style.transform,
+        top: document.getElementById('toplisten').textContent, sendOff: document.getElementById('sendsound').getAttribute('aria-disabled'),
+        said: document.getElementById('said').textContent, shown: +getComputedStyle(document.getElementById('said')).opacity, size: parseFloat(getComputedStyle(document.getElementById('said')).fontSize),
+        sets: __calls.filter(c => c[0] === 'set_setting').map(c => c[1]) }));
+      if (got.sound !== '2' || !/rotate\(120deg\)/.test(got.cap) || got.top !== 'Listening by sound' || got.sendOff === 'true') problems.push(`knob refused ${w}: the Sound switch did not go back to Listen and send: ${JSON.stringify(got)}`);
+      if (got.said !== 'The setting was not saved: disk full' || got.shown < .9 || got.size < 12) problems.push(`knob refused ${w}: the reason is not shown: ${JSON.stringify(got)}`);
+      if (JSON.stringify(got.sets) !== JSON.stringify([{ id: 'sound', valueIndex: 0 }])) problems.push(`knob refused ${w}: sent ${JSON.stringify(got.sets)}`);
+      await kr.locator('.top').screenshot({ path: path.join(out, `knob-refused-top-${w}.png`) });
+      report.knobRefused[w] = got;
+      await kr.close();
     }
     // Machine sound and Machine volume are the machine's settings: the title bar's lever shows what it keeps and the
     // drums play at its volume; moving the lever sends that one change. The Light switch, whose feature isn't fitted
