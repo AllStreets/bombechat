@@ -538,19 +538,22 @@ impl Node {
             .find_map(|t| t.band())
     }
 
-    /// Erase stored messages stamped before minute `cutoff_min`, except
-    /// ones still waiting to go out. Returns how many went; none while
-    /// locked.
-    pub fn forget_before(&self, cutoff_min: u32) -> usize {
-        self.store
-            .as_ref()
-            .and_then(|s| s.forget_before(cutoff_min).ok())
-            .unwrap_or(0)
+    /// Tell the store the machine's age, in ms of running time, to stamp
+    /// on messages it stores from now on. See [`Store::set_age`].
+    pub fn set_age(&self, age_ms: u64) {
+        if let Some(store) = &self.store {
+            store.set_age(age_ms);
+        }
     }
 
-    /// The latest minute a stored message is stamped with, if any.
-    pub fn latest_stamp(&self) -> Option<u32> {
-        self.store.as_ref().and_then(Store::latest_at_min)
+    /// Erase stored messages kept longer than `keep_ms` of running time
+    /// at the machine's age `age_ms`, except ones still waiting to go
+    /// out. Returns how many went; none while locked.
+    pub fn forget_older_than(&self, age_ms: u64, keep_ms: u64) -> usize {
+        self.store
+            .as_ref()
+            .and_then(|s| s.forget_older_than(age_ms, keep_ms).ok())
+            .unwrap_or(0)
     }
 
     /// The minute to stamp on a message stored now, by the machine's own
@@ -559,7 +562,9 @@ impl Node {
     /// A wall clock that jumps forward or back while the app runs moves
     /// no stamp, so stamps keep the order messages came in, and none
     /// is lifted by a jump into the next session (each session reads the
-    /// wall clock afresh). The minute shown on the sheet is this stamp.
+    /// wall clock afresh). It is for showing and ordering only: "Delete
+    /// messages after" never reads it, but the machine's running age
+    /// ([`Node::set_age`]).
     fn stamp(&mut self) -> u32 {
         let now_ms = self.now_ms;
         let wall = self.wall;
@@ -1851,7 +1856,6 @@ mod tests {
             })
             .unwrap();
         let mut node = Node::new(Some(store), vec![Box::new(Wire::default())]);
-        assert_eq!(node.latest_stamp(), Some(ahead));
         let before = now_min();
         let sent = node.send(&[contact], "Now.", Channel::Sound);
         let at = node
@@ -1869,7 +1873,8 @@ mod tests {
     #[test]
     fn forgetting_while_locked_erases_nothing() {
         let node = Node::new(None, Vec::new());
-        assert_eq!(node.forget_before(u32::MAX), 0);
+        node.set_age(u64::MAX);
+        assert_eq!(node.forget_older_than(u64::MAX, 0), 0);
     }
 
     #[test]

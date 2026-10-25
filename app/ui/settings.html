@@ -168,7 +168,7 @@ const SETTINGS=[
  {id:'quiet',g:'Quiet sending',name:'Send under',values:['30','35','40','45','50'],unit:' dB',v:2,desc:'Wait until the room is quieter than this before playing a message.'},
  {id:'repeats',g:'Quiet sending',name:'Repeats',values:['0','1','2','3'],v:2,desc:'Play each message again, a minute and a half apart, in case the first was missed.'},
  {id:'lock',g:'Privacy',name:'Lock with passphrase',values:['Off','On'],v:1,desc:'Ask for your passphrase when Bombechat opens. Contacts and messages are encrypted either way.'},
- {id:'expire',g:'Privacy',name:'Delete messages after',values:['Never','1 day','7 days','30 days'],v:0,desc:'Older messages are erased from this laptop.'},
+ {id:'expire',g:'Privacy',name:'Delete messages after',values:['Never','1 day','7 days','30 days'],v:0,desc:'Older messages are erased from this laptop. Counts only time this machine has been running, so they may go later, never sooner.'},
  {id:'inperson',g:'Privacy',name:'New contacts need a key check',values:['Off','On'],v:1,desc:'Only add someone once you have compared keys face to face.'},
 ];
 const byId=Object.fromEntries(SETTINGS.map(s=>[s.id,s]));
@@ -409,12 +409,13 @@ async function build(){
   /* ---------- focus, dim, tag ---------- */
   const tag=document.getElementById('tag');
   function focus(id){Object.values(plugs).forEach(P=>{P.dimT=id&&P.s.id!==id?1:0;P.liftT=id===P.s.id?.12:0});decorDim=id?1:0;
+    // a held row shows no tag: its name is engraved beside it and its tape says why, and a tag would only cover the
+    // row above
     if(id){frameRow(id);tag.textContent=tagText(id);tag.classList.toggle('on',!byId[id].held);lamp.intensity=0}else{overview();tag.classList.remove('on')}}
   let decorDim=0,decorDimNow=0;
   function updateTag(){if(!focusId){return}const P=plugs[focusId];const v=P.head.position.clone();v.z+=.6;v.y+=.42;v.project(camera);
     const tw=tag.offsetWidth/2+10;tag.style.left=Math.max(tw,Math.min(view.clientWidth-tw,(v.x*.5+.5)*view.clientWidth))+'px';tag.style.top=(-v.y*.5+.5)*view.clientHeight-14+'px';tag.textContent=tagText(focusId)}
-  // a held row needs no tag: its name is engraved beside it and its tape says why, and a tag would only cover the
-  // row above
+  // what the tag beside a focused plug says: the setting and its value
   const tagText=id=>`${byId[id].name}: ${label(byId[id])}`;
 
   /* ---------- moving a plug: pull, carry, seat ---------- */

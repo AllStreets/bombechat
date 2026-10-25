@@ -54,14 +54,16 @@ CREATE TABLE messages (
     at_min INTEGER NOT NULL,
     heard INTEGER NOT NULL,
     delivery INTEGER NOT NULL DEFAULT 1,
-    envelope BLOB
+    envelope BLOB,
+    age_at INTEGER
 );
-PRAGMA user_version = 1;
+PRAGMA user_version = 2;
 ";
 
 /// The schema version [`SCHEMA`] makes, kept in `PRAGMA user_version`.
-/// Version 0 is the first schema, before messages kept their delivery.
-const SCHEMA_VERSION: i64 = 1;
+/// Version 0 is the first schema, before messages kept their delivery;
+/// version 1 is before messages kept the machine's age.
+const SCHEMA_VERSION: i64 = 2;
 
 /// Brings a version 0 store up to version 1: outgoing messages gain a
 /// delivery state and, while waiting, their sealed envelope. Rows from
@@ -71,6 +73,17 @@ BEGIN;
 ALTER TABLE messages ADD COLUMN delivery INTEGER NOT NULL DEFAULT 1;
 ALTER TABLE messages ADD COLUMN envelope BLOB;
 PRAGMA user_version = 1;
+COMMIT;
+";
+
+/// Brings a version 1 store up to version 2: messages gain the machine's
+/// age when they were stored ([`Store::set_age`]). Rows from before have
+/// none until [`Store::adopt_unaged`] gives them the age at that moment,
+/// so none counts as older than it is.
+const MIGRATE_TO_2: &str = "
+BEGIN;
+ALTER TABLE messages ADD COLUMN age_at INTEGER;
+PRAGMA user_version = 2;
 COMMIT;
 ";
 
@@ -234,6 +247,9 @@ impl std::fmt::Debug for StoreKey {
 /// The encrypted on-device store: identity, contacts and messages.
 pub struct Store {
     conn: Mutex<Connection>,
+    /// The machine's age, in ms of running time, that messages stored now
+    /// are stamped with; none until [`Store::set_age`].
+    age_ms: Mutex<Option<u64>>,
 }
 
 impl Store {
@@ -272,6 +288,7 @@ impl Store {
         guard.disarm();
         Ok(Store {
             conn: Mutex::new(conn),
+            age_ms: Mutex::new(None),
         })
     }
 
@@ -300,6 +317,7 @@ impl Store {
 
         Ok(Store {
             conn: Mutex::new(conn),
+            age_ms: Mutex::new(None),
         })
     }
 
@@ -387,8 +405,8 @@ impl Store {
         let envelope = envelope.filter(|_| m.delivery == Delivery::Waiting);
         conn.execute(
             "INSERT INTO messages
-                 (id, contact_id, outgoing, text, channel, at_min, heard, delivery, envelope)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 (id, contact_id, outgoing, text, channel, at_min, heard, delivery, envelope, age_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT(id) DO UPDATE SET
                  contact_id = excluded.contact_id,
                  outgoing = excluded.outgoing,
@@ -408,6 +426,7 @@ impl Store {
                 m.heard as i64,
                 m.delivery.to_i64(),
                 envelope,
+                self.age(),
             ],
         )
         .map_err(|_| StoreError::Corrupt)?;
@@ -538,27 +557,48 @@ impl Store {
             .find(|m| &m.id == id)
     }
 
-    /// Erase every message stamped before minute `cutoff_min`, except
-    /// outgoing ones still waiting to go out (they are erased once they
-    /// have gone, at the next purge). Messages stamped at or after the
-    /// cut-off are never touched. Returns how many were erased.
-    pub fn forget_before(&self, cutoff_min: u32) -> Result<usize, StoreError> {
+    /// The machine's age, in ms of the time it has been running, to stamp
+    /// on messages stored from now on (as `age_at`; never shown). The
+    /// age only ever grows, and never follows the wall clock, so "Delete
+    /// messages after" can count from it without trusting the clock.
+    pub fn set_age(&self, age_ms: u64) {
+        *self.age_ms.lock().expect("store age mutex poisoned") = Some(age_ms);
+    }
+
+    fn age(&self) -> Option<i64> {
+        let age = *self.age_ms.lock().expect("store age mutex poisoned");
+        age.map(|a| i64::try_from(a).unwrap_or(i64::MAX))
+    }
+
+    /// Give every message stored without an age (from before ages were
+    /// kept, or before [`Store::set_age`]) the age `age_ms`: the youngest
+    /// it can be, so none is erased earlier than it should be. Returns how
+    /// many.
+    pub fn adopt_unaged(&self, age_ms: u64) -> Result<usize, StoreError> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         conn.execute(
-            "DELETE FROM messages WHERE at_min < ?1 AND NOT (outgoing = 1 AND delivery = 0)",
-            params![cutoff_min],
+            "UPDATE messages SET age_at = ?1 WHERE age_at IS NULL",
+            params![i64::try_from(age_ms).unwrap_or(i64::MAX)],
         )
         .map_err(|_| StoreError::Corrupt)
     }
 
-    /// The latest minute any stored message is stamped with, if any.
-    pub fn latest_at_min(&self) -> Option<u32> {
+    /// Erase every message stored more than `keep_ms` of running time
+    /// before the machine's age `age_ms`, except outgoing ones still
+    /// waiting to go out (they are erased once they have gone, at the
+    /// next purge) and ones with no age yet. Returns how many went.
+    pub fn forget_older_than(&self, age_ms: u64, keep_ms: u64) -> Result<usize, StoreError> {
+        let Some(before) = age_ms.checked_sub(keep_ms) else {
+            return Ok(0);
+        };
         let conn = self.conn.lock().expect("store mutex poisoned");
-        conn.query_row("SELECT MAX(at_min) FROM messages", [], |row| {
-            row.get::<_, Option<u32>>(0)
-        })
-        .ok()
-        .flatten()
+        conn.execute(
+            "DELETE FROM messages
+             WHERE age_at IS NOT NULL AND age_at < ?1
+               AND NOT (outgoing = 1 AND delivery = 0)",
+            params![i64::try_from(before).unwrap_or(i64::MAX)],
+        )
+        .map_err(|_| StoreError::Corrupt)
     }
 
     /// Set whether a contact's safety number has been checked. Unknown
@@ -649,9 +689,11 @@ fn migrate(conn: &Connection) -> Result<(), StoreError> {
     if version > SCHEMA_VERSION {
         return Err(StoreError::Corrupt);
     }
-    if version < 1 && conn.execute_batch(MIGRATE_TO_1).is_err() {
-        let _ = conn.execute_batch("ROLLBACK;");
-        return Err(StoreError::Corrupt);
+    for (to, step) in [(1, MIGRATE_TO_1), (2, MIGRATE_TO_2)] {
+        if version < to && conn.execute_batch(step).is_err() {
+            let _ = conn.execute_batch("ROLLBACK;");
+            return Err(StoreError::Corrupt);
+        }
     }
     Ok(())
 }
@@ -824,5 +866,53 @@ mod tests {
         // Opening it again does not migrate twice.
         let store = Store::open(&path, "pw").unwrap();
         assert_eq!(store.waiting().len(), 1);
+    }
+
+    /// The version 1 schema, as stores made before messages kept the
+    /// machine's age have it.
+    const SCHEMA_1: &str = "
+    CREATE TABLE identity (id INTEGER PRIMARY KEY CHECK (id = 0), secret BLOB NOT NULL, name TEXT NOT NULL);
+    CREATE TABLE contacts (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, sign BLOB NOT NULL,
+        dh BLOB NOT NULL, checked INTEGER NOT NULL);
+    CREATE TABLE messages (id BLOB PRIMARY KEY, contact_id INTEGER NOT NULL REFERENCES contacts(id),
+        outgoing INTEGER NOT NULL, text TEXT NOT NULL, channel INTEGER NOT NULL, at_min INTEGER NOT NULL,
+        heard INTEGER NOT NULL, delivery INTEGER NOT NULL DEFAULT 1, envelope BLOB);
+    PRAGMA user_version = 1;
+    ";
+
+    #[test]
+    fn a_store_from_before_ages_opens_and_erases_nothing_until_its_messages_have_an_age() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v1.db");
+        let them = Identity::generate().public();
+        {
+            let salt = random_salt();
+            write_salt_sidecar(&path, &salt).unwrap();
+            create_private_db_file(&path).unwrap();
+            let conn = open_existing(&path).unwrap();
+            key_connection(&conn, &derive_key("pw", &salt).unwrap()).unwrap();
+            conn.execute_batch(SCHEMA_1).unwrap();
+            store_identity(&conn, &Identity::generate(), "me").unwrap();
+            conn.execute(
+                "INSERT INTO contacts (name, sign, dh, checked) VALUES ('Marisol', ?1, ?2, 1)",
+                params![them.sign.as_slice(), them.dh.as_slice()],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO messages VALUES (?1, 1, 0, 'From long ago.', 0, 5, 0, 1, NULL)",
+                params![[7u8; 16].as_slice()],
+            )
+            .unwrap();
+        }
+
+        let store = Store::open(&path, "pw").unwrap();
+        assert_eq!(store.forget_older_than(u64::MAX, 0).unwrap(), 0);
+        assert_eq!(store.adopt_unaged(3_600_000).unwrap(), 1);
+        assert_eq!(store.forget_older_than(3_600_000 + 86_400_000, 86_400_000).unwrap(), 0);
+        assert!(store.message(&[7u8; 16]).is_some(), "a day of running time, not more");
+        drop(store);
+        // opening it again does not migrate twice
+        let store = Store::open(&path, "pw").unwrap();
+        assert_eq!(store.adopt_unaged(1).unwrap(), 0);
     }
 }

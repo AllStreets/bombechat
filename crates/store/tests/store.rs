@@ -452,46 +452,43 @@ fn the_key_a_passphrase_derives_opens_the_store_without_the_passphrase() {
 }
 
 #[test]
-fn forgetting_erases_only_what_is_older_than_the_cut_off() {
+fn forgetting_erases_only_what_has_been_kept_longer_than_the_running_time_allowed() {
     let d = tempdir().unwrap();
     let store = Store::create(&d.path().join("b.db"), "pw", &Identity::generate(), "me").unwrap();
     let c = store.add_contact("Marisol", &marisol(), true).unwrap();
-    store
-        .put_message(&message(1, c, 100, false, Delivery::Sent))
-        .unwrap();
-    store
-        .put_message(&message(2, c, 199, true, Delivery::Sent))
-        .unwrap();
-    store
-        .put_message(&message(3, c, 200, false, Delivery::Sent))
-        .unwrap();
-    store
-        .put_message(&message(4, c, 900, true, Delivery::Failed))
-        .unwrap();
-    // still waiting to go out: kept until it has gone
-    store
-        .put_outgoing(&message(5, c, 50, true, Delivery::Waiting), b"sealed")
-        .unwrap();
+    // at_min (the wall clock's minute) plays no part: these are all over the place
+    store.set_age(1_000);
+    store.put_message(&message(1, c, 9_999_999, false, Delivery::Sent)).unwrap();
+    store.set_age(5_000);
+    store.put_message(&message(2, c, 1, true, Delivery::Sent)).unwrap();
+    store.put_outgoing(&message(3, c, 1, true, Delivery::Waiting), b"sealed").unwrap();
+    store.set_age(9_000);
+    store.put_message(&message(4, c, 500, false, Delivery::Sent)).unwrap();
 
-    assert_eq!(store.latest_at_min(), Some(900));
-    assert_eq!(store.forget_before(200).unwrap(), 2);
+    assert_eq!(store.forget_older_than(9_000, 10_000).unwrap(), 0, "younger than the age itself");
+    assert_eq!(store.forget_older_than(9_000, 4_000).unwrap(), 1, "kept 8000 of 4000");
     let left: Vec<u8> = store.conversation(c).iter().map(|m| m.id[0]).collect();
-    assert_eq!(left, vec![3, 4, 5], "at the cut-off and after are kept");
-    assert_eq!(store.waiting().len(), 1);
+    assert_eq!(left, vec![2, 3, 4], "kept exactly 4000 is not longer than 4000");
+    assert_eq!(store.forget_older_than(9_001, 4_000).unwrap(), 1, "now it is");
+    assert_eq!(store.waiting().len(), 1, "still waiting to go out: kept");
+    store.set_delivery(&[3; 16], Delivery::Sent).unwrap();
+    assert_eq!(store.forget_older_than(9_001, 4_000).unwrap(), 1, "gone, so it can go");
 
-    // A clock set back gives an earlier cut-off: nothing newer than it goes,
-    // including messages stamped "in the future" by the clock before.
-    assert_eq!(store.forget_before(10).unwrap(), 0);
-    assert_eq!(store.conversation(c).len(), 3);
-
-    store.set_delivery(&[5; 16], Delivery::Sent).unwrap();
-    assert_eq!(store.forget_before(200).unwrap(), 1, "gone, so it can go");
+    // updating a stored message keeps the age it was first stored at
+    store.set_age(20_000);
+    store.put_message(&message(4, c, 500, false, Delivery::Sent)).unwrap();
+    assert_eq!(store.forget_older_than(13_001, 4_000).unwrap(), 1);
 }
 
 #[test]
-fn an_empty_store_has_no_latest_stamp() {
+fn messages_stored_before_ages_were_kept_take_the_age_they_are_found_at() {
     let d = tempdir().unwrap();
     let store = Store::create(&d.path().join("b.db"), "pw", &Identity::generate(), "me").unwrap();
-    assert_eq!(store.latest_at_min(), None);
-    assert_eq!(store.forget_before(u32::MAX).unwrap(), 0);
+    let c = store.add_contact("Marisol", &marisol(), true).unwrap();
+    store.put_message(&message(1, c, 1, false, Delivery::Sent)).unwrap(); // no age set yet
+    assert_eq!(store.forget_older_than(u64::MAX, 0).unwrap(), 0, "no age: never erased");
+    assert_eq!(store.adopt_unaged(50_000).unwrap(), 1);
+    assert_eq!(store.adopt_unaged(90_000).unwrap(), 0, "adopted once");
+    assert_eq!(store.forget_older_than(60_000, 10_000).unwrap(), 0);
+    assert_eq!(store.forget_older_than(60_001, 10_000).unwrap(), 1);
 }

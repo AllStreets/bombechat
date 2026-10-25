@@ -392,26 +392,27 @@ fn store_with_ages(path: &Path, ages: &[u32]) -> ContactId {
     marisol
 }
 
+const HOUR_MS: u64 = 60 * 60 * 1000;
+
 #[test]
-fn messages_older_than_delete_messages_after_go_at_unlock() {
+fn messages_go_after_a_day_of_running_time_whatever_their_wall_clock_minutes() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("bombechat.db");
     let day = 24 * 60;
-    let marisol = store_with_ages(&path, &[2 * day, day + 30, day - 5, 10]);
+    let marisol = store_with_ages(&path, &[400 * day, 2 * day, 10]);
     let s = Shared::new(Box::new(device(&path)));
-    commands::set_setting(&s, "expire".into(), 1).unwrap(); // 1 day, while locked: nothing yet
+    commands::set_setting(&s, "expire".into(), 1).unwrap(); // 1 day
+    commands::tick(&s, 0);
     commands::unlock(&s, "correct horse".into(), None).unwrap();
-    let left: Vec<String> = commands::conversation(&s, marisol.0)
-        .unwrap()
-        .iter()
-        .map(|m| m["text"].as_str().unwrap().to_string())
-        .collect();
-    // counted back from the newest message, ten minutes ago: never further on
-    // than the machine can vouch for
-    assert_eq!(left, vec!["1435 minutes old", "10 minutes old"]);
-
-    commands::set_setting(&s, "expire".into(), 0).unwrap(); // Never
-    assert_eq!(commands::conversation(&s, marisol.0).unwrap().len(), 2);
+    assert_eq!(
+        commands::conversation(&s, marisol.0).unwrap().len(),
+        3,
+        "found at unlock: none has been kept a day of running time here"
+    );
+    commands::tick(&s, 24 * HOUR_MS);
+    assert_eq!(commands::conversation(&s, marisol.0).unwrap().len(), 3);
+    commands::tick(&s, 25 * HOUR_MS);
+    assert_eq!(commands::conversation(&s, marisol.0).unwrap().len(), 0);
 }
 
 #[test]
@@ -433,18 +434,20 @@ fn at_its_default_delete_messages_after_deletes_nothing() {
 fn choosing_a_shorter_time_deletes_within_the_hour_not_at_once() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("bombechat.db");
-    let day = 24 * 60;
-    let marisol = store_with_ages(&path, &[3 * day, 60]);
+    let marisol = store_with_ages(&path, &[60]);
     let s = Shared::new(Box::new(device(&path)));
+    commands::tick(&s, 0);
     commands::unlock(&s, "correct horse".into(), None).unwrap();
+    commands::tick(&s, 72 * HOUR_MS); // three days kept, at Never
+    assert_eq!(commands::conversation(&s, marisol.0).unwrap().len(), 1);
     commands::set_setting(&s, "expire".into(), 1).unwrap();
     assert_eq!(
         commands::conversation(&s, marisol.0).unwrap().len(),
-        2,
+        1,
         "time to put it back"
     );
-    commands::tick(&s, 3_600_000);
-    assert_eq!(commands::conversation(&s, marisol.0).unwrap().len(), 1);
+    commands::tick(&s, 73 * HOUR_MS);
+    assert_eq!(commands::conversation(&s, marisol.0).unwrap().len(), 0);
 }
 
 #[test]

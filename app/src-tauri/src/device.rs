@@ -5,7 +5,6 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use bombechat_core::{Identity, PublicIdentity};
 use bombechat_modem::{AudioIo, Band, CpalAudio, ModemConfig, QuietGate};
@@ -38,18 +37,14 @@ pub fn send_gain(value_index: usize) -> f32 {
     0.2 * (value_index.min(4) + 1) as f32
 }
 
-/// The wall clock, in minutes since the Unix epoch.
-fn wall_min() -> u32 {
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    u32::try_from(secs / 60).unwrap_or(u32::MAX)
-}
+/// Where the machine's running age is kept, beside the store: one number
+/// of milliseconds, nothing more. See [`Device::age_ms`].
+const AGE_FILE: &str = "age.json";
 
-/// Where "Delete messages after" keeps the last minute it counted back
-/// from, beside the store: a minute number, nothing more.
-const PURGED_FILE: &str = "purged.json";
+/// The running age is written down at least this often while it runs (and
+/// at each purge and when the machine is let go), so a crash loses at most
+/// this much of it: the age then runs behind, never ahead.
+const AGE_SAVE_EVERY_MS: u64 = 60 * 1000;
 
 /// The settings file's name, beside the store. Settings are not secret
 /// (which switch is where, a threshold), so they are kept as plain JSON.
@@ -175,14 +170,12 @@ pub struct Device {
     /// When to look for old messages to delete next, by the pump's
     /// clock: an hour after the unlock, then every hour.
     next_purge_ms: Option<u64>,
-    /// The minute "Delete messages after" trusts as now, and the pump's
-    /// `now_ms` when it did, once this session has purged: from then on
-    /// it moves on only as `now_ms` does. See [`Device::trusted_now`].
-    trust: Option<(u64, u32)>,
-    /// The pump's clock at the last tick.
-    now_ms: u64,
-    /// The wall clock, in minutes.
-    wall: fn() -> u32,
+    /// The machine's running age, in ms: see [`Device::age_ms`].
+    age_ms: u64,
+    /// The age last written to [`AGE_FILE`].
+    age_saved: u64,
+    /// The pump's clock at the last tick, once there has been one.
+    now_ms: Option<u64>,
 }
 
 impl Device {
@@ -238,6 +231,7 @@ impl Device {
     ) -> Device {
         tidy_unfinished(&store_path);
         let settings = load_settings(&settings_path(&store_path));
+        let age_ms = load_age(&age_path(&store_path));
         let mut device = Device {
             node: Node::new(None, transports),
             store_path,
@@ -249,9 +243,9 @@ impl Device {
             keeper: Box::new(Nowhere),
             store_key: None,
             next_purge_ms: None,
-            trust: None,
-            now_ms: 0,
-            wall: wall_min,
+            age_ms,
+            age_saved: age_ms,
+            now_ms: None,
         };
         for (id, _, default) in SETTINGS {
             let value = device.setting(id).unwrap_or(default);
@@ -297,6 +291,10 @@ impl Device {
     /// still ask.
     fn install(&mut self, store: Store, key: StoreKey) {
         self.my_name = Some(store.my_name());
+        store.set_age(self.age_ms);
+        if let Err(e) = store.adopt_unaged(self.age_ms) {
+            eprintln!("bombechat: messages from before ages were kept have none: {e}");
+        }
         self.node.unlock(store);
         self.unlocked = true;
         if self.lock_is_off() {
@@ -312,40 +310,41 @@ impl Device {
         }
         self.store_key = Some(key);
         self.purge();
-        self.next_purge_ms = Some(self.now_ms.saturating_add(PURGE_EVERY_MS));
+        self.next_purge_ms = Some(self.now_ms.unwrap_or(0).saturating_add(PURGE_EVERY_MS));
     }
 
-    /// The minute "Delete messages after" counts back from: the wall
-    /// clock's, but never further on than the machine can vouch for, so a
-    /// wall clock set ahead (by mistake, or on purpose) erases nothing
-    /// early. The first purge of a session trusts no later than the newest
-    /// stored message's stamp or the minute the last purge counted from,
-    /// whichever is later; after that the trusted minute moves on only by
-    /// the pump's monotonic clock. A wall clock set back only moves the
-    /// cut-off back. The price: after a long time closed, messages are
-    /// deleted late (never early) until newer ones arrive.
-    fn trusted_now(&mut self) -> u32 {
-        let wall = (self.wall)();
-        let limit = match self.trust {
-            Some((at_ms, at_min)) => {
-                let elapsed = self.now_ms.saturating_sub(at_ms) / 60_000;
-                at_min.saturating_add(elapsed.min(u64::from(u32::MAX)) as u32)
-            }
-            None => {
-                let kept = load_purged(&purged_path(&self.store_path));
-                kept.max(self.node.latest_stamp()).unwrap_or(wall)
-            }
-        };
-        let trusted = wall.min(limit);
-        if self.trust.is_none() {
-            self.trust = Some((self.now_ms, trusted));
+    /// The machine's running age, in ms: how long it has been running,
+    /// all told, counted only by the pump's monotonic clock and kept
+    /// beside the store between launches. It never goes back and never
+    /// jumps, whatever the wall clock does. Each message is stored with
+    /// the age it was stored at, and "Delete messages after" counts in it:
+    /// time while the app is closed does not count, so deletion can run
+    /// late, never early.
+    pub fn age_ms(&self) -> u64 {
+        self.age_ms
+    }
+
+    /// Move the age on by the pump's clock since the last tick, and write
+    /// it down if it has moved far enough since it last was.
+    fn grow(&mut self, now_ms: u64) {
+        if let Some(last) = self.now_ms {
+            self.age_ms = self.age_ms.saturating_add(now_ms.saturating_sub(last));
         }
-        trusted
+        self.now_ms = Some(now_ms.max(self.now_ms.unwrap_or(0)));
+        self.node.set_age(self.age_ms);
+        if self.age_ms.saturating_sub(self.age_saved) >= AGE_SAVE_EVERY_MS {
+            self.save_age();
+        }
     }
 
-    /// Delete stored messages older than Delete messages after allows,
-    /// counting back from [`Device::trusted_now`]. Nothing while locked or
-    /// at Never. Returns how many went.
+    fn save_age(&mut self) {
+        save_age(&age_path(&self.store_path), self.age_ms);
+        self.age_saved = self.age_ms;
+    }
+
+    /// Delete stored messages kept longer than Delete messages after
+    /// allows, in running age ([`Device::age_ms`]); never by the wall
+    /// clock. Nothing while locked or at Never. Returns how many went.
     fn purge(&mut self) -> usize {
         let days = self
             .setting("expire")
@@ -353,10 +352,9 @@ impl Device {
             .and_then(|i| EXPIRE_DAYS.get(i).copied().flatten());
         match days {
             Some(days) if self.unlocked => {
-                let now = self.trusted_now();
-                save_purged(&purged_path(&self.store_path), now);
-                self.node
-                    .forget_before(now.saturating_sub(days.saturating_mul(24 * 60)))
+                self.save_age();
+                let keep_ms = u64::from(days) * 24 * 60 * 60 * 1000;
+                self.node.forget_older_than(self.age_ms, keep_ms)
             }
             _ => 0,
         }
@@ -418,24 +416,28 @@ fn default_of(id: &str) -> Option<usize> {
         .map(|(_, _, default)| *default)
 }
 
-/// Where the last purge's minute is kept, beside the store.
-fn purged_path(store_path: &Path) -> PathBuf {
-    store_path.with_file_name(PURGED_FILE)
+/// Where the running age is kept, beside the store.
+fn age_path(store_path: &Path) -> PathBuf {
+    store_path.with_file_name(AGE_FILE)
 }
 
-/// The minute the last purge counted back from, if it was kept.
-fn load_purged(path: &Path) -> Option<u32> {
-    let bytes = fs::read(path).ok()?;
-    let v: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-    u32::try_from(v.get("trusted_min")?.as_u64()?).ok()
+/// The running age kept at `path`, or 0 if there is none (or it cannot be
+/// read): starting again from 0 only makes deletion later.
+fn load_age(path: &Path) -> u64 {
+    fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|v| v.get("age_ms")?.as_u64())
+        .unwrap_or(0)
 }
 
-/// Keep the minute a purge counted back from, for the next session.
-fn save_purged(path: &Path, trusted_min: u32) {
+/// Keep the running age at `path`, written beside it first and moved into
+/// place so a crash never leaves half a file.
+fn save_age(path: &Path, age_ms: u64) {
     let staged = with_suffix(path, ".new");
-    let json = serde_json::json!({ "trusted_min": trusted_min }).to_string();
+    let json = serde_json::json!({ "age_ms": age_ms }).to_string();
     if let Err(e) = fs::write(&staged, json).and_then(|()| fs::rename(&staged, path)) {
-        eprintln!("bombechat: the last purge's minute was not kept: {e}");
+        eprintln!("bombechat: the machine's age was not kept: {e}");
     }
 }
 
@@ -595,7 +597,7 @@ impl Machine for Device {
     /// once an hour.
     fn tick(&mut self, now_ms: u64) -> Vec<NodeEvent> {
         let mut events = std::mem::take(&mut self.pending);
-        self.now_ms = now_ms;
+        self.grow(now_ms);
         events.extend(self.node.tick(now_ms));
         if self.unlocked {
             match self.next_purge_ms {
@@ -608,6 +610,16 @@ impl Machine for Device {
             }
         }
         events
+    }
+}
+
+/// The age is written down when the machine is let go (the app quits),
+/// so the next launch carries on from it.
+impl Drop for Device {
+    fn drop(&mut self) {
+        if self.age_ms != self.age_saved {
+            self.save_age();
+        }
     }
 }
 
@@ -787,21 +799,11 @@ mod tests {
         );
     }
 
-    /// The wall clock the purge tests set, in minutes.
-    static WALL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    fn set_wall(min: u32) {
-        WALL.store(min, std::sync::atomic::Ordering::SeqCst);
-    }
-    fn test_wall() -> u32 {
-        WALL.load(std::sync::atomic::Ordering::SeqCst)
-    }
-    /// The purge tests share the wall clock, so they take turns.
-    static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    const HOUR: u64 = 60 * 60 * 1000;
+    const DAY: u64 = 24 * HOUR;
 
-    const DAY: u32 = 1440;
-    const NOW: u32 = 1_000_000;
-
-    /// A store at `dir` holding messages stamped at `at` (minutes).
+    /// A store at `dir` holding messages stamped (wall clock) at `at`
+    /// minutes, stored before the machine kept ages.
     fn aged_store(dir: &tempfile::TempDir, at: &[u32]) -> (PathBuf, ContactId) {
         let path = dir.path().join("m.db");
         let store = Store::create(&path, "correct horse", &Identity::generate(), "Ana").unwrap();
@@ -810,26 +812,29 @@ mod tests {
             .unwrap();
         for (i, at_min) in at.iter().enumerate() {
             store
-                .put_message(&StoredMessage {
-                    id: [i as u8 + 1; 16],
-                    contact: c,
-                    outgoing: false,
-                    text: format!("at {at_min}"),
-                    channel: Channel::Sound,
-                    at_min: *at_min,
-                    heard: false,
-                    delivery: bombechat_store::Delivery::Sent,
-                })
+                .put_message(&message(i as u8 + 1, c, *at_min))
                 .unwrap();
         }
         (path, c)
     }
 
+    fn message(id: u8, contact: ContactId, at_min: u32) -> StoredMessage {
+        StoredMessage {
+            id: [id; 16],
+            contact,
+            outgoing: false,
+            text: format!("at {at_min}"),
+            channel: Channel::Sound,
+            at_min,
+            heard: false,
+            delivery: bombechat_store::Delivery::Sent,
+        }
+    }
+
     /// A device over the store at `path`, Delete messages after at 1 day,
-    /// unlocked at pump time `now_ms` (the wall clock as last set).
+    /// its pump started at `now_ms`, unlocked.
     fn opened(path: &Path, now_ms: u64) -> Device {
         let mut device = Device::new(path.to_path_buf(), Vec::new(), Vec::new());
-        device.wall = test_wall;
         device.set_setting("expire", 1).unwrap();
         device.tick(now_ms);
         let work = device.begin_unlock().unwrap();
@@ -837,100 +842,133 @@ mod tests {
         device
     }
 
-    fn stamps(device: &Device, c: ContactId) -> Vec<u32> {
-        device.conversation(c).iter().map(|m| m.at_min).collect()
+    /// Store a message as the node would, at the device's age now.
+    fn arrive(device: &Device, id: u8, at_min: u32) {
+        let store =
+            Store::open_with_key(&device.store_path, device.store_key.as_ref().unwrap()).unwrap();
+        store.set_age(device.age_ms());
+        store
+            .put_message(&message(id, ContactId(1), at_min))
+            .unwrap();
+    }
+
+    fn ids(device: &Device) -> Vec<u8> {
+        device
+            .conversation(ContactId(1))
+            .iter()
+            .map(|m| m.id[0])
+            .collect()
     }
 
     #[test]
-    fn old_messages_go_at_unlock_and_then_once_an_hour() {
-        let _turn = TURN.lock().unwrap_or_else(|p| p.into_inner());
+    fn a_message_goes_once_it_has_been_kept_a_day_of_running_time() {
         let dir = tempfile::TempDir::new().unwrap();
-        let (path, c) = aged_store(&dir, &[NOW - 2 * DAY, NOW - DAY - 5, NOW - 10]);
-        set_wall(NOW);
+        let (path, _) = aged_store(&dir, &[0]);
         let mut device = opened(&path, 0);
-        // the newest stamp vouches for NOW - 10: the cut-off is NOW - 10 - DAY
         assert_eq!(
-            stamps(&device, c),
-            vec![NOW - DAY - 5, NOW - 10],
-            "at unlock"
+            ids(&device),
+            vec![1],
+            "found at unlock: taken as new, not as old"
         );
-
-        device.tick(PURGE_EVERY_MS - 1);
-        assert_eq!(stamps(&device, c).len(), 2, "not yet an hour");
-        device.tick(PURGE_EVERY_MS);
-        assert_eq!(stamps(&device, c), vec![NOW - 10], "an hour on");
+        device.tick(2 * HOUR);
+        arrive(&device, 2, 0);
+        device.tick(DAY - HOUR);
+        device.tick(DAY);
         assert_eq!(
-            load_purged(&purged_path(&path)),
-            Some(NOW),
-            "an hour on, but no further than the wall clock"
+            ids(&device),
+            vec![1, 2],
+            "exactly a day is not more than a day"
+        );
+        device.tick(DAY + HOUR);
+        assert_eq!(
+            ids(&device),
+            vec![2],
+            "the hour after a day of running time"
+        );
+        device.tick(3 * DAY);
+        assert!(ids(&device).is_empty());
+    }
+
+    #[test]
+    fn a_wall_clock_a_month_ahead_or_set_back_deletes_nothing_early() {
+        // The device reads no wall clock at all; the wall clock reaches the
+        // store only as each message's at_min. These are the stamps a clock
+        // a month ahead at launch and at the first message, one set two days
+        // back, and one put right again would leave.
+        const NOW: u32 = 29_000_000;
+        let month = 30 * 1440;
+        let dir = tempfile::TempDir::new().unwrap();
+        let (path, _) = aged_store(&dir, &[NOW + month, NOW - 2 * 1440]);
+        let mut device = opened(&path, 0);
+        arrive(&device, 3, NOW - 2 * 1440 + 5);
+        arrive(&device, 4, NOW + 10);
+        device.tick(HOUR);
+        assert_eq!(
+            ids(&device),
+            vec![1, 2, 3, 4],
+            "nothing early at this launch"
+        );
+        drop(device);
+        let mut device = opened(&path, 0);
+        device.tick(HOUR);
+        assert_eq!(ids(&device), vec![1, 2, 3, 4], "nor at the next");
+        device.tick(DAY + HOUR);
+        assert!(
+            ids(&device).is_empty(),
+            "a day of running time later, all go"
         );
     }
 
     #[test]
-    fn choosing_a_shorter_time_waits_for_the_next_purge() {
-        let _turn = TURN.lock().unwrap_or_else(|p| p.into_inner());
+    fn the_running_age_carries_on_across_launches_and_never_goes_back() {
         let dir = tempfile::TempDir::new().unwrap();
-        let (path, c) = aged_store(&dir, &[NOW - 3 * DAY, NOW]);
-        set_wall(NOW);
-        let mut device = Device::new(path, Vec::new(), Vec::new());
-        device.wall = test_wall;
+        let path = dir.path().join("m.db");
+        let mut device = Device::new(path.clone(), Vec::new(), Vec::new());
+        assert_eq!(device.age_ms(), 0);
+        device.tick(5_000);
+        assert_eq!(
+            device.age_ms(),
+            0,
+            "the first tick only sets where the pump starts"
+        );
+        device.tick(65_000);
+        assert_eq!(device.age_ms(), 60_000);
+        device.tick(40_000); // a pump clock that went back: the age does not
+        assert_eq!(device.age_ms(), 60_000);
+        device.tick(70_000);
+        assert_eq!(device.age_ms(), 65_000);
+        drop(device);
+
+        // the next launch's pump starts at 0 again: the age carries on
+        let mut device = Device::new(path.clone(), Vec::new(), Vec::new());
+        assert_eq!(device.age_ms(), 65_000);
         device.tick(0);
-        let work = device.begin_unlock().unwrap();
-        device.finish_unlock(work("correct horse", "")).unwrap();
-        device.set_setting("expire", 1).unwrap();
-        assert_eq!(
-            stamps(&device, c).len(),
-            2,
-            "an hour's grace to put the plug back"
-        );
-        device.tick(PURGE_EVERY_MS);
-        assert_eq!(stamps(&device, c), vec![NOW]);
+        device.tick(1_000);
+        assert_eq!(device.age_ms(), 66_000);
+        drop(device);
+        assert_eq!(load_age(&age_path(&path)), 66_000);
     }
 
     #[test]
-    fn a_wall_clock_set_a_month_ahead_deletes_nothing_younger_than_the_real_day() {
-        let _turn = TURN.lock().unwrap_or_else(|p| p.into_inner());
+    fn a_crash_loses_at_most_a_minute_of_age_and_deletes_nothing_early() {
         let dir = tempfile::TempDir::new().unwrap();
-        let (path, c) = aged_store(&dir, &[NOW - 2 * DAY, NOW - DAY / 2, NOW - 10]);
-        set_wall(NOW + 30 * DAY);
+        let (path, _) = aged_store(&dir, &[0]);
         let mut device = opened(&path, 0);
-        assert_eq!(stamps(&device, c), vec![NOW - DAY / 2, NOW - 10]);
-        for hour in 1..=3 {
-            device.tick(hour * PURGE_EVERY_MS);
-        }
-        assert_eq!(
-            stamps(&device, c),
-            vec![NOW - DAY / 2, NOW - 10],
-            "three real hours on"
+        device.tick(10 * HOUR);
+        device.tick(10 * HOUR + 30_000);
+        let kept = load_age(&age_path(&path));
+        assert!(
+            kept >= 10 * HOUR && kept <= device.age_ms(),
+            "written down, behind if anything"
         );
-        drop(device);
-
-        // a restart, the wall clock still a month ahead
-        let device = opened(&path, 0);
-        assert_eq!(stamps(&device, c), vec![NOW - DAY / 2, NOW - 10]);
-    }
-
-    #[test]
-    fn a_clock_set_back_never_deletes_a_message_newer_than_the_cut_off() {
-        let _turn = TURN.lock().unwrap_or_else(|p| p.into_inner());
-        let dir = tempfile::TempDir::new().unwrap();
-        let at = [NOW - DAY - 60, NOW - 1000, NOW - 10, NOW + 2000];
-        let (path, c) = aged_store(&dir, &at);
-        // back two days: the cut-off moves back with it, nothing goes
-        set_wall(NOW - 2 * DAY);
+        std::mem::forget(device); // a crash: no goodbye
         let mut device = opened(&path, 0);
-        device.tick(PURGE_EVERY_MS);
-        assert_eq!(stamps(&device, c), at.to_vec());
-
-        // put right while running: trust moves on only by the hour that passed
-        set_wall(NOW);
-        device.tick(2 * PURGE_EVERY_MS);
-        assert_eq!(stamps(&device, c), at.to_vec());
-        drop(device);
-
-        // after a restart the cut-off is NOW - DAY: only what is older goes
-        let device = opened(&path, 0);
-        assert_eq!(stamps(&device, c), vec![NOW - 1000, NOW - 10, NOW + 2000]);
-        assert!(stamps(&device, c).iter().all(|at| *at >= NOW - DAY));
+        assert!(device.age_ms() <= 10 * HOUR + 30_000);
+        device.tick(13 * HOUR);
+        assert_eq!(
+            ids(&device),
+            vec![1],
+            "23 hours kept, so far as anyone can tell"
+        );
     }
 }
