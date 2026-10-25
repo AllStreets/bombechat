@@ -183,9 +183,25 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
 .newtab:focus-visible{outline:1.5px dotted var(--graphite);outline-offset:2px}
 
 /* reply line */
-.compose{display:grid;grid-template-columns:78px minmax(0,1fr) auto;align-items:end;gap:0 0;border-top:1px solid rgba(47,90,75,.55);padding:8px 0 10px}
-.compose .when{font-family:var(--type);font-size:12.5px;color:#5c5446;line-height:1.25;padding-bottom:5px}
-.compose .when span{display:block;font-size:12px;color:#6e6553;text-transform:uppercase;letter-spacing:.03em;margin-top:1px}
+.compose{display:grid;grid-template-columns:78px minmax(0,1fr) auto;grid-template-areas:"when line keys" ". note note";align-items:end;gap:0 0;border-top:1px solid rgba(47,90,75,.55);padding:8px 0 10px}
+.compose .when{grid-area:when;align-self:end;font-family:var(--type);font-size:12.5px;color:#5c5446;line-height:1.25}
+/* Reply or Public: a small bat-handle toggle on an engraved bakelite plate, thrown up to reply, down for a public notice */
+.mode{all:unset;box-sizing:border-box;position:relative;display:flex;align-items:center;gap:5px;margin:4px 0 0;padding:3px 6px 3px 4px;cursor:pointer;border-radius:3px;
+  background:linear-gradient(#2b2b28,#121210);box-shadow:inset 0 1px 0 rgba(255,255,255,.12),0 1.5px 0 #000,0 2px 4px rgba(0,0,0,.35)}
+.mode:hover{box-shadow:inset 0 1px 0 rgba(255,255,255,.16),inset 0 0 0 1px rgba(231,166,60,.5),0 1.5px 0 #000,0 2px 4px rgba(0,0,0,.35)}
+.mode:focus-visible{outline:1.5px dotted var(--graphite);outline-offset:3px}
+.mode .nut{position:relative;flex:none;width:12px;height:12px;border-radius:50%;background:radial-gradient(circle at 40% 35%,#d9d5ca,#8f8b80 55%,#3e3c37);box-shadow:0 0 0 1.5px #2b2a26,0 0 0 2px #000}
+.mode .nut i{position:absolute;left:50%;top:50%;width:4px;height:10px;margin:-10px 0 0 -2px;border-radius:2px;transform-origin:50% 10px;transition:transform .14s cubic-bezier(.3,1.6,.5,1);
+  background:linear-gradient(90deg,#8d8a80,#f1eee6 45%,#8d8a80);box-shadow:0 1.5px 1.5px rgba(0,0,0,.6)}
+.mode[aria-checked="true"] .nut i{transform:rotate(180deg)}
+.mode .lg{display:flex;flex-direction:column;gap:2px;font-family:var(--engr);font-size:12px;line-height:13px;letter-spacing:.06em;color:#77715f;-webkit-text-stroke:.25px currentColor}
+.mode .lg b{font-weight:400;transition:color .14s}
+.mode[aria-checked="false"] .lg b:first-child,.mode[aria-checked="true"] .lg b:last-child{color:#efe8d6}
+.compose .line{grid-area:line}
+.compose .keys{grid-area:keys}
+.pubnote{grid-area:note;display:none;padding:5px 0 0 12px;font-family:var(--type);font-size:12px;line-height:1.35;color:#6e6553}
+.compose.public .pubnote,.pubnote.refused{display:block}
+.pubnote.refused{color:#7a3a30}
 .line{position:relative;padding-left:12px;margin-right:14px}
 .line textarea{display:block;width:100%;resize:none;border:0;outline:0;background:transparent;font-family:var(--type);font-size:14.5px;line-height:21px;color:#2a2620;text-shadow:0 0 .7px rgba(42,38,32,.6);
   caret-color:#1c1a16;padding:0 0 3px;min-height:24px;max-height:87px;overflow-y:auto;scrollbar-width:none;
@@ -371,12 +387,13 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
         <button class="newtab" id="newtab" hidden><svg width="9" height="10" viewBox="0 0 9 10" aria-hidden="true"><path d="M4.5 1v7M1.2 5l3.3 3.3L7.8 5" fill="none" stroke="#1c1a16" stroke-width="1.3"/></svg>new below</button>
       </div>
       <form class="compose" id="compose" autocomplete="off">
-        <div class="when" id="nowtime">09.15<span>you</span></div>
-        <div class="line"><textarea id="reply" rows="1" placeholder="Reply to Marisol" aria-label="Reply to Marisol. Enter sends by sound, Shift and Enter starts a new line." spellcheck="true"></textarea></div>
+        <div class="when" id="nowtime">09.15<button type="button" class="mode" id="mode" role="switch" aria-checked="false" aria-label="Public notice" title="Up to reply to Marisol. Down to write a public notice, which anyone in range can read."><span class="nut" aria-hidden="true"><i></i></span><span class="lg" aria-hidden="true"><b>Reply</b><b>Public</b></span></button></div>
+        <div class="line"><textarea id="reply" rows="1" placeholder="Reply to Marisol" aria-label="Reply to Marisol. Enter sends by sound, Shift and Enter starts a new line." aria-describedby="pubnote" spellcheck="true"></textarea></div>
         <div class="keys">
           <button type="button" class="key pb" id="flash" aria-disabled="true" title="Light is switched off. Turn the Light switch to Read and flash to send this way.">Flash</button>
           <button type="submit" class="key pb" id="sendsound" title="Plays the message through the speaker. Enter does the same."><span class="jewel" id="sendlamp" aria-hidden="true"></span>Send by sound</button>
         </div>
+        <p class="pubnote" id="pubnote" aria-live="polite"></p>
       </form>
       <div class="sh-foot">
         <div>Received on<b>kitchen laptop</b></div>
@@ -446,12 +463,17 @@ function askPassphrase(first){return new Promise(done=>{
 async function openContacts(){
   for(;;){
     try{return await bridge.contacts()}catch(why){if(why!=='locked'&&why!=='no store yet')throw why;await askPassphrase(why==='no store yet')}}}
+// the reply line writes to the sheet's contact, or (the toggle thrown down) a public notice
+let PUBLIC=false;
+function replyLabels(){const r=document.getElementById('reply');
+  r.placeholder=PUBLIC?'Public notice':`Reply to ${CONTACT.short}`;
+  r.setAttribute('aria-label',PUBLIC?'Public notice. Enter broadcasts it by sound, Shift and Enter starts a new line.':`Reply to ${CONTACT.short}. Enter sends by sound, Shift and Enter starts a new line.`)}
 // the sheet's printed name, aria labels and station plate follow the contact
 function nameTheSheet(c){const at=s=>document.querySelector(s);
   at('.sheet').setAttribute('aria-label',`Message sheet with ${c.name}`);
   at('.fields div:first-child b').textContent=c.name;
-  at('#reply').placeholder=`Reply to ${c.short}`;
-  at('#reply').setAttribute('aria-label',`Reply to ${c.short}. Enter sends by sound, Shift and Enter starts a new line.`);
+  at('#mode').title=`Up to reply to ${c.short}. Down to write a public notice, which anyone in range can read.`;
+  replyLabels();
   at('.menu').setAttribute('aria-label',`Key check with ${c.short}`);
   at('.menu h2 span').textContent=bridge.simulated?`menu 7, ${c.short}`:c.short;
   at('.bankfoot .rd:last-child').title=`Each frame is checked against ${c.short}'s key as it lands`;
@@ -470,6 +492,10 @@ let CONTACT=PEOPLE[0]||{id:0,name:'No one yet',short:'no one yet',checked:false,
 nameTheSheet(CONTACT);
 // in the app, this machine: its key punches the tape, its name signs the sheet (realSheet, below)
 const ME=bridge.simulated?null:await bridge.machine();
+// what signs a public notice and how long one may be, as the machine says (the simulated machine has its own)
+const SELF=ME||await bridge.machine().catch(()=>null);
+const MY_FP=SELF&&/^[0-9a-f]{4}/i.test(SELF.key||'')?SELF.key.slice(0,4).toUpperCase():'';
+const MAX_BROADCAST=SELF&&Number.isInteger(SELF.broadcast_max)?SELF.broadcast_max:null;
 // the settings as the machine keeps them: its record is the only one, and this page never sends them back
 // if it cannot answer, the switches show Off and say they were not read: never the most permissive position
 let KEPT_READ=true;
@@ -586,7 +612,8 @@ function onMessage(m){
   grow(()=>log.appendChild(ent))}
 bridge.on('message',onMessage);
 bridge.on('broadcast',b=>{const ent=entry(bridge.now(),'public');const what=ent.querySelector('.what');tape(what,b.text);
-  what.appendChild(el('div','state',`${b.verified?'signed':'signed, not checked,'} ${b.signer.slice(0,4).toUpperCase()}${b.hops?', '+hopsWord(b.hops):''}`));
+  // from someone not checked in person: unverified, with the key that signed it
+  what.appendChild(el('div','state',`signed ${b.signer.slice(0,4).toUpperCase()}${b.verified?'':', unverified'}${b.hops?', '+hopsWord(b.hops):''}`));
   grow(()=>log.appendChild(ent))});
 bridge.on('heard',h=>{const s=sent.get(h.id);if(!s||s.ent.querySelector('.stamp'))return;
   grow(()=>{const st=s.ent.querySelector('.state');if(st)st.remove();stamp(s.ent.querySelector('.what'),s.how,bridge.now(),h.by)})});
@@ -706,8 +733,11 @@ function drawOutbox(){const q=[...outbox.values()].filter(m=>m.text&&(m.state===
 function status(it){const st=it.ent&&it.ent.querySelector('.state');if(!st)return;
   st.classList.toggle('live',it.state==='playing');
   if(it.ent)it.ent.classList.toggle('failed',it.state==='failed');
-  st.textContent=it.state==='waiting'?(room==null?'waiting for quiet':room<sendUnder()?'playing next':`waiting for quiet, the room is at ${Math.round(room)} dB`)
-    :it.state==='playing'?(it.how==='light'?'flashing on screen':'playing by sound'):it.state==='sent'?'sent, not heard yet':it.state==='failed'?sentence(it.why||'not sent'):''}
+  const said=it.state==='waiting'?(room==null?'waiting for quiet':room<sendUnder()?'playing next':`waiting for quiet, the room is at ${Math.round(room)} dB`)
+    :it.state==='playing'?(it.how==='light'?'flashing on screen':'playing by sound'):it.state==='sent'?(it.public?'sent to anyone in range':'sent, not heard yet'):it.state==='failed'?sentence(it.why||'not sent'):'';
+  // a public notice carries the key it is signed with, as the public entries heard on the sheet do
+  st.textContent=it.public&&it.state!=='failed'?[signedBy(),said].filter(Boolean).join(', '):said}
+const signedBy=()=>MY_FP?`signed ${MY_FP}`:'signed';
 function setOut(it,state){const was=it.state;it.state=state;status(it);
   if(state==='playing'&&was==='waiting'&&!RM.matches){it.leaving=true;const slip=outboxEl.querySelector(`[data-id="${it.id}"]`);if(slip)slip.classList.add('gone');setTimeout(()=>{it.leaving=false;drawOutbox()},460)}
   else drawOutbox();
@@ -722,12 +752,13 @@ const nowtime=document.getElementById('nowtime');
 const tick=()=>{nowtime.firstChild.nodeValue=hhmm(bridge.now())};
 const reply=document.getElementById('reply'),form=document.getElementById('compose');
 function fit(){reply.style.height='auto';reply.style.height=Math.min(88,reply.scrollHeight)+'px'}
-reply.addEventListener('input',fit);
+reply.addEventListener('input',()=>{fit();if(pubnote.classList.contains('refused'))explain()});
 reply.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();send('sound')}});
 form.addEventListener('submit',e=>{e.preventDefault();send('sound')});
 flashBtn.addEventListener('click',()=>send('light'));
 function nudge(btn){btn.animate([{transform:'translateX(0)'},{transform:'translateX(-3px)'},{transform:'translateX(3px)'},{transform:'translateX(0)'}],{duration:220});}
 function send(how){const text=reply.value.trim();
+  if(PUBLIC&&how==='sound'){broadcast(text);return}
   const btn=how==='sound'?sendBtn:flashBtn;
   if(btn.getAttribute('aria-disabled')==='true'){nudge(btn);btn.focus();return}
   if(!text){reply.focus();return}
@@ -739,6 +770,35 @@ function send(how){const text=reply.value.trim();
     const it=outItem(id);Object.assign(it,{text,ent,how});
     if(it.state)setOut(it,it.state);tick()},
     why=>{ent.classList.add('failed');ent.querySelector('.state').textContent=sentence(why)})}
+
+/* ---------- a public notice ----------
+   The toggle in the reply line's margin, thrown down, makes the line a public notice: plain
+   text, signed with this machine's key, that anyone in range can read. The line says so
+   underneath; a notice the machine won't send says why there, and keeps what was written.
+   Once one goes, the toggle springs back to Reply, so the next reply is never public by mistake. */
+const modeSw=document.getElementById('mode'),pubnote=document.getElementById('pubnote');
+function explain(){pubnote.classList.remove('refused');pubnote.textContent=`Anyone in range can read it. Signed with your key${MY_FP?', '+MY_FP:''}.`}
+function refuse(why){pubnote.classList.add('refused');pubnote.textContent=sentence(why);nudge(sendBtn)}
+function setPublic(on){if(on===PUBLIC)return;PUBLIC=on;modeSw.setAttribute('aria-checked',on);form.classList.toggle('public',on);replyLabels();fit();explain();
+  if(!on)pubnote.classList.remove('refused');Drum.spin(1,1.3)}
+modeSw.addEventListener('click',()=>{setPublic(!PUBLIC);reply.focus()});
+let broadcasting=false;
+function broadcast(text){if(broadcasting)return;
+  const s=KNOBS.k1.pos;
+  if(sendBtn.getAttribute('aria-disabled')==='true'){refuse(`Sound is ${s===0?'off':'set to listen only'}. Turn it to Listen and send to broadcast`);return}
+  if(!text){refuse('Write the notice first');reply.focus();return}
+  const n=new TextEncoder().encode(text).length;
+  if(MAX_BROADCAST!=null&&n>MAX_BROADCAST){refuse(`Too long to broadcast: ${n} bytes, at most ${MAX_BROADCAST}`);return}
+  broadcasting=true;
+  bridge.broadcast(text).then(id=>{broadcasting=false;
+    const ent=entry(bridge.now(),'public');ent.classList.add('mine','public');const what=ent.querySelector('.what');what.append(el('div','typed',text),el('div','state'));
+    grow(()=>log.appendChild(ent),true);
+    reply.value='';fit();setPublic(false);
+    sent.set(id,{ent,how:'sound'});
+    if(finished.has(id)){status({state:finished.get(id),why:finishedWhy.get(id),ent,how:'sound',public:true});tick();return}
+    const it=outItem(id);Object.assign(it,{text,ent,how:'sound',public:true});
+    if(it.state)setOut(it,it.state);else status(it);tick()},
+    why=>{broadcasting=false;refuse(why)})}
 
 /* ---------- key check menu ---------- */
 // the pencil menu is the mockups' story; in the app the card shows the real safety number (cardRest, below)

@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use bombechat_core::{safety_number, PublicIdentity};
 use bombechat_modem::Band;
-use bombechat_node::{NodeEvent, NOT_SENT, NOT_STORED};
+use bombechat_node::{NodeEvent, MAX_BROADCAST, NOT_SENT, NOT_STORED};
 use bombechat_store::{Channel, Contact, ContactId, StoredMessage};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -277,7 +277,7 @@ fn band_name(b: Band) -> &'static str {
 
 /// This machine as the page sees it: its plate name, its public identity
 /// (sign key then dh key, as hex), the person's own name, how many
-/// messages it holds for others, and the build.
+/// messages it holds for others, the build, and the longest broadcast.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MachineView {
     pub name: &'static str,
@@ -285,6 +285,8 @@ pub struct MachineView {
     pub you: String,
     pub held: usize,
     pub version: &'static str,
+    /// The longest broadcast, in UTF-8 bytes of text.
+    pub broadcast_max: usize,
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -347,8 +349,21 @@ pub fn send(
     sent(s.machine().send(&to, &text, channel))
 }
 
-/// `broadcast { text }`: the broadcast's id, as hex.
+/// `broadcast { text }`: the broadcast's id, as hex. Refused with a
+/// sentence to show when there is nothing to say, or more than one
+/// envelope holds ([`MAX_BROADCAST`] bytes, which `machine` reports).
+/// The Sound switch's refusal comes as for `send`: the channel state,
+/// then the outbox's `failed`.
 pub fn broadcast(s: &Shared, text: String) -> Result<String, String> {
+    if text.trim().is_empty() {
+        return Err("Write the notice first".to_string());
+    }
+    if text.len() > MAX_BROADCAST {
+        return Err(format!(
+            "Too long to broadcast: {} bytes, at most {MAX_BROADCAST}",
+            text.len()
+        ));
+    }
     sent(s.machine().broadcast(&text))
 }
 
@@ -489,6 +504,7 @@ pub fn machine(s: &Shared) -> Result<MachineView, String> {
             .unwrap_or_else(|| MACHINE_NAME.to_string()),
         held: machine.held_for_others(),
         version: env!("CARGO_PKG_VERSION"),
+        broadcast_max: MAX_BROADCAST,
     })
 }
 

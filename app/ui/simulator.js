@@ -49,7 +49,11 @@ function keptSettings() {
 function keepSettings(settings) { try { sessionStorage.setItem(MACHINE_SETTINGS, JSON.stringify(settings)); } catch (e) {} }
 // bytes of message a second over sound, as the modem measures it at its defaults (crates/modem measured_rate)
 const RATE = 16.1;
+// the longest broadcast, in UTF-8 bytes of text, as the node's MAX_BROADCAST (an envelope less its header and signing)
+const MAX_BROADCAST = 3939;
 const PAIR_MS = 2400;
+// this machine's public identity, sign key then dh key, made up but seeded so its fingerprint is always C41D
+const SELF_KEY = 'c41d' + Array.from({ length: 62 }, ((r) => () => r().toString(16).padStart(2, '0'))(seeded(4242))).join('');
 const at = (h, m) => Math.floor(new Date(2026, 9, 24, h, m).getTime() / 60000);
 const bytes = n => Array.from(crypto.getRandomValues(new Uint8Array(n)));
 const signer = (a, b) => ({ sign: [a, b, ...bytes(30)], dh: bytes(32) });
@@ -194,7 +198,17 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
       } else { queue.push(m); later(() => outbox(m, 'waiting')); }
       return Promise.resolve(m.id);
     },
-    broadcast(text) { const m = { id: bytes(16), text, public: true }; queue.push(m); later(() => outbox(m, 'waiting')); return Promise.resolve(m.id); },
+    // refused as the broadcast command refuses; at Listen or Off, as the node does: the channel says why, then the outbox fails
+    broadcast(text) {
+      if (!text.trim()) return Promise.reject('Write the notice first');
+      const n = utf8(text).length;
+      if (n > MAX_BROADCAST) return Promise.reject(`Too long to broadcast: ${n} bytes, at most ${MAX_BROADCAST}`);
+      const m = { id: bytes(16), text, public: true };
+      clock += 60000;
+      if (settings.sound < 2) later(() => { sound(settings.sound === 0 ? 'not sent: sound is off' : 'not sent: sound is set to listen only'); outbox(m, 'failed'); sound(settings.sound === 0 ? 'off' : 'listening'); });
+      else { queue.push(m); later(() => outbox(m, 'waiting')); }
+      return Promise.resolve(m.id);
+    },
     pair() { later(() => emit('pairOffer', { peer: signer(0x2c, 0x91), name: 'Teodor Vance', safety }), PAIR_MS); return Promise.resolve(); },
     confirmPair(peerHex, name) {
       if (!people.some(p => p.id === TEODOR)) people.push({ id: TEODOR, name, checked: true, safety });
@@ -215,7 +229,8 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
     contacts: () => Promise.resolve(people.map(p => ({ ...p }))),
     // the sheet's history arrives as events when the conversation starts, as the mockups showed it
     conversation: () => Promise.resolve([]),
-    machine: () => Promise.resolve({ name: 'Machine No. 1', key: '', held: 6, version: '0.4' }),
+    // you are Teodor here: his key signs your broadcasts
+    machine: () => Promise.resolve({ name: 'Machine No. 1', key: SELF_KEY, you: 'Teodor Vance', held: 6, version: '0.4', broadcast_max: MAX_BROADCAST }),
     channels: () => Promise.resolve([{ channel: 'Sound', state: soundState || 'listening', rate: RATE, band: settings.band ? 'audible' : 'near silent' }]),
     test,
   };

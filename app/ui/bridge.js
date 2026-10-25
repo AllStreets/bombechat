@@ -5,7 +5,9 @@
 //   send(contactIds, text, channel)  [send { contactIds, text, channel }]  resolves to the message id, as hex;
 //                                channel 'sound' (the default) or 'light'. Rejects with 'not sent' when nothing
 //                                went: in this plan only sound sends, and light reports channel 'unavailable: ...'
-//   broadcast(text)              [broadcast { text }]               resolves to the message id, as hex
+//   broadcast(text)              [broadcast { text }]               resolves to the message id, as hex. Rejects with a
+//                                sentence to show: 'Write the notice first' (nothing but spaces), 'Too long to broadcast:
+//                                N bytes, at most M' (M is machine().broadcast_max). The Sound switch refuses it as send
 //   pair()                       [pair]                             plays this machine's hello (once the room is quiet); a
 //                                peer's hello arrives as pairOffer. Rejects with the reason when the Sound switch
 //                                won't send, e.g. 'not sent: sound is set to listen only'
@@ -29,9 +31,11 @@
 //                                safety: the 60-digit safety number shared with them, in 12 groups of five
 //   conversation(contactId)      [conversation { contactId }]       resolves to the stored messages, oldest first, each
 //                                shaped as the message event
-//   machine()                    [machine]                          resolves to { name, key, you, held, version }: name is the
-//                                machine's plate (Machine No. 1), key its public identity as hex, you the person's own
-//                                name, held the messages it carries for others
+//   machine()                    [machine]                          resolves to { name, key, you, held, version, broadcast_max }:
+//                                name is the machine's plate (Machine No. 1), key its public identity as hex (sign key
+//                                first, so its first four digits are the short fingerprint broadcasts are signed with),
+//                                you the person's own name, held the messages it carries for others, broadcast_max the
+//                                longest broadcast in UTF-8 bytes
 //   channels()                   [channels]                         resolves to [{ channel, state, rate? }]: the last state each
 //                                channel reported, for a page that opened after the event. None reported: listening.
 //                                rate: the payload bytes a second the channel's modem measures (sound has one), for the

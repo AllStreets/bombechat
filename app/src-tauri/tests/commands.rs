@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use bombechat_app::commands::{self, bridge_event, Lock, Machine, Opened, Shared, Unlocking};
 use bombechat_core::{safety_number, ChunkView, PublicIdentity};
-use bombechat_node::{NodeEvent, OutboxState, NOT_SENT, NOT_STORED};
+use bombechat_node::{NodeEvent, OutboxState, MAX_BROADCAST, NOT_SENT, NOT_STORED};
 use bombechat_store::{Channel, Contact, ContactId, Delivery, StoredMessage};
 use serde_json::json;
 
@@ -276,6 +276,51 @@ fn broadcast_returns_the_id_as_hex() {
 }
 
 #[test]
+fn an_empty_broadcast_is_refused_with_a_sentence() {
+    let (m, calls) = fake(Lock::Unlocked);
+    for text in ["", "   ", "\n\t"] {
+        assert_eq!(
+            commands::broadcast(&m, text.into()),
+            Err("Write the notice first".to_string())
+        );
+    }
+    assert!(calls.lock().unwrap().broadcasts.is_empty());
+}
+
+#[test]
+fn a_broadcast_longer_than_an_envelope_holds_is_refused_with_its_length() {
+    let (m, calls) = fake(Lock::Unlocked);
+    let longest = "x".repeat(MAX_BROADCAST);
+    assert!(commands::broadcast(&m, longest.clone()).is_ok());
+    assert_eq!(
+        commands::broadcast(&m, "x".repeat(MAX_BROADCAST + 1)),
+        Err(format!(
+            "Too long to broadcast: {} bytes, at most {MAX_BROADCAST}",
+            MAX_BROADCAST + 1
+        ))
+    );
+    // counted in bytes, as the envelope holds it: each of these is two
+    let accents = "é".repeat(MAX_BROADCAST / 2 + 1);
+    assert!(commands::broadcast(&m, accents).is_err());
+    assert_eq!(calls.lock().unwrap().broadcasts, vec![longest]);
+}
+
+#[test]
+fn the_simulator_broadcasts_as_much_as_the_node() {
+    let sim = include_str!("../../ui/simulator.js");
+    let line = sim
+        .lines()
+        .find(|l| l.starts_with("const MAX_BROADCAST = "))
+        .expect("simulator.js has MAX_BROADCAST");
+    let n: usize = line
+        .trim_start_matches("const MAX_BROADCAST = ")
+        .trim_end_matches(';')
+        .parse()
+        .expect("a number");
+    assert_eq!(n, MAX_BROADCAST);
+}
+
+#[test]
 fn pair_announces_your_name_and_refuses_while_locked() {
     let (m, calls) = fake(Lock::Unlocked);
     commands::pair(&m).unwrap();
@@ -518,7 +563,8 @@ fn machine_is_named_machine_no_1_with_its_public_key() {
     assert_eq!(
         view,
         json!({ "name": "Machine No. 1", "key": "01".repeat(32) + &"02".repeat(32),
-                "you": "Ana Lima", "held": 3, "version": env!("CARGO_PKG_VERSION") })
+                "you": "Ana Lima", "held": 3, "version": env!("CARGO_PKG_VERSION"),
+                "broadcast_max": MAX_BROADCAST })
     );
     let (fresh, _) = fake(Lock::NoStore);
     assert!(commands::machine(&fresh).is_err());

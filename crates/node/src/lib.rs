@@ -132,6 +132,12 @@ const SEGMENT: usize = CHUNK + AEAD_TAG;
 /// sender sign, sender dh, sent_min and signature around the text.
 const INNER_OVERHEAD: usize = 32 + 32 + 4 + 64;
 
+/// The longest text a broadcast can carry, in UTF-8 bytes: what is left
+/// of an envelope after its header and the signed inner layout. Longer
+/// is refused by [`Node::broadcast`]; the page is told this so it can
+/// say so before asking.
+pub const MAX_BROADCAST: usize = MAX_ENVELOPE - ENVELOPE_HEADER - INNER_OVERHEAD;
+
 /// Where one of this node's sends has got to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OutboxState {
@@ -735,13 +741,14 @@ impl Node {
     }
 
     /// Sign `text` as a public broadcast and send it. Returns its envelope
-    /// id, or [`NOT_SENT`] if locked or the text is too long. Refused by
+    /// id, or [`NOT_SENT`] if locked or the text is longer than
+    /// [`MAX_BROADCAST`]. Refused by
     /// the Sound switch as [`Node::send`] is.
     pub fn broadcast(&mut self, text: &str) -> [u8; 16] {
         let Some(me) = &self.me else {
             return NOT_SENT;
         };
-        if ENVELOPE_HEADER + INNER_OVERHEAD + text.len() > MAX_ENVELOPE {
+        if text.len() > MAX_BROADCAST {
             return NOT_SENT;
         }
         let env = seal_public(me, text, now_min(), TTL_MIN);
@@ -1489,6 +1496,7 @@ mod tests {
         assert_eq!(node.send(&[ContactId(999)], "hi", Channel::Sound), NOT_SENT);
         assert_eq!(node.send(&ids, &"x".repeat(4000), Channel::Sound), NOT_SENT);
         assert_eq!(node.broadcast(&"x".repeat(4000)), NOT_SENT);
+        assert_eq!(node.broadcast(&"x".repeat(MAX_BROADCAST + 1)), NOT_SENT);
         assert!(wire.sent.lock().unwrap().is_empty());
 
         let longest = (0..4000)
@@ -1499,6 +1507,8 @@ mod tests {
             node.send(&ids, &"x".repeat(longest), Channel::Sound),
             NOT_SENT
         );
+        // the longest broadcast the page is told of still fits in an envelope
+        assert_ne!(node.broadcast(&"x".repeat(MAX_BROADCAST)), NOT_SENT);
     }
 
     fn offers(events: &[NodeEvent]) -> usize {

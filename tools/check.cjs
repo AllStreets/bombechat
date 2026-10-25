@@ -10,6 +10,8 @@
 //   reply.png             the sheet after typing and sending a reply
 //   card-<path>-<w>-<state>.png  2x crops of the key check card through pairing, in the
 //                         browser (simulator) and on the app path, at 1024, 1440 and 1728
+//   broadcast-<path>-<w>-<state>.png  2x crops of the message sheet writing a public notice
+//                         (idle, composing, sent; refused at 1440), browser and app path
 // and prints what it measured. Exits non-zero on page errors, horizontal overflow,
 // text under 12px, layout shift on load, a plain row that doesn't settle on the
 // frame text, the sheet not keeping its place, a reply that doesn't land, clipped
@@ -19,7 +21,11 @@
 // pairing by sound doesn't run in the browser or on the app path (first run asking your name,
 // pair, a 60-digit offer legible at 1024, 1440 and 1728 under an editable name, Matched, add
 // keeping the corrected name and stamping the card in place, Doesn't match keeping nothing,
-// a held hello lapsing), when the bytes-a-second readout
+// a held hello lapsing), when writing a public notice doesn't work in the browser or on the app
+// path (the Reply/Public toggle, the line saying who can read it and the key that signs it,
+// empty, too long and Sound at Listen refused in sentence case with nothing sent, a sent
+// notice on the sheet as a signed public entry with its outbox status, the toggle springing
+// back to Reply), when the bytes-a-second readout
 // doesn't show the rate the bridge reports, when
 // the page asks for anything off this machine, or when an http(s) URL appears
 // anywhere in app/ui (licence texts and comments in vendored three.js aside).
@@ -60,7 +66,7 @@ function tauriStub({ hello, safety, people, talk, afterUnlock, settings }) {
       switch (cmd) {
         case 'contacts': return unlocked ? Promise.resolve(people || []) : Promise.reject(people ? 'locked' : 'no store yet');
         case 'unlock': unlocked = true; for (const [name, payload] of afterUnlock || []) window.__emit(name, payload); return Promise.resolve(null);
-        case 'machine': return Promise.resolve({ name: 'Machine No. 1', key: 'a3f09c1e'.repeat(16), you: 'Ana Lima', held: 0, version: '0.1.0' });
+        case 'machine': return Promise.resolve({ name: 'Machine No. 1', key: 'a3f09c1e'.repeat(16), you: 'Ana Lima', held: 0, version: '0.1.0', broadcast_max: 3939 });
         case 'conversation': return Promise.resolve((talk || {})[args.contactId] || []);
         case 'settings': return settings === 'unread' ? Promise.reject('the machine did not answer') : Promise.resolve(settings || { sound: 2, volume: 2, band: 0, light: 0, flash: 1, machine: 1, machvol: 2, carry: 1, hops: 3, hold: 2, quiet: 2, repeats: 2, lock: 1, expire: 0, inperson: 1 });
         // as the device answers on this build: relay and light wait for their features, the key check is always on
@@ -70,6 +76,17 @@ function tauriStub({ hello, safety, people, talk, afterUnlock, settings }) {
         case 'pair': setTimeout(() => window.__emit('pairOffer', { peer: { sign: Array(32).fill(5), dh: Array(32).fill(6) }, name: hello, safety }), 1200); return Promise.resolve(null);
         case 'confirm_pair': return Promise.resolve(7);
         case 'send': return Promise.reject('not sent');
+        // as the broadcast command answers; an accepted one waits, plays and is sent, as the node reports it
+        case 'broadcast': {
+          if (!args.text.trim()) return Promise.reject('Write the notice first');
+          const n = new TextEncoder().encode(args.text).length;
+          if (n > 3939) return Promise.reject(`Too long to broadcast: ${n} bytes, at most 3939`);
+          const id = Array.from({ length: 16 }, (_, i) => (i * 17 + window.__calls.length) & 255);
+          setTimeout(() => window.__emit('outbox', { id, state: 'waiting' }), 50);
+          setTimeout(() => window.__emit('outbox', { id, state: 'playing' }), 1500);
+          setTimeout(() => window.__emit('outbox', { id, state: 'sent' }), 2600);
+          return Promise.resolve(id);
+        }
         default: return Promise.resolve(null);
       } } },
   };
@@ -578,6 +595,97 @@ function measureText() {
       await shot('refused');
       report.pairing[tag] = { listening: listening.state, offered: { name: offered.name, groupPx: offered.groupPx, gridAt: offered.gridAt }, matched: { stamp: matched.stamp, gridAt: matched.gridAt, who: matched.who }, refused: refused.note, contacts: after };
       await pr.close();
+    }
+
+    // writing a public notice, in the browser (the simulator) and on the app path, at 1024, 1440 and 1728:
+    // the toggle makes the reply line a public notice that says anyone in range can read it and which key
+    // signs it; empty and too long are refused with the reason and nothing is sent; one that goes lands on
+    // the sheet as a signed public entry with its status, has a public outbox slip, and the toggle springs
+    // back to Reply; at Listen, it is refused and what was written is kept. 2x crops of the sheet.
+    report.broadcast = {};
+    const people = [{ id: 1, name: 'Marisol Ortega', checked: true, safety: '' }];
+    const atListen = { sound: 1, volume: 2, band: 0, light: 0, flash: 1, machine: 1, machvol: 2, carry: 1, hops: 3, hold: 2, quiet: 2, repeats: 2, lock: 1, expire: 0, inperson: 1 };
+    const openSheet = async (where, w, h, { listen = false, live = false } = {}) => {
+      const bp = await browser.newPage({ viewport: { width: w, height: h }, deviceScaleFactor: 2 });
+      watch(bp, `broadcast ${where} ${w}${listen ? ' at Listen' : ''}`);
+      if (where === 'app') {
+        await bp.addInitScript(tauriStub, { hello: 'Marisol Ortega', safety: '', people, settings: listen ? atListen : undefined });
+        await bp.goto(url('still'));
+        await bp.waitForSelector('.unlock input[name=pass]');
+        await bp.fill('.unlock input[name=pass]', 'correct horse');
+        await bp.click('.unlock button');
+      } else {
+        if (listen) await bp.addInitScript(() => { try { sessionStorage.setItem('bombechat.simulated-machine', JSON.stringify({ sound: 1 })); } catch (e) {} });
+        await bp.goto(url(live ? '' : 'still'));
+      }
+      await bp.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
+      await bp.evaluate(() => document.fonts.ready);
+      return bp;
+    };
+    const line = () => ({ public: document.getElementById('mode').getAttribute('aria-checked'), note: document.getElementById('pubnote').textContent,
+      noteShown: getComputedStyle(document.getElementById('pubnote')).display !== 'none', refused: document.getElementById('pubnote').classList.contains('refused'),
+      box: document.getElementById('reply').value, placeholder: document.getElementById('reply').placeholder,
+      calls: window.__TAURI__ ? __calls.filter(c => c[0] === 'broadcast').map(c => c[1].text) : null,
+      mine: [...document.querySelectorAll('#log .ent.public.mine')].map(e => ({ how: e.querySelector('.when span').textContent, text: e.querySelector('.typed').textContent, state: (e.querySelector('.state') || {}).textContent, failed: e.classList.contains('failed') })),
+      slips: [...document.querySelectorAll('#outbox .slip:not(.empty)')].map(s => s.innerText.replace(/\s+/g, ' ').trim()) });
+    for (const where of ['browser', 'app']) for (const [w, h] of [[1024, 768], [1440, 900], [1728, 1117]]) {
+      const tag = `${where} ${w}`;
+      const fp = where === 'app' ? 'A3F0' : 'C41D';
+      const explained = `Anyone in range can read it. Signed with your key, ${fp}.`;
+      const bp = await openSheet(where, w, h, { live: where === 'browser' && w === 1440 });
+      const shot = st => bp.locator('.sheet').screenshot({ path: path.join(out, `broadcast-${where}-${w}-${st}.png`) });
+      const idle = await bp.evaluate(line);
+      if (idle.public !== 'false' || idle.noteShown || idle.placeholder !== 'Reply to Marisol') problems.push(`${tag}: the reply line did not start as a reply: ${JSON.stringify(idle)}`);
+      await shot('idle');
+      await bp.click('#mode');
+      const on = await bp.evaluate(line);
+      if (on.public !== 'true' || !on.noteShown || on.note !== explained || on.placeholder !== 'Public notice') problems.push(`${tag}: the toggle did not make a public notice that says who can read it: ${JSON.stringify(on)}`);
+      // empty: refused, nothing sent
+      await bp.focus('#reply'); await bp.keyboard.press('Enter'); await bp.waitForTimeout(150);
+      const empty = await bp.evaluate(line);
+      if (empty.note !== 'Write the notice first.' || !empty.refused || empty.mine.length || (empty.calls && empty.calls.length)) problems.push(`${tag}: an empty notice was not refused: ${JSON.stringify(empty)}`);
+      // one byte longer than an envelope holds: refused with its length, kept, nothing sent
+      const long = 'x'.repeat(3940);
+      await bp.fill('#reply', long); await bp.keyboard.press('Enter'); await bp.waitForTimeout(150);
+      const tooLong = await bp.evaluate(line);
+      if (tooLong.note !== 'Too long to broadcast: 3940 bytes, at most 3939.' || tooLong.box !== long || tooLong.mine.length || (tooLong.calls && tooLong.calls.length)) problems.push(`${tag}: an oversize notice was not refused: ${JSON.stringify({ ...tooLong, box: tooLong.box.length })}`);
+      if (w === 1440) await shot('refused-long');
+      const TEXT = 'Water at the church on Fifth until dusk. Bring containers.';
+      await bp.fill('#reply', TEXT);
+      const composing = await bp.evaluate(line);
+      if (composing.refused || composing.note !== explained) problems.push(`${tag}: writing again did not clear the refusal: ${JSON.stringify(composing)}`);
+      await shot('composing');
+      await bp.keyboard.press('Enter'); await bp.waitForTimeout(400);
+      const went = await bp.evaluate(line);
+      const ent = went.mine[went.mine.length - 1];
+      if (!ent || ent.how !== 'public' || ent.text !== TEXT || !new RegExp(`^signed ${fp}, (waiting for quiet|playing)`).test(ent.state)) problems.push(`${tag}: the notice is not on the sheet as a signed public entry: ${JSON.stringify(went.mine)}`);
+      if (went.public !== 'false' || went.box !== '' || went.noteShown) problems.push(`${tag}: the toggle did not spring back to Reply once the notice went: ${JSON.stringify(went)}`);
+      if (went.calls && JSON.stringify(went.calls) !== JSON.stringify([TEXT])) problems.push(`${tag}: broadcast was asked ${JSON.stringify(went.calls)}`);
+      if (!went.slips.some(t => t.startsWith(TEXT) && /public, sends once under 40 dB/.test(t))) problems.push(`${tag}: no public outbox slip for the notice: ${JSON.stringify(went.slips)}`);
+      // it goes: the app's node reports it within 3 s, the simulated room falls quiet within 20
+      if (where === 'app' || w === 1440) {
+        await bp.waitForFunction(t => [...document.querySelectorAll('#log .ent.public.mine')].some(e => e.querySelector('.typed').textContent === t && /sent to anyone in range/.test(e.querySelector('.state').textContent)), TEXT, { timeout: 22000 }).catch(() => {});
+        const done = await bp.evaluate(line);
+        const last = done.mine[done.mine.length - 1];
+        if (!last || last.state !== `signed ${fp}, sent to anyone in range`) problems.push(`${tag}: the notice never said it was sent: ${JSON.stringify(last)}`);
+        await bp.waitForTimeout(600);
+      }
+      await shot('sent');
+      report.broadcast[tag] = { on: on.note, empty: empty.note, tooLong: tooLong.note, went: ent && ent.state };
+      await bp.close();
+    }
+    // at Listen: refused with the reason, what was written kept, nothing sent
+    for (const where of ['browser', 'app']) {
+      const tag = `${where} at Listen`;
+      const bp = await openSheet(where, 1440, 900, { listen: true });
+      await bp.click('#mode');
+      await bp.fill('#reply', 'Road north is open.');
+      await bp.keyboard.press('Enter'); await bp.waitForTimeout(400);
+      const listen = await bp.evaluate(line);
+      if (listen.note !== 'Sound is set to listen only. Turn it to Listen and send to broadcast.' || !listen.refused || listen.box !== 'Road north is open.' || listen.public !== 'true' || listen.mine.length || (listen.calls && listen.calls.length)) problems.push(`${tag}: a notice at Listen was not refused: ${JSON.stringify(listen)}`);
+      await bp.locator('.sheet').screenshot({ path: path.join(out, `broadcast-${where}-1440-refused-listen.png`) });
+      report.broadcast[tag] = listen.note;
+      await bp.close();
     }
   }
 
