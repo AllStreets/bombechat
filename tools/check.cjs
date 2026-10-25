@@ -93,7 +93,7 @@ function tauriStub({ hello, safety, pairOfferMs = 1200, people, talk, afterUnloc
         case 'pair': {
           const light = (settings && settings !== 'unread' ? settings.light : 0);
           if (args.channel === 'light' && light < 2) return Promise.reject(light === 0 ? 'not sent: light is off' : 'not sent: light is set to read only');
-          if (pairOfferMs !== null) setTimeout(() => window.__emit('pairOffer', { peer: { sign: Array(32).fill(5), dh: Array(32).fill(6) }, name: hello, safety }), pairOfferMs);
+          if (pairOfferMs !== null) setTimeout(() => window.__emit('pairOffer', { peer: { sign: Array(32).fill(5), dh: Array(32).fill(6) }, name: hello, safety, channel: args.channel === 'light' ? 'Light' : 'Sound' }), pairOfferMs);
           return Promise.resolve(null);
         }
         case 'confirm_pair': return Promise.resolve(7);
@@ -757,7 +757,7 @@ function measureText() {
         const heldNote = await pr.evaluate(() => document.querySelector('.menu .note').textContent);
         await pr.waitForTimeout(1900);
         const lapsed = await pr.evaluate(() => document.querySelector('.menu .note').textContent);
-        if (heldNote !== 'Teodor Vance said hello. Press Pair by sound or Pair by light to answer.' || /said hello/.test(lapsed)) problems.push(`${tag}: a held hello's note: ${JSON.stringify({ heldNote, lapsed })}`);
+        if (heldNote !== 'Teodor Vance said hello by sound. Press Pair by sound to answer.' || /said hello/.test(lapsed)) problems.push(`${tag}: a held hello's note: ${JSON.stringify({ heldNote, lapsed })}`);
       }
       await pr.click('#pairbtn');
       await pr.waitForTimeout(300);
@@ -993,6 +993,8 @@ function measureText() {
       };
       const emit = (lp, name, payload) => lp.evaluate(([n, p]) => window.__emit(n, p), [name, payload]);
       const frame = (spec, i, tag = 4660) => ({ tag, bits: CODE[spec].frames[i].bits, spec, index: i });
+      // a frame of this machine's pairing hello, as the node marks it
+      const helloFrame = (spec, i, tag) => ({ ...frame(spec, i, tag), hello: true });
       const paint = lp => lp.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))));
       const view = () => { const l = document.getElementById('lamp'), c = document.getElementById('lampcode'), k = c.getContext('2d');
         const mid = k.getImageData(c.width >> 1, c.height >> 1, 1, 1).data[0];
@@ -1153,7 +1155,10 @@ function measureText() {
         if (JSON.stringify(rest.stamps) !== '["Pair by sound","Pair by light"]') problems.push(`${tag}: the card's stamps at rest: ${JSON.stringify(rest.stamps)}`);
         await cardShot('rest');
         await lp.click('#pairlight');
-        if (where === 'app') { await paint(lp); for (let i = 0; i <= 3; i++) { await emit(lp, 'display', frame(1, i, 0x4e1)); await paint(lp); } await lp.waitForTimeout(450); for (let i = 4; i <= 6; i++) { await emit(lp, 'display', frame(1, i, 0x4e1)); await paint(lp); } }
+        // the card reading, before the first frame of the hello reaches the lamp (at 1440 and 1728 the lamp then covers
+        // the card, so this is the card's only moment in view there; the browser's simulator flashes at once)
+        if (where === 'app') { await paint(lp); await cardShot('reading'); }
+        if (where === 'app') { for (let i = 0; i <= 3; i++) { await emit(lp, 'display', helloFrame(1, i, 0x4e1)); await paint(lp); } await lp.waitForTimeout(450); for (let i = 4; i <= 6; i++) { await emit(lp, 'display', helloFrame(1, i, 0x4e1)); await paint(lp); } }
         else await lp.waitForTimeout(1100);
         const reading = await st();
         if (reading.state !== 'reading' || reading.who !== 'pairing by light' || !reading.lamp || reading.plate !== 'Pairing by light' || reading.say !== 'Hold your screens face to face. reading theirs, Escape stops it' || !/reading for a hello/.test(reading.pencil))
@@ -1162,12 +1167,12 @@ function measureText() {
         r.small = await lp.evaluate(`(${measureText.toString()})()`);
         if (r.small.length) problems.push(`${tag}: text under 12px while pairing by light: ${r.small.join('; ')}`);
         await lp.locator('.lamp').screenshot({ path: path.join(out, `light-pair-${where}-${w}-reading.png`) });
-        await cardShot('reading');
+        if (where === 'browser' && w === 1024) await cardShot('reading');
         // their hello is in: the card has the offer under the lamp, and the lamp shows yours to the end of its window
-        if (where === 'app') { await emit(lp, 'pairOffer', { peer: { sign: Array(32).fill(5), dh: Array(32).fill(6) }, name: 'Marisol Ortega', safety: SAFETY }); await paint(lp); }
+        if (where === 'app') { await emit(lp, 'pairOffer', { peer: { sign: Array(32).fill(5), dh: Array(32).fill(6) }, name: 'Marisol Ortega', safety: SAFETY, channel: 'Light' }); await paint(lp); }
         else await lp.waitForFunction(() => document.querySelector('.menu').dataset.pair === 'offer', null, { timeout: 8000 }).catch(() => {});
         const finishing = await st();
-        if (finishing.state !== 'offer' || !finishing.lamp || finishing.say !== 'Hold your screens face to face. theirs is read, yours finishes, Escape stops it') problems.push(`${tag}: the offer did not wait under the lamp for the hello to finish: ${JSON.stringify(finishing)}`);
+        if (finishing.state !== 'offer' || !finishing.lamp || finishing.say !== 'Their key is read. Yours finishes showing. Escape stops it') problems.push(`${tag}: the offer did not wait under the lamp for the hello to finish: ${JSON.stringify(finishing)}`);
         if (where === 'app' && !finishing.calls.includes('finish_pairing')) problems.push(`${tag}: the machine was not told to finish: ${JSON.stringify(finishing.calls)}`);
         await lp.locator('.lamp').screenshot({ path: path.join(out, `light-pair-${where}-${w}-finishing.png`) });
         if (where === 'app') { await emit(lp, 'displayStopped', { tag: 0x4e1 }); await paint(lp); }
@@ -1179,7 +1184,7 @@ function measureText() {
         await cardShot('offer');
         await lp.click('#pairyes'); await lp.waitForTimeout(500);
         const matched = await st();
-        if (matched.state !== '' || !/^Matched \d+ [A-Z][a-z]{2}$/.test(matched.stamp) || matched.note !== 'Checked in person, by light.' || Math.abs(matched.gridAt - offered.gridAt) > 1 || matched.lamp)
+        if (matched.state !== '' || !/^Matched \d+ [A-Z][a-z]{2}$/.test(matched.stamp) || matched.note !== 'Checked in person, by light.' || Math.abs(matched.gridAt - offered.gridAt) > 1 || matched.lamp || matched.focus !== 'pairlight')
           problems.push(`${tag}: Matched, add after pairing by light: ${JSON.stringify(matched)}`);
         await cardShot('matched');
         Object.assign(r, { reading: reading.say, finishing: finishing.say, offered: offered.state, matched: matched.note });
@@ -1187,9 +1192,9 @@ function measureText() {
           // Escape ends the pairing, not the switch, and a frame of the hello still on its way is not shown
           const before = (await st()).calls.length;
           await lp.click('#pairlight'); await paint(lp);
-          await emit(lp, 'display', frame(1, 0, 0x4e2)); await lp.waitForTimeout(500); await emit(lp, 'display', frame(1, 1, 0x4e2)); await paint(lp);
+          await emit(lp, 'display', helloFrame(1, 0, 0x4e2)); await lp.waitForTimeout(500); await emit(lp, 'display', helloFrame(1, 1, 0x4e2)); await paint(lp);
           await lp.keyboard.press('Escape'); await paint(lp);
-          await emit(lp, 'display', frame(1, 2, 0x4e2)); await lp.waitForTimeout(300);
+          await emit(lp, 'display', helloFrame(1, 2, 0x4e2)); await lp.waitForTimeout(300);
           const esc = await st();
           if (esc.lamp || esc.state !== '' || esc.note !== 'Pairing by light stopped. Nothing was kept.' || esc.light !== '2' || JSON.stringify(esc.calls.slice(before)) !== '["pair {\\"channel\\":\\"light\\"}","stop_pairing"]' || esc.focus !== 'pairlight')
             problems.push(`${tag}: Escape did not end the pairing by light: ${JSON.stringify(esc)}`);
@@ -1197,17 +1202,34 @@ function measureText() {
           // Doesn't match ends it
           const before2 = (await st()).calls.length;
           await lp.click('#pairlight'); await paint(lp);
-          await emit(lp, 'display', frame(1, 0, 0x4e3)); await lp.waitForTimeout(500);
-          await emit(lp, 'pairOffer', { peer: { sign: Array(32).fill(7), dh: Array(32).fill(8) }, name: 'Someone Else', safety: SAFETY }); await paint(lp);
-          await emit(lp, 'display', frame(1, 1, 0x4e3)); await paint(lp);
+          await emit(lp, 'display', helloFrame(1, 0, 0x4e3)); await lp.waitForTimeout(500);
+          await emit(lp, 'pairOffer', { peer: { sign: Array(32).fill(7), dh: Array(32).fill(8) }, name: 'Someone Else', safety: SAFETY, channel: 'Light' }); await paint(lp);
+          await emit(lp, 'display', helloFrame(1, 1, 0x4e3)); await paint(lp);
           await lp.keyboard.press('Escape'); await paint(lp);
           const escOffer = await st();
           if (escOffer.lamp || escOffer.state !== 'offer' || escOffer.focus !== 'pairyes') problems.push(`${tag}: Escape while the hello finished did not leave the offer: ${JSON.stringify(escOffer)}`);
           await lp.click('#pairno'); await paint(lp);
           const declined = await st();
-          if (declined.state !== 'refused' || declined.lamp || JSON.stringify(declined.calls.slice(before2)) !== '["pair {\\"channel\\":\\"light\\"}","finish_pairing","stop_pairing","stop_pairing"]')
+          if (declined.state !== 'refused' || declined.lamp || declined.focus !== 'pairlight' || JSON.stringify(declined.calls.slice(before2)) !== '["pair {\\"channel\\":\\"light\\"}","finish_pairing","stop_pairing","stop_pairing"]')
             problems.push(`${tag}: Doesn't match after pairing by light: ${JSON.stringify(declined)}`);
           r.escape = esc.note;
+          // a message by light on the lamp while pairing keeps its own caption, and Escape stops it the Task 6 way (Light
+          // to Read), which ends the pairing too: the card rests and says so. The hello's frames after it are let go
+          // only by their own tag, never the message's
+          await lp.click('#pairlight'); await paint(lp);
+          await emit(lp, 'display', helloFrame(1, 0, 0x4e5)); await lp.waitForTimeout(500);
+          await emit(lp, 'display', frame(1, 0, 0x4e6)); await lp.waitForTimeout(450); await emit(lp, 'display', frame(1, 1, 0x4e6)); await paint(lp);
+          const mixed = await st();
+          if (!mixed.lamp || mixed.plate !== 'Flashing by light' || mixed.say !== 'Hold this screen up to their camera. flashing, Escape stops it' || mixed.state !== 'reading')
+            problems.push(`${tag}: a message by light during pairing does not keep its own lamp: ${JSON.stringify(mixed)}`);
+          await lp.locator('.lamp').screenshot({ path: path.join(out, 'light-pair-app-1440-message.png') });
+          // (the knob's reading settles once its turn has drawn, 330 ms)
+          await lp.keyboard.press('Escape'); await lp.waitForTimeout(600);
+          const msgEsc = await st();
+          if (msgEsc.lamp || msgEsc.light !== '1' || !msgEsc.calls.includes('set_setting {"id":"light","valueIndex":1}') || msgEsc.state !== '' || msgEsc.note !== 'Pairing by light stopped. Light is at Read, and nothing was kept.')
+            problems.push(`${tag}: Escape on a message during pairing: ${JSON.stringify(msgEsc)}`);
+          await emit(lp, 'displayStopped', { tag: 0x4e6 });
+          r.messageDuringPairing = { plate: mixed.plate, escape: msgEsc.note };
         }
         await lp.close();
       }
@@ -1216,8 +1238,8 @@ function measureText() {
         const tag = 'light pairing cap 1440';
         const lp = await openLight(1440, 900, 2, { q: 'still&ready=300&paircap=1500', stub: { pairOfferMs: null } });
         await lp.click('#pairlight'); await paint(lp);
-        await emit(lp, 'display', frame(1, 0, 0x4e4)); await lp.waitForTimeout(1700);
-        await emit(lp, 'display', frame(1, 1, 0x4e4)); await paint(lp);
+        await emit(lp, 'display', helloFrame(1, 0, 0x4e4)); await lp.waitForTimeout(1700);
+        await emit(lp, 'display', helloFrame(1, 1, 0x4e4)); await paint(lp);
         const capped = await lp.evaluate(pairCard);
         if (capped.lamp || capped.state !== '' || capped.note !== 'Pairing by light ended after three minutes. Nothing was kept.' || !capped.calls.includes('stop_pairing')) problems.push(`${tag}: the cap did not end it: ${JSON.stringify(capped)}`);
         await lp.locator('.menu').screenshot({ path: path.join(out, 'card-app-1440-light-capped.png') });

@@ -893,11 +893,12 @@ fn node_events_become_the_bridge_events_with_the_payloads_bridge_js_expects() {
         bridge_event(&NodeEvent::PairOffer {
             peer: who,
             name: "Marisol".to_string(),
-            safety: "12345".to_string()
+            safety: "12345".to_string(),
+            channel: Channel::Light
         }),
         (
             "pairOffer",
-            json!({ "peer": { "sign": sign, "dh": dh }, "name": "Marisol", "safety": "12345" })
+            json!({ "peer": { "sign": sign, "dh": dh }, "name": "Marisol", "safety": "12345", "channel": "light" })
         )
     );
 
@@ -920,10 +921,11 @@ fn node_events_become_the_bridge_events_with_the_payloads_bridge_js_expects() {
             bits: vec![0xa5, 0x0f],
             spec_id: 2,
             index: 7,
+            hello: true,
         }),
         (
             "display",
-            json!({ "tag": 0x0d0e, "bits": [0xa5, 0x0f], "spec": 2, "index": 7 })
+            json!({ "tag": 0x0d0e, "bits": [0xa5, 0x0f], "spec": 2, "index": 7, "hello": true })
         )
     );
     assert_eq!(
@@ -1235,4 +1237,21 @@ fn the_simulator_knows_the_longest_reply_as_the_node_does() {
     );
     let check = include_str!("../../../tools/check.cjs");
     assert!(check.contains(&format!("reply_max: {}", max_private_text(1))));
+}
+
+#[test]
+fn the_page_and_the_simulator_end_pairing_when_the_node_does() {
+    let cap = bombechat_node::PAIRING_CAP_MS.to_string();
+    let page = include_str!("../../ui/bombechat.html");
+    assert!(
+        page.contains(&format!(
+            "const PAIR_CAP=Q.has('paircap')?+Q.get('paircap'):{cap};"
+        )),
+        "bombechat.html's PAIR_CAP is not the node's PAIRING_CAP_MS ({cap})"
+    );
+    let sim = include_str!("../../ui/simulator.js");
+    assert!(
+        sim.contains(&format!("const PAIRING_CAP_MS = {cap};")),
+        "simulator.js's PAIRING_CAP_MS is not the node's ({cap})"
+    );
 }

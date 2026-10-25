@@ -271,7 +271,15 @@ fn displays(log: &[NodeEvent]) -> Vec<(u16, u32)> {
 
 fn offer(log: &[NodeEvent]) -> Option<(PublicIdentity, String)> {
     log.iter().find_map(|e| match e {
-        NodeEvent::PairOffer { peer, name, .. } => Some((peer.clone(), name.clone())),
+        NodeEvent::PairOffer {
+            peer,
+            name,
+            channel,
+            ..
+        } => {
+            assert_eq!(*channel, Channel::Light, "a hello read by light says so");
+            Some((peer.clone(), name.clone()))
+        }
         _ => None,
     })
 }
@@ -285,8 +293,14 @@ fn pair_message_and_receipt_by_light_alone() {
 
     // Both hold up their hellos at once; each camera reads the other's,
     // and each hello keeps showing until its person confirms.
-    room.peers[0].node.start_pairing("Ann").unwrap();
-    room.peers[1].node.start_pairing("Ben").unwrap();
+    room.peers[0]
+        .node
+        .start_pairing("Ann", Channel::Light)
+        .unwrap();
+    room.peers[1]
+        .node
+        .start_pairing("Ben", Channel::Light)
+        .unwrap();
     assert!(room.run_until(10_000, |r| offer(&r.peers[0].log).is_some()
         && offer(&r.peers[1].log).is_some()));
     let (ann, name) = offer(&room.peers[1].log).unwrap();
@@ -362,8 +376,9 @@ fn pair_message_and_receipt_by_light_alone() {
 /// goes up on its own screen only, each camera reads the other's, and
 /// once a hello is in, the page finishes the pairing: the hello on screen
 /// shows to the end of its window, so whoever pressed later still has a
-/// whole window to read it, then the screen clears. Then one side
-/// matches (kept) and the other does not (nothing kept).
+/// whole window to read it, then the screen clears. One side declines
+/// while its hello is still up (it clears at once, nothing is kept), the
+/// other matches (kept, checked).
 #[test]
 fn pairing_by_light_alone_one_pressing_later() {
     let dir = TempDir::new().unwrap();
@@ -374,7 +389,7 @@ fn pairing_by_light_alone_one_pressing_later() {
     // Ann presses first; Ben's camera reads her hello before he presses.
     room.peers[0]
         .node
-        .start_pairing_by("Ann", Channel::Light)
+        .start_pairing("Ann", Channel::Light)
         .unwrap();
     assert!(room.run_until(6_000, |r| offer(&r.peers[1].log).is_some()));
     room.run(3_000);
@@ -382,7 +397,7 @@ fn pairing_by_light_alone_one_pressing_later() {
     // Ann's as soon as she reads his.
     room.peers[1]
         .node
-        .start_pairing_by("Ben", Channel::Light)
+        .start_pairing("Ben", Channel::Light)
         .unwrap();
     room.peers[1].node.finish_pairing();
     assert!(room.run_until(10_000, |r| offer(&r.peers[0].log).is_some()));
@@ -390,28 +405,36 @@ fn pairing_by_light_alone_one_pressing_later() {
         room.peers.iter().all(|p| p.screen.is_some()),
         "both hellos are still up when the second offer arrives"
     );
-    room.peers[0].node.finish_pairing();
-    assert!(room.run_until(10_000, |r| r.peers.iter().all(|p| !p.node.pairing())));
-    // The screen clears at what would have been the next frame.
-    room.run(200);
-    assert!(room.peers.iter().all(|p| p.screen.is_none()));
-
     let (ben, name) = offer(&room.peers[0].log).unwrap();
     assert_eq!((&ben, name.as_str()), (&room.peers[1].me, "Ben"));
     let (ann, name) = offer(&room.peers[1].log).unwrap();
     assert_eq!((&ann, name.as_str()), (&room.peers[0].me, "Ann"));
 
-    // Ann's numbers match: Ben is kept. Ben's do not: he keeps nothing.
+    // Ben's numbers do not match: he declines while his hello is still
+    // on screen. It clears at once, and his pairing is over.
+    assert!(room.peers[1].node.pairing());
+    room.peers[1].node.stop_pairing();
+    room.step();
+    assert!(room.peers[1].screen.is_none(), "cleared at once");
+    assert!(!room.peers[1].node.pairing());
+
+    // Ann's page finishes hers: it shows to the end of its window, then
+    // clears by itself, and she matches: Ben is kept, checked.
+    room.peers[0].node.finish_pairing();
+    assert!(room.run_until(10_000, |r| !r.peers[0].node.pairing()));
+    // The screen clears at what would have been the next frame.
+    room.run(200);
+    assert!(room.peers[0].screen.is_none());
     let ben_id = room.peers[0].node.confirm_pairing(&ben, "Ben");
     assert!(room.peers[0]
         .node
         .contacts()
         .iter()
         .any(|c| c.id == ben_id && c.checked));
-    room.peers[1].node.stop_pairing();
-    assert!(room.peers[1].node.contacts().is_empty());
 
-    // Nothing more goes up, and both cameras still read (Read and flash).
+    // Nothing more goes up on either screen, Ben has stored no contact
+    // (declining keeps nothing, however long his camera reads on), and
+    // both cameras still read (Read and flash).
     let shown = (
         displays(&room.peers[0].log).len(),
         displays(&room.peers[1].log).len(),
@@ -424,7 +447,11 @@ fn pairing_by_light_alone_one_pressing_later() {
             displays(&room.peers[1].log).len()
         )
     );
-    assert!(room.peers.iter().all(|p| p.cam.is_running()));
+    assert!(room.peers[1].node.contacts().is_empty());
+    assert!(room
+        .peers
+        .iter()
+        .all(|p| p.screen.is_none() && p.cam.is_running()));
 }
 
 /// Contacts already paired, each seeing the other.

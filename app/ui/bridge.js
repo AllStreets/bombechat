@@ -73,7 +73,8 @@
 //   broadcast  { id, outgoing, signer, text, verified, hops, at_min, state? }
 //                                                               signer: hex of the signing key; heard ones arrive as
 //                                                               events, kept ones (and this machine's own) from broadcasts()
-//   pairOffer  { peer, name, safety }                           peer: hex of sign key then dh key
+//   pairOffer  { peer, name, safety, channel }                  peer: hex of sign key then dh key; channel: the one the
+//                                                               hello came in on, 'sound' or 'light'
 //   roomDb     number
 //   channel    { channel, state }       state 'receiving' while a message arrives; 'failed' when one
 //                                       stops arriving or fails its checks (the state it is then in follows);
@@ -88,12 +89,13 @@
 //                                       'playing', 'sent', or 'failed' (it will never go out). text and public come with the first report of a send
 //                                       this page didn't make (one queued before it opened); the simulator sends
 //                                       them, the node does not yet, so in the app such a send shows no slip.
-//   display    { tag, bits, spec, index }  light: put this code frame on screen now, in place of the last. bits: the
+//   display    { tag, bits, spec, index, hello }  light: put this code frame on screen now, in place of the last. bits: the
 //                                       whole grid, one bit a cell (dark 1), row-major from the top left, most
 //                                       significant bit first; the grid is 48, 56 or 64 cells a side for spec 0 (slow),
 //                                       1 (normal) or 2 (fast). index counts the frames of envelope tag shown so far.
 //                                       Public code bits only, never a key. Not held before ready(): a frame is only
-//                                       worth showing when it comes
+//                                       worth showing when it comes. hello: the frame is of this machine's pairing hello,
+//                                       not a message
 //   displayStopped { tag }             light: clear the screen; tag's frame was on it
 //   eyepiece   { width, height, pixels }  light: what the camera sees, small and grey (64 pixels wide, one byte a
 //                                       pixel, row-major), about four a second while Light reads and eyepiece(true)
@@ -157,11 +159,11 @@ const normalise = {
   message: m => ({ ...m, id: hex(m.id), contact: contactId(m.contact), channel: lower(m.channel) }),
   heard: h => ({ id: hex(h.id), by: contactId(h.by) }),
   broadcast: b => ({ ...b, id: hex(b.id), outgoing: !!b.outgoing, signer: b.signer && b.signer.sign ? hex(b.signer.sign) : hex(b.signer) }),
-  pairOffer: p => ({ ...p, peer: identity(p.peer) }),
+  pairOffer: p => ({ ...p, peer: identity(p.peer), channel: lower(p.channel) || 'sound' }),
   roomDb: d => +(d && typeof d === 'object' ? d.db : d),
   channel: s => ({ ...s, channel: lower(s.channel) }),
   outbox: o => ({ ...o, id: hex(o.id), state: lower(o.state) }),
-  display: d => ({ tag: +d.tag, bits: bytesOf(d.bits), spec: +d.spec, index: +d.index }),
+  display: d => ({ tag: +d.tag, bits: bytesOf(d.bits), spec: +d.spec, index: +d.index, hello: !!d.hello }),
   displayStopped: d => ({ tag: d && typeof d === 'object' ? +d.tag : +d }),
   eyepiece: e => ({ width: +e.width, height: +e.height, pixels: bytesOf(e.pixels) }),
 };

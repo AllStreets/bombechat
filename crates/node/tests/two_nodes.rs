@@ -162,7 +162,13 @@ fn run(
 
 fn offer(p: &Peer) -> Option<(PublicIdentity, String, String)> {
     p.events.iter().find_map(|e| match e {
-        NodeEvent::PairOffer { peer, name, safety } => {
+        NodeEvent::PairOffer {
+            peer,
+            name,
+            safety,
+            channel,
+        } => {
+            assert_eq!(*channel, Channel::Sound, "a hello by sound says so");
             Some((peer.clone(), name.clone(), safety.clone()))
         }
         _ => None,
@@ -207,8 +213,8 @@ fn pair_then_message_then_receipt() {
     );
     let mut now = 1_000;
 
-    a.node.start_pairing("Ana").unwrap();
-    b.node.start_pairing("Ben").unwrap();
+    a.node.start_pairing("Ana", Channel::Sound).unwrap();
+    b.node.start_pairing("Ben", Channel::Sound).unwrap();
     run(&mut [&mut a, &mut b], &mut now, 200, |p| {
         offer(p[0]).is_some() && offer(p[1]).is_some()
     });

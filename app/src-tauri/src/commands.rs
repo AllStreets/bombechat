@@ -709,9 +709,14 @@ pub fn bridge_event(e: &NodeEvent) -> (&'static str, Value) {
             json!({ "id": id.to_vec(), "outgoing": false, "signer": identity(signer), "text": text,
                     "verified": verified, "hops": hops, "at_min": at_min }),
         ),
-        NodeEvent::PairOffer { peer, name, safety } => (
+        NodeEvent::PairOffer {
+            peer,
+            name,
+            safety,
+            channel,
+        } => (
             "pairOffer",
-            json!({ "peer": identity(peer), "name": name, "safety": safety }),
+            json!({ "peer": identity(peer), "name": name, "safety": safety, "channel": channel_name(*channel) }),
         ),
         NodeEvent::RoomDb(db) => ("roomDb", json!(db)),
         NodeEvent::ChannelState { channel, state } => (
@@ -729,9 +734,10 @@ pub fn bridge_event(e: &NodeEvent) -> (&'static str, Value) {
             bits,
             spec_id,
             index,
+            hello,
         } => (
             "display",
-            json!({ "tag": tag, "bits": bits, "spec": spec_id, "index": index }),
+            json!({ "tag": tag, "bits": bits, "spec": spec_id, "index": index, "hello": hello }),
         ),
         NodeEvent::DisplayStopped { tag } => ("displayStopped", json!({ "tag": tag })),
         // What the camera sees, small and grey, for the eyepiece: shown,

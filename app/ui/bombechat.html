@@ -880,7 +880,8 @@ function turnKnob(id,pos,again){const k=KNOBS[id];if(k.held)return Promise.resol
   if(id==='k2'&&pos===2)Lamp.stopped=false;
   const cap=document.querySelector(`#${id} .cap`);cap.style.transform=`rotate(${ANG[pos]}deg)`;setTimeout(()=>drawKnob(id),RM.matches?0:330);
   Drum.spin(2,0.7);
-  const taken=Promise.resolve(bridge.setSetting(k.setting,pos)).then(()=>true,why=>{const t=String(why&&why.message||why);if(k.pos!==pos)return t;k.pos=was.pos;k.read=was.read;drawKnob(id);applyChannels();
+  // Light taken off Read and flash: the machine ends a pairing by light, and so does the card
+  const taken=Promise.resolve(bridge.setSetting(k.setting,pos)).then(()=>{if(id==='k2'&&pos<2)lightLeftFlash();return true},why=>{const t=String(why&&why.message||why);if(k.pos!==pos)return t;k.pos=was.pos;k.read=was.read;drawKnob(id);applyChannels();
     say(t.charAt(0).toUpperCase()+t.slice(1));return t});
   applyChannels();return taken}
 ['k1','k2'].forEach(id=>{drawKnob(id);const el=document.getElementById(id);
@@ -1099,7 +1100,7 @@ document.getElementById('settings').addEventListener('click',e=>{
   setTimeout(()=>{location.href=href},650)});
 // back from the settings page by history: the switches may have moved there, so read them again from the machine
 addEventListener('pageshow',e=>{if(e.persisted){document.body.classList.remove('turning');document.getElementById('app').classList.remove('turning');
-  bridge.settings().then(k=>{Object.assign(KEPT,k);KEPT_READ=true;machineSound();for(const [id,kn] of Object.entries(KNOBS)){if(kn.held)continue;const v=k[kn.setting];if(v>=0&&v<=2&&(v!==kn.pos||!kn.read)){kn.pos=v;kn.read=true;drawKnob(id)}}
+  bridge.settings().then(k=>{Object.assign(KEPT,k);KEPT_READ=true;machineSound();for(const [id,kn] of Object.entries(KNOBS)){if(kn.held)continue;const v=k[kn.setting];if(v>=0&&v<=2&&(v!==kn.pos||!kn.read)){kn.pos=v;kn.read=true;drawKnob(id);if(id==='k2'&&v<2)lightLeftFlash()}}
     applyChannels();drawOutbox();vuTitle();outbox.forEach(status)},()=>{})}});
 
 /* ---------- ?audiotest: render one drum turn offline and report what it contains ---------- */
@@ -1172,8 +1173,10 @@ function showRate(list){const s=list.find(c=>c.channel==='sound'),rd=document.ge
    face to face. It needs Light at Read and flash, and turns no switch: at Off or Read it is refused on the card, as
    sound pairing is at Listen. Once their hello is in, the card takes the offer and the machine is told to finish:
    your hello shows to the end of its window, so whoever pressed later still gets a whole one to read, then the lamp
-   closes on the offer. Escape (or the lamp's Stop key), the light stamp again, Doesn't match, Matched, add, and
-   three minutes all end it, and the screen clears. */
+   closes on the offer. Escape (or the lamp's Stop key) while the hello is on the lamp, the light stamp again,
+   Doesn't match, Matched, add, Light leaving Read and flash, and three minutes all end it, and the screen clears.
+   The node marks the hello's frames (display's hello), so only the hello is ever taken off the lamp: a message by
+   light on it keeps its own caption and its own Escape. An offer says the channel its hello came in on. */
 const menu=document.querySelector('.menu'),pencilEl=document.getElementById('pencil'),pairBtn=document.getElementById('pairbtn');
 const yesBtn=document.getElementById('pairyes'),noBtn=document.getElementById('pairno'),lightPairBtn=document.getElementById('pairlight');
 // how long pairing stays in progress at most, as the node's PAIRING_CAP_MS (?paircap shortens it for checks)
@@ -1181,10 +1184,13 @@ const PAIR_CAP=Q.has('paircap')?+Q.get('paircap'):180000;
 // pairing by light: 'reading' while your hello shows and the camera reads theirs, 'finishing' once theirs is in and
 // yours shows to the end of its window; null otherwise
 let lightPairing=null,pairCapT=null;
+// the stamp that started the pairing in progress, for focus to return to when it ends
+let startedBy=null;
+const stampFor=()=>startedBy==='light'?lightPairBtn:pairBtn;
 const menuNote=menu.querySelector('.note'),menuStamp=menu.querySelector('.stmp'),menuSvg=document.getElementById('menusvg'),menuWho=menu.querySelector('h2 span');
 const day=ms=>{const d=new Date(ms);return `${d.getDate()} ${MONTHS[d.getMonth()]}`};
 const HOLD_OFFER=Q.has('hold')?+Q.get('hold'):120000;
-let checkedWith=null;// the key check made on this page: {name, safety, at}
+let checkedWith=null;// the key check made on this page: {name, safety, at, by}
 let offer=null,heldOffer=null;
 const TILTS=[-.6,.4,-.2,.7,-.5,.2,.5,-.7,.3,-.3,.6,-.4];
 // their name above the ruled number, and (once matched) the stamp pressed on its corner
@@ -1193,6 +1199,12 @@ function checkSheet(nameHtml,safety,stamp){const g=safety.trim().split(/\s+/);
 const stampHtml=(date,fresh)=>`<div class="gstmp${fresh&&!RM.matches?' new':''}" aria-label="Matched${date?', '+date:''}">Matched${date?`<small>${esc(date)}</small>`:''}</div>`;
 function pencil(html){menuSvg.style.visibility='hidden';pencilEl.innerHTML=html;pencilEl.hidden=false}
 function noteSays(text){menuNote.textContent=text||''}
+// a pencil sketch in the card's hand: the same filter and stroke for every one, a seed of its own
+const sketch=(id,seed,body)=>`<svg class="ears" viewBox="0 0 64 40" aria-hidden="true"><defs><filter id="${id}" x="-10%" y="-10%" width="120%" height="120%"><feTurbulence baseFrequency=".08" numOctaves="2" seed="${seed}" result="t"/><feDisplacementMap in="SourceGraphic" in2="t" scale="1.6"/></filter></defs>
+    <g filter="url(#${id})" fill="none" stroke="#4b4a47" stroke-width="1.3" stroke-linecap="round">${body}</g></svg>`;
+// sound: a speaker's dot and its waves; light: two screens face to face, the code passing between them
+const EARS=sketch('penh',5,'<circle cx="10" cy="20" r="2.4" fill="#4b4a47" stroke="none"/><path d="M20 10 Q27 20 20 30"/><path d="M30 4 Q41 20 30 36"/><path d="M40 -1 Q55 20 40 41"/>');
+const FACES=sketch('penl',9,'<rect x="1" y="1" width="10" height="38" rx="2"/><rect x="53" y="1" width="10" height="38" rx="2"/><rect x="3.5" y="4" width="5" height="32" fill="#4b4a47" fill-opacity=".14" stroke="none"/><rect x="55.5" y="4" width="5" height="32" fill="#4b4a47" fill-opacity=".14" stroke="none"/><path d="M17 11 H47" stroke-dasharray="4 3"/><path d="M17 20 H47" stroke-dasharray="4 3"/><path d="M17 29 H47" stroke-dasharray="4 3"/>');
 function buttons(state){pairBtn.hidden=state==='offer'||state==='reading';lightPairBtn.hidden=state==='offer'||state==='listening';yesBtn.hidden=noBtn.hidden=state!=='offer';
   pairBtn.textContent=state==='listening'?'Stop listening':'Pair by sound';lightPairBtn.textContent=state==='reading'?'Stop reading':'Pair by light';yesBtn.disabled=noBtn.disabled=false}
 function setState(state,gridded){menu.dataset.pair=state;if(state!=='reading'){clearTimeout(pairCapT);pairCapT=null}menu.classList.toggle('gridded',!!gridded);buttons(state);
@@ -1208,10 +1220,9 @@ function cardRest(fresh){setState('',true);offer=null;
 async function pairBySound(){
   if(menu.dataset.pair==='listening'){bridge.stopPairing().catch(()=>{});cardRest();return}
   pairBtn.disabled=true;
-  try{await bridge.pair()}catch(why){pairBtn.disabled=false;cardRest();noteSays(sentence(why));return}
-  pairBtn.disabled=false;lightPairing=null;setState('listening');menuWho.textContent='pairing by sound';
-  pencil(`<svg class="ears" viewBox="0 0 64 40" aria-hidden="true"><defs><filter id="penh" x="-10%" y="-10%" width="120%" height="120%"><feTurbulence baseFrequency=".08" numOctaves="2" seed="5" result="t"/><feDisplacementMap in="SourceGraphic" in2="t" scale="1.6"/></filter></defs>
-    <g filter="url(#penh)" fill="none" stroke="#4b4a47" stroke-width="1.3" stroke-linecap="round"><circle cx="10" cy="20" r="2.4" fill="#4b4a47" stroke="none"/><path d="M20 10 Q27 20 20 30"/><path d="M30 4 Q41 20 30 36"/><path d="M40 -1 Q55 20 40 41"/></g></svg>
+  try{await bridge.pair('sound')}catch(why){pairBtn.disabled=false;cardRest();noteSays(sentence(why));return}
+  pairBtn.disabled=false;lightPairing=null;startedBy='sound';setState('listening');menuWho.textContent='pairing by sound';
+  pencil(`${EARS}
     <p class="ph">listening for a hello…</p><p class="psub">Your hello plays once the room is quiet. Ask them to press Pair by sound too.</p>`);
   noteSays('');
   if(heldOffer)showOffer(heldOffer.o)}
@@ -1221,29 +1232,33 @@ async function pairByLight(){
   if(!(KNOBS.k2.read&&KNOBS.k2.pos===2)){cardRest();noteSays(`${lightRefusal()}. Turn it to Read and flash to pair by light.`);return}
   lightPairBtn.disabled=true;
   try{await bridge.pair('light')}catch(why){lightPairBtn.disabled=false;cardRest();noteSays(sentence(why));return}
-  lightPairBtn.disabled=false;setState('reading');menuWho.textContent='pairing by light';
+  lightPairBtn.disabled=false;startedBy='light';setState('reading');menuWho.textContent='pairing by light';
   // asked for afresh: a hello is not held back by an earlier Escape
   lightPairing='reading';Lamp.stopped=false;Lamp.gone=null;
-  pencil(`<svg class="ears" viewBox="0 0 64 40" aria-hidden="true"><defs><filter id="penl" x="-10%" y="-10%" width="120%" height="120%"><feTurbulence baseFrequency=".08" numOctaves="2" seed="9" result="t"/><feDisplacementMap in="SourceGraphic" in2="t" scale="1.6"/></filter></defs>
-    <g filter="url(#penl)" fill="none" stroke="#4b4a47" stroke-width="1.3" stroke-linecap="round"><rect x="3" y="7" width="8" height="26" rx="1.5"/><rect x="53" y="7" width="8" height="26" rx="1.5"/><path d="M17 13 H47" stroke-dasharray="3 4"/><path d="M17 20 H47" stroke-dasharray="3 4"/><path d="M17 27 H47" stroke-dasharray="3 4"/></g></svg>
+  pencil(`${FACES}
     <p class="ph">reading for a hello…</p><p class="psub">Your hello shows as a light code. Hold your screens face to face, and ask them to press Pair by light too.</p>`);
   noteSays('');
   pairCapT=setTimeout(()=>{if(menu.dataset.pair==='reading')endLightPairing('Pairing by light ended after three minutes. Nothing was kept.')},PAIR_CAP);
   if(heldOffer)lightOffer(heldOffer.o)}
-// the lamp goes at once, and a frame of the hello still on its way is let go
-function lampShut(){if(Lamp.state!=='closed'){Lamp.gone=Lamp.tag;lampClose(false)}}
+// the hello comes off the lamp at once, and a frame of it still on its way is let go; a message on the lamp stays
+function helloOff(){if(Lamp.state!=='closed'&&Lamp.hello){Lamp.gone=Lamp.tag;lampClose(false)}}
 // stopped before their hello came: the screen clears, the card is as it was
-function endLightPairing(note){lightPairing=null;bridge.stopPairing().catch(()=>{});lampShut();cardRest();noteSays(note);lightPairBtn.focus({preventScroll:true})}
+function endLightPairing(note){lightPairing=null;bridge.stopPairing().catch(()=>{});helloOff();cardRest();noteSays(note);lightPairBtn.focus({preventScroll:true})}
+// Light was turned off Read and flash (the machine has ended the pairing): reading, the card rests and says so;
+// finishing, the offer stays for the person to judge
+function lightLeftFlash(){if(!lightPairing)return;const was=lightPairing;lightPairing=null;helloOff();
+  if(was==='reading'){cardRest();noteSays(`Pairing by light stopped. ${KNOBS.k2.pos===0?'Light is off':'Light is at Read'}, and nothing was kept.`);lightPairBtn.focus({preventScroll:true})}}
 // their hello is in: the card takes the offer under the lamp, and the lamp closes once yours has finished its window
 function lightOffer(o){const fromLamp=lampEl.contains(document.activeElement);
   lightPairing='finishing';bridge.finishPairing().catch(()=>{});
-  showOffer(o,'light');if(Lamp.state!=='closed')lampCaption();
+  showOffer(o);if(Lamp.state!=='closed')lampCaption();
   if(fromLamp)lampStop.focus({preventScroll:true})}
 // the name field grows with what is written in it
 const fitName=i=>{i.size=Math.max(6,Math.min(28,i.value.length+1))};
-function showOffer(o,by='sound'){offer=o;heldOffer=null;
+// o.channel: the channel their hello came in on, as the node says
+function showOffer(o){offer=o;heldOffer=null;
   const inCard=menu.contains(document.activeElement);
-  setState('offer',true);menuWho.textContent=`pairing by ${by}`;
+  setState('offer',true);menuWho.textContent=`pairing by ${o.channel}`;
   pencil(checkSheet(`<input class="pname" id="peername" maxlength="40" spellcheck="false" autocomplete="off" aria-label="Their name, as you will keep it. Correct it before adding them." title="Their name, as you will keep it. Correct it before adding them."> said hello`,o.safety));
   const nm=document.getElementById('peername');nm.value=o.name;fitName(nm);
   nm.addEventListener('input',()=>fitName(nm));
@@ -1254,25 +1269,25 @@ bridge.on('pairOffer',o=>{
   if(menu.dataset.pair==='listening'){showOffer(o);return}
   if(menu.dataset.pair==='reading'){lightOffer(o);return}
   if(menu.dataset.pair==='offer')return;
-  const held=heldOffer={o};noteSays(`${o.name} said hello. Press Pair by sound or Pair by light to answer.`);
+  const held=heldOffer={o};noteSays(`${o.name} said hello by ${o.channel}. Press Pair by ${o.channel} to answer.`);
   setTimeout(()=>{if(heldOffer!==held)return;heldOffer=null;if(menu.dataset.pair==='')cardRest();else if(menu.dataset.pair==='refused')noteSays('')},HOLD_OFFER)});
 pairBtn.addEventListener('click',pairBySound);
 lightPairBtn.addEventListener('click',pairByLight);
-noBtn.addEventListener('click',()=>{const o=offer;offer=null;lightPairing=null;bridge.stopPairing().catch(()=>{});lampShut();setState('refused');menuWho.textContent='';
+noBtn.addEventListener('click',()=>{const o=offer;offer=null;lightPairing=null;bridge.stopPairing().catch(()=>{});helloOff();setState('refused');menuWho.textContent='';
   pencil(`<p class="ph">not added</p><p class="psub">${esc(o?o.name:'Their machine')} is not a contact. Nothing from this hello was kept.</p>`);
-  noteSays('Not added. Nothing was kept.');pairBtn.focus()});
+  noteSays('Not added. Nothing was kept.');stampFor().focus()});
 yesBtn.addEventListener('click',()=>{const o=offer;if(!o)return;
   const nm=document.getElementById('peername'),name=(nm?nm.value:o.name).trim();
   if(!name){noteSays('Write their name first.');nm.focus();return}
   yesBtn.disabled=noBtn.disabled=true;
   bridge.confirmPair(o.peer,name).then(id=>{
-    lightPairing=null;lampShut();
-    checkedWith={name,safety:o.safety,at:bridge.now(),by:menuWho.textContent==='pairing by light'?'light':'sound'};
+    lightPairing=null;helloOff();
+    checkedWith={name,safety:o.safety,at:bridge.now(),by:o.channel};
     const p={id,name,short:name.split(' ')[0],checked:true,safety:o.safety};
     const i=PEOPLE.findIndex(x=>x.id===id);if(i<0)PEOPLE.push(p);else PEOPLE[i]=p;
     if(!CONTACT.id){CONTACT=p;nameTheSheet(CONTACT)}
     if(!bridge.simulated)drawStations();
-    cardRest(true);pairBtn.focus()},
+    cardRest(true);stampFor().focus()},
   why=>{yesBtn.disabled=noBtn.disabled=false;noteSays(sentence(why))})});
 
 /* ---------- the flashing view ----------
@@ -1283,9 +1298,9 @@ yesBtn.addEventListener('click',()=>{const o=offer;if(!o)return;
    whole device pixels, the leftover split evenly round the grid. Frames that come during the still moment are
    let go; the node shows each message for at least four seconds and three times what a camera needs.
    Escape (or Stop) turns the Light switch to Read, the machine's own way to stop flashing: the screen clears at
-   once, the message waits, and nothing more flashes until the switch is back at Read and flash. While pairing by
-   light the lamp shows your hello instead, says to hold the screens face to face, and Escape (or Stop) ends the
-   pairing, not the switch: the hello stops, the screen clears, and Light stays where it is. */
+   once, the message waits, and nothing more flashes until the switch is back at Read and flash. When the frames
+   are your pairing hello (display's hello), the lamp says to hold the screens face to face, and Escape (or Stop)
+   ends the pairing, not the switch: the hello stops, the screen clears, and Light stays where it is. */
 const lampEl=document.getElementById('lamp'),lampCv=document.getElementById('lampcode'),lampCtx=lampCv.getContext('2d',{alpha:false});
 const lampSay=document.getElementById('lampsay'),lampStop=document.getElementById('lampstop'),deckEl=document.querySelector('.deck'),sheetEl=document.querySelector('.sheet');
 // cells a side for each preset (0 slow, 1 normal, 2 fast), and the quiet zone, as crates/light CodeSpec and QUIET
@@ -1294,8 +1309,9 @@ const LAMP_CELLS=[48,56,64],LAMP_QUIET=3;
 const READY_MS=Q.has('ready')?+Q.get('ready'):1200,LAMP_GREY='#bcbcbc';
 // closed, ready (still) or flashing; for: whose camera to hold it up to (a name, or null for anyone's)
 // next: whose camera the next message to go on screen is for (set by a send from this page); for: the one showing
-// gone: the tag of a hello just taken off the lamp, whose frames still on their way are let go
-const Lamp={state:'closed',tag:null,gone:null,spec:1,bits:null,index:-1,shown:0,readyT:null,stopped:false,stopping:false,for:null,next:null,refocus:false,rateSpec:null};
+// hello: the frames on the lamp are your pairing hello; gone: the tag of a hello just taken off the lamp, whose
+// frames still on their way are let go
+const Lamp={state:'closed',tag:null,hello:false,gone:null,spec:1,bits:null,index:-1,shown:0,readyT:null,stopped:false,stopping:false,for:null,next:null,refocus:false,rateSpec:null};
 const odoDigits=(el,n,w)=>{el.innerHTML=String(Math.max(0,Math.min(10**w-1,Math.round(n)))).padStart(w,'0').split('').map(d=>`<i>${d}</i>`).join('')};
 // the canvas, sized to the bezel's opening in whole device pixels and placed on whole device pixels
 // the lamp's span: the sheet's column, and the card's when it stands beside the sheet (the wide layout)
@@ -1319,15 +1335,15 @@ function lampPaint(){const px=lampCv.width,n=LAMP_CELLS[Lamp.spec],cell=Math.flo
   if(Lamp.state!=='flashing'||!Lamp.bits){k.fillStyle=LAMP_GREY;k.fillRect(o,o,cell*n,cell*n);return}
   k.fillStyle='#000';const b=Lamp.bits;
   for(let i=0;i<n*n;i++)if(b[i>>3]&(128>>(i&7)))k.fillRect(o+(i%n)*cell,o+((i/n)|0)*cell,cell,cell)}
-function lampCaption(){const who=Lamp.for?`${Lamp.for}'s`:'their';
-  lampSay.firstChild.nodeValue=lightPairing?'Hold your screens face to face.':`Hold this screen up to ${who} camera.`;
-  lampSay.querySelector('small').textContent=Lamp.refused?Lamp.refused:lightPairing==='finishing'?'theirs is read, yours finishes, Escape stops it':Lamp.state==='ready'?'ready, Escape stops it':lightPairing?'reading theirs, Escape stops it':'flashing, Escape stops it';
+function lampCaption(){const who=Lamp.for?`${Lamp.for}'s`:'their',hello=Lamp.hello,finishing=hello&&lightPairing==='finishing';
+  lampSay.firstChild.nodeValue=finishing?'Their key is read. Yours finishes showing.':hello?'Hold your screens face to face.':`Hold this screen up to ${who} camera.`;
+  lampSay.querySelector('small').textContent=Lamp.refused?Lamp.refused:finishing?'Escape stops it':Lamp.state==='ready'?'ready, Escape stops it':hello?'reading theirs, Escape stops it':'flashing, Escape stops it';
   // the plate, the code's label and the Stop key say what is on the lamp: a message, or your hello
-  lampEl.querySelector('.lamp-head .pl.screw').textContent=lightPairing?'Pairing by light':'Flashing by light';
-  lampEl.setAttribute('aria-label',lightPairing?'Pairing by light':'Flashing by light');
-  lampCv.setAttribute('aria-label',lightPairing?'Your hello as a light code':'The message as a light code');
-  lampStop.title=lightPairing?'Stops pairing by light. Escape does the same. The screen clears, and Light stays where it is.':'Stops flashing. Escape does the same. Light turns to Read, and the message waits until it is back at Read and flash.';
-  document.getElementById('lampnrd').title=lightPairing?'Frames of your hello shown in this window':'Frames of this message shown so far'}
+  lampEl.querySelector('.lamp-head .pl.screw').textContent=hello?'Pairing by light':'Flashing by light';
+  lampEl.setAttribute('aria-label',hello?'Pairing by light':'Flashing by light');
+  lampCv.setAttribute('aria-label',hello?'Your hello as a light code':'The message as a light code');
+  lampStop.title=hello?'Stops pairing by light. Escape does the same. The screen clears, and Light stays where it is.':'Stops flashing. Escape does the same. Light turns to Read, and the message waits until it is back at Read and flash.';
+  document.getElementById('lampnrd').title=hello?'Frames of your hello shown in this window':'Frames of this message shown so far'}
 // the readout: the bytes a second this Flash speed shows, as the machine reckons it, read again when the speed changes
 function lampRate(){bridge.channels().then(list=>{const l=list.find(c=>c.channel==='light');const rd=document.getElementById('lamprd');
   rd.hidden=!(l&&l.rate>0);if(l&&l.rate>0){odoDigits(document.getElementById('lamprate'),l.rate,4);
@@ -1340,7 +1356,7 @@ function lampOpen(){Lamp.state='ready';Lamp.shown=0;
   clearTimeout(Lamp.readyT);Lamp.readyT=setTimeout(()=>{if(Lamp.state!=='ready')return;Lamp.state='flashing';lampFrame()},READY_MS)}
 function lampFrame(){if(Lamp.state!=='flashing')return;lampPaint();
   odoDigits(document.getElementById('lampn'),Lamp.shown,3);document.getElementById('lampjewel').classList.remove('off');lampCaption()}
-function lampClose(focusBack=true){clearTimeout(Lamp.readyT);if(Lamp.state==='closed')return;Lamp.state='closed';Lamp.bits=null;Lamp.tag=null;Lamp.for=null;Lamp.refused='';Lamp.rateSpec=null;
+function lampClose(focusBack=true){clearTimeout(Lamp.readyT);if(Lamp.state==='closed')return;Lamp.state='closed';Lamp.bits=null;Lamp.tag=null;Lamp.hello=false;Lamp.for=null;Lamp.refused='';Lamp.rateSpec=null;
   const back=lampEl.contains(document.activeElement)||Lamp.refocus;
   lampEl.hidden=true;deckEl.classList.remove('flashing');sheetEl.inert=false;
   // back to the reply line, or (a pairing's lamp closing on its offer) to the card's Matched, add
@@ -1349,17 +1365,21 @@ bridge.on('display',d=>{
   // stopped with Escape: nothing shows again until the machine says the screen is clear
   if(Lamp.stopped||d.tag===Lamp.gone||!(d.spec in LAMP_CELLS)||d.bits.length!==Math.ceil(LAMP_CELLS[d.spec]**2/8))return;
   // a new message on screen: it is for whoever the page last sent one by light to, if anyone, else for any camera
-  if(d.tag!==Lamp.tag){Lamp.tag=d.tag;Lamp.shown=0;Lamp.for=Lamp.next;Lamp.next=null}
+  // (your pairing hello is for no one's camera in particular, and takes no send's name)
+  if(d.tag!==Lamp.tag){Lamp.tag=d.tag;Lamp.shown=0;Lamp.hello=d.hello;if(d.hello)Lamp.for=null;else{Lamp.for=Lamp.next;Lamp.next=null}}
   Lamp.spec=d.spec;Lamp.bits=d.bits;Lamp.index=d.index;Lamp.shown=d.index+1;
   if(d.spec!==Lamp.rateSpec){Lamp.rateSpec=d.spec;lampRate()}
   if(Lamp.state==='closed')lampOpen();else lampFrame()});
-bridge.on('displayStopped',()=>{Lamp.stopped=false;Lamp.gone=null;if(lightPairing==='finishing')lightPairing=null;lampClose()});
+bridge.on('displayStopped',()=>{Lamp.stopped=false;Lamp.gone=null;if(Lamp.hello&&lightPairing==='finishing')lightPairing=null;lampClose()});
 // the lamp goes, and the page says so, only once the machine has taken the switch's turn to Read; refused, the lamp
 // stays up (the machine is still flashing) and says why on its card
 async function stopFlashing(){if(Lamp.state==='closed'||Lamp.stopping)return;
-  // pairing by light: the pairing ends, not the switch; an offer already on the card stays for the person to judge
-  if(lightPairing==='reading'){endLightPairing('Pairing by light stopped. Nothing was kept.');return}
-  if(lightPairing==='finishing'){lightPairing=null;bridge.stopPairing().catch(()=>{});lampShut();yesBtn.focus({preventScroll:true});return}
+  // your hello on the lamp: the pairing ends, not the switch; an offer already on the card stays for the person to
+  // judge. A message on the lamp stops the Task 6 way, whatever pairing is doing
+  if(Lamp.hello){
+    if(lightPairing==='reading'){endLightPairing('Pairing by light stopped. Nothing was kept.');return}
+    const offered=lightPairing==='finishing';lightPairing=null;bridge.stopPairing().catch(()=>{});helloOff();
+    if(offered)yesBtn.focus({preventScroll:true});return}
   Lamp.stopping=true;
   const taken=await turnKnob('k2',1,true);Lamp.stopping=false;
   if(taken===true){if(Lamp.state!=='closed'){Lamp.stopped=true;lampClose()}say('Flashing stopped. Light is at Read, and the message waits.');return}

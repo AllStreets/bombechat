@@ -12,8 +12,9 @@
 // key and a seeded safety number); confirmPair adds him to contacts() under the
 // name as the page corrected it. pair('light') also shows this machine's hello as
 // the node does: display frames at the Flash speed until stopPairing or
-// confirmPair, the end of the window showing when finishPairing is called, or
-// three minutes (?paircap=ms shortens it). Refused, as the node refuses it, when
+// confirmPair, the end of the window showing when finishPairing is called, Light
+// leaving Read and flash, or three minutes (?paircap=ms shortens it). Its frames
+// say hello; offers say the channel they came in on. Refused, as the node refuses it, when
 // the channel's switch won't send.
 //
 // Settings: the simulated machine keeps them as the device keeps settings.json,
@@ -215,7 +216,7 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
       flashT = later(flashTick, 200); return;
     }
     if (!f.announced && f.m) { f.announced = true; outbox(f.m, 'playing'); }
-    emit('display', { tag: f.tag, bits: frameBits(f.spec, f.tag, f.shown), spec: f.spec, index: f.shown });
+    emit('display', { tag: f.tag, bits: frameBits(f.spec, f.tag, f.shown), spec: f.spec, index: f.shown, hello: !!f.hello });
     f.lit = true; f.shown += 1;
     if (f.shown >= f.window) {
       flashing = null;
@@ -344,12 +345,12 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
         flashes.push(h);
         if (!flashT) flashT = later(flashTick, 0);
         helloCap = later(() => { if (hello === h) endHello(); }, pairCap);
-        later(() => { if (hello === h) emit('pairOffer', { peer: signer(0x2c, 0x91), name: 'Teodor Vance', safety }); }, PAIR_MS);
+        later(() => { if (hello === h) emit('pairOffer', { peer: signer(0x2c, 0x91), name: 'Teodor Vance', safety, channel: 'Light' }); }, PAIR_MS);
         return Promise.resolve();
       }
       if (channel !== 'sound') return Promise.reject(`no such channel: ${channel}`);
       if (settings.sound < 2) { const why = settings.sound === 0 ? 'not sent: sound is off' : 'not sent: sound is set to listen only'; later(() => { sound(why); sound(settings.sound === 0 ? 'off' : 'listening'); }); return Promise.reject(why); }
-      later(() => emit('pairOffer', { peer: signer(0x2c, 0x91), name: 'Teodor Vance', safety }), PAIR_MS);
+      later(() => emit('pairOffer', { peer: signer(0x2c, 0x91), name: 'Teodor Vance', safety, channel: 'Sound' }), PAIR_MS);
       return Promise.resolve();
     },
     stopPairing() { endHello(); return Promise.resolve(); },
@@ -374,6 +375,8 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
       settings[id] = valueIndex; keepSettings(settings);
       // the light channel says when its camera closes or opens, as the node does on its next tick
       if (id === 'light' && (was === 0) !== (valueIndex === 0)) { later(() => light(lightAt())); eyeWake(); }
+      // pairing by light ends when Light leaves Read and flash, as the node ends it
+      if (id === 'light' && valueIndex < 2) endHello();
       return Promise.resolve();
     },
     // read from the record each time, as the device answers from its own: another page may have changed it

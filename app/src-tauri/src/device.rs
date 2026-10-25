@@ -606,7 +606,7 @@ impl Machine for Device {
 
     fn start_pairing(&mut self, my_name: &str, channel: Channel) -> Result<(), String> {
         self.node
-            .start_pairing_by(my_name, channel)
+            .start_pairing(my_name, channel)
             .map_err(str::to_string)
     }
 

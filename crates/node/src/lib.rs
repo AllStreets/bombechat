@@ -310,6 +310,8 @@ pub enum NodeEvent {
         peer: PublicIdentity,
         name: String,
         safety: String,
+        /// The channel the hello came in on.
+        channel: Channel,
     },
     /// The room's loudness in approximate dB.
     RoomDb(f32),
@@ -331,6 +333,8 @@ pub enum NodeEvent {
         bits: Vec<u8>,
         spec_id: u8,
         index: u32,
+        /// The frame is of this machine's pairing hello, not a message.
+        hello: bool,
     },
     /// Light: clear the screen; nothing is being shown. `tag` is the
     /// envelope whose frame was on it.
@@ -529,6 +533,8 @@ struct Pairing {
     hello: Envelope,
     /// When it started, by `now_ms`.
     since_ms: u64,
+    /// The channel the hello goes out on.
+    channel: Channel,
     /// The tag the hello is showing under by light, if it is.
     light_tag: Option<u16>,
     /// Their hello is in ([`Node::finish_pairing`]): the one on screen
@@ -689,8 +695,19 @@ impl Node {
     /// an envelope part way through showing stops at once and waits
     /// (reported [`OutboxState::Waiting`]), carrying on from where it
     /// stopped once the switch is back at Read and flash.
+    ///
+    /// Pairing by light ends when the switch leaves Read and flash: its
+    /// hello stops, as by [`Node::stop_pairing`], rather than waiting.
     pub fn set_light(&mut self, switch: LightSwitch) {
         self.light = switch;
+        if switch != LightSwitch::ReadAndFlash
+            && self
+                .pairing
+                .as_ref()
+                .is_some_and(|p| p.channel == Channel::Light)
+        {
+            self.stop_pairing();
+        }
         for t in &mut self.transports {
             if t.name() == Channel::Light {
                 t.set_listening(switch != LightSwitch::Off);
@@ -1055,66 +1072,43 @@ impl Node {
         }
     }
 
-    /// Announce this device for pairing: a signed hello carrying its
-    /// identity and `my_name` (cut to 64 bytes). Anyone who hears it gets
-    /// a [`NodeEvent::PairOffer`]. It goes out on every channel whose
-    /// switch allows sending. Refused with "locked" before
-    /// [`Node::unlock`], and, when no switch allows sending, with the
-    /// state the Sound channel reports (light's is reported too, if there
-    /// is a light transport).
+    /// Announce this device for pairing on `channel` (sound or light): a
+    /// signed hello carrying its identity and `my_name` (cut to 64 bytes).
+    /// Anyone who hears it gets a [`NodeEvent::PairOffer`]. Refused with
+    /// "locked" before [`Node::unlock`]; with that channel's state unless
+    /// its switch allows sending (light at Off or Read, sound at Off or
+    /// Listen: a switch is never turned for pairing, so the camera and the
+    /// screen are only ever as the Light switch has them); and with
+    /// [`NOTHING_TO_SEND_ON`] when there is no transport for it.
     ///
     /// Pairing is then in progress until [`Node::stop_pairing`],
-    /// [`Node::confirm_pairing`] or [`PAIRING_CAP_MS`] later, whichever
-    /// comes first. While it is, the hello keeps showing by light (each
-    /// time its sending window ends it goes on screen again); sound plays
-    /// it once. Starting again ends the pairing in progress first.
-    pub fn start_pairing(&mut self, my_name: &str) -> Result<(), &'static str> {
-        self.pair_on(my_name, &[Channel::Sound, Channel::Light])
-    }
-
-    /// As [`Node::start_pairing`], on `channel` only: pairing by sound or
-    /// by light. Refused, with that channel's state, unless its switch
-    /// allows sending: a switch is never turned for pairing (light at Off
-    /// or Read is refused, as sound at Off or Listen is), so the camera
-    /// and screen are only ever as the Light switch has them.
-    pub fn start_pairing_by(
-        &mut self,
-        my_name: &str,
-        channel: Channel,
-    ) -> Result<(), &'static str> {
-        self.pair_on(my_name, &[channel])
-    }
-
-    fn pair_on(&mut self, my_name: &str, channels: &[Channel]) -> Result<(), &'static str> {
+    /// [`Node::finish_pairing`], [`Node::confirm_pairing`], the Light
+    /// switch leaving Read and flash (pairing by light), or
+    /// [`PAIRING_CAP_MS`] later, whichever comes first. While it is, the
+    /// hello keeps showing by light (each time its sending window ends it
+    /// goes on screen again, and [`NodeEvent::Display`] says `hello`);
+    /// sound plays it once. Starting again ends the pairing in progress
+    /// first.
+    pub fn start_pairing(&mut self, my_name: &str, channel: Channel) -> Result<(), &'static str> {
         let Some(me) = &self.me else {
             return Err("locked");
         };
         let env = control::pair_hello(me, my_name, random_id(), now_min(), TTL_MIN);
-        let carried: Vec<Channel> = [Channel::Sound, Channel::Light]
-            .into_iter()
-            .filter(|c| channels.contains(c))
-            .filter(|c| self.transports.iter().any(|t| t.name() == *c))
-            .collect();
-        let open: Vec<Channel> = carried
-            .iter()
-            .copied()
-            .filter(|c| self.refusal(*c).is_none())
-            .collect();
-        if open.is_empty() {
-            let refused: Vec<(Channel, &'static str)> = carried
-                .iter()
-                .filter_map(|c| Some((*c, self.refusal(*c)?)))
-                .collect();
-            for (channel, why) in &refused {
-                self.report_refusal(*channel, why);
-            }
-            return Err(refused.first().map_or(NOTHING_TO_SEND_ON, |(_, why)| why));
+        let carried = matches!(channel, Channel::Sound | Channel::Light)
+            && self.transports.iter().any(|t| t.name() == channel);
+        if !carried {
+            return Err(NOTHING_TO_SEND_ON);
+        }
+        if let Some(why) = self.refusal(channel) {
+            self.report_refusal(channel, why);
+            return Err(why);
         }
         self.stop_pairing();
-        let tag = self.transmit(&env, &open);
+        let tag = self.transmit(&env, &[channel]);
         self.pairing = Some(Pairing {
             since_ms: self.now_ms,
-            light_tag: open.contains(&Channel::Light).then_some(tag),
+            channel,
+            light_tag: (channel == Channel::Light).then_some(tag),
             finishing: false,
             hello: env,
         });
@@ -1294,6 +1288,10 @@ impl Node {
                         spec,
                         bits,
                     } => events.push(NodeEvent::Display {
+                        hello: self
+                            .pairing
+                            .as_ref()
+                            .is_some_and(|p| p.light_tag == Some(tag)),
                         tag,
                         bits,
                         spec_id: spec,
@@ -1780,6 +1778,7 @@ impl Node {
                     return;
                 }
                 events.push(NodeEvent::PairOffer {
+                    channel: self.channel(ti),
                     safety: safety_number(&mine, &identity),
                     peer: identity,
                     name,
@@ -2291,33 +2290,6 @@ mod tests {
     }
 
     #[test]
-    fn a_hello_goes_on_every_channel_that_may_send() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let (a, b) = (Identity::generate(), Identity::generate());
-        let (mut node, sound, light, _) = two_channel_node(&dir, &a, &b);
-        assert_eq!(node.start_pairing("Ann"), Ok(()));
-        assert_eq!((sound.envelopes().len(), light.envelopes().len()), (1, 1));
-
-        node.set_sound(SoundSwitch::Off);
-        assert_eq!(node.start_pairing("Ann"), Ok(()));
-        assert_eq!((sound.envelopes().len(), light.envelopes().len()), (1, 2));
-
-        node.set_light(LightSwitch::Read);
-        assert_eq!(node.start_pairing("Ann"), Err(SOUND_OFF));
-        let states: Vec<_> = node
-            .tick(1)
-            .into_iter()
-            .filter_map(|e| match e {
-                NodeEvent::ChannelState { channel, state } => Some((channel, state)),
-                _ => None,
-            })
-            .collect();
-        assert!(states.contains(&(Channel::Light, READ_ONLY.to_string())));
-        assert!(states.contains(&(Channel::Sound, SOUND_OFF.to_string())));
-        assert_eq!((sound.envelopes().len(), light.envelopes().len()), (1, 2));
-    }
-
-    #[test]
     fn a_receipt_from_everyone_tells_the_carrier_it_was_delivered() {
         let dir = tempfile::TempDir::new().unwrap();
         let (a, b, c) = (
@@ -2542,10 +2514,10 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let (a, b) = (Identity::generate(), Identity::generate());
         let (mut node, sound, light, _) = two_channel_node(&dir, &a, &b);
-        assert_eq!(node.start_pairing_by("Ann", Channel::Light), Ok(()));
+        assert_eq!(node.start_pairing("Ann", Channel::Light), Ok(()));
         assert_eq!((sound.envelopes().len(), light.envelopes().len()), (0, 1));
         assert!(node.pairing());
-        assert_eq!(node.start_pairing_by("Ann", Channel::Sound), Ok(()));
+        assert_eq!(node.start_pairing("Ann", Channel::Sound), Ok(()));
         assert_eq!((sound.envelopes().len(), light.envelopes().len()), (1, 1));
         // Starting by sound ended the pairing by light: its hello is done.
         assert!(light.delivered.lock().unwrap().contains(&light.last_tag()));
@@ -2563,7 +2535,7 @@ mod tests {
         ] {
             node.set_light(switch);
             // Sound may send, but this pairing is by light only.
-            assert_eq!(node.start_pairing_by("Ann", Channel::Light), Err(why));
+            assert_eq!(node.start_pairing("Ann", Channel::Light), Err(why));
             assert!(!node.pairing());
             let states: Vec<_> = node
                 .tick(1)
@@ -2581,7 +2553,7 @@ mod tests {
         // Pairing by sound with Sound off is refused the same way.
         node.set_light(LightSwitch::ReadAndFlash);
         node.set_sound(SoundSwitch::Off);
-        assert_eq!(node.start_pairing_by("Ann", Channel::Sound), Err(SOUND_OFF));
+        assert_eq!(node.start_pairing("Ann", Channel::Sound), Err(SOUND_OFF));
         assert_eq!((sound.envelopes().len(), light.envelopes().len()), (0, 0));
     }
 
@@ -2625,7 +2597,7 @@ mod tests {
         let (a, b) = (Identity::generate(), Identity::generate());
         let mut node = light_node(&dir, &a);
         node.tick(0);
-        assert_eq!(node.start_pairing("Ann"), Ok(()));
+        assert_eq!(node.start_pairing("Ann", Channel::Light), Ok(()));
         assert!(node.pairing());
 
         // Far past one 4 s window, it is still showing, under fresh tags.
@@ -2644,7 +2616,7 @@ mod tests {
         assert_eq!((frames, clear), (0, true));
 
         // Stopping ends it too.
-        node.start_pairing("Ann").unwrap();
+        node.start_pairing("Ann", Channel::Light).unwrap();
         let (_, frames, _) = shown(&mut node, 30_000, 36_000);
         assert_eq!(frames, 60);
         node.stop_pairing();
@@ -2658,7 +2630,7 @@ mod tests {
         let a = Identity::generate();
         let mut node = light_node(&dir, &a);
         node.tick(0);
-        node.start_pairing_by("Ann", Channel::Light).unwrap();
+        node.start_pairing("Ann", Channel::Light).unwrap();
         // A second into the first window, their hello is in.
         let (tags, frames, _) = shown(&mut node, 20, 1_000);
         assert_eq!((tags.len(), frames), (1, 10));
@@ -2672,10 +2644,66 @@ mod tests {
         // Finished with no hello on screen (sound only), it ends at once.
         let (b, c) = (Identity::generate(), Identity::generate());
         let (mut two, _, light, _) = two_channel_node(&dir, &b, &c);
-        two.start_pairing_by("Ben", Channel::Sound).unwrap();
+        two.start_pairing("Ben", Channel::Sound).unwrap();
         two.finish_pairing();
         assert!(!two.pairing());
         assert!(light.envelopes().is_empty());
+    }
+
+    #[test]
+    fn hello_frames_say_so_and_a_message_by_light_does_not() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (a, b) = (Identity::generate(), Identity::generate());
+        let mut node = light_node(&dir, &a);
+        let ben = node
+            .store
+            .as_ref()
+            .unwrap()
+            .add_contact("Ben", &b.public(), true)
+            .unwrap();
+        node.tick(0);
+        // A message goes on screen first, the hello queues behind it.
+        node.send(&[ben], "Road north is open.", Channel::Light);
+        node.start_pairing("Ann", Channel::Light).unwrap();
+        let mut frames = Vec::new();
+        for now in (20..12_000).step_by(20) {
+            for e in node.tick(now) {
+                if let NodeEvent::Display { tag, hello, .. } = e {
+                    frames.push((tag, hello));
+                }
+            }
+        }
+        let first = frames[0].0;
+        assert!(frames
+            .iter()
+            .take_while(|(t, _)| *t == first)
+            .all(|(_, h)| !h));
+        assert!(frames
+            .iter()
+            .skip_while(|(t, _)| *t == first)
+            .all(|(_, h)| *h));
+        assert!(frames.iter().any(|(_, h)| *h));
+    }
+
+    #[test]
+    fn light_leaving_read_and_flash_ends_pairing_by_light() {
+        let a = Identity::generate();
+        for switch in [LightSwitch::Read, LightSwitch::Off] {
+            let dir = tempfile::TempDir::new().unwrap();
+            let mut node = light_node(&dir, &a);
+            node.tick(0);
+            node.start_pairing("Ann", Channel::Light).unwrap();
+            let (_, frames, _) = shown(&mut node, 20, 1_000);
+            assert!(frames > 0);
+            node.set_light(switch);
+            assert!(!node.pairing(), "{switch:?}");
+            let (_, frames, clear) = shown(&mut node, 1_000, 20_000);
+            assert_eq!((frames, clear), (0, true));
+            // Back at Read and flash, nothing comes back on screen.
+            node.set_light(LightSwitch::ReadAndFlash);
+            let (_, frames, _) = shown(&mut node, 20_000, 30_000);
+            assert_eq!(frames, 0, "{switch:?}");
+        }
     }
 
     #[test]
@@ -2684,7 +2712,7 @@ mod tests {
         let a = Identity::generate();
         let mut node = light_node(&dir, &a);
         node.tick(0);
-        node.start_pairing("Ann").unwrap();
+        node.start_pairing("Ann", Channel::Light).unwrap();
         let (_, frames, _) = shown(&mut node, 20, PAIRING_CAP_MS - 1_000);
         assert!(frames > 1_700, "shown all along: {frames}");
         assert!(node.pairing());
@@ -2702,7 +2730,7 @@ mod tests {
         let mut node = light_node(&dir, &a);
         node.set_light(LightSwitch::Read);
         // Sound is at Listen and send, but there is no sound to send on.
-        assert_eq!(node.start_pairing("Ann"), Err(READ_ONLY));
+        assert_eq!(node.start_pairing("Ann", Channel::Light), Err(READ_ONLY));
         assert!(!node.pairing());
         let states: Vec<_> = node
             .tick(1)
@@ -2717,7 +2745,10 @@ mod tests {
 
         let store = Store::create(&dir.path().join("none.db"), "pass", &a, "me").unwrap();
         let mut bare = Node::new(Some(store), vec![]);
-        assert_eq!(bare.start_pairing("Ann"), Err(NOTHING_TO_SEND_ON));
+        assert_eq!(
+            bare.start_pairing("Ann", Channel::Light),
+            Err(NOTHING_TO_SEND_ON)
+        );
     }
 
     #[test]
@@ -2767,7 +2798,7 @@ mod tests {
         let mut node = Node::new(None, vec![Box::new(wire.clone())]);
         assert_eq!(node.send(&[ContactId(1)], "hi", Channel::Sound), NOT_SENT);
         assert_eq!(node.broadcast("hi", Channel::Sound), NOT_SENT);
-        assert_eq!(node.start_pairing("me"), Err("locked"));
+        assert_eq!(node.start_pairing("me", Channel::Sound), Err("locked"));
         let peer = Identity::generate().public();
         assert_eq!(node.confirm_pairing(&peer, "p"), NOT_STORED);
         assert!(wire.sent.lock().unwrap().is_empty());
@@ -3229,7 +3260,7 @@ mod tests {
         let id = node.send(&ids, "refused", Channel::Sound);
         assert_ne!(id, NOT_SENT, "kept, so the sheet can say it was not sent");
         let public = node.broadcast("refused too", Channel::Sound);
-        assert_eq!(node.start_pairing("Ben"), Err(LISTEN_ONLY));
+        assert_eq!(node.start_pairing("Ben", Channel::Sound), Err(LISTEN_ONLY));
         let events = node.tick(2);
         assert_eq!(
             outbox(&events),
