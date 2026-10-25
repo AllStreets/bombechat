@@ -28,6 +28,7 @@
 //! the winning tone keeps the symbol clock locked for the rest of the
 //! frame.
 
+use std::fmt;
 use std::f64::consts::{PI, TAU};
 use std::sync::Arc;
 
@@ -109,6 +110,52 @@ impl Default for ModemConfig {
     }
 }
 
+impl ModemConfig {
+    /// Whether the modem can run at this configuration: `Err` says why
+    /// not, e.g. a sample rate too low to carry the band (a microphone at
+    /// 16, 24 or 32 kHz cannot carry the near-silent band). [`modulate`],
+    /// [`measured_rate`] and [`Demodulator::new`] panic on a configuration
+    /// this refuses, so check one that comes from hardware first.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        Layout::try_new(self).map(|_| ())
+    }
+}
+
+/// Why a [`ModemConfig`] cannot be used.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ConfigError {
+    /// Tones must be 2, 4 or 16, so symbols pack whole bytes.
+    Tones(u8),
+    /// The band's top tone is at or above half the sample rate.
+    AboveNyquist { top_hz: f32, sample_rate: u32 },
+    /// The symbol is too short for its edge ramps.
+    SymbolTooShort(f32),
+}
+
+impl fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ConfigError::Tones(t) => write!(
+                f,
+                "tones must be 2, 4 or 16 so symbols pack whole bytes, got {t}"
+            ),
+            ConfigError::AboveNyquist {
+                top_hz,
+                sample_rate,
+            } => write!(
+                f,
+                "band top {top_hz} Hz is above the Nyquist frequency of {sample_rate} Hz sampling"
+            ),
+            ConfigError::SymbolTooShort(ms) => write!(
+                f,
+                "symbol of {ms} ms is too short for its {RAMP_MS} ms edge ramps"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ConfigError {}
+
 /// What the demodulator heard.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DemodEvent {
@@ -137,27 +184,36 @@ struct Layout {
 }
 
 impl Layout {
+    /// The layout for `cfg`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `cfg` is not valid ([`ModemConfig::validate`]).
     fn new(cfg: &ModemConfig) -> Self {
+        Layout::try_new(cfg).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    fn try_new(cfg: &ModemConfig) -> Result<Self, ConfigError> {
         let bits_per_symbol = match cfg.tones {
             2 => 1,
             4 => 2,
             16 => 4,
-            t => panic!("tones must be 2, 4 or 16 so symbols pack whole bytes, got {t}"),
+            t => return Err(ConfigError::Tones(t)),
         };
         let fs = cfg.sample_rate as f64;
         let (lo, hi) = cfg.band.range_hz();
-        assert!(
-            (hi as f64) < fs / 2.0,
-            "band top {hi} Hz is above the Nyquist frequency of {fs} Hz sampling"
-        );
+        if (hi as f64) >= fs / 2.0 {
+            return Err(ConfigError::AboveNyquist {
+                top_hz: hi,
+                sample_rate: cfg.sample_rate,
+            });
+        }
         let symbol = (cfg.symbol_ms as f64 * fs / 1000.0).round() as usize;
         let ramp = (RAMP_MS * fs / 1000.0).round() as usize;
-        assert!(
-            symbol >= 4 * ramp,
-            "symbol of {} ms is too short for its {RAMP_MS} ms edge ramps",
-            cfg.symbol_ms
-        );
-        Layout {
+        if !cfg.symbol_ms.is_finite() || symbol < 4 * ramp {
+            return Err(ConfigError::SymbolTooShort(cfg.symbol_ms));
+        }
+        Ok(Layout {
             fs,
             lo: lo as f64,
             hi: hi as f64,
@@ -166,7 +222,7 @@ impl Layout {
             symbol,
             ramp,
             chirp: (PREAMBLE_MS * fs / 1000.0).round() as usize,
-        }
+        })
     }
 
     fn symbols_per_byte(&self) -> usize {
@@ -447,10 +503,14 @@ impl Demodulator {
     }
 
     /// Feed the next samples of input. Returns frames heard and level
-    /// reports, in the order they occurred in the input.
+    /// reports, in the order they occurred in the input. A sample that is
+    /// not finite is taken as 0.
     pub fn push(&mut self, samples: &[f32]) -> Vec<DemodEvent> {
         let mut events = Vec::new();
         for &x in samples {
+            // A NaN or infinity would poison the running sums and filters
+            // for good: hear it as silence.
+            let x = if x.is_finite() { x } else { 0.0 };
             self.level_sum += (x as f64) * (x as f64);
             self.level_count += 1;
             if self.level_count == self.level_len {

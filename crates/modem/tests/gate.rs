@@ -95,3 +95,14 @@ fn repeat_waits_for_quiet_after_the_gap() {
     g.observe(10.0, 500_000);
     assert_eq!(g.due(500_000), None);
 }
+
+#[test]
+fn send_under_can_be_raised_for_a_loud_room() {
+    let mut g = QuietGate::new(40.0, 0, 90);
+    g.enqueue(0);
+    g.observe(43.0, 0);
+    assert_eq!(g.due(0), None, "43 dB is not under 40");
+    g.set_send_under(45.0);
+    assert_eq!(g.send_under(), 45.0);
+    assert_eq!(g.due(10), Some(0), "43 dB is under 45");
+}

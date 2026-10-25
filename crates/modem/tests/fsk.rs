@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 
 use bombechat_modem::{
-    measured_rate, modulate, split, Band, DemodEvent, Demodulator, Event, ModemConfig, Reassembler,
+    measured_rate, modulate, split, Band, ConfigError, DemodEvent, Demodulator, Event, ModemConfig,
+    Reassembler,
 };
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
@@ -498,4 +499,67 @@ fn measured_rate_matches_airtime() {
     assert!((rate - expected).abs() < 1e-3, "{rate} vs {expected}");
     // 100 ms chirp + (3 + 69) bytes * 2 symbols * 20 ms = 2.98 s per 48 bytes.
     assert!((rate - 48.0 / 2.98).abs() < 1e-3, "{rate}");
+}
+
+#[test]
+fn a_rate_too_low_for_the_band_is_refused_not_panicked() {
+    // A Bluetooth headset or a cheap USB microphone: 16, 24 or 32 kHz.
+    for rate in [16_000, 24_000, 32_000] {
+        let near_silent = ModemConfig {
+            sample_rate: rate,
+            ..Default::default()
+        };
+        assert_eq!(
+            near_silent.validate(),
+            Err(ConfigError::AboveNyquist {
+                top_hz: 19_800.0,
+                sample_rate: rate
+            })
+        );
+        let audible = ModemConfig {
+            band: Band::Audible,
+            ..near_silent
+        };
+        assert_eq!(audible.validate(), Ok(()));
+    }
+    assert_eq!(ModemConfig::default().validate(), Ok(()));
+    let three_tones = ModemConfig {
+        tones: 3,
+        ..Default::default()
+    };
+    assert_eq!(three_tones.validate(), Err(ConfigError::Tones(3)));
+    let short = ModemConfig {
+        symbol_ms: 1.0,
+        ..Default::default()
+    };
+    assert!(matches!(short.validate(), Err(ConfigError::SymbolTooShort(_))));
+}
+
+#[test]
+fn audible_band_loopback_at_16_khz() {
+    let f = sample_frame();
+    let cfg = ModemConfig {
+        sample_rate: 16_000,
+        band: Band::Audible,
+        ..Default::default()
+    };
+    assert_eq!(decode(cfg, &padded(&cfg, &f, 1_234, 8)), vec![f]);
+}
+
+#[test]
+fn one_bad_sample_does_not_deafen_the_receiver() {
+    let f = sample_frame();
+    let cfg = ModemConfig::default();
+    let mut d = Demodulator::new(cfg);
+    let mut glitch = vec![0.0f32; 4_800];
+    glitch[100] = f32::NAN;
+    glitch[200] = f32::INFINITY;
+    glitch[300] = f32::NEG_INFINITY;
+    let early = d.push(&glitch);
+    assert!(early.iter().all(|e| match e {
+        DemodEvent::Level { dbfs } => dbfs.is_finite(),
+        DemodEvent::Frame(_) => false,
+    }));
+    let later = frames_of(&d.push(&padded(&cfg, &f, 3_000, 5)));
+    assert_eq!(later, vec![f]);
 }

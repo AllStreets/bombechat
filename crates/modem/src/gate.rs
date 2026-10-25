@@ -67,6 +67,18 @@ impl QuietGate {
         }
     }
 
+    /// Change the threshold: items play only while the room is quieter
+    /// than `send_under_db`. Takes effect from the next
+    /// [`due`](QuietGate::due).
+    pub fn set_send_under(&mut self, send_under_db: f32) {
+        self.send_under_db = send_under_db;
+    }
+
+    /// The threshold, in dB.
+    pub fn send_under(&self) -> f32 {
+        self.send_under_db
+    }
+
     /// Queue `item` to play once the room is quiet.
     pub fn enqueue(&mut self, item: usize) {
         self.queue.push_back(Entry {
