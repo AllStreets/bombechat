@@ -1,8 +1,11 @@
 // Renders the README's pictures from the app itself, headless, on the GPU:
-//   node tools/media.cjs [icon] [logo] [banner] [shots] [demo] [settings] [light]     (all of them when none is named)
-// Writes to docs/media/, and the app icon to app/src-tauri/icons/. Every picture is a page of this repository served by
-// tools/serve.cjs (the browser simulator for the front, a stand-in for the
-// Tauri shell for the first run); nothing on the screen is captured.
+//   node tools/media.cjs [icon] [logo] [banner] [shots] [demo] [settings] [light] [bluetooth] [--edition bluetooth]
+// (all of them when none is named). Writes to docs/media/, and the app icon to app/src-tauri/icons/. Every picture is a
+// page of this repository served by tools/serve.cjs (the browser simulator for the front, a stand-in for the
+// Tauri shell for the first run); nothing on the screen is captured. --edition bluetooth serves the standard edition's
+// tree (bluetooth/, through its own copy of serve.cjs) instead of the root's, still writing to the root's docs/media/;
+// the bluetooth target always renders from that tree, since the Bluetooth switch is only there. Run
+// tools/sync-bluetooth.sh first so the edition shows what the root does.
 // Needs Google Chrome (Playwright's channel 'chrome', for Metal) and ffmpeg for the GIFs, and gifsicle to make
 // the clips small enough. The icon needs python3 with Pillow, and macOS's iconutil for icon.icns.
 const path = require('path');
@@ -15,7 +18,15 @@ const ROOT = path.resolve(__dirname, '..');
 const OUT = path.join(ROOT, 'docs', 'media');
 const PORT = 4814;
 const at = p => `http://127.0.0.1:${PORT}/${p}`;
-const want = new Set(process.argv.slice(2));
+const args = process.argv.slice(2);
+// --edition <name> (or --edition=<name>): serve that edition's tree in place of the root's
+const editionArg = (() => { const i = args.findIndex(a => a === '--edition' || a.startsWith('--edition='));
+  if (i < 0) return null; const v = args[i].includes('=') ? args[i].split('=')[1] : args[i + 1]; args.splice(i, args[i].includes('=') ? 1 : 2); return v; })();
+if (editionArg && editionArg !== 'bluetooth') { console.error(`no such edition: ${editionArg}`); process.exit(2); }
+const EDITION_ROOT = path.join(ROOT, 'bluetooth');
+// the server for a tree: the root's serve.cjs, or the edition's copy of it, which serves bluetooth/
+const serverFor = edition => edition ? require(path.join(EDITION_ROOT, 'tools', 'serve.cjs')).start : start;
+const want = new Set(args);
 const doing = k => !want.size || want.has(k);
 fs.mkdirSync(OUT, { recursive: true });
 
@@ -77,7 +88,11 @@ function virtualClock() {
 }
 
 (async () => {
-  const server = await start(PORT);
+  const server = await serverFor(editionArg)(PORT);
+  // the Bluetooth clip's own server, on the edition's tree, unless that is already the one serving
+  const BT_PORT = PORT + 1;
+  const btServer = doing('bluetooth') && !editionArg ? await serverFor('bluetooth')(BT_PORT) : null;
+  const btAt = p => `http://127.0.0.1:${btServer ? BT_PORT : PORT}/${p}`;
   const browser = await chromium.launch({ channel: 'chrome', args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
   const ctx = (w, h, scale = 2) => browser.newContext({ viewport: { width: w, height: h }, deviceScaleFactor: scale, reducedMotion: 'no-preference' });
   const errors = p => p.on('pageerror', e => console.error('page error:', e.message));
@@ -89,10 +104,12 @@ function virtualClock() {
     if (doing('demo')) await demo();
     if (doing('settings')) await settingsClip();
     if (doing('light')) await lightClip();
+    if (doing('bluetooth')) await bluetoothClip();
     shrink();
   } finally {
     await browser.close();
     server.close();
+    if (btServer) btServer.close();
   }
 
   // Shrink the PNGs: full-window shots down to 1.5x, then everything but the logo to 256 colours (Pillow,
@@ -469,18 +486,145 @@ for px, cut, out in json.loads(sys.argv[2]):
     await c.close();
     encode(tmp, n, FPS, { W: 960, H: 600, name: 'light.gif', playFps: PLAY });
   }
+  // Bluetooth, on the standard edition's front (bluetooth/app/ui, its own simulator): the switch turned from Contacts to
+  // Open, its jewel lit and the Near readout counting the strangers in range; Ines Duarte asking to connect, on a slip in
+  // the tray; Accept stamped, and her station added as not confirmed; a reply to Marisol sent by Bluetooth and stamped
+  // heard; then Marisol's answer coming in by Bluetooth, the drums turning to it. The page can't take Ines off again, so
+  // the clip's last frames dissolve into its first. Stepped on the page's clock, as the light clip is. Also
+  // bluetooth.png, the panel's column with the request waiting, at 2x.
+  //
+  // The edition's simulator plays the room's side through the node's own events; its emit is kept on window.__btEmit
+  // (and its sealing on window.__btSeal) by the copy this page is served, so Marisol's answer arrives as the node hands
+  // over a Bluetooth envelope: every chunk at once, then the message. The file on disk is not changed.
+  async function bluetoothClip() {
+    const FPS = 20, DT = 1000 / FPS;
+    const SIM = path.join(EDITION_ROOT, 'app', 'ui', 'simulator.js');
+    if (!fs.existsSync(SIM)) throw new Error('bluetooth/ has no simulator: run tools/sync-bluetooth.sh');
+    const kept = { sound: 2, volume: 2, band: 0, light: 2, flash: 1, machine: 1, machvol: 2, carry: 1, hops: 3, hold: 2, quiet: 2, repeats: 2, lock: 1, expire: 0, inperson: 0, bluetooth: 1 };
+    const setUp = kept => { try { localStorage.clear(); sessionStorage.clear(); sessionStorage.setItem('bombechat.simulated-machine', JSON.stringify(kept)); } catch (e) {} };
+    const REPLY = 'On my way. Ines is with me, she has a radio.';
+    const ANSWER = 'Good. Come up the back stairs.';
+    const hooked = () => {
+      let src = fs.readFileSync(SIM, 'utf8');
+      const open = /(export function createSimulator\(emit\b[^\n]*\{\n)/;
+      if (!open.test(src)) throw new Error('simulator.js: createSimulator(emit, ...) not found; update the bluetooth clip');
+      src = src.replace(open, '$1  window.__btEmit = emit;\n');
+      if (!/\bfunction chunked\(/.test(src) || !/\bfunction sealedInner\(/.test(src)) throw new Error('simulator.js: chunked or sealedInner not found; update the bluetooth clip');
+      return src + '\nwindow.__btSeal = (text, minute, seed) => chunked(sealedInner(text, minute, seed), seed);\n';
+    };
+    // the front as it opens: the incoming message whole (?f past its end), the room held still, two more strangers in
+    // range for Open to show
+    async function open(c) {
+      await c.addInitScript(setUp, kept);
+      await c.route('**/app/ui/simulator.js', r => r.fulfill({ body: hooked(), contentType: 'text/javascript', headers: { 'Cache-Control': 'no-store' } }));
+      const p = await c.newPage(); errors(p);
+      await p.goto(btAt('app/ui/bombechat.html?still&f=99'));
+      await p.waitForFunction(() => window.__bank && window.__bank.ready && window.__btEmit && document.getElementById('k3'), null, { timeout: 30000 });
+      await p.evaluate(() => document.fonts.ready);
+      await p.evaluate(() => window.__sim.bluetoothStrangers(['R2QD', 'T8WN']));
+      return p;
+    }
+    const tmp = path.join(ROOT, 'checks', 'media', 'bluetooth'); fs.rmSync(tmp, { recursive: true, force: true }); fs.mkdirSync(tmp, { recursive: true });
+
+    // the still: the switch at Open, the request waiting in the tray, the strangers folded under the meter
+    {
+      const c = await ctx(1440, 900, 2);
+      const p = await open(c);
+      await p.waitForTimeout(1500);
+      await p.click('#k3');
+      await p.waitForTimeout(900);
+      await p.evaluate(() => window.__sim.bluetoothAsk());
+      await p.waitForSelector('.slip.ask .rs.ok');
+      await p.mouse.move(0, 0);
+      await p.waitForTimeout(3200);// the top bar's line has faded
+      // the panel: the three switches, the meter and the tray, the stations
+      const b = await p.locator('.panel').boundingBox();
+      await p.screenshot({ path: path.join(OUT, 'bluetooth.png'), clip: { x: b.x - 12, y: b.y - 12, width: b.width + 24, height: Math.min(900 - b.y + 12, b.height + 24) } });
+      await c.close();
+      console.log('bluetooth.png');
+    }
+
+    const c = await ctx(1440, 900, 1.5);
+    await c.addInitScript(virtualClock);
+    const p = await open(c);
+    const centre = async sel => { const b = await p.locator(sel).first().boundingBox(); return { x: b.x + b.width / 2, y: b.y + b.height / 2 }; };
+    // where the cursor rests: on the panel's dark face beside the room meter, clear of every control
+    const vu = await p.locator('.vu').boundingBox();
+    const rest = { x: vu.x + vu.width * .7, y: vu.y - 22 };
+    let cur = { ...rest };
+    await p.mouse.move(cur.x, cur.y);
+    await p.waitForTimeout(2500);
+    await p.evaluate(() => window.__clock.freeze());
+    for (let i = 0; i < 2 * FPS; i++) await p.evaluate(dt => window.__clock.step(dt), DT);
+    let n = 0;
+    const frame = async () => { await p.evaluate(dt => window.__clock.step(dt), DT); await p.screenshot({ path: path.join(tmp, `f${String(n++).padStart(4, '0')}.jpg`), type: 'jpeg', quality: 94 }); };
+    const hold = async s => { for (let i = Math.round(s * FPS); i > 0; i--) await frame(); };
+    const ease = k => k < .5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2;
+    const glide = async (to, s) => { const from = { ...cur }, N = Math.round(s * FPS);
+      for (let i = 1; i <= N; i++) { const e = ease(i / N); cur = { x: from.x + (to.x - from.x) * e, y: from.y + (to.y - from.y) * e }; await p.mouse.move(cur.x, cur.y); await frame(); } };
+    const click = async () => { await p.mouse.down(); await p.mouse.up(); await p.evaluate(() => window.__press(true)); await frame(); await frame(); await p.evaluate(() => window.__press(false)); };
+
+    await hold(.7);
+    // the switch, Contacts to Open
+    await glide(await centre('#k3'), .8);
+    await hold(.15);
+    await click();
+    await hold(.5);
+    // the cursor off the switch, so the jewel and the Near readout are seen
+    await glide({ x: cur.x - 30, y: cur.y + 70 }, .5);
+    await hold(.6);
+    // Ines asks
+    await p.evaluate(() => window.__sim.bluetoothAsk());
+    await hold(1.1);
+    await glide(await centre('.slip.ask .rs.ok'), .8);
+    await hold(.25);
+    await click();
+    // her station: not confirmed, until her machine shows it holds this one too
+    await glide({ x: cur.x - 10, y: cur.y + 50 }, .5);
+    await hold(.6);
+    // a reply to Marisol, typed and sent by Bluetooth
+    const r = await p.locator('#reply').boundingBox();
+    await glide({ x: r.x + 120, y: r.y + r.height / 2 }, 1.0);
+    await click();
+    for (let i = 0; i < REPLY.length; i += 2) { await p.keyboard.type(REPLY.slice(i, i + 2)); await frame(); }
+    await hold(.25);
+    await glide(await centre('#sendbluetooth'), .7);
+    await hold(.15);
+    await click();
+    await hold(1.4);
+    // Marisol's answer, by Bluetooth: the envelope whole, so every chunk lands at once and the drums turn to it
+    await p.evaluate(text => {
+      const e = window.__btEmit, ents = document.querySelectorAll('.ent.mine'), minute = Math.floor(+ents[ents.length - 1].dataset.at / 60000) + 1;
+      e('channel', { channel: 'Bluetooth', state: 'receiving' });
+      const parts = window.__btSeal(text, minute, 2718);
+      parts.forEach((view, index) => e('chunk', { tag: 0x2718, index, of: parts.length, view, channel: 'Bluetooth' }));
+      e('message', { id: Array.from({ length: 16 }, (_, i) => 0x40 + i), contact: 1, outgoing: false, text, channel: 'Bluetooth', at_min: minute, heard: false });
+    }, ANSWER);
+    await glide(rest, 1.2);
+    await p.evaluate(() => window.__btEmit('channel', { channel: 'Bluetooth', state: 'open to requests' }));
+    await hold(1.3);
+    // and back to the opening frame
+    const FADE = Math.round(.7 * FPS);
+    await hold(FADE / FPS);
+    await c.close();
+    encode(tmp, n, FPS, { W: 960, H: 600, name: 'bluetooth.gif', fade: FADE });
+  }
   // A GIF of a photoreal scene in motion: scaled down, softened a touch (the enamel's grain is what costs the most),
   // then held still wherever a pixel moved less than the eye can see, so the frames carry only what changed. One
   // palette for the whole clip, no dithering, then gifsicle's lossy pass when it is installed.
-  function encode(dir, n, FPS, { W = 800, H = 500, name = 'settings.gif', playFps = FPS } = {}) {
+  // fade: that many last frames dissolve into the first, for a clip whose last state can't be undone on the page.
+  function encode(dir, n, FPS, { W = 800, H = 500, name = 'settings.gif', playFps = FPS, fade = 0 } = {}) {
     const T = 8, size = W * H * 3;
     const raw = path.join(dir, 'frames.rgb'), held = path.join(dir, 'held.rgb'), gif = path.join(dir, 'clip.gif'), out = path.join(OUT, name);
     execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-framerate', String(FPS), '-i', path.join(dir, 'f%04d.jpg'), '-vf', `scale=${W}:${H}:flags=lanczos,gblur=sigma=.6`, '-f', 'rawvideo', '-pix_fmt', 'rgb24', raw]);
     // once a move has come to rest (a frame where nothing passes the threshold), the whole frame is brought up to
     // date, so what the threshold held back never lingers; the last frame is too, so the loop meets its first
     const fin = fs.openSync(raw, 'r'), fout = fs.openSync(held, 'w'), prev = Buffer.alloc(size), cur = Buffer.alloc(size);
+    const first = Buffer.alloc(size);
     let settled = true;
     for (let f = 0; f < n && fs.readSync(fin, cur, 0, size, f * size) === size; f++) {
+      if (f === 0) cur.copy(first);
+      if (fade && f >= n - fade) { const a = (f - (n - fade) + 1) / (fade + 1); for (let i = 0; i < size; i++) cur[i] = Math.round(cur[i] + (first[i] - cur[i]) * a); }
       let moved = 0;
       if (f > 0) for (let i = 0; i < size; i += 3) {
         if (Math.abs(cur[i] - prev[i]) > T || Math.abs(cur[i + 1] - prev[i + 1]) > T || Math.abs(cur[i + 2] - prev[i + 2]) > T) { prev[i] = cur[i]; prev[i + 1] = cur[i + 1]; prev[i + 2] = cur[i + 2]; moved++; }

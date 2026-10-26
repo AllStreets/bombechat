@@ -86,9 +86,17 @@ While Light reads, a small brass eyepiece on its switch shows what the camera se
 
 ## By Bluetooth
 
+<p align="center">
+  <img src="docs/media/bluetooth.png" alt="The front panel on the standard build with the Bluetooth switch at Open and its jewel lit. In the tray beside the room meter a request slip reads Ines Duarte, as they gave it, key CA96, asks to connect, 09.15, with Accept and Decline stamps. Under the meter a typed line lists the strangers in range: K7MX, R2QD." width="435" />
+</p>
+
 On the standard build, the third switch on the front of the machine is Bluetooth, where the airgapped build has a blanking plate. It has three positions. Off is where it starts, and at Off the radio is idle: nothing is advertised or scanned for, and every connection this Mac opened is closed. macOS is asked for Bluetooth permission the first time you turn it on, and not before. At Contacts it reaches the people you've added whenever they're in range, and a Send by Bluetooth key sits beside Flash and Send by sound. At Open, strangers nearby can also ask to connect, and you can ask them.
 
 Requests work the way they do on LinkedIn. A stranger in range shows up as a random four-character label, never a name or a key. Asking sends your name and key to that one person, and nothing of theirs comes back until they accept. On their machine the request arrives as a slip with Accept and Decline. Accept adds you as a contact who hasn't been checked in person yet, and lays out the safety number to compare when you do meet. Decline keeps nothing and sends nothing back, so from your side it looks exactly like a request nobody answered. While New contacts need a key check is on, which it is until you change it, requests are shown but can't be sent or accepted.
+
+<p align="center">
+  <img src="docs/media/bluetooth.gif" alt="Bluetooth on the front of the machine. The cursor turns the Bluetooth switch from Contacts to Open, and the Near readout goes from one stranger to three as a list of strangers in range appears in the tray. A slip arrives saying Ines Duarte asks to connect. Accept is stamped, the key check card lays out her safety number, and her station is added marked not confirmed. A reply to Marisol is typed and sent with Send by Bluetooth: it lands on the sheet with bluetooth in the margin and is stamped heard by Marisol. Her answer comes back by Bluetooth, the drums turning to it as it is typed onto the sheet." width="900" />
+</p>
 
 Live sessions use the Noise protocol, through the `snow` library, with the same proven primitives as the rest of Bombechat: X25519, ChaCha20-Poly1305, SHA-256 and HKDF, with each identity signed by its Ed25519 key. Contacts open sessions with Noise IK and requests use Noise XN, so a machine never tells a stranger who it is unless its owner accepts. Bombechat uses its own Bluetooth service, separate from Bitchat's.
 
