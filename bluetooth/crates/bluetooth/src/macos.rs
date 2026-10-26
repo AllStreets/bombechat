@@ -597,6 +597,7 @@ impl Open {
                     format!("disconnected {} error {code:?}", short(p))
                 }
                 Raw::Subscribed(p, _) => format!("central {} subscribed", short(p)),
+                Raw::State(role, power) => format!("{role:?} manager {power:?}"),
                 Raw::Unsubscribed(p) => format!("central {} unsubscribed", short(p)),
                 _ => continue,
             };
@@ -1152,10 +1153,16 @@ mod tests {
         let start = Instant::now();
         let mut seen = Vec::new();
         while start.elapsed() < how_long {
-            seen.extend(radio.poll());
+            let events = radio.poll();
             for line in radio.take_trace() {
                 println!("{:7.1} s  {line}", start.elapsed().as_secs_f64());
             }
+            for e in &events {
+                if matches!(e, RadioEvent::Up { .. } | RadioEvent::Down(_)) {
+                    println!("{:7.1} s  {e:?}", start.elapsed().as_secs_f64());
+                }
+            }
+            seen.extend(events);
             std::thread::sleep(Duration::from_millis(20));
         }
         seen
@@ -1244,7 +1251,8 @@ mod tests {
     /// cargo test -p bombechat-bluetooth --lib macos -- --ignored --nocapture two_macs                          # B
     /// ```
     ///
-    /// Optionally `BOMBECHAT_WATCH_MIN=20` on both, for measurement 2.
+    /// For measurements 2 and 5, add `BOMBECHAT_WATCH_MIN=25` on both,
+    /// and on A also `BOMBECHAT_RESTART_EVERY_MIN=5`.
     ///
     /// Measurements, from the printed lines (each Mac prints the other's
     /// identifier, which follows its Bluetooth address, as 8 hex digits):
@@ -1270,16 +1278,42 @@ mod tests {
     ///    means the connection lived on until B let it go: a central that
     ///    doesn't let go keeps it.
     ///
+    /// 5. **Does the other Mac's identifier as a central change?** This
+    ///    Mac's peripheral side remembers centrals by that identifier. With
+    ///    `BOMBECHAT_RESTART_EVERY_MIN=5` during the watch, A stops and
+    ///    starts its radio every 5 minutes (new managers, new token); each
+    ///    time B's central finds A again, A prints `central … subscribed`
+    ///    with B's identifier. Across a watch of at least 20 minutes, B's
+    ///    address rotates at least once. On A, compare the identifiers:
+    ///    - the same before and after a restart: new managers see the same
+    ///      identifier for B, so a held connection gets nothing new after
+    ///      a stop and start (and B, first heard under an earlier token,
+    ///      gets no link from A until its identifier changes; look for an
+    ///      `Up` after `central … subscribed`);
+    ///    - a new identifier after B's address rotates: the block on B
+    ///      ends with its rotation. The same identifier for the whole
+    ///      watch (as may happen between two Macs on the same Apple ID)
+    ///      means the block lasts until B is silent for an hour, and links
+    ///      run from A to B only.
+    ///
+    ///    The `Central manager …`/`Peripheral manager …` lines after each
+    ///    restart show the managers' first states (they must reach `On`
+    ///    without `Off` or `Resetting` in between, or A forgets B).
+    ///
     /// Send back both Macs' output.
     #[test]
     #[ignore = "needs two Macs in range running it together; run by hand"]
     fn two_macs_exchange_4_kb_both_ways_then_stop() {
         const SIZE: usize = 4096;
         let stop_first = std::env::var_os("BOMBECHAT_STOP_FIRST").is_some();
-        let watch_min: u64 = std::env::var("BOMBECHAT_WATCH_MIN")
-            .ok()
-            .and_then(|m| m.parse().ok())
-            .unwrap_or(0);
+        let minutes = |name: &str| -> u64 {
+            std::env::var(name)
+                .ok()
+                .and_then(|m| m.parse().ok())
+                .unwrap_or(0)
+        };
+        let watch_min = minutes("BOMBECHAT_WATCH_MIN");
+        let restart_every = minutes("BOMBECHAT_RESTART_EVERY_MIN");
         let mut radio = CoreBluetoothRadio::new();
         radio.start(Mode::Contacts);
         radio.advertise(random_token());
@@ -1339,7 +1373,20 @@ mod tests {
         radio.advertise(random_token());
         watch(&mut radio, Duration::from_secs(30));
         // measurement 2: the same token for a long while
-        if watch_min > 0 {
+        if watch_min > 0 && restart_every > 0 {
+            // measurement 5: restart now and then, and see who comes back
+            println!("watching {watch_min} min, restarting every {restart_every} min");
+            let mut left = watch_min;
+            while left > 0 {
+                let now = restart_every.min(left);
+                watch(&mut radio, Duration::from_secs(60 * now));
+                left -= now;
+                radio.stop();
+                radio.start(Mode::Contacts);
+                radio.advertise(random_token());
+                println!("restarted");
+            }
+        } else if watch_min > 0 {
             println!("watching {watch_min} min without a new token");
             watch(&mut radio, Duration::from_secs(60 * watch_min));
         }

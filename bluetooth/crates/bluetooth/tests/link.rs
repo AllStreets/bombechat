@@ -296,6 +296,39 @@ fn two_contacts_exchange_envelopes_both_ways() {
     assert_eq!(a.t.name(), Channel::Bluetooth);
 }
 
+/// When one Mac refuses the other's links (it heard that Mac under an
+/// earlier token, and the identifier never changes, as between two Macs
+/// on the same Apple ID), the pair still talks over the links the other
+/// way, in both directions, and stays present to each other.
+#[test]
+fn a_pair_with_one_direction_refused_still_talks_both_ways() {
+    for (refused_by_b, seed) in [(true, 11), (false, 12)] {
+        let room = Room::new(seed);
+        let (mut a, mut b) = pair(&room);
+        if refused_by_b {
+            room.refuse(&a.radio, &b.radio);
+        } else {
+            room.refuse(&b.radio, &a.radio);
+        }
+        let t = run(&mut [&mut a, &mut b], 0, 3_000);
+        assert_eq!(room.links().len(), 1, "one direction only");
+        assert_eq!(a.h.peers().contacts, vec![b.me()]);
+        assert_eq!(b.h.peers().contacts, vec![a.me()]);
+        let to_b = private(&a, &[&b], "for b");
+        let to_a = private(&b, &[&a], "for a");
+        a.send(&to_b, 7);
+        b.send(&to_a, 9);
+        let t = run(&mut [&mut a, &mut b], t, t + 3_000);
+        assert_eq!(b.heard(), vec![to_b]);
+        assert_eq!(a.heard(), vec![to_a]);
+        assert!(a.has(&TransportEvent::Sent(7)) && b.has(&TransportEvent::Sent(9)));
+        // and it carries on across tokens and the link's own replacement
+        run_by(&mut [&mut a, &mut b], t, t + 2 * TOKEN_MS, 250);
+        assert_eq!(a.h.peers().contacts, vec![b.me()]);
+        assert_eq!(b.h.peers().contacts, vec![a.me()]);
+    }
+}
+
 #[test]
 fn small_writes_and_long_envelopes_still_arrive() {
     let room = Room::new(2);

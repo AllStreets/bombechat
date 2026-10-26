@@ -47,6 +47,10 @@ struct RoomState {
     duplicate_per_mille: u32,
     reorder_per_mille: u32,
     apart: HashSet<(usize, usize)>,
+    /// (central, peripheral) pairs the peripheral refuses: no link is
+    /// made that way, as when it heard that central under an earlier
+    /// token.
+    refused: HashSet<(usize, usize)>,
     /// Links a radio closed, by (central, peripheral, the advert it had
     /// connected to): not reopened while the peripheral still shows it.
     closed: Vec<(usize, usize, [u8; TOKEN_LEN])>,
@@ -79,7 +83,12 @@ impl RoomState {
         let n = self.stations.len();
         for c in 0..n {
             for p in 0..n {
-                if c == p || !self.stations[c].on || !self.stations[p].on || !self.in_range(c, p) {
+                if c == p
+                    || !self.stations[c].on
+                    || !self.stations[p].on
+                    || !self.in_range(c, p)
+                    || self.refused.contains(&(c, p))
+                {
                     continue;
                 }
                 let Some(token) = self.stations[p].token else {
@@ -165,6 +174,7 @@ impl Room {
             duplicate_per_mille: 0,
             reorder_per_mille: 0,
             apart: HashSet::new(),
+            refused: HashSet::new(),
             closed: Vec::new(),
         })))
     }
@@ -228,6 +238,22 @@ impl Room {
             for id in gone {
                 s.cut(id);
             }
+        }
+    }
+
+    /// Have `peripheral` refuse `central`: no link from `central` to its
+    /// advert (the other way is unaffected), and any such link goes down.
+    pub fn refuse(&self, central: &FakeRadio, peripheral: &FakeRadio) {
+        let mut s = self.0.lock().unwrap();
+        s.refused.insert((central.me, peripheral.me));
+        let gone: Vec<u64> = s
+            .links
+            .iter()
+            .filter(|(_, l)| l.central == central.me && l.peripheral == peripheral.me)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in gone {
+            s.cut(id);
         }
     }
 
