@@ -1758,25 +1758,38 @@ async function build(){
   /* ---- place everything from the HTML layout ---- */
   let U=1,BW=1,BH=1;
   const toWorld=(px,py)=>new THREE.Vector3((px-BW/2)/U,-(py-BH/2)/U,0);
-  function layout(){const br=bank.getBoundingClientRect();BW=br.width;BH=br.height;if(!BW||!BH)return;
-    const dr=cells[0].el.getBoundingClientRect().width;U=dr/.92;
+  // where an element sits in the bank as laid out, ignoring any transform on the way: the page turns round (#app's
+  // rotateY to and from the back, the body's turn on arriving) and a rect measured mid-turn comes back projected
+  const css=(el,k)=>parseFloat(getComputedStyle(el)[k])||0;
+  function box(el){let x=0,y=0;for(let e=el;e&&e!==bank;e=e.offsetParent){x+=e.offsetLeft+(e===el?0:e.clientLeft);y+=e.offsetTop+(e===el?0:e.clientTop)}
+    return {x,y,w:css(el,'width'),h:css(el,'height')}}
+  function layout(){BW=css(bank,'width');BH=css(bank,'height');if(!BW||!BH)return;
+    const dr=css(cells[0].el,'width');U=dr/.92;
     renderer.setSize(BW,BH,false);camera.aspect=BW/BH;
     const D=(BH/U/2)/Math.tan(camera.fov*Math.PI/360);baseD=D;camera.updateProjectionMatrix();composer.setSize(BW,BH);
     panel.scale.set(BW/U+.4,BH/U+.4,1);
-    drums.forEach(d=>{const r=d.cell.el.getBoundingClientRect();const p=toWorld(r.left-br.left+r.width/2,r.top-br.top+r.width*.08+r.width/2);d.g.position.copy(p)});
+    drums.forEach(d=>{const r=box(d.cell.el);const p=toWorld(r.x+r.w/2,r.y+r.w*.08+r.w/2);d.g.position.copy(p)});
     const rowY=[0,1,2].map(r=>drums[r*12].g.position.y);const x0=drums[0].g.position.x,x1=drums[11].g.position.x;
     // a shaft runs behind each row
     [0,1,2].forEach(r=>{const m=rails[r];m.position.set((x0+x1)/2,rowY[r],-.16);m.scale.set(1,(x1-x0)+1.2,1)});
     const lab=[...document.querySelectorAll('.rowlab')];
-    const ps=(21/U)/.2;plates.forEach((p,r)=>{p.scale.set(ps,ps,1);const lr=lab[r].getBoundingClientRect();const w=p.geometry.parameters.width*ps;const pos=toWorld(lr.left-br.left+4,0);p.position.set(pos.x+w/2,rowY[r],-.18);
+    const ps=(21/U)/.2;plates.forEach((p,r)=>{p.scale.set(ps,ps,1);const lr=box(lab[r]);const w=p.geometry.parameters.width*ps;const pos=toWorld(lr.x+4,0);p.position.set(pos.x+w/2,rowY[r],-.18);
       // the screws sit in the plate's ends, 8 px in, as the printed plates have them
       plateScrews[r][0].position.set(p.position.x-w/2+8/U,rowY[r],-.155);plateScrews[r][1].position.set(p.position.x+w/2-8/U,rowY[r],-.155);plateScrews[r].forEach(m=>m.scale.setScalar((6/U)/.07))});
-    const cn=[...document.querySelectorAll('.colno')];nums.forEach((n,i)=>{const r=cn[i].getBoundingClientRect();const p=toWorld(r.left-br.left+r.width/2,r.top-br.top+r.height/2);n.position.set(p.x,p.y+.07,-.205);n.scale.setScalar(Math.max(1,(13/U)/.13))});
+    const cn=[...document.querySelectorAll('.colno')];nums.forEach((n,i)=>{const r=box(cn[i]);const p=toWorld(r.x+r.w/2,r.y+r.h/2);n.position.set(p.x,p.y+.07,-.205);n.scale.setScalar(Math.max(1,(13/U)/.13))});
     renderer.shadowMap.needsUpdate=true;dirty=true}
   let baseD=10,dirty=true;
   /* ---- lens ---- */
   const composer=K.makeComposer({ao:!Q.has('noao')});
   new ResizeObserver(layout).observe(bank);addEventListener('resize',layout);
+  // and again once a turn ends, though nothing changed size: back from the settings page, by history or on load
+  document.getElementById('app').addEventListener('transitionend',e=>{if(e.target===e.currentTarget)layout()});
+  addEventListener('pageshow',layout);document.body.getAnimations().forEach(a=>a.finished.then(layout,()=>{}));
+  // for checks: each drum's centre, where the scene draws it and where its cell is, and its axle's height, in bank pixels
+  window.__bank.placement=()=>{camera.updateMatrixWorld();const br=bank.getBoundingClientRect();
+    const px=v=>{const q=v.clone().project(camera);return {x:(q.x+1)/2*BW,y:(1-q.y)/2*BH}};
+    return drums.map(d=>{const r=d.cell.el.getBoundingClientRect();return {r:d.r,c:d.c,drawn:px(d.g.position),cell:{x:r.left-br.left+r.width/2,y:r.top-br.top+r.width*.08+r.width/2},
+      axle:(BH/2-rails[d.r].position.y*U),centre:(BH/2-d.g.position.y*U)}})};
   document.fonts&&document.fonts.ready.then(()=>{drums.forEach(d=>d.last='');layout()});
   let par={x:0,y:0},parT={x:0,y:0};
   bank.addEventListener('pointermove',e=>{if(RM.matches||STILL)return;const r=bank.getBoundingClientRect();parT.x=(e.clientX-r.left)/r.width-.5;parT.y=(e.clientY-r.top)/r.height-.5});

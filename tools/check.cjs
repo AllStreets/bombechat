@@ -291,6 +291,18 @@ function measureText() {
   if (APP) {
     report.rails = await live.evaluate(() => ({ ...__bank.rails(), bars: document.querySelectorAll('#drums .bar').length, drums: document.querySelectorAll('#drums .drum').length }));
     if (report.rails.between !== 0 || report.rails.axles !== 3 || report.rails.bars !== 0 || report.rails.drums !== 36) problems.push(`the drum bank is not three rows with nothing between them: ${JSON.stringify(report.rails)}`);
+    // the drums stay on their axles after a turn: lay the bank out while #app is mid-turn (as it is coming back from
+    // the settings page), end the turn, and every drum must be drawn on its cell and its row's axle
+    report.afterTurn = await live.evaluate(async () => {
+      const app = document.getElementById('app'), frames = n => new Promise(r => { const f = () => --n ? requestAnimationFrame(f) : r(); requestAnimationFrame(f); });
+      app.style.transition = 'none'; app.style.transform = 'rotateY(55deg)'; app.getBoundingClientRect();
+      dispatchEvent(new Event('resize')); await frames(2);
+      app.style.transform = ''; app.getBoundingClientRect(); await frames(4); app.style.transition = '';
+      const off = __bank.placement().map(d => ({ at: `${d.r + 1}.${d.c + 1}`, cell: Math.hypot(d.drawn.x - d.cell.x, d.drawn.y - d.cell.y), axle: Math.abs(d.centre - d.axle) }));
+      const worst = k => off.reduce((a, b) => (b[k] > a[k] ? b : a));
+      return { cell: worst('cell'), axle: worst('axle') };
+    });
+    if (report.afterTurn.cell.cell > 1 || report.afterTurn.axle.axle > 1) problems.push(`after a turn the drums are off their cells or axles: ${JSON.stringify(report.afterTurn)}`);
   }
   report.fps = await live.evaluate(() => new Promise(r => { let n = 0; const t0 = performance.now(); const f = () => { n++; performance.now() - t0 < 2000 ? requestAnimationFrame(f) : r(Math.round(n / 2)); }; requestAnimationFrame(f); }));
   if (report.fps < 50) problems.push('front frame rate ' + report.fps);
