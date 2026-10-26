@@ -27,11 +27,14 @@ use rand_core::{OsRng, RngCore};
 use crate::{control, low_order, now_min, random_id, Node, NodeEvent, TransportEvent, TTL_MIN};
 
 /// At most this many requests wait for an answer; one more drops the
-/// oldest.
+/// oldest. The one source of this number: a carrier that holds requests
+/// itself caps them by it.
 pub const REQUESTS_WAITING: usize = 20;
 
 /// At most one request from the same device (its identity, or the
-/// carrier's connection to it) is taken in this long: ten minutes.
+/// carrier's connection to it) is taken in this long: ten minutes. The
+/// one source of this gap: a carrier that keeps its own per-connection
+/// gap uses it.
 pub const REQUEST_GAP_MS: u64 = 600_000;
 
 /// Why a request is refused, or cannot be accepted, while new contacts

@@ -8,7 +8,9 @@ use std::sync::{Arc, Mutex};
 
 use bombechat_core::{Envelope, Identity, PublicIdentity, MAX_ENVELOPE};
 use bombechat_modem::{split, Event, Reassembler};
-use bombechat_node::{read_hello, Transport, TransportEvent, NOT_IN_RANGE, REQUEST_GAP_MS};
+use bombechat_node::{
+    read_hello, Transport, TransportEvent, NOT_IN_RANGE, REQUESTS_WAITING, REQUEST_GAP_MS,
+};
 use bombechat_session::{Handshake, Session, SessionKeys, TOKEN_LEN};
 use bombechat_store::Channel;
 use rand_core::{OsRng, RngCore};
@@ -78,8 +80,11 @@ pub const HANDSHAKE_MS: u64 = 30_000;
 pub const REQUEST_MS: u64 = 10 * 60_000;
 /// At most this many requests received are held, one per link; one more
 /// pushes out the oldest the person hasn't accepted. Accepted ones never
-/// go this way.
-pub const REQUESTS_CAP: usize = 20;
+/// go this way. The node owns the number ([`REQUESTS_WAITING`]): the
+/// transport holds no more than the node will show. The gap between two
+/// requests from one link or identity is the node's too
+/// ([`REQUEST_GAP_MS`]).
+pub const REQUESTS_CAP: usize = REQUESTS_WAITING;
 /// At most this many requests received are part way (handshake not done,
 /// or no hello yet); one more drops the oldest of them, never one already
 /// reported.
