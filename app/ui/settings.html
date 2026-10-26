@@ -436,7 +436,14 @@ async function build(){
   /* ---------- camera framing ---------- */
   const look=new THREE.Vector3(),lookT=new THREE.Vector3(0,0,0),pos=new THREE.Vector3(),posT=new THREE.Vector3();let par={x:0,y:0},parT={x:0,y:0};
   function fitDist(w,h){const fov=camera.fov*Math.PI/180;return Math.max(h/2/Math.tan(fov/2),w/2/Math.tan(fov/2)/camera.aspect)}
-  function overview(){const d=fitDist(PW-.3,12.5);lookT.set(0,-.4,0);posT.set(.7,-1.0,d)}
+  // the first view: the whole panel, its top bolt row to the cable trough with a little margin, centred on it. A window
+  // too wide and short for all of it at a size the plates still read (no smaller than nine tenths of the width-filling
+  // view the back always opened on) keeps that size and hangs the view from the panel's top edge: the bolts, the column
+  // numbers and Row 1 always show, and the rest is a row's focus away.
+  const VIEW_TOP=PTOP+.25+.35,VIEW_BOT=-8.65-.3,SMALLEST=.9;
+  function overview(){const fov=camera.fov*Math.PI/180,h=VIEW_TOP-VIEW_BOT,cap=fitDist(PW-.3,12.5)/SMALLEST;let d=fitDist(PW-.3,h),cy=(VIEW_TOP+VIEW_BOT)/2;
+    if(d>cap){d=cap;cy=VIEW_TOP-d*Math.tan(fov/2)}
+    lookT.set(0,cy,0);posT.set(.7,cy-.6,d)}
   // the row from its name to its last jack, or to the end of the tape beside it
   // a focused row is framed with the rows of its group beside it in full: the view reaches as far right as any of them
   function frameRow(id){const P=plugs[id];const a=P.src;

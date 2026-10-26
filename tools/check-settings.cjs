@@ -4,7 +4,8 @@
 // Writes checks/<folder>/settings/: overview, focused rows, mid-move frames, narrow layout, 2x details.
 // Fails on page errors, a plug that does not end in the jack its setting names, or a slow frame rate,
 // and for the app's interface on any request that leaves this machine, on a drum connector field that is not
-// three rows of twelve signed Row 1 to Row 3 with columns 12 to 1 clear of the plates below it.
+// three rows of twelve signed Row 1 to Row 3 with columns 12 to 1 clear of the plates below it, and on a first
+// view that does not show the panel's top (bolts, column numbers, Row 1) at every window size.
 const path = require('path'), fs = require('fs');
 const { chromium } = require('playwright');
 const ROOTDIR = path.resolve(__dirname, '..');
@@ -178,8 +179,8 @@ const url = q => 'http://127.0.0.1:4811/' + path.relative(ROOTDIR, page) + (q ? 
   await hi.screenshot({ path: path.join(out, 'detail-card.png'), clip: { x: 0, y: 46, width: 460, height: 854 } });
   await hi.context().close();
   // 2x crops at three widths: the card scrolled to Passing on, the whole back panel, and the waiting rows up close
-  for (const width of [1024, 1440, 1728]) {
-    const height = width === 1024 ? 768 : width === 1440 ? 900 : 1117;
+  for (const width of [1024, 1440, 1512, 1728]) {
+    const height = { 1024: 768, 1440: 900, 1512: 982, 1728: 1117 }[width];
     const w = await open({ width, height }, 'still', 2);
     const cardBox = await w.locator('.cardwrap').boundingBox();
     const viewBox = await w.locator('#view').boundingBox();
@@ -206,6 +207,23 @@ const url = q => 'http://127.0.0.1:4811/' + path.relative(ROOTDIR, page) + (q ? 
       if (!clear.tag.on || clear.tag.top < clear.above.bottom || clear.tag.bottom > clear.row.top) problems.push(`${width}: the Flash speed tag overlaps a row of jacks: ${JSON.stringify(clear)}`);
     }
     await w.context().close();
+  }
+  // the back's first view shows its top at every window: the top bolt row, the column numbers and Row 1's sign all in
+  // the view's top quarter and none of them cut, including the commissioner's 1512 by 982 fullscreen and the narrow
+  // single-column layout. Where the whole panel fits (top bolts to the cable trough), say so.
+  const framing = {};
+  if (APP) for (const [width, height] of [[1024, 768], [1280, 800], [1440, 900], [1512, 982], [1728, 1117], [900, 1000], [720, 900]]) {
+    const f = await open({ width, height }, 'still');
+    const got = await f.evaluate(() => window.__bc.parts());
+    const v = got.view, inside = b => b.left >= v.left && b.right <= v.right && b.top >= v.top && b.bottom <= v.bottom;
+    const quarter = v.top + (v.bottom - v.top) * .25, why = [];
+    for (const [name, list] of [['top bolt', got.topBolts], ['column number', got.colNums], ['Row 1 sign', [got.rowSigns[0]]]])
+      list.forEach((b, i) => { if (!inside(b)) why.push(`${name} ${i} cut`); else if (b.bottom > quarter) why.push(`${name} ${i} below the top quarter (${Math.round(b.bottom - v.top)} of ${Math.round(v.bottom - v.top)})`); });
+    const conRow = got.connectors.slice(0, 12).sort((a, b) => a.left - b.left);
+    framing[`${width}x${height}`] = { whole: inside(got.makersPlate) && got.groupPlates.every(inside), topBolts: Math.round(got.topBolts[0].top - v.top), pitch: +(((conRow[11].left - conRow[0].left) / 11)).toFixed(1), problems: why.length };
+    if (why.length) problems.push(`${width}x${height}: the back's first view does not show its top: ${[...new Set(why)].slice(0, 6).join('; ')}`);
+    if (width === 1512) await f.screenshot({ path: path.join(out, 'overview-1512x982.png') });
+    await f.context().close();
   }
   // narrow
   const nar = await open({ width: 900, height: 1000 });
@@ -411,7 +429,7 @@ const url = q => 'http://127.0.0.1:4811/' + path.relative(ROOTDIR, page) + (q ? 
     await kp.context().close();
   }
   await browser.close();
-  console.log(JSON.stringify({ out, fps, field, results, keyboard: [before, after], atBoot, history, refused, band, lockNotice, heldPress, problems }, null, 2));
+  console.log(JSON.stringify({ out, fps, field, framing, results, keyboard: [before, after], atBoot, history, refused, band, lockNotice, heldPress, problems }, null, 2));
   server.close();
   process.exit(problems.length ? 1 : 0);
 })();
