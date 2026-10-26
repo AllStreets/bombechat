@@ -1,6 +1,6 @@
 {
-  "productName": "Bombechat",
-  "version": "0.1.0",
+  "productName": "Bombechat Standard",
+  "version": "0.5.0",
   "identifier": "app.bombechat.standard",
   "build": {
     "frontendDist": "../ui"

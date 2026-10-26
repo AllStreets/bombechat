@@ -2,8 +2,9 @@
 +++ b/app/src-tauri/tauri.conf.json
 @@ -1,7 +1,7 @@
  {
-   "productName": "Bombechat",
-   "version": "0.1.0",
+-  "productName": "Bombechat",
++  "productName": "Bombechat Standard",
+   "version": "0.5.0",
 -  "identifier": "app.bombechat.airgapped",
 +  "identifier": "app.bombechat.standard",
    "build": {

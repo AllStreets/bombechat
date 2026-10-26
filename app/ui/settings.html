@@ -41,6 +41,9 @@ a.pl:focus-visible,button.pl:focus-visible{outline:1px solid var(--amber);outlin
 a.pl svg{display:block}
 .top .rt{margin-left:auto;display:flex;gap:10px;align-items:center;min-width:0}
 .maker,.pl,a.pl,button.pl{-webkit-text-stroke:.25px currentColor}
+/* the build plate is cut for its longest form (a commit built from uncommitted changes, +), so nothing beside it moves */
+.top .build{min-width:168px;justify-content:center}
+.top .build:empty{visibility:hidden}
 .saved{font-family:var(--type);font-size:12.5px;color:#9d978a;min-width:150px;text-align:right;transition:opacity .4s}
 
 .stage{display:grid;grid-template-columns:minmax(380px,440px) minmax(0,1fr);min-height:0;background:var(--enamel)}
@@ -131,7 +134,7 @@ a.pl svg{display:block}
 <div class="top">
   <a class="pl" href="bombechat.html" id="back" aria-label="Back to the front of the machine"><svg width="11" height="9" viewBox="0 0 11 9" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M4.5 1 1 4.5 4.5 8M1 4.5h9.5"/></svg>Front of the machine</a>
   <span class="maker">Bombechat<small></small></span>
-  <div class="rt"><span class="hint" id="hint">drag a plug to another jack</span><span class="saved" id="saved" aria-live="polite"></span><span class="pl">Build 0.4</span></div>
+  <div class="rt"><span class="hint" id="hint">drag a plug to another jack</span><span class="saved" id="saved" aria-live="polite"></span><span class="pl build" id="build"></span></div>
 </div>
 
 <div class="stage">
@@ -152,7 +155,7 @@ a.pl svg{display:block}
 
 <script type="module">
 import { createMachine, engravingFace } from './machine-kit.js';
-import { bridge } from './bridge.js';
+import { bridge, buildPlate } from './bridge.js';
 import { SETTING_ROWS, ONLY_IN_PERSON, GROUP_NOTES } from './edition.js';
 
 const Q=new URLSearchParams(location.search);
@@ -189,6 +192,8 @@ const byId=Object.fromEntries(SETTINGS.map(s=>[s.id,s]));
 // not read, with Sound and Light at Off rather than their most permissive positions.
 function takeKept(kept){const changed=[];for(const s of SETTINGS){if(s.held)continue;const v=kept[s.id];if(Number.isInteger(v)&&v>=0&&v<s.values.length&&(v!==s.v||!s.read)){s.v=v;s.read=true;changed.push(s.id)}}return changed}
 SETTINGS.forEach(s=>s.read=true);
+// the top plate names the build and the commit it was made from, as the machine says, as the front's does
+bridge.machine().then(m=>{if(m&&m.version)document.getElementById('build').textContent=buildPlate(m)},()=>{});
 try{takeKept(await bridge.settings())}catch(e){SETTINGS.forEach(s=>s.read=false);byId.sound.v=0;byId.light.v=0}
 try{localStorage.removeItem('bombechat.settings')}catch(e){}
 // the settings this machine can't change, as it says: one waiting for a feature ('comes with relay') has no value and

@@ -1,6 +1,6 @@
 --- a/package.json
 +++ b/package.json
-@@ -3,7 +3,7 @@
+@@ -4,7 +4,7 @@
    "private": true,
    "description": "Messaging by sound, light and Bluetooth, with no internet.",
    "scripts": {

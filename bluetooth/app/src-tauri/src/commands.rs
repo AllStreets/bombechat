@@ -396,7 +396,8 @@ fn band_name(b: Band) -> &'static str {
 
 /// This machine as the page sees it: its plate name, its public identity
 /// (sign key then dh key, as hex), the person's own name, how many
-/// messages it holds for others, the build, and the longest broadcast.
+/// messages it holds for others, the build and the commit it was made
+/// from, and the longest broadcast.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MachineView {
     pub name: &'static str,
@@ -404,6 +405,9 @@ pub struct MachineView {
     pub you: String,
     pub held: usize,
     pub version: &'static str,
+    /// The commit this build was made from: its short hash, with a
+    /// trailing `+` when built from uncommitted changes, or `unknown`.
+    pub commit: &'static str,
     /// The longest broadcast, in UTF-8 bytes of text.
     pub broadcast_max: usize,
     /// The longest reply (a private message to one person), in UTF-8
@@ -728,6 +732,7 @@ pub fn machine(s: &Shared) -> Result<MachineView, String> {
             .unwrap_or_else(|| MACHINE_NAME.to_string()),
         held: machine.held_for_others(),
         version: env!("CARGO_PKG_VERSION"),
+        commit: env!("BOMBECHAT_COMMIT"),
         broadcast_max: MAX_BROADCAST,
         reply_max: max_private_text(1),
     })

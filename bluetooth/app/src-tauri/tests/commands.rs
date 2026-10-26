@@ -899,8 +899,15 @@ fn machine_is_named_machine_no_1_with_its_public_key() {
     assert_eq!(
         view,
         json!({ "name": "Machine No. 1", "key": "01".repeat(32) + &"02".repeat(32),
-                "you": "Ana Lima", "held": 3, "version": env!("CARGO_PKG_VERSION"),
+                "you": "Ana Lima", "held": 3, "version": "0.5.0", "commit": env!("BOMBECHAT_COMMIT"),
                 "broadcast_max": MAX_BROADCAST, "reply_max": max_private_text(1) })
+    );
+    // the commit names this build: a short hash, marked + when built from uncommitted changes
+    let commit = env!("BOMBECHAT_COMMIT");
+    let hash = commit.strip_suffix('+').unwrap_or(commit);
+    assert!(
+        commit == "unknown" || (hash.len() >= 7 && hash.bytes().all(|b| b.is_ascii_hexdigit())),
+        "{commit}"
     );
     let (fresh, _) = fake(Lock::NoStore);
     assert!(commands::machine(&fresh).is_err());

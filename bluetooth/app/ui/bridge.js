@@ -57,11 +57,12 @@
 //   broadcasts()                 [broadcasts]                       resolves to the broadcasts kept, this machine's own and the
 //                                ones heard, oldest first, each shaped as the broadcast event, with state for its own
 //                                ('waiting' queued again on unlock, 'sent' or 'failed')
-//   machine()                    [machine]                          resolves to { name, key, you, held, version, broadcast_max }:
+//   machine()                    [machine]                          resolves to { name, key, you, held, version, commit, broadcast_max }:
 //                                name is the machine's plate (Machine No. 1), key its public identity as hex (sign key
 //                                first, so its first four digits are the short fingerprint broadcasts are signed with),
-//                                you the person's own name, held the messages it carries for others, broadcast_max the
-//                                longest broadcast in UTF-8 bytes
+//                                you the person's own name, held the messages it carries for others, version and commit
+//                                the build (commit its short hash, + when built from uncommitted changes, 'unknown'
+//                                without git, 'browser' in the simulator), broadcast_max the longest broadcast in UTF-8 bytes
 //   channels()                   [channels]                         resolves to [{ channel, state, rate? }]: the last state each
 //                                channel reported, for a page that opened after the event. None reported: listening.
 //                                rate: the payload bytes a second the channel moves (sound at its band, light at the
@@ -349,3 +350,6 @@ export const bridge = {
   start: () => { ready(); backend.start(); },
   now: () => backend.now(),
 };
+
+// What the top plates on both pages say of the build, from machine(): its version and the commit it was made from.
+export const buildPlate = m => `Build ${m.version} \u00b7 ${m.commit}`;

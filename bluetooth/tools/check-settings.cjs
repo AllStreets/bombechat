@@ -46,6 +46,15 @@ const url = q => 'http://127.0.0.1:4811/' + path.relative(ROOTDIR, page) + (q ? 
     if (typeof held !== 'boolean') problems.push('the page does not say whether the key check is held (window.__edition)');
     ONLY_IN_PERSON = held !== false;
   }
+  // the top plate names the build as the machine does, as the front's does, cut for its longest form
+  if (APP) {
+    const { workspaceVersion } = require('./versions.cjs');
+    const b = await p.evaluate(() => { const b = document.getElementById('build'), rt = b.parentElement;
+      const at = () => [...rt.children].map(k => Math.round(k.getBoundingClientRect().left)).join();
+      const text = b.textContent, before = at(); b.textContent = text.replace(/[^ ]+$/, 'ddddddd+'); const moved = at() !== before; b.textContent = text; return { text, moved }; });
+    if (b.text !== `Build ${workspaceVersion(ROOTDIR)} \u00b7 browser`) problems.push(`the top plate says ${JSON.stringify(b.text)}`);
+    if (b.moved) problems.push("the build plate's longest form moves what is beside it");
+  }
   if (ONLY_IN_PERSON) NOTES.inperson = { note: 'always, on this build', value: 1 };
   await p.screenshot({ path: path.join(out, 'overview.png') });
   // the back carries the front's three rows of drums: 36 connectors, Rows 1 to 3 signed on plates, columns 12 to 1

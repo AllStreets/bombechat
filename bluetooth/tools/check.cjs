@@ -52,11 +52,12 @@ fs.rmSync(out, { recursive: true, force: true });
 fs.mkdirSync(out, { recursive: true });
 const { start } = require('./serve.cjs');
 const { externalUrls } = require('./offline.cjs');
+const { versionProblems, workspaceVersion } = require('./versions.cjs');
 const url = q => 'http://127.0.0.1:4812/' + path.relative(ROOTDIR, page) + (q ? '?' + q : '');
 // held still on a frame of the incoming message: the app's ?f counts chunks (chunk 1 ends on
 // a frame of the text), the mockup's counts frames
 const HELD = APP ? 'f=1&still' : 'f=3&still';
-const VIEWPORTS = [[1024, 768], [1280, 800], [1440, 900], [1728, 1117]];
+const VIEWPORTS = [[1024, 768], [1280, 800], [1440, 900], [1512, 982], [1728, 1117]];
 const PARTS = { top: '.top', bank: '.bank', sheet: '.sheet', compose: '.compose', menu: '.menu', panel: '.panel' };
 
 // The app's side of the bridge, for checking the app path in a plain browser: a first-run machine
@@ -94,7 +95,7 @@ function tauriStub({ hello, safety, pairOfferMs = 1200, people, talk, afterUnloc
         case 'unlock': return new Promise(r => setTimeout(r, unlockMs)).then(() => {
           if (refusals > 0) { refusals--; return Promise.reject(wrongWhy); }
           unlocked = true; for (const [name, payload] of afterUnlock || []) window.__emit(name, payload); return null; });
-        case 'machine': return Promise.resolve({ name: 'Machine No. 1', key: 'a3f09c1e'.repeat(16), you: 'Ana Lima', held: 0, version: '0.1.0', broadcast_max: broadcastMax, reply_max: 2814 });
+        case 'machine': return Promise.resolve({ name: 'Machine No. 1', key: 'a3f09c1e'.repeat(16), you: 'Ana Lima', held: 0, version: '0.5.0', commit: 'a1b2c3d', broadcast_max: broadcastMax, reply_max: 2814 });
         case 'conversation': return Promise.resolve((talk || {})[args.contactId] || []);
         case 'settings': return settings === 'unread' ? Promise.reject('the machine did not answer') : Promise.resolve(settings || { sound: 2, volume: 2, band: 0, light: 0, flash: 1, machine: 1, machvol: 2, carry: 1, hops: 3, hold: 2, quiet: 2, repeats: 2, lock: 1, expire: 0, inperson: 1 });
         // as the device answers on this build: relay waits for its feature, the key check is always on
@@ -199,6 +200,8 @@ function measureText() {
   };
   // the app's files carry no web addresses
   if (APP) { report.externalUrls = externalUrls(path.dirname(page)); for (const u of report.externalUrls) problems.push(`external URL in ${u}`); }
+  // one version everywhere it is written: the Cargo workspace, tauri.conf.json, package.json and the simulator
+  if (APP) for (const v of versionProblems(ROOTDIR)) problems.push(v);
 
   // 1. each laptop size: overflow, small text, layout shift while fonts arrive
   report.viewports = {};
@@ -225,6 +228,21 @@ function measureText() {
     if (r.overflowX > 0) problems.push(`${w}x${h}: page scrolls sideways by ${r.overflowX}px`);
     if (r.smallText.length) problems.push(`${w}x${h}: text under 12px: ${r.smallText.slice(0, 6).join('; ')}`);
     if (r.cls > 0.02) problems.push(`${w}x${h}: layout shift on load ${r.cls}`);
+    if (APP) {
+      // the top plate names the build as the machine does, and is cut for its longest form: a commit of the widest
+      // digits built from uncommitted changes moves nothing beside it, and the bar holds every plate
+      const b = await p.evaluate(() => {
+        const b = document.getElementById('build'), top = document.querySelector('.top'), rt = b.parentElement;
+        const at = () => [...rt.children].map(k => Math.round(k.getBoundingClientRect().left)).join();
+        const text = b.textContent, before = at();
+        b.textContent = text.replace(/[^ ]+$/, 'ddddddd+');
+        const r = { text, moved: at() !== before, over: Math.max(top.scrollWidth - top.clientWidth, rt.scrollWidth - rt.clientWidth) };
+        b.textContent = text; return r;
+      });
+      if (b.text !== `Build ${workspaceVersion(ROOTDIR)} \u00b7 browser`) problems.push(`${w}x${h}: the top plate says ${JSON.stringify(b.text)}`);
+      if (b.moved) problems.push(`${w}x${h}: the build plate's longest form moves the plates beside it`);
+      if (b.over > 0) problems.push(`${w}x${h}: the top bar overflows by ${b.over}px`);
+    }
     await p.screenshot({ path: path.join(out, `vp-${w}x${h}.png`) });
     if (r.pageHeight > h) await p.screenshot({ path: path.join(out, `vp-${w}x${h}-full.png`), fullPage: true });
     await p.close();

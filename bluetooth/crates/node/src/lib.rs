@@ -1012,19 +1012,29 @@ impl Node {
 
     /// The minute to stamp on a message stored now, by the machine's own
     /// clock: the wall clock as it read the first time this session
-    /// stamped anything, moved on since only by the monotonic `now_ms`.
-    /// A wall clock that jumps forward or back while the app runs moves
-    /// no stamp, so stamps keep the order messages came in, and none
-    /// is lifted by a jump into the next session (each session reads the
-    /// wall clock afresh). It is for showing and ordering only: "Delete
-    /// messages after" never reads it, but the machine's running age
-    /// ([`Node::set_age`]).
+    /// stamped anything, moved on since by the monotonic `now_ms`. The
+    /// monotonic clock stands still while the Mac sleeps, so when the
+    /// wall clock reads later than that, the stamp takes the wall
+    /// clock's minute and counts on from there: a message after a night's
+    /// sleep is stamped that morning, not the evening before. A wall
+    /// clock put back moves no stamp back, so stamps never decrease and
+    /// keep the order messages came in, and none is lifted by a jump into
+    /// the next session (each session reads the wall clock afresh). It is
+    /// for showing and ordering only: "Delete messages after" never reads
+    /// it, but the machine's running age ([`Node::set_age`]).
     fn stamp(&mut self) -> u32 {
         let now_ms = self.now_ms;
-        let wall = self.wall;
-        let (at_ms, at_min) = *self.clock.get_or_insert_with(|| (now_ms, wall()));
+        let wall = (self.wall)();
+        let (at_ms, at_min) = *self.clock.get_or_insert((now_ms, wall));
         let elapsed = (now_ms.saturating_sub(at_ms) / 60_000).min(u64::from(u32::MAX)) as u32;
-        at_min.saturating_add(elapsed)
+        let counted = at_min.saturating_add(elapsed);
+        if wall > counted {
+            // the Mac slept (or the clock was put forward): count on from the wall clock
+            self.clock = Some((now_ms, wall));
+            wall
+        } else {
+            counted
+        }
     }
 
     /// Why nothing may be sent on `channel` right now, if so: the
@@ -3409,7 +3419,7 @@ mod tests {
     }
 
     #[test]
-    fn a_wall_clock_that_jumps_ahead_and_back_moves_no_stamp() {
+    fn a_wall_clock_put_back_moves_no_stamp_back() {
         let dir = tempfile::TempDir::new().unwrap();
         let (a, b) = (Identity::generate(), Identity::generate());
         let (mut node, _wire, ids) = node(&dir, &b, &[&a]);
@@ -3417,17 +3427,46 @@ mod tests {
         WALL.store(1_000_000, std::sync::atomic::Ordering::SeqCst);
         node.tick(0);
         node.send(&ids, "before", Channel::Sound);
-        // the clock jumps a month ahead
-        WALL.store(1_000_000 + 30 * 1440, std::sync::atomic::Ordering::SeqCst);
+        // the clock is put an hour back
+        WALL.store(1_000_000 - 60, std::sync::atomic::Ordering::SeqCst);
         node.tick(60_000);
         node.send(&ids, "during", Channel::Sound);
-        // and is put right
+        // and forward again
         WALL.store(1_000_002, std::sync::atomic::Ordering::SeqCst);
         node.tick(120_000);
         node.send(&ids, "after", Channel::Sound);
         assert_eq!(
             stamped(&node, ids[0]),
             vec![1_000_000, 1_000_001, 1_000_002]
+        );
+    }
+
+    // a wall clock of its own: tests run at once, and the one above moves WALL
+    static SLEPT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    fn slept_wall() -> u32 {
+        SLEPT.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[test]
+    fn a_stamp_after_the_mac_sleeps_is_the_wall_clocks_minute() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (a, b) = (Identity::generate(), Identity::generate());
+        let (mut node, _wire, ids) = node(&dir, &b, &[&a]);
+        node.wall = slept_wall;
+        SLEPT.store(2_000_000, std::sync::atomic::Ordering::SeqCst);
+        node.tick(0);
+        node.send(&ids, "evening", Channel::Sound);
+        // the Mac sleeps eight hours: the wall clock moves on, the monotonic clock only a minute
+        SLEPT.store(2_000_000 + 8 * 60, std::sync::atomic::Ordering::SeqCst);
+        node.tick(60_000);
+        node.send(&ids, "morning", Channel::Sound);
+        // and the stamps count on from the wall clock, never back
+        SLEPT.store(2_000_000 + 8 * 60 + 1, std::sync::atomic::Ordering::SeqCst);
+        node.tick(60_000 + 3 * 60_000);
+        node.send(&ids, "later", Channel::Sound);
+        assert_eq!(
+            stamped(&node, ids[0]),
+            vec![2_000_000, 2_000_480, 2_000_483]
         );
     }
 

@@ -525,7 +525,7 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
     // this machine's own notices, kept across reloads; the heard ones arrive as history, as the mockups showed them
     broadcasts: () => Promise.resolve(keptNotices()),
     // you are Teodor here: his key signs your broadcasts
-    machine: () => Promise.resolve({ name: 'Machine No. 1', key: SELF_KEY, you: 'Teodor Vance', held: 6, version: '0.4', broadcast_max: MAX_BROADCAST, reply_max: REPLY_MAX }),
+    machine: () => Promise.resolve({ name: 'Machine No. 1', key: SELF_KEY, you: 'Teodor Vance', held: 6, version: '0.5.0', commit: 'browser', broadcast_max: MAX_BROADCAST, reply_max: REPLY_MAX }),
     channels: () => Promise.resolve([{ channel: 'Sound', state: soundState || 'listening', rate: RATE, band: settings.band ? 'audible' : 'near silent' },
       { channel: 'Light', state: lightState || lightAt(), rate: LIGHT_RATES[settings.flash] }, ...(fit.channels ? fit.channels() : [])]),
     // requests to connect, as the device answers with no carrier that brings them, unless this build fits one

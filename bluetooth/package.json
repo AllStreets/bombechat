@@ -1,5 +1,6 @@
 {
   "name": "bombechat",
+  "version": "0.5.0",
   "private": true,
   "description": "Messaging by sound, light and Bluetooth, with no internet.",
   "scripts": {

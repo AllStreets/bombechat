@@ -27,7 +27,7 @@ function firstRun() {
     core: { invoke: cmd => {
       switch (cmd) {
         case 'contacts': return Promise.reject('no store yet');
-        case 'machine': return Promise.resolve({ name: 'Machine No. 1', key: 'a3f09c1e'.repeat(16), you: '', held: 0, version: '0.1.0', broadcast_max: 3939 });
+        case 'machine': return Promise.resolve({ name: 'Machine No. 1', key: 'a3f09c1e'.repeat(16), you: '', held: 0, version: '0.5.0', commit: 'a1b2c3d', broadcast_max: 3939 });
         case 'settings': return Promise.resolve({ sound: 2, volume: 2, band: 0, light: 0, flash: 1, machine: 1, machvol: 2, carry: 1, hops: 3, hold: 2, quiet: 2, repeats: 2, lock: 1, expire: 0, inperson: 1 });
         case 'setting_notes': return Promise.resolve({});
         default: return new Promise(() => {});
