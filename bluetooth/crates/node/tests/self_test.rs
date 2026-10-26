@@ -359,6 +359,39 @@ fn a_stopped_test_plays_no_more_and_is_not_heard() {
 }
 
 #[test]
+fn a_test_stopped_while_it_plays_falls_silent_at_once() {
+    // a speaker its microphone never hears, so the test plays on until stopped
+    let mut l = Laptop::new(false);
+    l.node.start_self_test(Channel::Sound).unwrap();
+    l.run(20, |ev| {
+        ev.iter().any(|e| {
+            matches!(
+                e,
+                NodeEvent::SelfTest {
+                    state: SelfTestState::Playing,
+                    ..
+                }
+            )
+        })
+    });
+    assert!(
+        l.audio.pending(None) > 48_000,
+        "seconds of it wait at the speaker"
+    );
+    l.audio.speak(4_800);
+    l.node.stop_self_test();
+    assert_eq!(l.audio.pending(None), 0, "what was handed over is cut");
+    let handed = l.audio.played().len();
+    l.rounds(400);
+    assert_eq!(
+        l.audio.played().len(),
+        handed,
+        "and nothing more is handed over"
+    );
+    assert_eq!(l.tests().last().unwrap().1, SelfTestState::Stopped);
+}
+
+#[test]
 fn a_test_is_refused_as_pairing_is() {
     let mut l = Laptop::new(true);
     l.node.set_sound(SoundSwitch::Listen);

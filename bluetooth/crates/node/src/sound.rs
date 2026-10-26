@@ -2,7 +2,7 @@
 //! once the room is quiet, frames in from the microphone through the
 //! demodulator.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use bombechat_modem::{
@@ -89,6 +89,11 @@ pub struct SoundTransport {
     playing: HashMap<u16, u64>,
     /// When everything handed to the speaker so far finishes, in `now_ms`.
     speaker_free_ms: u64,
+    /// What has been handed to the speaker and has not finished, in the
+    /// order it plays: each frame's tag, and when it starts and ends.
+    handed: VecDeque<(Option<u16>, u64, u64)>,
+    /// The last poll's `now_ms`.
+    now_ms: u64,
     /// Envelopes with a frame the speaker refused to play, by tag.
     unplayed: HashSet<u16>,
     /// Off: what the microphone hears is let go undemodulated.
@@ -115,6 +120,8 @@ impl SoundTransport {
             play_failed: false,
             playing: HashMap::new(),
             speaker_free_ms: 0,
+            handed: VecDeque::new(),
+            now_ms: 0,
             unplayed: HashSet::new(),
             listening: true,
             sending: true,
@@ -192,8 +199,11 @@ impl Transport for SoundTransport {
     }
 
     /// Frames of `tag` still in the gate (first plays or repeats) are
-    /// let go; audio already handed to the speaker plays out, and the
-    /// envelope is reported sent once it has, if any of it played.
+    /// let go, and what of it was already handed to the speaker and has
+    /// not played yet is cut ([`AudioIo::cut`]), so it falls silent at
+    /// once rather than playing out. Only `tag`'s own audio stops: any
+    /// other envelope handed to the speaker plays on, just sooner. The
+    /// envelope is reported sent on the next poll, if any of it played.
     fn withdraw(&mut self, tag: u16) {
         let gate = &mut self.gate;
         self.queued.retain(|item, frame| {
@@ -203,6 +213,36 @@ impl Transport for SoundTransport {
             }
             keep
         });
+        if self.io.cut(tag) == 0 {
+            return;
+        }
+        // its frames leave the speaker's timeline, and what was queued
+        // behind each moves up by what of it was cut
+        let now = self.now_ms;
+        let mut shift = 0;
+        for (t, start, end) in self.handed.iter_mut() {
+            if *t == Some(tag) {
+                shift += end.saturating_sub((*start).max(now));
+            } else {
+                *start -= shift;
+                *end -= shift;
+            }
+        }
+        self.handed.retain(|(t, _, _)| *t != Some(tag));
+        self.speaker_free_ms = self.handed.back().map_or(now, |c| c.2);
+        let handed = &self.handed;
+        for (t, ends) in self.playing.iter_mut() {
+            *ends = if *t == tag {
+                0
+            } else {
+                handed
+                    .iter()
+                    .filter(|c| c.0 == Some(*t))
+                    .map(|c| c.2)
+                    .max()
+                    .unwrap_or(*ends)
+            };
+        }
     }
 
     fn set_send_under(&mut self, db: f32) {
@@ -276,6 +316,10 @@ impl Transport for SoundTransport {
 
     fn poll(&mut self, now_ms: u64) -> Vec<TransportEvent> {
         let mut events = std::mem::take(&mut self.pending);
+        self.now_ms = now_ms;
+        while self.handed.front().is_some_and(|c| c.2 <= now_ms) {
+            self.handed.pop_front();
+        }
 
         if matches!(self.input, Input::NotStarted) {
             events.extend(self.start_input());
@@ -310,15 +354,20 @@ impl Transport for SoundTransport {
                 self.queued.remove(&item);
             }
             let rate = u64::from(self.io.sample_rate().max(1));
-            let ends =
-                self.speaker_free_ms.max(now_ms) + (samples.len() as u64 * 1000).div_ceil(rate);
+            let starts = self.speaker_free_ms.max(now_ms);
+            let ends = starts + (samples.len() as u64 * 1000).div_ceil(rate);
             self.speaker_free_ms = ends;
+            self.handed.push_back((tag, starts, ends));
             if let Some(tag) = tag {
                 if self.playing.insert(tag, ends).is_none() {
                     events.push(TransportEvent::Playing(tag));
                 }
             }
-            match self.io.play(samples) {
+            let played = match tag {
+                Some(tag) => self.io.play_for(tag, samples),
+                None => self.io.play(samples),
+            };
+            match played {
                 Ok(()) => self.play_failed = false,
                 Err(e) => {
                     if let Some(tag) = tag {
@@ -714,6 +763,112 @@ mod tests {
         t.poll(20);
         assert_eq!((io.starts(), io.stops()), (2, 1));
         assert!(io.is_open());
+    }
+
+    /// A speaker the test plays by hand: `FakeAudio` holds what it was
+    /// handed until `speak` says the time it takes has passed.
+    fn fake_transport(io: &bombechat_modem::FakeAudio) -> SoundTransport {
+        let mut t = SoundTransport::new(
+            Box::new(io.clone()),
+            ModemConfig::default(),
+            QuietGate::new(40.0, 0, 90),
+        );
+        t.poll(0);
+        t
+    }
+
+    #[test]
+    fn a_withdrawn_envelope_is_cut_from_the_speaker_and_falls_silent() {
+        let io = bombechat_modem::FakeAudio::new(48_000);
+        let mut t = fake_transport(&io);
+        for f in split(&[3; 300], 9) {
+            t.send(f);
+        }
+        io.feed(&[0.0; 9_600]);
+        assert_eq!(progress(t.poll(100)), vec![TransportEvent::Playing(9)]);
+        let handed = io.played().len();
+        assert!(
+            io.pending(Some(9)) > 48_000,
+            "seconds of it wait at the speaker"
+        );
+
+        // 50 ms of it plays, then it is stopped
+        io.speak(2_400);
+        t.withdraw(9);
+        assert_eq!(io.pending(None), 0, "nothing of it is left to play");
+        // it is over at once, not when it would have finished playing
+        assert_eq!(progress(t.poll(150)), vec![TransportEvent::Sent(9)]);
+        for now in [200, 5_000, 60_000, 200_000] {
+            io.feed(&[0.0; 9_600]);
+            assert!(progress(t.poll(now)).is_empty());
+        }
+        assert_eq!(io.played().len(), handed, "no more of it was handed over");
+    }
+
+    #[test]
+    fn withdrawing_one_envelope_leaves_another_playing_on() {
+        let io = bombechat_modem::FakeAudio::new(48_000);
+        let mut t = fake_transport(&io);
+        // a message to a contact goes out, then the test is queued behind it
+        for f in split(&[1; 200], 2) {
+            t.send(f);
+        }
+        io.feed(&[0.0; 9_600]);
+        assert_eq!(progress(t.poll(100)), vec![TransportEvent::Playing(2)]);
+        for f in split(&[3; 200], 9) {
+            t.send(f);
+        }
+        assert_eq!(progress(t.poll(200)), vec![TransportEvent::Playing(9)]);
+        let contact = io.pending(Some(2));
+        assert!(contact > 0 && io.pending(Some(9)) > 0);
+
+        io.speak(4_800);
+        t.withdraw(9);
+        assert_eq!(io.pending(Some(9)), 0, "the test is cut");
+        assert_eq!(
+            io.pending(Some(2)),
+            contact - 4_800,
+            "the contact's message is not"
+        );
+        assert_eq!(progress(t.poll(300)), vec![TransportEvent::Sent(9)]);
+
+        // the contact's message is sent once it has played, and no sooner
+        let ms = (contact as u64 * 1000).div_ceil(48_000);
+        assert!(progress(t.poll(100 + ms - 1)).is_empty(), "still playing");
+        assert_eq!(
+            progress(t.poll(100 + ms + 1)),
+            vec![TransportEvent::Sent(2)]
+        );
+    }
+
+    #[test]
+    fn a_contacts_message_queued_behind_the_test_moves_up_when_it_is_cut() {
+        let io = bombechat_modem::FakeAudio::new(48_000);
+        let mut t = fake_transport(&io);
+        for f in split(&[3; 200], 9) {
+            t.send(f);
+        }
+        io.feed(&[0.0; 9_600]);
+        assert_eq!(progress(t.poll(100)), vec![TransportEvent::Playing(9)]);
+        for f in split(&[1; 200], 2) {
+            t.send(f);
+        }
+        assert_eq!(progress(t.poll(200)), vec![TransportEvent::Playing(2)]);
+        let contact = io.pending(Some(2));
+        t.withdraw(9);
+        assert_eq!(
+            io.pending(None),
+            contact,
+            "only the contact's message is left"
+        );
+        assert_eq!(progress(t.poll(300)), vec![TransportEvent::Sent(9)]);
+        // it plays from now, not after the test's cut audio
+        let ms = (contact as u64 * 1000).div_ceil(48_000);
+        assert!(progress(t.poll(300 + ms - 200)).is_empty());
+        assert_eq!(
+            progress(t.poll(300 + ms + 1)),
+            vec![TransportEvent::Sent(2)]
+        );
     }
 
     #[test]

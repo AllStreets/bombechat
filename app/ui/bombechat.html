@@ -1522,6 +1522,7 @@ const SELF_TEST_TEXT='The machine hears itself.';
 const SWITCH_REFUSALS=['not sent: sound is off','not sent: sound is set to listen only','not sent: light is off','not sent: light is set to read only'];
 const NOTHING_TO_TEST={sound:'This Mac has no sound to test with.',light:'This Mac has no camera to test by light with.'};
 const testBtn=document.getElementById('testbtn'),testLightBtn=document.getElementById('testlight'),testNote=document.getElementById('testnote');
+[testBtn,testLightBtn].forEach(b=>b.dataset.rest=b.title);
 // the test in progress: its channel, the tags it goes out under, its entry on the sheet once the machine took it, how
 // far it has got ('asking', 'waiting', 'playing' or 'arriving'), and its arrival on the drums
 let Test=null;
@@ -1538,9 +1539,11 @@ function setEmptyMark(){if(emptyLine.hidden)return;const f=emptyLine.parentEleme
 function showEmptyLine(){const empty=!log.querySelector('.ent');if(emptyLine.hidden!==empty)return;emptyLine.hidden=!empty;setEmptyMark()}
 function watchEmptySheet(){new MutationObserver(showEmptyLine).observe(log,{childList:true});addEventListener('resize',setEmptyMark);showEmptyLine()}
 function testSays(text){testNote.textContent=text||''}
-// one stamp while a test runs, saying it stops it; both at rest
+// one stamp while a test runs, in the red ink of a refusal, saying it stops it; both at rest
 function testStamps(){const on=Test&&Test.channel;testBtn.hidden=on==='light';testLightBtn.hidden=on==='sound';
-  testBtn.textContent=on==='sound'?'Stop the test':'Test the machine';testLightBtn.textContent=on==='light'?'Stop the test':'Test by light'}
+  testBtn.textContent=on==='sound'?'Stop the test':'Test the machine';testLightBtn.textContent=on==='light'?'Stop the test':'Test by light';
+  [[testBtn,'sound'],[testLightBtn,'light']].forEach(([b,ch])=>{b.classList.toggle('no',on===ch);
+    b.title=on===ch?`Stops the test at once: ${ch==='light'?'the screen clears':'the sound stops'}. Escape does the same.`:b.dataset.rest})}
 const testStampFor=channel=>channel==='light'?testLightBtn:testBtn;
 // the switch that won't let it run, said as what to turn
 function refuseTest(channel){const k=channel==='light'?KNOBS.k2:KNOBS.k1,name=channel==='light'?'Light':'Sound';
@@ -1551,7 +1554,7 @@ function testLine(text,live){if(!Test||!Test.ent)return;const st=Test.ent.queryS
 function testWaiting(){if(!Test||Test.state!=='waiting')return;
   testLine('sealed to this machine, '+(Test.channel==='light'?'waiting to go on screen':room==null?'waiting for quiet':room<sendUnder()?'playing next':`waiting for quiet, the room is at ${Math.round(room)} dB`))}
 function testShow(){if(!Test)return;if(Test.state==='waiting')testWaiting();
-  else if(Test.state==='playing')testLine(`sealed to this machine, ${Test.channel==='light'?'on the screen for a mirror':'playing by sound, listening for it'}`,true)}
+  else if(Test.state==='playing')testLine(`sealed to this machine, ${Test.channel==='light'?'on the screen for a mirror':'playing by sound and listening for it'}, Escape stops it`,true)}
 // a chunk of it came back: onto the drums, and its provisional tape typed into its own entry
 function testChunk(c){const a=Test.arr||(Test.arr={ent:Test.ent});
   if(Test.state!=='arriving'){Test.state='arriving';testLine(`arriving by ${c.channel}, not yet checked`,true)}

@@ -62,6 +62,26 @@ pub trait AudioIo: Send {
     /// samples are queued, without waiting for them to actually play.
     fn play(&mut self, samples: Vec<f32>) -> Result<(), AudioError>;
 
+    /// Queue `samples` as [`play`](AudioIo::play) does, marked as
+    /// `owner`'s, so that [`cut`](AudioIo::cut) can take back whatever of
+    /// them has not played yet. The default plays them unmarked, for
+    /// devices that cannot take anything back.
+    fn play_for(&mut self, owner: u16, samples: Vec<f32>) -> Result<(), AudioError> {
+        let _ = owner;
+        self.play(samples)
+    }
+
+    /// Drop every sample queued by [`play_for`](AudioIo::play_for) for
+    /// `owner` that has not played yet, the one playing now included, so
+    /// its sound stops within the output's own buffer (milliseconds).
+    /// Everything else queued plays on as it would have. Returns how many
+    /// samples were dropped. The default drops nothing: a device that
+    /// cannot take audio back lets it play out.
+    fn cut(&mut self, owner: u16) -> usize {
+        let _ = owner;
+        0
+    }
+
     /// The sample rate, in Hz, that both the input and output streams run
     /// at.
     fn sample_rate(&self) -> u32;
@@ -102,6 +122,65 @@ fn record_stream_error(slot: &Mutex<Option<AudioError>>, err: cpal::Error) {
     *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(mapped);
 }
 
+/// What the output stream plays from: chunks of mono samples in the order
+/// they were queued, each marked with who queued it (if anyone), so one
+/// owner's audio can be taken back without touching the rest.
+#[derive(Default)]
+struct Speaker {
+    chunks: VecDeque<Chunk>,
+}
+
+struct Chunk {
+    owner: Option<u16>,
+    samples: Vec<f32>,
+    /// How many of `samples` have played.
+    at: usize,
+}
+
+impl Speaker {
+    fn push(&mut self, owner: Option<u16>, samples: Vec<f32>) {
+        if !samples.is_empty() {
+            self.chunks.push_back(Chunk {
+                owner,
+                samples,
+                at: 0,
+            });
+        }
+    }
+
+    /// The next sample to play, or silence when nothing is queued.
+    fn next(&mut self) -> f32 {
+        while let Some(chunk) = self.chunks.front_mut() {
+            if let Some(&s) = chunk.samples.get(chunk.at) {
+                chunk.at += 1;
+                return s;
+            }
+            self.chunks.pop_front();
+        }
+        0.0
+    }
+
+    /// Drops what has not played of every chunk `owner` queued; returns
+    /// how many samples that was.
+    fn cut(&mut self, owner: u16) -> usize {
+        let mut dropped = 0;
+        self.chunks.retain(|c| {
+            let keep = c.owner != Some(owner);
+            if !keep {
+                dropped += c.samples.len() - c.at;
+            }
+            keep
+        });
+        dropped
+    }
+
+    /// Samples queued and not yet played.
+    #[cfg(test)]
+    fn pending(&self) -> usize {
+        self.chunks.iter().map(|c| c.samples.len() - c.at).sum()
+    }
+}
+
 /// Default-device input and output over cpal.
 ///
 /// Built once, at construction: the output stream is opened and started
@@ -117,7 +196,7 @@ pub struct CpalAudio {
     input_stream: Option<cpal::Stream>,
     // Kept alive for as long as `CpalAudio` is; dropping it stops output.
     _output_stream: cpal::Stream,
-    output_queue: Arc<Mutex<VecDeque<f32>>>,
+    output_queue: Arc<Mutex<Speaker>>,
     /// The most recent error reported by either stream's error callback
     /// (a device disconnect, an xrun, and so on) since it was last taken
     /// by [`CpalAudio::take_stream_error`]. `start_input`/`play` only
@@ -152,7 +231,7 @@ impl CpalAudio {
         let input_channels = input_default.channels();
         let output_channels = output_default.channels();
 
-        let output_queue: Arc<Mutex<VecDeque<f32>>> = Arc::new(Mutex::new(VecDeque::new()));
+        let output_queue: Arc<Mutex<Speaker>> = Arc::new(Mutex::new(Speaker::default()));
         let queue_for_callback = output_queue.clone();
         let out_channels = output_channels as usize;
 
@@ -172,7 +251,7 @@ impl CpalAudio {
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
                     for frame in data.chunks_mut(out_channels.max(1)) {
-                        let sample = queue.pop_front().unwrap_or(0.0);
+                        let sample = queue.next();
                         for s in frame.iter_mut() {
                             *s = sample;
                         }
@@ -207,6 +286,14 @@ impl CpalAudio {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .take()
+    }
+}
+
+impl CpalAudio {
+    fn speaker(&self) -> std::sync::MutexGuard<'_, Speaker> {
+        self.output_queue
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 
@@ -252,12 +339,19 @@ impl AudioIo for CpalAudio {
     }
 
     fn play(&mut self, samples: Vec<f32>) -> Result<(), AudioError> {
-        let mut queue = self
-            .output_queue
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        queue.extend(samples);
+        self.speaker().push(None, samples);
         Ok(())
+    }
+
+    fn play_for(&mut self, owner: u16, samples: Vec<f32>) -> Result<(), AudioError> {
+        self.speaker().push(Some(owner), samples);
+        Ok(())
+    }
+
+    /// Takes the samples out of the queue the output callback reads, so
+    /// at most the device's current buffer of them is still heard.
+    fn cut(&mut self, owner: u16) -> usize {
+        self.speaker().cut(owner)
     }
 
     fn sample_rate(&self) -> u32 {
@@ -272,6 +366,33 @@ impl AudioIo for CpalAudio {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_speaker_plays_its_chunks_in_order_then_silence() {
+        let mut sp = Speaker::default();
+        sp.push(Some(1), vec![0.1, 0.2]);
+        sp.push(None, vec![]);
+        sp.push(None, vec![0.3]);
+        let heard: Vec<f32> = (0..5).map(|_| sp.next()).collect();
+        assert_eq!(heard, vec![0.1, 0.2, 0.3, 0.0, 0.0]);
+        assert_eq!(sp.pending(), 0);
+    }
+
+    #[test]
+    fn a_cut_drops_only_its_owners_unplayed_samples_mid_chunk_included() {
+        let mut sp = Speaker::default();
+        sp.push(Some(7), vec![0.7; 4]);
+        sp.push(Some(2), vec![0.2; 3]);
+        sp.push(Some(7), vec![0.7; 5]);
+        sp.push(None, vec![0.5; 2]);
+        // one sample of the first chunk has played: it is cut part way
+        assert_eq!(sp.next(), 0.7);
+        assert_eq!(sp.cut(7), 3 + 5);
+        assert_eq!(sp.pending(), 3 + 2);
+        let heard: Vec<f32> = (0..6).map(|_| sp.next()).collect();
+        assert_eq!(heard, vec![0.2, 0.2, 0.2, 0.5, 0.5, 0.0]);
+        assert_eq!(sp.cut(7), 0, "nothing of it is left to cut");
+    }
 
     #[test]
     fn stream_error_is_mapped_like_a_synchronous_one() {
