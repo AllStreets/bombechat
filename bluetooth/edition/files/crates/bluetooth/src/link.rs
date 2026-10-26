@@ -75,6 +75,9 @@ pub(crate) struct Link {
     pub reassembly: Reassembly,
     next_fragment: u16,
     pub exchanges: BTreeMap<ExKey, Exchange>,
+    /// The contact this link was marked as carrying a confirmed session
+    /// with ([`Radio::mark_contact`]), if any.
+    pub marked: Option<[u8; 64]>,
 }
 
 impl Link {
@@ -86,6 +89,7 @@ impl Link {
             reassembly: Reassembly::new(),
             next_fragment: 0,
             exchanges: BTreeMap::new(),
+            marked: None,
         }
     }
 

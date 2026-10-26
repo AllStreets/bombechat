@@ -62,6 +62,13 @@ pub trait Radio: Send {
     /// link was made to.
     fn disconnect(&mut self, link: LinkId);
 
+    /// Say whether `link` carries a confirmed session with a contact
+    /// (`true` once one is confirmed, `false` if that contact is removed).
+    /// A radio that refuses devices it heard under an earlier token may
+    /// exempt the device at the other end of such a link: only a contact
+    /// can confirm a session, so a stranger gains nothing.
+    fn mark_contact(&mut self, link: LinkId, contact: bool);
+
     /// Write `bytes` to `link`, at most [`Radio::max_write`] of them.
     fn write(&mut self, link: LinkId, bytes: &[u8]);
 

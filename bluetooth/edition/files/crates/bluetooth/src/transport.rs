@@ -123,6 +123,10 @@ pub struct BleTransport<R: Radio> {
     last_tried: BTreeMap<Key, u64>,
     rounds: BTreeMap<[u8; TOKEN_LEN], u64>,
     redial: BTreeMap<Key, Redial>,
+    /// Contacts whose link (to an advert with this token) the radio lost:
+    /// redialled at once on the next link to the same token, which gets
+    /// no new round of its own.
+    lost: BTreeMap<[u8; TOKEN_LEN], (Vec<PublicIdentity>, u64)>,
     seen_ephemerals: HashMap<[u8; 32], u64>,
     seen_order: VecDeque<([u8; 32], u64)>,
     outbound_frames: Vec<Vec<u8>>,
@@ -164,6 +168,7 @@ impl<R: Radio> BleTransport<R> {
             last_tried: BTreeMap::new(),
             rounds: BTreeMap::new(),
             redial: BTreeMap::new(),
+            lost: BTreeMap::new(),
             seen_ephemerals: HashMap::new(),
             seen_order: VecDeque::new(),
             outbound_frames: Vec::new(),
@@ -376,6 +381,7 @@ impl<R: Radio> BleTransport<R> {
         self.seen_links.clear();
         self.rounds.clear();
         self.redial.clear();
+        self.lost.clear();
         for tag in self.queue.drain_unreported() {
             self.events.push(TransportEvent::Dropped(tag));
         }
@@ -429,6 +435,49 @@ impl<R: Radio> BleTransport<R> {
         self.link_gone(id);
     }
 
+    /// The radio lost a link this device opened: remember the contacts it
+    /// carried (or was redialling), so a new link to the same advert
+    /// dials them again at once. The token's one round is spent, so
+    /// without this they would wait for the next token.
+    fn remember_lost(&mut self, id: LinkId) {
+        let now = self.now_ms;
+        let Some(link) = self.links.get(&id) else {
+            return;
+        };
+        let Some(token) = link.token else { return };
+        let mut who: Vec<PublicIdentity> = link
+            .exchanges
+            .values()
+            .filter_map(|e| match e {
+                Exchange::Session(s) if s.kind == SessKind::Contact => s.remote.clone(),
+                _ => None,
+            })
+            .collect();
+        who.extend(
+            self.redial
+                .values()
+                .filter(|r| r.link == id)
+                .map(|r| r.contact.clone()),
+        );
+        who.dedup();
+        if who.is_empty() {
+            return;
+        }
+        self.lost
+            .retain(|_, (_, at)| now.saturating_sub(*at) < ROUND_MEMORY_MS);
+        if self.lost.len() >= ROUNDS_CAP {
+            let oldest = self
+                .lost
+                .iter()
+                .min_by_key(|(_, (_, at))| *at)
+                .map(|(t, _)| *t);
+            if let Some(t) = oldest {
+                self.lost.remove(&t);
+            }
+        }
+        self.lost.insert(token, (who, now));
+    }
+
     fn link_gone(&mut self, id: LinkId) {
         let Some(gone) = self.links.remove(&id) else {
             return;
@@ -449,8 +498,27 @@ impl<R: Radio> BleTransport<R> {
                     return;
                 }
                 self.links.insert(link, Link::new(token, self.now_ms));
+                if let Some((who, _)) = token.and_then(|t| self.lost.remove(&t)) {
+                    for contact in who {
+                        let k = key_of(&contact);
+                        if self.contact_keys.contains(&k) {
+                            self.redial.insert(
+                                k,
+                                Redial {
+                                    link,
+                                    contact,
+                                    next_ms: self.now_ms,
+                                    backoff_ms: REDIAL_FIRST_MS,
+                                },
+                            );
+                        }
+                    }
+                }
             }
-            RadioEvent::Down(link) => self.link_gone(link),
+            RadioEvent::Down(link) => {
+                self.remember_lost(link);
+                self.link_gone(link);
+            }
             RadioEvent::Bytes(link, bytes) => {
                 let now = self.now_ms;
                 let Some(l) = self.links.get_mut(&link) else {
@@ -1210,6 +1278,32 @@ impl<R: Radio> BleTransport<R> {
         self.events.extend(events);
     }
 
+    /// Tell the radio which links carry a confirmed session with a
+    /// contact, and which no longer do because the contact was removed.
+    fn mark_contacts(&mut self) {
+        for (id, link) in self.links.iter_mut() {
+            match link.marked {
+                Some(k) if !self.contact_keys.contains(&k) => {
+                    self.radio.mark_contact(*id, false);
+                    link.marked = None;
+                }
+                Some(_) => {}
+                None => {
+                    let confirmed = link.exchanges.values().find_map(|e| match e {
+                        Exchange::Session(s) if s.kind == SessKind::Contact && s.confirmed() => {
+                            s.remote.as_ref().map(key_of)
+                        }
+                        _ => None,
+                    });
+                    if let Some(k) = confirmed.filter(|k| self.contact_keys.contains(k)) {
+                        self.radio.mark_contact(*id, true);
+                        link.marked = Some(k);
+                    }
+                }
+            }
+        }
+    }
+
     fn update_peers(&mut self) {
         let now = self.now_ms;
         for (id, link) in &self.links {
@@ -1337,6 +1431,7 @@ impl<R: Radio> Transport for BleTransport<R> {
             self.schedule();
             self.upkeep();
             self.close_links();
+            self.mark_contacts();
         }
         self.update_peers();
         std::mem::take(&mut self.events)

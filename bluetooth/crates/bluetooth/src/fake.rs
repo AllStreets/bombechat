@@ -28,6 +28,7 @@ struct Station {
     starts: u32,
     stops: u32,
     written: Vec<(LinkId, Vec<u8>)>,
+    marks: Vec<(LinkId, bool)>,
 }
 
 #[derive(Clone, Copy)]
@@ -196,6 +197,7 @@ impl Room {
             starts: 0,
             stops: 0,
             written: Vec::new(),
+            marks: Vec::new(),
         });
         FakeRadio {
             room: self.0.clone(),
@@ -325,6 +327,11 @@ impl FakeRadio {
     pub fn take_written(&self) -> Vec<(LinkId, Vec<u8>)> {
         std::mem::take(&mut self.room.lock().unwrap().stations[self.me].written)
     }
+
+    /// Every [`Radio::mark_contact`] it was given, in order.
+    pub fn contact_marks(&self) -> Vec<(LinkId, bool)> {
+        self.room.lock().unwrap().stations[self.me].marks.clone()
+    }
 }
 
 impl Radio for FakeRadio {
@@ -389,6 +396,12 @@ impl Radio for FakeRadio {
         s.stations[me]
             .inbox
             .retain(|e| !matches!(e, RadioEvent::Bytes(l, _) if *l == link));
+    }
+
+    fn mark_contact(&mut self, link: LinkId, contact: bool) {
+        self.room.lock().unwrap().stations[self.me]
+            .marks
+            .push((link, contact));
     }
 
     fn write(&mut self, link: LinkId, bytes: &[u8]) {

@@ -329,6 +329,39 @@ fn a_pair_with_one_direction_refused_still_talks_both_ways() {
     }
 }
 
+/// The transport tells the radio which links carry a confirmed session
+/// with a contact, once each, and takes it back when the contact goes.
+#[test]
+fn links_with_a_confirmed_contact_session_are_marked_and_unmarked() {
+    let room = Room::new(13);
+    let (mut a, mut b) = pair(&room);
+    let t = run(&mut [&mut a, &mut b], 0, 3_000);
+    let marks = a.radio.contact_marks();
+    assert!(
+        !marks.is_empty() && marks.iter().all(|(_, on)| *on),
+        "{marks:?}"
+    );
+    let links: Vec<LinkId> = marks.iter().map(|(l, _)| *l).collect();
+    let mut once = links.clone();
+    once.dedup();
+    assert_eq!(links, once, "once per link");
+    assert!(!b.radio.contact_marks().is_empty());
+    // a stranger's links are never marked
+    let c = Device::new(&room, 3);
+    c.h.set_mode(Some(Mode::Contacts));
+    let mut c = c;
+    let t = run(&mut [&mut a, &mut b, &mut c], t, t + 3_000);
+    assert!(c.radio.contact_marks().is_empty());
+    // removing the contact takes the mark back
+    a.h.set_contacts(vec![]);
+    run(&mut [&mut a, &mut b, &mut c], t, t + 1_000);
+    let after = a.radio.contact_marks();
+    assert!(
+        after[marks.len()..].iter().all(|(_, on)| !*on) && after.len() > marks.len(),
+        "{after:?}"
+    );
+}
+
 #[test]
 fn small_writes_and_long_envelopes_still_arrive() {
     let room = Room::new(2);

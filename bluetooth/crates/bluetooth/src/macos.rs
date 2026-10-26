@@ -1013,6 +1013,10 @@ impl Radio for CoreBluetoothRadio {
         self.inner.disconnect(link);
     }
 
+    fn mark_contact(&mut self, link: LinkId, contact: bool) {
+        self.inner.mark_contact(link, contact);
+    }
+
     fn write(&mut self, link: LinkId, bytes: &[u8]) {
         self.inner.write(link, bytes);
     }
@@ -1036,12 +1040,15 @@ impl Drop for CoreBluetoothRadio {
 impl CoreBluetoothRadio {
     /// What CoreBluetooth reported since the last call, as lines.
     fn take_trace(&mut self) -> Vec<String> {
-        self.inner
+        let mut lines: Vec<String> = self
+            .inner
             .stack_mut()
             .open
             .as_mut()
             .map(|o| std::mem::take(&mut o.trace))
-            .unwrap_or_default()
+            .unwrap_or_default();
+        lines.append(&mut self.inner.notes);
+        lines
     }
 }
 
@@ -1149,7 +1156,14 @@ mod tests {
     }
 
     /// Poll for `how_long`, printing what CoreBluetooth reports.
-    fn watch(radio: &mut CoreBluetoothRadio, how_long: Duration) -> Vec<RadioEvent> {
+    /// With `as_contacts`, every link counts as carrying a confirmed
+    /// contact session (the two Macs stand in for contacts), as the
+    /// transport would mark it.
+    fn watch(
+        radio: &mut CoreBluetoothRadio,
+        how_long: Duration,
+        as_contacts: bool,
+    ) -> Vec<RadioEvent> {
         let start = Instant::now();
         let mut seen = Vec::new();
         while start.elapsed() < how_long {
@@ -1160,6 +1174,9 @@ mod tests {
             for e in &events {
                 if matches!(e, RadioEvent::Up { .. } | RadioEvent::Down(_)) {
                     println!("{:7.1} s  {e:?}", start.elapsed().as_secs_f64());
+                }
+                if let (true, RadioEvent::Up { link, .. }) = (as_contacts, e) {
+                    radio.mark_contact(*link, true);
                 }
             }
             seen.extend(events);
@@ -1296,6 +1313,14 @@ mod tests {
     ///      means the block lasts until B is silent for an hour, and links
     ///      run from A to B only.
     ///
+    ///    In this mode every link counts as a contact's (the two Macs stand
+    ///    in for contacts, as the transport would mark them), so B should
+    ///    be served after every restart anyway: look for `central …
+    ///    served the token as a contact` lines, one per restart once B
+    ///    has been marked, each followed by an `Up`. B being refused
+    ///    instead (no such line, no `Up`) means the exemption doesn't
+    ///    reach B, for instance because its identifier changed.
+    ///
     ///    The `Central manager …`/`Peripheral manager …` lines after each
     ///    restart show the managers' first states (they must reach `On`
     ///    without `Off` or `Resetting` in between, or A forgets B).
@@ -1366,12 +1391,12 @@ mod tests {
         );
         assert_eq!(&got[..SIZE], &payload[..], "the other Mac's 4 KB, whole");
         // give the other Mac time to finish hearing ours
-        watch(&mut radio, Duration::from_secs(10));
+        watch(&mut radio, Duration::from_secs(10), false);
 
         // measurement 1: a new token, and what the other Mac's adverts do
         println!("new token");
         radio.advertise(random_token());
-        watch(&mut radio, Duration::from_secs(30));
+        watch(&mut radio, Duration::from_secs(30), false);
         // measurement 2: the same token for a long while
         if watch_min > 0 && restart_every > 0 {
             // measurement 5: restart now and then, and see who comes back
@@ -1379,7 +1404,7 @@ mod tests {
             let mut left = watch_min;
             while left > 0 {
                 let now = restart_every.min(left);
-                watch(&mut radio, Duration::from_secs(60 * now));
+                watch(&mut radio, Duration::from_secs(60 * now), true);
                 left -= now;
                 radio.stop();
                 radio.start(Mode::Contacts);
@@ -1388,7 +1413,7 @@ mod tests {
             }
         } else if watch_min > 0 {
             println!("watching {watch_min} min without a new token");
-            watch(&mut radio, Duration::from_secs(60 * watch_min));
+            watch(&mut radio, Duration::from_secs(60 * watch_min), false);
         }
         // measurement 4: one Mac stops, the other watches
         if stop_first {
@@ -1396,7 +1421,7 @@ mod tests {
             stop_and_check_freed(&mut radio);
         } else {
             println!("watching the other Mac stop");
-            watch(&mut radio, Duration::from_secs(30));
+            watch(&mut radio, Duration::from_secs(30), false);
             stop_and_check_freed(&mut radio);
         }
     }

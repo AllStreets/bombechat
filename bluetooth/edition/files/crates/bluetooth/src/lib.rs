@@ -54,7 +54,12 @@
 //!
 //! When a contact session on such a link ends, the contact is redialled
 //! outside the rounds, after [`REDIAL_FIRST_MS`], doubling to
-//! [`REDIAL_MAX_MS`], for as long as the link lives.
+//! [`REDIAL_MAX_MS`], for as long as the link lives. When the radio loses
+//! such a link, its contacts are redialled at once on the next link to
+//! the same advert, which gets no round of its own.
+//!
+//! The transport tells the radio which links carry a confirmed contact
+//! session ([`Radio::mark_contact`]), and when that contact is removed.
 //!
 //! The answering side builds a contact responder for each message 1 with
 //! its clock and its current and previous tokens. It answers only if the
@@ -154,6 +159,8 @@ mod queue;
 mod radio;
 mod route;
 mod session;
+#[cfg(test)]
+mod sim;
 mod transport;
 mod unsupported;
 pub use unsupported::{UnsupportedRadio, BLUETOOTH_NOT_SUPPORTED};

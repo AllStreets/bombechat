@@ -62,8 +62,12 @@
 //! can't open a link to this device until its address changes (a new
 //! identifier) or it has been silent an hour. Two Macs on the same Apple
 //! ID may keep the same identifier for each other across address
-//! changes; between them, links run the other way, from this device to
-//! them, while that way isn't refused in turn. The side that is refused
+//! changes, so they could refuse each other both ways; contacts are
+//! exempt. Once a link carries a confirmed contact session
+//! ([`Radio::mark_contact`]; only a contact can confirm one), the device
+//! at its other end is never refused and gets the current token whenever
+//! it subscribes, for [`EXEMPT_MS`] after its last confirmed session. A
+//! stranger gains nothing from this. The side that is refused
 //! waits for a new tag on the advert, or [`REFUSED_MS`], before asking
 //! again, so a refusal is not retried every few seconds.
 //!
@@ -118,6 +122,11 @@ pub const CLOSED_CAP: usize = 256;
 pub const CENTRAL_MEMORY_MS: u64 = 60 * 60_000;
 /// ...and at most this many are remembered.
 pub const CENTRALS_CAP: usize = 1024;
+/// A device that held a confirmed contact session with this one is never
+/// refused for this long after it last did...
+pub const EXEMPT_MS: u64 = 24 * 60 * 60_000;
+/// ...and at most this many are remembered (the oldest goes).
+pub const EXEMPT_CAP: usize = 256;
 /// A peripheral that took our subscription but sent no token (it heard
 /// this device under an earlier token) is not asked again until its
 /// advert shows a new tag, or this long.
@@ -294,6 +303,8 @@ struct Conn {
     tag: Option<Tag>,
     queue: VecDeque<Vec<u8>>,
     queued: usize,
+    /// Carries a confirmed session with a contact ([`Radio::mark_contact`]).
+    contact: bool,
 }
 
 /// A remembered advert this side won't connect to.
@@ -339,6 +350,13 @@ pub(crate) struct Adapter<S: Stack> {
     /// Remote centrals heard from, kept across `stop` (their connections
     /// may outlive it), forgotten when Bluetooth goes off.
     centrals: BTreeMap<PeerId, Heard>,
+    /// Devices that held a confirmed contact session with this one, by
+    /// identifier, and when they last did: never refused, for
+    /// [`EXEMPT_MS`] after that. Kept and cleared as `centrals` is.
+    exempt: BTreeMap<PeerId, u64>,
+    /// What happened that the hardware tests print.
+    #[cfg(test)]
+    pub notes: Vec<String>,
     next_link: u64,
     events: Vec<RadioEvent>,
 }
@@ -362,6 +380,9 @@ impl<S: Stack> Adapter<S> {
             closed: Vec::new(),
             epoch: 0,
             centrals: BTreeMap::new(),
+            exempt: BTreeMap::new(),
+            #[cfg(test)]
+            notes: Vec::new(),
             next_link: 1,
             events: Vec::new(),
         }
@@ -504,6 +525,7 @@ impl<S: Stack> Adapter<S> {
                 // central's connection may outlive that.)
                 if matches!(power, Power::Off | Power::Resetting) {
                     self.centrals.clear();
+                    self.exempt.clear();
                 }
             }
         }
@@ -567,6 +589,7 @@ impl<S: Stack> Adapter<S> {
                 tag,
                 queue: VecDeque::new(),
                 queued: 0,
+                contact: false,
             },
         );
         self.ids.insert(link, key);
@@ -646,6 +669,18 @@ impl<S: Stack> Adapter<S> {
         }))
     }
 
+    /// Exempt `peer` from now, the oldest exemption going if too many.
+    fn exempt_now(&mut self, peer: PeerId) {
+        let now = self.stack.now_ms();
+        if !self.exempt.contains_key(&peer) && self.exempt.len() >= EXEMPT_CAP {
+            let oldest = self.exempt.iter().min_by_key(|(_, t)| **t).map(|(p, _)| *p);
+            if let Some(p) = oldest {
+                self.exempt.remove(&p);
+            }
+        }
+        self.exempt.insert(peer, now);
+    }
+
     /// Accepted traffic from `central`: only this keeps its record fresh.
     fn touch(&mut self, central: PeerId) {
         let now = self.stack.now_ms();
@@ -660,15 +695,29 @@ impl<S: Stack> Adapter<S> {
             return;
         }
         let epoch = self.epoch;
-        let Some(h) = self.record(central) else {
-            return;
-        };
-        h.subscribed = true;
-        // the token at most once per connection, and only to a central
-        // first heard in this token's period; a refusal doesn't refresh
-        // the record, so the hour counts from accepted traffic
-        if h.served || h.epoch != epoch {
-            return;
+        // a contact is never refused: it gets the current token whenever
+        // it subscribes, as a central first heard now would
+        let contact = self.exempt.contains_key(&central);
+        match self.record(central) {
+            Some(h) => {
+                h.subscribed = true;
+                // otherwise, the token at most once per connection, and
+                // only to a central first heard in this token's period; a
+                // refusal doesn't refresh the record, so the hour counts
+                // from accepted traffic
+                if !contact && (h.served || h.epoch != epoch) {
+                    return;
+                }
+            }
+            None if contact => {}
+            None => return,
+        }
+        #[cfg(test)]
+        if contact {
+            self.notes.push(format!(
+                "central {:02x}{:02x}{:02x}{:02x} served the token as a contact",
+                central[0], central[1], central[2], central[3]
+            ));
         }
         let Some(token) = self.token else { return };
         if self
@@ -696,6 +745,7 @@ impl<S: Stack> Adapter<S> {
                 tag: None,
                 queue: VecDeque::new(),
                 queued: 0,
+                contact: false,
             },
         );
         self.ids.insert(link, key);
@@ -853,6 +903,18 @@ impl<S: Stack> Adapter<S> {
         self.closed.retain(|c| now < c.until_ms);
         self.centrals
             .retain(|_, h| h.subscribed || now.saturating_sub(h.last_ms) < CENTRAL_MEMORY_MS);
+        // a contact's session still on a link keeps its exemption fresh
+        let live: Vec<PeerId> = self
+            .conns
+            .iter()
+            .filter(|(_, c)| c.contact)
+            .map(|((_, p), _)| *p)
+            .collect();
+        for p in live {
+            self.exempt.insert(p, now);
+        }
+        self.exempt
+            .retain(|_, at| now.saturating_sub(*at) < EXEMPT_MS);
     }
 }
 
@@ -929,6 +991,21 @@ impl<S: Stack + Send> Radio for Adapter<S> {
         }
         if self.running {
             self.advertise_now();
+        }
+    }
+
+    fn mark_contact(&mut self, link: LinkId, contact: bool) {
+        let Some(&key) = self.ids.get(&link) else {
+            return;
+        };
+        let Some(conn) = self.conns.get_mut(&key) else {
+            return;
+        };
+        conn.contact = contact;
+        if contact {
+            self.exempt_now(key.1);
+        } else {
+            self.exempt.remove(&key.1);
         }
     }
 
@@ -1788,6 +1865,143 @@ mod tests {
             let ev = push(&mut a, [CbEvent::Subscribed(peer(2))]);
             let up = ev.iter().any(|e| matches!(e, RadioEvent::Up { .. }));
             assert_eq!(up, !remembered, "{power:?}");
+        }
+    }
+
+    /// Rotate to `token(n)` and have it confirmed.
+    fn rotate(a: &mut Radio_, n: u8) {
+        a.advertise(token(n));
+        push(a, [CbEvent::Advertising(true)]);
+    }
+
+    fn served(a: &mut Radio_, central: u8) -> bool {
+        let ev = push(a, [CbEvent::Subscribed(peer(central))]);
+        let up = ev.iter().any(|e| matches!(e, RadioEvent::Up { .. }));
+        push(a, [CbEvent::Unsubscribed(peer(central))]);
+        up
+    }
+
+    /// A contact (a link marked as carrying a confirmed contact session)
+    /// is served the new token after a rotation; a stranger with the
+    /// same kind of stable identifier is not.
+    #[test]
+    fn a_contact_gets_the_new_token_after_a_rotation_and_a_stranger_does_not() {
+        let mut a = running();
+        let stranger = link_from(&mut a, 2);
+        let contact = link_from(&mut a, 3);
+        a.mark_contact(contact, true);
+        a.disconnect(stranger); // as the transport does at rotation
+        push(
+            &mut a,
+            [
+                CbEvent::Unsubscribed(peer(2)),
+                CbEvent::Unsubscribed(peer(3)),
+            ],
+        );
+        rotate(&mut a, 9);
+        a.stack_mut().notes.clear();
+        assert!(!served(&mut a, 2), "the stranger is refused");
+        assert!(a.stack().notes.is_empty());
+        assert!(served(&mut a, 3), "the contact is served");
+        assert_eq!(
+            a.stack().notes.last(),
+            Some(&(peer(3), token_note(token(9))))
+        );
+        assert!(a.notes[0].contains("served the token as a contact"));
+        // and again after the next rotation
+        rotate(&mut a, 10);
+        assert!(served(&mut a, 3));
+        assert!(!served(&mut a, 2));
+    }
+
+    /// The exemption lasts 24 hours from the last confirmed session, kept
+    /// fresh while one is on a link, and ends when the contact is removed.
+    #[test]
+    fn an_exemption_lasts_a_day_after_the_last_contact_session() {
+        let mut a = running();
+        let contact = link_from(&mut a, 3);
+        a.mark_contact(contact, true);
+        // a day and more on a live contact link keeps it fresh
+        for _ in 0..26 {
+            a.stack_mut().now += 60 * 60_000;
+            a.poll();
+        }
+        let last = a.stack().now;
+        push(&mut a, [CbEvent::Unsubscribed(peer(3))]);
+        rotate(&mut a, 9);
+        // served as a contact whenever it comes back (which also keeps it
+        // remembered as a central), until a day after its last session
+        while a.stack().now + 50 * 60_000 < last + EXEMPT_MS {
+            a.stack_mut().now += 50 * 60_000;
+            a.poll();
+            assert!(served(&mut a, 3), "a contact at {}", a.stack().now);
+        }
+        a.stack_mut().now = last + EXEMPT_MS - 1;
+        a.poll();
+        assert!(served(&mut a, 3), "still a contact just under a day on");
+        a.stack_mut().now = last + EXEMPT_MS;
+        a.poll();
+        assert!(!served(&mut a, 3), "a day after the last session: refused");
+
+        // removing the contact ends it at once
+        let mut b = running();
+        let contact = link_from(&mut b, 3);
+        b.mark_contact(contact, true);
+        b.mark_contact(contact, false);
+        push(&mut b, [CbEvent::Unsubscribed(peer(3))]);
+        rotate(&mut b, 9);
+        assert!(!served(&mut b, 3));
+    }
+
+    /// Exemptions are kept and cleared as the refusal memory is: across a
+    /// stop and start and a permission change, not across Bluetooth off.
+    #[test]
+    fn exemptions_survive_a_restart_and_a_permission_change_but_not_bluetooth_off() {
+        for (what, kept) in [("restart", true), ("unauthorized", true), ("off", false)] {
+            let mut a = running();
+            let contact = link_from(&mut a, 3);
+            a.mark_contact(contact, true);
+            push(&mut a, [CbEvent::Unsubscribed(peer(3))]);
+            match what {
+                "restart" => {
+                    a.stop();
+                    a.start(Mode::Contacts);
+                    a.advertise(token(9));
+                    push(
+                        &mut a,
+                        [
+                            CbEvent::State(Role::Central, Power::On),
+                            CbEvent::State(Role::Peripheral, Power::On),
+                            CbEvent::ServiceAdded(true),
+                            CbEvent::Advertising(true),
+                        ],
+                    );
+                }
+                _ => {
+                    let power = if what == "off" {
+                        Power::Off
+                    } else {
+                        Power::Unauthorized
+                    };
+                    rotate(&mut a, 9);
+                    push(
+                        &mut a,
+                        [
+                            CbEvent::State(Role::Peripheral, power),
+                            CbEvent::State(Role::Peripheral, Power::On),
+                            CbEvent::ServiceAdded(true),
+                            CbEvent::Advertising(true),
+                        ],
+                    );
+                }
+            }
+            // after Off every central is new anyway (that memory is
+            // cleared too), so look at the exemptions themselves
+            if kept {
+                assert!(served(&mut a, 3), "{what}: kept");
+            } else {
+                assert!(a.exempt.is_empty(), "{what}: cleared");
+            }
         }
     }
 
