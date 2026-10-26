@@ -68,7 +68,19 @@ Building and checking:
     cargo test --workspace
     npm run check
 
-Builds land in `bluetooth/target`, apart from the root's.
+The app:
+
+    cd bluetooth/app/src-tauri
+    cargo tauri build
+
+Builds land in `bluetooth/target`, apart from the root's, so the app is
+`bluetooth/target/release/bundle/macos/Bombechat.app`. It has the same name
+as the airgapped app, so don't copy both into `/Applications`. Its store is
+in `~/Library/Application Support/app.bombechat.standard/`.
+
+Part 4 of the walkthrough at the root, `docs/testing/two-laptops.md`, tries
+it on two Macs: the hardware tests in `crates/bluetooth/src/macos.rs` with
+their six measurements, then the app step by step.
 
 The Mac's name: anyone in Bluetooth range can read it, Bombechat or not.
 People are told: "Anyone in Bluetooth range can read this Mac's name. Give
