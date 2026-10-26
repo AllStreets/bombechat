@@ -1,5 +1,60 @@
 /* Which build this machine is, as its plates name it: the top plate, the
    passphrase stand and the maker's plate on the back all read it from here.
    This is the standard build, the Bluetooth edition: this file is laid over
-   the root's app/ui/edition.css when bluetooth/ is synced. */
-:root{--build:'standard build'}
+   the root's app/ui/edition.css when bluetooth/ is synced. The maker's plate
+   says the radio it has. */
+:root{--build:'standard build';--radio:'bluetooth fitted'}
+
+/* The rest is the front's Bluetooth (edition.js draws it). Every part is one the machine already has: the switch is
+   Sound's and Light's knob on the same tile, who is in range is a readout on the bank's foot, and requests come as
+   slips in a tray above the outbox, stamped as the key check card is. These come after the page's own rules, so each
+   is written one step more particular than the rule it changes. */
+
+/* three switches of one size: the panel is cut wide enough that their engraving stays at 12px or more */
+.app .deck{grid-template-columns:minmax(470px,1.55fr) minmax(286px,322px) minmax(410px,1fr)}
+@media (max-width:1239px){.app .deck{grid-template-columns:minmax(0,1fr) 410px}
+  /* the sheet gives the panel its room from its foot's two fields, so the test stamps stay on the sheet */
+  .sheet .sh-foot{grid-template-columns:128px 128px 1fr}}
+.panel .mods{grid-template-columns:repeat(3,minmax(0,1fr))}
+/* what the radio can't do, typed on tape under its switch as the camera's is under Light's; set from the switch's
+   right edge, where the panel ends, and run to two lines when the reason is long */
+.mod.bt .btnote{left:auto;right:0;transform:rotate(-.8deg)}
+.mod.bt .btnote b{white-space:normal;width:max-content;text-align:left}
+
+/* the tray: a request on top of the outbox's own slips, and strangers on a slip under the room meter. While a request
+   waits, the outbox's "Nothing waiting to send" gives it the room */
+.row2>.col{display:flex;flex-direction:column;gap:8px;min-width:0}
+.intray{display:flex;flex-direction:column;gap:8px;min-width:0}
+.intray:empty{display:none}
+.col:has(#intray:not(:empty)) .outbox>.slip.empty:only-child{display:none}
+.col:has(#intray:not(:empty)) .outbox:has(>.slip.empty:only-child){display:none}
+.intray .slip{padding:8px 10px 9px}
+.intray .slip.empty{padding:7px 10px;font-size:12.5px}
+/* their name as they gave it, typed on a dotted rule to be corrected, as the key check card pencils a hello's */
+.intray .who{display:block;cursor:text}
+.intray .who .asks{display:block}
+.askname{font:inherit;color:inherit;text-shadow:0 0 .6px rgba(28,26,22,.45);background:transparent;border:0;border-bottom:1.2px dotted rgba(75,74,71,.8);border-radius:0;padding:0 1px 1px;margin-right:2px;max-width:100%}
+.askname:hover{border-bottom-style:solid}
+.askname:focus{outline:0;border-bottom:1.4px solid #2e2d2a;background:rgba(255,253,246,.7)}
+/* the key check's rule, typed where Accept would be; a refusal in the red the sheet types one in */
+.intray .rule{font-size:12px;line-height:1.3;color:#4b4a47;margin-top:6px}
+.intray .rule:empty,.intray .why:empty{display:none}
+.intray .why{font-size:12.5px;line-height:1.35;color:#7a3a30;margin-top:5px}
+/* the stamps, pressed on the slip as on the card: the same rubber, ink and tilt */
+.intray .stamps{display:flex;justify-content:flex-end;align-items:flex-end;gap:12px;margin-top:9px}
+.intray .rs{box-sizing:border-box;min-height:28px;font-size:14px}
+.intray .rs.ask{font-size:13.5px;padding:3px 8px 2px;min-height:26px;--tilt:-1.6deg}
+.intray .slip.near li:nth-child(2) .rs.ask{--tilt:1.2deg}
+/* strangers, by the label each goes under: typed, one a line, with the stamp or how the asking went beside it */
+.intray .slip.near small.hd{margin:0 0 3px}
+.intray .slip.near ul{list-style:none}
+.intray .slip.near li{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:33px}
+.intray .slip.near li+li{border-top:1px dotted rgba(107,97,80,.45)}
+.intray .slip.near .lab{letter-spacing:.08em}
+.intray .slip.near li small{margin:0;text-align:right}
+.intray .slip.near small.bad{color:#7a3a30}
+.intray .slip.near>small:last-child{margin-top:4px}
+
+/* a station added from a request, not yet confirmed by their machine */
+.stn .nc{font-weight:400;color:#7a3a30}
+

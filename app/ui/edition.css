@@ -2,5 +2,5 @@
    passphrase stand and the maker's plate on the back all read it from here.
    This is the airgapped build. The Bluetooth edition (bluetooth/) lays its own
    copy of this file over this one, so the two share every page and differ
-   only in this line. */
-:root{--build:'airgapped build'}
+   only in this line: the build's name, and the radio its maker's plate says it has. */
+:root{--build:'airgapped build';--radio:'no radio fitted'}

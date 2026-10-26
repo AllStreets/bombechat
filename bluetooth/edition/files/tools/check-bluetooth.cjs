@@ -1,20 +1,24 @@
 // The Bluetooth edition's check of its own parts, in a plain browser over the simulator (npm run check runs it after
 // the shared checks):
 //   node tools/check-bluetooth.cjs
-// Writes checks/app-ui/bluetooth/: 2x crops of the front's Bluetooth tile at each switch position and the settings
-// card's Bluetooth row at 1024, 1440 and 1728.
-// Fails on page errors, a request to another host, and when: the settings card has no live Bluetooth row (Off,
-// Contacts, Open; Off by default, kept across pages, its plug dragged on the machine landing where it is let go) or
-// still shows the blanking plate; New contacts need a key check
-// is held instead of live; the Bluetooth channel doesn't say the switch's word ('off', 'contacts only', 'open to
-// requests'), or 'unavailable: ' and why, and its own word again once the radio works; the front's Bluetooth tile
-// doesn't follow (its jewel lit only while the radio works, its title saying the state, who is near and the requests
-// waiting); Marisol isn't counted in range or the stranger isn't offered at Open; the stranger's request doesn't arrive
-// as a request event and in requests(); accepting is not refused with the key check's sentence while it is On, or
-// doesn't add her once it is Off (requestGone, unconfirmed, then contactConfirmed and in range); declining doesn't
-// forget the request and keep nothing; asking isn't refused at Contacts with the switch's sentence, or doesn't go by
-// label at Open (requested delivered, then accepted with her id); a send by Bluetooth at Off isn't refused in so many
-// words; or the switch at Off doesn't end requests and empty who is near.
+// Writes checks/app-ui/bluetooth/: 2x crops of the front's panel in every Bluetooth state (off, contacts, open,
+// request, request-held, requests-two, accepted, asking, locked, unavailable, unavailable-long) at 1024, 1440 and 1728
+// (x2-<w>-<state>.png, with the deck, top bar and bank's foot for some), and the settings card's Bluetooth row.
+// Fails on page errors, a request to another host, text under 12px in the Bluetooth parts, a page that scrolls
+// sideways, and when: the settings card has no live Bluetooth row (Off, Contacts, Open; Off by default, kept across
+// pages, its plug dragged on the machine landing where it is let go), still shows the blanking plate, or lacks the
+// Mac-name note; New contacts need a key check is held instead of live; the front still shows the blanking plate or
+// Not fitted; the Bluetooth switch (a knob like Sound's and Light's) at each position, by keyboard and click, doesn't
+// set the setting, the channel's word, the jewel (lit only while the radio works), the top plate and who is in range
+// (contacts and strangers, on the bank's foot); a send at Off isn't refused in so many words; a request doesn't arrive
+// as a slip (the name as they gave it, editable, Escape putting it back, the key's first four digits, the time, Accept
+// and Decline, in Tab order), an empty name isn't refused on the slip, accepting doesn't keep them unchecked under the
+// corrected name with their station marked not confirmed until confirmed and the card laying out the number to
+// compare, unstamped; declining doesn't keep nothing and bring the next; the key check On doesn't type the node's
+// sentence in place of Accept (and once on the strangers' slip when no request says it); asking a stranger isn't
+// refused at Contacts, or doesn't show asking, delivered, not delivered and accepted; Off doesn't end requests,
+// strangers and who is in range; the locked machine doesn't say it waits for the passphrase; the radio's reason for
+// not working isn't on the tape under the switch (kept on the panel and off the room meter), or working again isn't said.
 const path = require('path'), fs = require('fs');
 const { chromium } = require('playwright');
 const { start } = require('./serve.cjs');
@@ -26,6 +30,7 @@ const PORT = 4813;
 const url = (page, q) => `http://127.0.0.1:${PORT}/app/ui/${page}` + (q ? '?' + q : '');
 const MEET_FIRST = 'Meet them and compare keys first: this machine only adds people checked in person.';
 const NEED_OPEN = 'Requests go out only with Bluetooth set to Open.';
+const GROUP_NOTE = 'Anyone in Bluetooth range can read this Mac\'s name. Give it a plain name that doesn\'t say who you are, in System Settings, General, About.';
 
 (async () => {
   const server = await start(PORT);
@@ -62,11 +67,32 @@ const NEED_OPEN = 'Requests go out only with Bluetooth set to Open.';
   const call = (p, f, ...a) => p.evaluate(([f, a]) => window.__bt[f](...a).then(v => ({ ok: v }), e => ({ err: String(e) })), [f, a]);
   const seen = (p, name) => p.evaluate(n => window.__seen.filter(e => e[0] === n).map(e => e[1]), name);
   const said = async p => (await seen(p, 'channel')).filter(c => c.channel === 'bluetooth').map(c => c.state);
-  const tile = p => p.evaluate(() => { const t = document.querySelector('.mod .blank').closest('.mod'), j = t.querySelector('.jewel');
-    return { state: t.dataset.bluetooth, title: t.title, lit: !j.classList.contains('off'), opacity: j.style.opacity }; });
+  // the face as it stands: the tile (its state, jewel, title, the tape under it, the knob), the top plate, who is in
+  // range, the tray and the stations
+  const face = p => p.evaluate(() => { const t = document.querySelector('.mod.bt'), j = t.querySelector('.jewel'), k = document.getElementById('k3'), near = document.getElementById('btnear');
+    const slip = document.querySelector('#intray .slip.ask'), ns = document.querySelector('#neartray .slip.near');
+    return { state: t.dataset.bluetooth, title: t.title, lit: !j.classList.contains('off'), note: t.querySelector('#btnote b').textContent, knob: k.getAttribute('aria-valuenow'), knobText: k.getAttribute('aria-valuetext'),
+      top: document.getElementById('radio').textContent, near: near.hidden ? null : [...near.querySelectorAll('.odo')].map(o => o.textContent),
+      request: slip && { id: +slip.dataset.id, name: slip.querySelector('.askname').value, small: slip.querySelector('small').textContent, accept: !slip.querySelector('.rs.ok').hidden, decline: !slip.querySelector('.rs.no').hidden,
+        rule: slip.querySelector('.rule').textContent, why: slip.querySelector('.why').textContent, label: slip.getAttribute('aria-label'), gone: slip.classList.contains('gone') },
+      more: [...document.querySelectorAll('#intray .slip.empty')].map(e => e.textContent),
+      strangers: ns && [...ns.querySelectorAll('li')].map(li => ({ label: li.dataset.label, ask: !!li.querySelector('button'), said: (li.querySelector('small') || {}).textContent || '' })),
+      strangersRule: ns && (ns.querySelector('.rule') || {}).textContent || '',
+      stations: [...document.querySelectorAll('.stn[data-contact]')].map(s => ({ id: +s.dataset.contact, name: s.querySelector('.holder span').firstChild.nodeValue, mark: (s.querySelector('.nc') || {}).textContent || '', lit: !s.querySelector('.jewel').classList.contains('off') })),
+      card: { who: document.querySelector('.menu h2 span').textContent, name: (document.querySelector('.menu .pfrom') || {}).textContent || '', groups: document.querySelectorAll('.menu .sn li').length, stamp: !!document.querySelector('.menu .gstmp'), note: document.querySelector('.menu .note').textContent },
+      said: document.getElementById('said').textContent, blank: !!document.querySelector('.mod .blank, .pl.red') }; });
+  // every piece of text in the Bluetooth parts, with the size it is drawn at (the knob's engraving through its scale)
+  const smallText = p => p.evaluate(() => { const out = [];
+    for (const root of document.querySelectorAll('.mod.bt, #intray, #neartray, #btnear, #radio, .row3')) {
+      const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      while (w.nextNode()) { const n = w.currentNode, el = n.parentElement; if (!n.nodeValue.trim() || !el.getBoundingClientRect().width) continue;
+        let px = parseFloat(getComputedStyle(el).fontSize); if (el instanceof SVGElement) { const m = el.getScreenCTM(); px = parseFloat(el.getAttribute('font-size')) * Math.hypot(m.a, m.b); }
+        if (px < 11.75) out.push(`${n.nodeValue.trim()} ${px.toFixed(1)}px`); } }
+    return out; });
   const setting = (p, id, v) => p.evaluate(([id, v]) => window.__bt.setSetting(id, v), [id, v]);
-  const crop = async (p, name) => { const b = await p.locator('.mod .blank').evaluate(e => { const r = e.closest('.mod').getBoundingClientRect(); return { x: r.x - 12, y: r.y - 12, width: r.width + 24, height: r.height + 24 }; });
-    await p.screenshot({ path: path.join(out, name), clip: b }); };
+  const shot = async (p, name, w) => { const b = await p.evaluate(() => { const r = document.querySelector('.panel').getBoundingClientRect(); return { x: r.x - 10, y: r.y + scrollY - 10, width: r.width + 20, height: r.height + 20 }; });
+    await p.screenshot({ path: path.join(out, `x2-${w}-${name}.png`), clip: b, fullPage: true }); };
+  const wait = (p, f, arg) => p.waitForFunction(f, arg, { timeout: 8000 }).catch(() => {});
 
   // 1. the settings card: a live Bluetooth row, Off by default, and the key check live
   {
@@ -78,7 +104,8 @@ const NEED_OPEN = 'Requests go out only with Bluetooth set to Open.';
     await p.waitForFunction(() => window.__ready, null, { timeout: 90000 });
     const row = await p.evaluate(() => { const r = document.querySelector('.row[data-id="bluetooth"]');
       return r && { jacks: [...r.querySelectorAll('.jk')].map(b => b.textContent.trim()), on: +r.querySelector('.jk[aria-checked="true"]').dataset.i, disabled: [...r.querySelectorAll('.jk')].some(b => b.disabled),
-        blank: !!document.querySelector('.notfitted'), small: [...document.querySelectorAll('.grp')].find(g => g.firstChild.textContent === 'Bluetooth').querySelector('small').textContent }; });
+        blank: !!document.querySelector('.notfitted'), small: [...document.querySelectorAll('.grp')].find(g => g.firstChild.textContent === 'Bluetooth').querySelector('small').textContent,
+        note: ([...document.querySelectorAll('.grp')].find(g => g.firstChild.textContent === 'Bluetooth').nextElementSibling || {}).textContent }; });
     if (!row) fail('settings: no Bluetooth row');
     else {
       if (JSON.stringify(row.jacks) !== JSON.stringify(['Off', 'Contacts', 'Open'])) fail(`settings: the Bluetooth jacks are ${JSON.stringify(row.jacks)}`);
@@ -86,6 +113,7 @@ const NEED_OPEN = 'Requests go out only with Bluetooth set to Open.';
       if (row.disabled) fail('settings: the Bluetooth row is taped');
       if (row.blank) fail('settings: the blanking plate is still there');
       if (row.small !== '1 plug') fail(`settings: the Bluetooth group says ${JSON.stringify(row.small)}`);
+      if (row.note !== GROUP_NOTE) fail(`settings: the Bluetooth group's note is ${JSON.stringify(row.note)}`);
     }
     if (await p.evaluate(() => window.__edition && window.__edition.keyCheckHeld) !== false) fail('settings: the page says the key check is held on this build');
     // drag the Bluetooth plug on the machine itself, from Off to Open, then back to Off
@@ -125,127 +153,229 @@ const NEED_OPEN = 'Requests go out only with Bluetooth set to Open.';
     }
   }
 
-  // 2. Off: the channel and the tile say so; a send by Bluetooth is refused in so many words; nobody near
+
+  // 2. the switch at every position, by keyboard and by click: knob, setting, channel, jewel, top plate, who is in
+  //    range; nothing of the airgapped plate left
   {
     const ctx = await machine(null);
-    const p = await front(ctx, 'off');
+    const p = await front(ctx, 'switch');
+    let f = await face(p);
+    if (f.blank) fail('switch: the blanking plate or the Not fitted plate is still on the front');
+    if (f.state !== 'off' || f.lit || f.knob !== '0' || f.top !== 'Bluetooth off' || f.near || f.title !== 'Bluetooth: off.') fail(`switch: at Off the face shows ${JSON.stringify(f)}`);
     const ch = (await call(p, 'channels')).ok.find(c => c.channel === 'bluetooth');
-    if (!ch || ch.state !== 'off' || 'rate' in ch) fail(`off: channels() says ${JSON.stringify(ch)}`);
-    const t = await tile(p);
-    if (t.state !== 'off' || t.lit || t.opacity !== '0.25' || t.title !== 'Bluetooth: off.') fail(`off: the tile shows ${JSON.stringify(t)}`);
-    await crop(p, 'x2-1440-tile-off.png');
-    const peers = (await call(p, 'peers')).ok;
-    if (JSON.stringify(peers) !== JSON.stringify({ contacts: [], strangers: 0 })) fail(`off: peers ${JSON.stringify(peers)}`);
-    if ((await call(p, 'strangers')).ok.length) fail('off: a stranger is offered');
-    await call(p, 'send', [1], 'hi', 'bluetooth');
-    await p.waitForTimeout(200);
+    if (!ch || ch.state !== 'off' || 'rate' in ch) fail(`switch: channels() says ${JSON.stringify(ch)}`);
+    const want = [[1, 'contacts only', 'Bluetooth to contacts'], [2, 'open to requests', 'Bluetooth open'], [0, 'off', 'Bluetooth off']];
+    await p.focus('#k3');
+    for (const [v, word, top] of want) {
+      if (v === 0) await p.keyboard.press('Home'); else await p.keyboard.press('ArrowRight');
+      await wait(p, w => document.querySelector('.mod.bt').dataset.bluetooth === w, word);
+      await p.waitForTimeout(400);
+      f = await face(p);
+      const kept = (await call(p, 'settings')).ok.bluetooth;
+      if (f.knob !== String(v) || kept !== v || f.state !== word || f.top !== top || f.lit !== (v > 0) || !!f.near !== (v > 0)) fail(`switch: at ${v} by keyboard the face shows ${JSON.stringify({ ...f, kept })}`);
+      if (v > 0 && JSON.stringify(f.near) !== JSON.stringify(['01', '01'])) fail(`switch: who is in range reads ${JSON.stringify(f.near)}`);
+    }
+    await p.click('#k3'); await wait(p, () => document.querySelector('.mod.bt').dataset.bluetooth === 'contacts only');
+    // (the knob says its new reading once its turn has drawn, 330 ms)
+    await wait(p, () => document.getElementById('k3').getAttribute('aria-valuenow') === '1');
+    if ((await face(p)).knob !== '1') fail('switch: a click does not turn it to Contacts');
+    // Marisol in range: her station's jewel lit (once the stations are the contacts)
+    if ((await call(p, 'peers')).ok.contacts[0] !== 1) fail('switch: Marisol not in range');
+    // a send by Bluetooth at Off is refused in so many words
+    await setting(p, 'bluetooth', 0); await p.waitForTimeout(200);
+    await call(p, 'send', [1], 'hi', 'bluetooth'); await p.waitForTimeout(200);
     const s = await said(p);
-    if (JSON.stringify(s.slice(-2)) !== JSON.stringify(['not sent: bluetooth is off', 'off'])) fail(`off: a send said ${JSON.stringify(s)}`);
-    if (!(await seen(p, 'outbox')).some(o => o.state === 'failed')) fail('off: the send did not fail');
+    if (JSON.stringify(s.slice(-2)) !== JSON.stringify(['not sent: bluetooth is off', 'off'])) fail(`switch: a send at Off said ${JSON.stringify(s)}`);
+    if ((await face(p)).state !== 'off') fail('switch: the refusal stuck on the tile');
+    const small = await smallText(p);
+    if (small.length) fail(`switch: text under 12px: ${small.join('; ')}`);
     await ctx.close();
   }
 
-  // 3. Contacts: Marisol in range, no stranger offered, asking refused with the switch's sentence
+  // 3. a request arrives at Open, the key check Off: a slip with the name as they gave it, the key's first four
+  //    digits, the time, Accept and Decline; Escape puts back a corrected name; accepted under the corrected name, it
+  //    is kept unchecked, marked not confirmed on its station until confirmed, and the card lays out the number
   {
-    const ctx = await machine({ bluetooth: 1, inperson: 0 });
-    const p = await front(ctx, 'contacts');
-    const t = await tile(p);
-    if (t.state !== 'contacts only' || !t.lit || t.opacity !== '' || t.title !== 'Bluetooth: contacts only. 1 contact in range, 1 stranger seen lately.') fail(`contacts: the tile shows ${JSON.stringify(t)}`);
-    await crop(p, 'x2-1440-tile-contacts.png');
-    const peers = (await call(p, 'peers')).ok;
-    if (JSON.stringify(peers.contacts) !== '[1]') fail(`contacts: Marisol not in range: ${JSON.stringify(peers)}`);
-    if ((await call(p, 'strangers')).ok.length) fail('contacts: a stranger is offered');
-    const r = await call(p, 'sendRequest', 'K7MX');
-    if (r.err !== NEED_OPEN) fail(`contacts: asking said ${JSON.stringify(r)}`);
-    await ctx.close();
-  }
-
-  // 4. Open, key check On: the stranger asks; accepting is refused in so many words, and the request stays; then Off
-  //    the key check and she is added, unconfirmed until her own answer, then in range
-  {
-    const ctx = await machine({ bluetooth: 2 });
-    const p = await front(ctx, 'open');
-    if (JSON.stringify((await call(p, 'strangers')).ok) !== '["K7MX"]') fail('open: the stranger is not offered');
-    if ((await call(p, 'peers')).ok.strangers !== 1) fail('open: the stranger is not counted');
-    await p.evaluate(() => window.__sim.bluetoothAsk());
-    await p.waitForTimeout(100);
-    const asked = await seen(p, 'request');
-    if (asked.length !== 1 || asked[0].name !== 'Ines Duarte' || !/^[0-9a-f]{16}$/.test(asked[0].fingerprint) || !/^(\d{5} ){11}\d{5}$/.test(asked[0].safety)) fail(`open: the request came as ${JSON.stringify(asked)}`);
-    const listed = (await call(p, 'requests')).ok;
-    if (JSON.stringify(listed) !== JSON.stringify(asked)) fail(`open: requests() lists ${JSON.stringify(listed)}`);
-    const t = await tile(p);
-    if (t.title !== 'Bluetooth: open to requests. 1 contact in range, 1 stranger seen lately. 1 request waits.') fail(`open: the tile's title is ${JSON.stringify(t.title)}`);
-    await crop(p, 'x2-1440-tile-open.png');
-    const refused = await call(p, 'acceptRequest', asked[0].id, 'Ines');
-    if (refused.err !== MEET_FIRST) fail(`open: accepting with the key check on said ${JSON.stringify(refused)}`);
-    if ((await call(p, 'requests')).ok.length !== 1) fail('open: the refused request did not stay');
-    const ask = await call(p, 'sendRequest', 'K7MX');
-    if (ask.err !== MEET_FIRST) fail(`open: asking with the key check on said ${JSON.stringify(ask)}`);
-    await setting(p, 'inperson', 0);
-    const id = (await call(p, 'acceptRequest', asked[0].id, ' Ines from the market ')).ok;
-    if (id !== 3) fail(`open: accepting gave ${JSON.stringify(id)}`);
-    const right = await p.evaluate(() => window.__seen.filter(e => e[0] === 'requestGone').map(e => e[1].id));
-    if (JSON.stringify(right) !== JSON.stringify([asked[0].id])) fail(`open: requestGone ${JSON.stringify(right)}`);
-    if (JSON.stringify((await call(p, 'unconfirmed')).ok) !== '[3]') fail('open: the accept is not unconfirmed at first');
+    const ctx = await machine({ bluetooth: 2, inperson: 0 });
+    const p = await front(ctx, 'accept');
+    await p.evaluate(() => window.__sim.bluetoothAsk()); await p.waitForTimeout(150);
+    const [q] = await seen(p, 'request');
+    let f = await face(p);
+    const fp = q && q.fingerprint.slice(0, 4).toUpperCase();
+    if (!f.request || f.request.name !== 'Ines Duarte' || !f.request.small.startsWith(`name as they gave it, key ${fp}, `) || !/, \d\d\.\d\d$/.test(f.request.small) || !f.request.accept || !f.request.decline || f.request.rule || f.request.label !== 'Ines Duarte asks to connect')
+      fail(`accept: the request slip shows ${JSON.stringify(f.request)}`);
+    if (f.said !== 'Ines Duarte asks to connect.') fail(`accept: the top bar said ${JSON.stringify(f.said)}`);
+    if (!/1 request waits\.$/.test(f.title)) fail(`accept: the tile's title is ${JSON.stringify(f.title)}`);
+    if (JSON.stringify(f.strangers) !== JSON.stringify([{ label: 'K7MX', ask: true, said: '' }])) fail(`accept: strangers ${JSON.stringify(f.strangers)}`);
+    // keyboard: the name, then Accept, then Decline
+    await p.focus('#intray .askname');
+    await p.keyboard.press('End'); await p.keyboard.type('s');
+    await p.keyboard.press('Escape');
+    if ((await face(p)).request.name !== 'Ines Duarte') fail('accept: Escape did not put back the name as they gave it');
+    await p.keyboard.press('Tab');
+    if (await p.evaluate(() => document.activeElement.textContent) !== 'Accept') fail('accept: Tab from the name does not reach Accept');
+    await p.keyboard.press('Tab');
+    if (await p.evaluate(() => document.activeElement.textContent) !== 'Decline') fail('accept: Tab from Accept does not reach Decline');
+    // an empty name is refused on the slip
+    await p.fill('#intray .askname', ' ');
+    await p.click('#intray .rs.ok'); await p.waitForTimeout(100);
+    if ((await face(p)).request.why !== 'Write their name first.') fail('accept: an empty name was not refused on the slip');
+    await p.fill('#intray .askname', 'Ines from the market');
+    await p.press('#intray .askname', 'Enter');
+    await wait(p, () => !document.querySelector('#intray .slip.ask:not(.gone)'));
+    await p.waitForTimeout(600);
+    f = await face(p);
     const added = (await call(p, 'contacts')).ok.find(c => c.id === 3);
-    if (!added || added.name !== 'Ines from the market' || added.checked) fail(`open: the contact kept is ${JSON.stringify(added)}`);
+    if (!added || added.name !== 'Ines from the market' || added.checked) fail(`accept: kept ${JSON.stringify(added)}`);
+    if (JSON.stringify((await seen(p, 'requestGone')).map(g => g.id)) !== JSON.stringify([q.id])) fail('accept: no requestGone');
+    if (f.request) fail('accept: the slip stayed');
+    const st = f.stations.find(s => s.id === 3);
+    if (!st || st.name !== 'Ines from the market' || st.mark !== 'not confirmed, ') fail(`accept: her station shows ${JSON.stringify(f.stations)}`);
+    if (f.card.who !== 'by Bluetooth' || f.card.name !== 'Ines from the market' || f.card.groups !== 12 || f.card.stamp || !/^Added, not yet checked\./.test(f.card.note)) fail(`accept: the card shows ${JSON.stringify(f.card)}`);
+    if (await p.evaluate(() => document.activeElement && document.activeElement.id) !== 'k3' && !(await p.evaluate(() => !!document.activeElement.closest('#neartray')))) fail('accept: focus was lost when the slip left');
     await p.waitForTimeout(1500);
-    if (JSON.stringify(await seen(p, 'contactConfirmed')) !== JSON.stringify([{ contact: 3 }])) fail('open: not confirmed once');
-    if ((await call(p, 'unconfirmed')).ok.length) fail('open: still unconfirmed');
-    const near = (await call(p, 'peers')).ok;
-    if (JSON.stringify(near) !== JSON.stringify({ contacts: [1, 3], strangers: 0 })) fail(`open: who is near after: ${JSON.stringify(near)}`);
-    if ((await call(p, 'strangers')).ok.length) fail('open: Ines is still a stranger');
-    // the radio can't work, then works again
-    await p.evaluate(() => window.__sim.bluetoothUnavailable('Bluetooth is off in System Settings.'));
-    await p.waitForTimeout(100);
-    const down = await tile(p);
-    if (down.state !== 'unavailable: Bluetooth is off in System Settings.' || down.lit || down.title !== 'Bluetooth is off in System Settings.') fail(`open: unavailable shows ${JSON.stringify(down)}`);
-    if ((await call(p, 'channels')).ok.find(c => c.channel === 'bluetooth').state !== down.state) fail('open: channels() does not say it is unavailable');
-    await crop(p, 'x2-1440-tile-unavailable.png');
-    await p.evaluate(() => window.__sim.bluetoothAvailable());
-    await p.waitForTimeout(100);
-    const up = await tile(p);
-    if (up.state !== 'open to requests' || !up.lit) fail(`open: available again shows ${JSON.stringify(up)}`);
+    f = await face(p);
+    const st2 = f.stations.find(s => s.id === 3);
+    if (!st2 || st2.mark || !st2.lit) fail(`accept: once confirmed her station shows ${JSON.stringify(st2)}`);
+    if (JSON.stringify(f.near) !== JSON.stringify(['02', '00'])) fail(`accept: who is in range reads ${JSON.stringify(f.near)}`);
     await ctx.close();
   }
 
-  // 5. Open: a decline forgets the request and keeps nothing; asking goes by label and she accepts; Off ends it all
+  // 4. declined: the slip leaves, nothing is kept, and answering it after says it is gone
   {
     const ctx = await machine({ bluetooth: 2, inperson: 0 });
     const p = await front(ctx, 'decline');
-    await p.evaluate(() => window.__sim.bluetoothAsk());
-    await p.waitForTimeout(100);
-    const [q] = await seen(p, 'request');
-    await call(p, 'declineRequest', q.id);
-    await p.waitForTimeout(100);
-    if (JSON.stringify((await seen(p, 'requestGone')).map(g => g.id)) !== JSON.stringify([q.id])) fail('decline: no requestGone');
-    if ((await call(p, 'requests')).ok.length) fail('decline: the request is still listed');
+    await p.evaluate(() => { window.__sim.bluetoothAsk(); window.__sim.bluetoothAsk('Tomas Reyes'); }); await p.waitForTimeout(150);
+    let f = await face(p);
+    if (JSON.stringify(f.more) !== '["and 1 more asking"]') fail(`decline: two requests show ${JSON.stringify(f.more)}`);
+    const first = f.request.id;
+    await p.click('#intray .rs.no');
+    await wait(p, id => { const s = document.querySelector('#intray .slip.ask:not(.gone)'); return s && +s.dataset.id !== id; }, first);
+    await p.waitForTimeout(600);
+    f = await face(p);
+    if (!f.request || f.request.name !== 'Tomas Reyes' || f.more.length) fail(`decline: the next request shows ${JSON.stringify(f)}`);
     if ((await call(p, 'contacts')).ok.some(c => c.id === 3)) fail('decline: she was kept');
-    const gone = await call(p, 'acceptRequest', q.id, 'Ines');
-    if (gone.err !== 'That request is no longer waiting.') fail(`decline: accepting after said ${JSON.stringify(gone)}`);
-    const nope = await call(p, 'sendRequest', 'AAAA');
-    if (nope.err !== 'They are no longer in range.') fail(`ask: an unknown label said ${JSON.stringify(nope)}`);
-    await call(p, 'sendRequest', 'K7MX');
-    await p.waitForTimeout(2800);
-    const how = await seen(p, 'requested');
-    if (JSON.stringify(how) !== JSON.stringify([{ label: 'K7MX', state: 'delivered', contact: null }, { label: 'K7MX', state: 'accepted', contact: 3 }])) fail(`ask: requested ${JSON.stringify(how)}`);
-    if (!(await call(p, 'contacts')).ok.some(c => c.id === 3)) fail('ask: she was not added');
-    // a second stranger's request waits, then Off ends it and empties who is near
-    await p.evaluate(() => window.__sim.bluetoothAsk());
-    await setting(p, 'bluetooth', 0);
-    await p.waitForTimeout(200);
-    const t = await tile(p);
-    if (t.state !== 'off' || t.lit) fail(`off again: the tile shows ${JSON.stringify(t)}`);
-    if (JSON.stringify((await call(p, 'peers')).ok) !== JSON.stringify({ contacts: [], strangers: 0 })) fail('off again: someone is near');
-    if ((await call(p, 'requests')).ok.length) fail('off again: a request still waits');
+    if (f.said !== 'Declined. Nothing of the request was kept.') fail(`decline: the top bar said ${JSON.stringify(f.said)}`);
+    if ((await call(p, 'acceptRequest', first, 'Ines')).err !== 'That request is no longer waiting.') fail('decline: accepting after was not refused');
     await ctx.close();
   }
 
-  // 6. the tile at each laptop size, Open with someone near
-  for (const [w, h] of [[1024, 768], [1440, 900], [1728, 1117]]) {
+  // 5. the key check On: accepting is refused by the setting: the node's sentence typed in place of Accept, Decline
+  //    kept; Enter in the name does nothing; and if the setting changes elsewhere the refusal turns the slip over
+  {
+    const ctx = await machine({ bluetooth: 2, inperson: 1 });
+    const p = await front(ctx, 'held');
+    await p.evaluate(() => window.__sim.bluetoothAsk()); await p.waitForTimeout(150);
+    let f = await face(p);
+    if (!f.request || f.request.accept || !f.request.decline || f.request.rule !== MEET_FIRST) fail(`held: the slip shows ${JSON.stringify(f.request)}`);
+    if (JSON.stringify(f.strangers) !== JSON.stringify([{ label: 'K7MX', ask: false, said: '' }]) || f.strangersRule) fail(`held: strangers ${JSON.stringify([f.strangers, f.strangersRule])}`);
+    await p.press('#intray .askname', 'Enter'); await p.waitForTimeout(200);
+    if ((await call(p, 'requests')).ok.length !== 1 || (await call(p, 'contacts')).ok.some(c => c.id === 3)) fail('held: Enter accepted');
+    // the setting turned Off and On again behind the page's back: Accept shows, is refused, and the slip turns over
+    await setting(p, 'inperson', 0);
+    await p.evaluate(() => dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }))); await p.waitForTimeout(200);
+    if (!(await face(p)).request.accept) fail('held: the key check Off again does not bring Accept back');
+    await setting(p, 'inperson', 1);
+    await p.click('#intray .rs.ok'); await p.waitForTimeout(200);
+    f = await face(p);
+    if (f.request.accept || f.request.rule !== MEET_FIRST) fail(`held: the refusal did not turn the slip over: ${JSON.stringify(f.request)}`);
+    // with no request on show, the strangers' slip says it once
+    await p.click('#intray .rs.no'); await p.waitForTimeout(700);
+    if ((await face(p)).strangersRule !== MEET_FIRST) fail('held: the strangers slip does not say why there is nothing to ask');
+    const small = await smallText(p);
+    if (small.length) fail(`held: text under 12px: ${small.join('; ')}`);
+    await ctx.close();
+  }
+
+  // 6. asking strangers: refused at Contacts in so many words; at Open by label, delivered then accepted (she is
+  //    added); one not delivered says so
+  {
+    const ctx = await machine({ bluetooth: 1, inperson: 0 });
+    const p = await front(ctx, 'ask');
+    if ((await face(p)).strangers) fail('ask: strangers are shown at Contacts');
+    if ((await call(p, 'sendRequest', 'K7MX')).err !== NEED_OPEN) fail('ask: asking at Contacts was not refused with the switch sentence');
+    await setting(p, 'bluetooth', 2); await p.waitForTimeout(300);
+    await p.evaluate(() => window.__sim.bluetoothStrangers(['P2QD', 'W9HT'], ['W9HT'])); await p.waitForTimeout(200);
+    let f = await face(p);
+    if (JSON.stringify(f.strangers.map(s => s.label)) !== '["K7MX","P2QD","W9HT"]' || f.strangers.some(s => !s.ask)) fail(`ask: strangers ${JSON.stringify(f.strangers)}`);
+    if (JSON.stringify(f.near) !== JSON.stringify(['01', '03'])) fail(`ask: who is in range reads ${JSON.stringify(f.near)}`);
+    await p.click('li[data-label="W9HT"] .rs');
+    await p.focus('li[data-label="K7MX"] .rs'); await p.keyboard.press('Enter');
+    await p.waitForTimeout(150);
+    f = await face(p);
+    if (f.strangers.find(s => s.label === 'K7MX').said !== 'asking') fail(`ask: asking shows ${JSON.stringify(f.strangers)}`);
+    await p.waitForTimeout(700);
+    f = await face(p);
+    if (f.strangers.find(s => s.label === 'K7MX').said !== 'asked, delivered' || f.strangers.find(s => s.label === 'W9HT').said !== 'not delivered') fail(`ask: delivered shows ${JSON.stringify(f.strangers)}`);
+    await p.waitForTimeout(2200);
+    f = await face(p);
+    if (f.strangers.find(s => s.label === 'K7MX').said !== 'accepted, added') fail(`ask: accepted shows ${JSON.stringify(f.strangers)}`);
+    if (JSON.stringify((await seen(p, 'requested')).filter(r => r.label === 'K7MX')) !== JSON.stringify([{ label: 'K7MX', state: 'delivered', contact: null }, { label: 'K7MX', state: 'accepted', contact: 3 }])) fail('ask: requested events');
+    if (!f.stations.some(s => s.id === 3 && s.name === 'Ines Duarte' && !s.mark)) fail(`ask: she is not on the stations: ${JSON.stringify(f.stations)}`);
+    // Off ends it all: requests, strangers, who is in range
+    await p.evaluate(() => window.__sim.bluetoothAsk('Tomas Reyes'));
+    await setting(p, 'bluetooth', 0); await p.waitForTimeout(800);
+    f = await face(p);
+    if (f.lit || f.near || f.request || f.strangers) fail(`ask: Off left ${JSON.stringify(f)}`);
+    if ((await call(p, 'requests')).ok.length) fail('ask: a request still waits at Off');
+    await ctx.close();
+  }
+
+  // 7. the locked machine: the channel waits for the passphrase; the tile says so on its tape, its jewel dark, nobody
+  //    counted; the radio can't work: its reason on the tape, then it works again, and the top bar says so
+  {
     const ctx = await machine({ bluetooth: 2 });
-    const p = await front(ctx, `tile ${w}`, w, h);
-    await crop(p, `x2-${w}-tile-open.png`);
+    const p = await front(ctx, 'radio');
+    await p.evaluate(() => window.__sim.bluetoothLocked()); await p.waitForTimeout(150);
+    let f = await face(p);
+    if (f.state !== 'waiting for the passphrase' || f.lit || f.note !== 'Waits for the passphrase.' || f.top !== 'Bluetooth locked' || f.near || f.strangers) fail(`locked: the face shows ${JSON.stringify(f)}`);
+    if ((await call(p, 'channels')).ok.find(c => c.channel === 'bluetooth').state !== 'waiting for the passphrase') fail('locked: channels() does not say it waits');
+    await p.evaluate(() => window.__sim.bluetoothUnlocked()); await p.waitForTimeout(150);
+    f = await face(p);
+    if (f.state !== 'open to requests' || !f.lit || f.note) fail(`unlocked: the face shows ${JSON.stringify(f)}`);
+    await p.evaluate(() => window.__sim.bluetoothUnavailable('Bluetooth is off in System Settings.')); await p.waitForTimeout(150);
+    f = await face(p);
+    if (f.state !== 'unavailable: Bluetooth is off in System Settings.' || f.lit || f.note !== 'Bluetooth is off in System Settings.' || f.top !== 'Bluetooth unavailable' || f.title !== 'Bluetooth is off in System Settings.' || f.near) fail(`unavailable: the face shows ${JSON.stringify(f)}`);
+    const tape = await p.evaluate(() => { const b = document.querySelector('#btnote b').getBoundingClientRect(), panel = document.querySelector('.panel').getBoundingClientRect(); return { right: b.right, edge: panel.right + 4 }; });
+    if (tape.right > tape.edge) fail(`unavailable: the tape runs off the panel: ${JSON.stringify(tape)}`);
+    await p.evaluate(() => window.__sim.bluetoothUnavailable('Bombechat may not use Bluetooth. Allow it in System Settings, Privacy and Security, Bluetooth.')); await p.waitForTimeout(150);
+    const two = await p.evaluate(() => { const b = document.querySelector('#btnote b').getBoundingClientRect(), vu = document.querySelector('.vu').getBoundingClientRect(); return { bottom: b.bottom, vu: vu.top }; });
+    if (two.bottom > two.vu + 10) fail(`unavailable: a long reason covers the room meter: ${JSON.stringify(two)}`);
+    await p.evaluate(() => window.__sim.bluetoothAvailable()); await p.waitForTimeout(150);
+    f = await face(p);
+    if (f.state !== 'open to requests' || !f.lit || f.note || f.said !== 'Bluetooth works again: open to requests.') fail(`available again: the face shows ${JSON.stringify(f)}`);
+    await ctx.close();
+  }
+
+  // 8. every state at each laptop size, 2x crops of the panel; nothing scrolls sideways and nothing is under 12px
+  const CROPS = [
+    ['off', null, null],
+    ['contacts', { bluetooth: 1 }, null],
+    ['open', { bluetooth: 2, inperson: 0 }, async p => { await p.evaluate(() => window.__sim.bluetoothStrangers(['P2QD', 'W9HT'])); }],
+    ['request', { bluetooth: 2, inperson: 0 }, async p => { await p.evaluate(() => window.__sim.bluetoothAsk()); }],
+    ['request-held', { bluetooth: 2, inperson: 1 }, async p => { await p.evaluate(() => window.__sim.bluetoothAsk()); }],
+    ['requests-two', { bluetooth: 2, inperson: 0 }, async p => { await p.evaluate(() => { window.__sim.bluetoothAsk(); window.__sim.bluetoothAsk('Tomas Reyes'); }); }],
+    ['accepted', { bluetooth: 2, inperson: 0 }, async p => { await p.evaluate(() => window.__sim.bluetoothAsk()); await p.waitForTimeout(150); await p.click('#intray .rs.ok'); await p.waitForTimeout(700); }],
+    ['asking', { bluetooth: 2, inperson: 0 }, async p => { await p.evaluate(() => window.__sim.bluetoothStrangers(['P2QD', 'W9HT'], ['W9HT'])); await p.waitForTimeout(150);
+      await p.click('li[data-label="P2QD"] .rs'); await p.click('li[data-label="W9HT"] .rs'); await p.waitForTimeout(900); }],
+    ['locked', { bluetooth: 2 }, async p => { await p.evaluate(() => window.__sim.bluetoothLocked()); }],
+    ['unavailable', { bluetooth: 2 }, async p => { await p.evaluate(() => window.__sim.bluetoothUnavailable('Bluetooth is off in System Settings.')); }],
+    ['unavailable-long', { bluetooth: 1 }, async p => { await p.evaluate(() => window.__sim.bluetoothUnavailable('Bombechat may not use Bluetooth. Allow it in System Settings, Privacy and Security, Bluetooth.')); }],
+  ];
+  for (const [w, h] of [[1024, 768], [1440, 900], [1728, 1117]]) for (const [name, settings, run] of CROPS) {
+    const ctx = await machine(settings);
+    const p = await front(ctx, `${name} ${w}`, w, h);
+    if (run) await run(p);
+    await p.waitForTimeout(250);
+    // (the top bar's passing sentence aside: at 1024 it runs past the window on every build, as the root's does)
+    const over = await p.evaluate(() => { const s = document.getElementById('said'), t = s.textContent; s.textContent = ''; const o = document.documentElement.scrollWidth - innerWidth; s.textContent = t; return o; });
+    if (over > 0) fail(`${name} ${w}: the page scrolls sideways by ${over}px`);
+    const small = await smallText(p);
+    if (small.length) fail(`${name} ${w}: text under 12px: ${small.join('; ')}`);
+    await shot(p, name, w);
+    if (name === 'accepted' || name === 'request') await p.screenshot({ path: path.join(out, `x2-${w}-${name}-deck.png`), clip: await p.evaluate(() => { const r = document.querySelector('.deck').getBoundingClientRect(); return { x: r.x, y: r.y + scrollY, width: r.width, height: r.height }; }), fullPage: true });
+    if (name === 'contacts' || name === 'request') await p.screenshot({ path: path.join(out, `x2-${w}-${name}-top.png`), clip: await p.evaluate(() => { const r = document.querySelector('.top').getBoundingClientRect(); return { x: 0, y: 0, width: r.width, height: r.height }; }) });
+    if (name === 'open') await p.screenshot({ path: path.join(out, `x2-${w}-${name}-bankfoot.png`), clip: await p.evaluate(() => { const r = document.querySelector('.bankfoot').getBoundingClientRect(); return { x: r.x, y: r.y + scrollY, width: r.width, height: r.height }; }), fullPage: true });
     await ctx.close();
   }
 

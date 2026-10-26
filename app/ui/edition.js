@@ -7,6 +7,12 @@
 export const SETTING_ROWS = [
 ];
 
+// What the wiring schedule types under a group's name. Under a group this build has no rows for (its blanking plate),
+// why it has none.
+export const GROUP_NOTES = {
+  Bluetooth: 'This build carries no Bluetooth code, so there is nothing here to switch on. The standard build adds discovery and requests to connect from people you have not met.',
+};
+
 // Every contact is added by checking keys in person (this build has no other way to add one), so New contacts need a
 // key check is held On, as the device's edition::ONLY_IN_PERSON has it.
 export const ONLY_IN_PERSON = true;
@@ -16,5 +22,7 @@ export const ONLY_IN_PERSON = true;
 // with send(m, contactIds, channel), and commands that take the place of the simulator's own. Nothing here.
 export function simulate() { return {}; }
 
-// The front page's part, called once the page is up, with the bridge. Nothing here.
+// The front page's part, called once the page is up, before the bridge starts, with the bridge and what the page lends
+// it (bombechat.html: a switch fitted as Sound and Light are, the top bar, the stations, the key check card). Nothing
+// here.
 export function front() {}

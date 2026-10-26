@@ -27,13 +27,21 @@ What lives here:
   the app's dependency on `crates/bluetooth`, and `tools/check-bluetooth.cjs`
   in `npm run check`.
 - `files/`: files the edition adds or replaces. `app/ui/edition.css` names
-  this build "standard build" on the machine's plates.
+  this build "standard build" on the machine's plates ("bluetooth fitted" on
+  the maker's plate) and styles the front's Bluetooth face: three switches of
+  one size, the tray of request and stranger slips, and the tape under the
+  switch.
   `app/src-tauri/src/edition.rs` and `app/ui/edition.js` replace the root's
   empty ones: the app's Bluetooth (the transport over the CoreBluetooth
   radio, the Bluetooth switch setting, its channel's words, and New
   contacts need a key check as a real choice), the settings card's
-  Bluetooth row, the simulator's Bluetooth (a contact and a stranger in
-  range, requests to connect), and the front's hook on the Bluetooth tile.
+  Bluetooth row and its note on the Mac's name, the simulator's Bluetooth (a
+  contact and strangers in range, requests to connect, the locked and
+  unavailable radio), and the front's Bluetooth face: the Bluetooth switch
+  (fitted through the page's knob, as Sound and Light are), who is in range
+  on the bank's foot, request slips with Accept and Decline, strangers to ask,
+  the not confirmed mark on a station, and the number to compare on the key
+  check card.
   `app/src-tauri/tests/device_bluetooth.rs` and `tools/check-bluetooth.cjs`
   test them. `crates/session` is
   the live session crate: Noise handshakes (IK for contacts, XN for
@@ -65,5 +73,5 @@ Builds land in `bluetooth/target`, apart from the root's.
 The Mac's name: anyone in Bluetooth range can read it, Bombechat or not.
 People are told: "Anyone in Bluetooth range can read this Mac's name. Give
 it a plain name that doesn't say who you are, in System Settings, General,
-About." The Bluetooth settings note in the app (Task 6) carries the same
+About." The Bluetooth group's note on the wiring schedule carries the same
 sentence.

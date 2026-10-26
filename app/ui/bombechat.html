@@ -490,7 +490,7 @@ body:has(.lamp:not([hidden])){perspective:none}
       <label class="pl sndlab" for="snd">Machine sound</label>
       <span class="sep"></span>
       <span class="jewel" id="topjewel" aria-hidden="true"></span><span class="pl" id="toplisten">Listening by sound</span>
-      <span class="pl" title="This build has no Bluetooth code in it, so there is no radio to switch on.">No radio fitted</span>
+      <span class="pl" id="radio" title="This build has no Bluetooth code in it, so there is no radio to switch on.">No radio fitted</span>
       <span class="pl build">Build 0.4</span>
       <span class="sep"></span>
       <a class="pl screw pb" id="settings" href="settings.html" title="Turn the machine round to its back panel">Settings</a>
@@ -662,7 +662,7 @@ function nameTheSheet(c){const at=s=>document.querySelector(s);
   replyLabels();
   at('.menu').setAttribute('aria-label',`Key check with ${c.short}`);
   at('.menu h2 span').textContent=bridge.simulated?`menu 7, ${c.short}`:c.short;
-  at('.bankfoot .rd:last-child').title=`Each frame is checked against ${c.short}'s key as it lands`;
+  at('#chk').parentElement.title=`Each frame is checked against ${c.short}'s key as it lands`;
   at('.row3 .stn .holder > span').firstChild.nodeValue=c.name}
 const Q=new URLSearchParams(location.search);
 const STILL=Q.has('still');
@@ -793,6 +793,7 @@ const hopsWord=n=>['no hops','one hop','two hops','three hops','four hops','five
 function onMessage(m){
   if(onSheet.has(m.id))return;
   if(!m.outgoing&&!m.via&&arrival&&arrival.ent&&m.channel===arrival.how)return;// it finishes a provisional entry: see below
+  if(!m.outgoing&&!m.via)HEARD.set(m.contact,m);
   if(m.contact!==CONTACT.id)return;// another person's sheet
   onSheet.add(m.id);
   const how=m.via?'relay':m.channel;const ent=entry(m.at_min*60000,how);const what=ent.querySelector('.what');
@@ -890,10 +891,12 @@ function drawKnob(id){const el=document.getElementById(id),k=KNOBS[id];let fl=''
   <g class="cap" style="transform:rotate(${ANG[k.pos]}deg)">${fl}<circle r="17" fill="#1d1c1a" stroke="rgba(0,0,0,.75)"/><circle r="17" fill="none" stroke="rgba(255,255,255,.07)" transform="translate(0,-.7)"/><rect x="-1.5" y="-24" width="3" height="12.5" rx="1.1" fill="#e9e3d2"/></g></svg>`;
   el.setAttribute('aria-valuenow',k.pos);el.setAttribute('aria-valuetext',k.labels[k.pos].toLowerCase());el.title=k.held?`${k.name}: ${k.held}. Taped at ${k.labels[k.pos].toLowerCase()} until then.`:k.read?`${k.name}: ${k.say[k.pos]}. Click or use the arrow keys to turn.`:`${k.name}: not read from the machine, shown at off. Click or use the arrow keys to turn.`}
 // the switches and the back panel's Sound and Light rows are the same two settings, kept by the machine
-for(const k of Object.values(KNOBS)){const v=KEPT[k.setting];if(v>=0&&v<=2)k.pos=v;k.read=KEPT_READ}
-for(const [id,k] of Object.entries(KNOBS)){const n=NOTES[k.setting];if(!n)continue;k.held=n.note;k.pos=Number.isInteger(n.value)?n.value:0;k.read=true;
+// (seated the same way for any switch a build fits, edition.js's through the front's kit below)
+function seatKnob(id){const k=KNOBS[id],v=KEPT[k.setting];if(v>=0&&v<=2)k.pos=v;k.read=KEPT_READ}
+function tapeKnob(id){const k=KNOBS[id],n=NOTES[k.setting];if(!n)return;k.held=n.note;k.pos=Number.isInteger(n.value)?n.value:0;k.read=true;
   const el=document.getElementById(id),mod=el.closest('.mod');mod.classList.add('taped');el.setAttribute('aria-disabled','true');
   const t=document.createElement('span');t.className='tapedown';t.id=id+'-tape';t.appendChild(document.createElement('b')).textContent=n.note;mod.appendChild(t);el.setAttribute('aria-describedby',t.id)}
+Object.keys(KNOBS).forEach(seatKnob);Object.keys(KNOBS).forEach(tapeKnob);
 // the machine won't take a turn (the setting could not be saved): the knob goes back and the top bar says why, as the
 // settings page does
 const saidEl=document.getElementById('said');let saidT;
@@ -915,9 +918,10 @@ function turnKnob(id,pos,again){const k=KNOBS[id];if(k.held)return Promise.resol
     return Promise.resolve(bridge.settings()).then(m=>{if(!m||m.light!==pos)return back(t);if(k.pos!==pos)return t;
       lightLeftFlash();say(`Light at ${k.labels[pos]}, not saved.`,`Light is at ${k.labels[pos]} for now. ${sentence(t)} So it goes back to ${k.labels[was.pos]} next time.`);return {unsaved:t}},()=>back(t))});
   applyChannels();return taken}
-['k1','k2'].forEach(id=>{drawKnob(id);const el=document.getElementById(id);
+function wireKnob(id){drawKnob(id);const el=document.getElementById(id);
   el.addEventListener('click',()=>turnKnob(id,(KNOBS[id].pos+1)%3));
-  el.addEventListener('keydown',e=>{const d={ArrowRight:1,ArrowUp:1,ArrowLeft:-1,ArrowDown:-1}[e.key];if(e.key==='Home')turnKnob(id,0);else if(e.key==='End')turnKnob(id,2);else if(d)turnKnob(id,KNOBS[id].pos+d);else return;e.preventDefault()})});
+  el.addEventListener('keydown',e=>{const d={ArrowRight:1,ArrowUp:1,ArrowLeft:-1,ArrowDown:-1}[e.key];if(e.key==='Home')turnKnob(id,0);else if(e.key==='End')turnKnob(id,2);else if(d)turnKnob(id,KNOBS[id].pos+d);else return;e.preventDefault()})}
+['k1','k2'].forEach(wireKnob);
 const sendBtn=document.getElementById('sendsound'),flashBtn=document.getElementById('flash');
 function applyChannels(){const s=KNOBS.k1.pos,l=KNOBS.k2.pos;
   document.getElementById('j1').classList.toggle('off',s===0);document.getElementById('j2').classList.toggle('off',l===0);
@@ -1185,12 +1189,17 @@ async function realSheet(){
   document.documentElement.classList.add('real')}
 // stations: the contacts, with when each was last heard
 let TALK=new Map();
+// the last message heard from each contact on this page, for one the store gave no history of
+const HEARD=new Map();
+// told each time the stations are drawn (the front's kit, below)
+const stationsDrawn=[];
 function drawStations(){const row=document.querySelector('.row3'),counter=row.querySelector('.counter');row.querySelectorAll('.stn').forEach(s=>s.remove());
   for(const p of PEOPLE.length?PEOPLE.slice(0,3):[null]){
-    const last=p&&[...(TALK.get(p.id)||[])].reverse().find(m=>!m.outgoing);
-    const stn=el('div','stn');stn.innerHTML='<span class="jewel off" aria-hidden="true"></span><span class="holder"><span></span></span>';
+    const last=p&&([...(TALK.get(p.id)||[])].reverse().find(m=>!m.outgoing)||HEARD.get(p.id));
+    const stn=el('div','stn');if(p)stn.dataset.contact=p.id;stn.innerHTML='<span class="jewel off" aria-hidden="true"></span><span class="holder"><span></span></span>';
     stn.querySelector('.holder span').append(p?p.name:'No contacts yet',el('small',null,!p?'pair by sound or light to add one':last?`${last.channel}, ${hhmm(last.at_min*60000)}`:'not heard yet'));
-    row.insertBefore(stn,counter)}}
+    row.insertBefore(stn,counter)}
+  stationsDrawn.forEach(f=>f(row))}
 // the bytes-a-second readout: the rate the node measures for sound, or nothing when it has none
 function showRate(list){const s=list.find(c=>c.channel==='sound'),rd=document.getElementById('raterd');
   soundBand=s&&s.band||null;
@@ -1253,6 +1262,10 @@ function cardRest(fresh){setState('',true);offer=null;
     menuWho.textContent=`menu 7, ${CONTACT.short}`;noteSays('Checked in person, by light.');
     menuStamp.hidden=false;const d=menuStamp.querySelector('div');d.textContent='Matched';d.appendChild(el('small',null,'2 Oct'))}
   else{menu.classList.remove('gridded');pencil('<p class="ph">not yet paired</p>');menuWho.textContent='';noteSays('Press Pair by sound or Pair by light, here and on their machine.')}}
+// a contact added some other way than in person (a request to connect, on a build with a carrier for them): the card
+// lays out the number to compare when they meet, unstamped, since nothing has been checked. Not over a pairing in progress
+function cardUnchecked(name,safety,who,note){if(menu.dataset.pair&&menu.dataset.pair!=='refused')return false;
+  setState('',true);offer=null;pencil(checkSheet(esc(name),safety,''));menuWho.textContent=who;noteSays(note);return true}
 async function pairBySound(){
   if(menu.dataset.pair==='listening'){bridge.stopPairing().catch(()=>{});cardRest();return}
   pairBtn.disabled=true;
@@ -1558,13 +1571,21 @@ function lightSays(state){const tilt=state===TILT_OR_DIM;lightNote.textContent=t
 
 /* ---------- open: replay what came before, then listen ---------- */
 drawOutbox();applyChannels();cardRest();
+// what this build fits beyond sound and light keeps its own part of the front (edition.js), listening from the start.
+// The kit is what the page lends it: a switch fitted as Sound and Light are, the top bar, the stations and the card
+front(bridge,{
+  knob(id,spec){KNOBS[id]=spec;seatKnob(id);tapeKnob(id);wireKnob(id);return spec},
+  say,
+  contactAdded(p){const i=PEOPLE.findIndex(x=>x.id===p.id);if(i<0)PEOPLE.push(p);else PEOPLE[i]=p;
+    if(!CONTACT.id){CONTACT=p;nameTheSheet(CONTACT)}drawStations()},
+  onStations(f){stationsDrawn.push(f)},
+  showUnchecked:cardUnchecked,
+});
 function vuTitle(){document.querySelector('.vu').title=`Loudness of the room. Messages wait to play until it drops under ${sendUnder()} dB.`}
 vuTitle();
 if(!bridge.simulated)await realSheet();
 // the broadcasts kept, this machine's own and the ones heard, in their places among the messages
 for(const b of await bridge.broadcasts().catch(()=>[]))drawNotice(b);
-// what this build fits beyond sound and light keeps its own part of the front (edition.js), listening from the start
-front(bridge);
 bridge.start();
 // a page opened (or reloaded) after the channel last changed still learns its state
 bridge.channels().then(list=>{list.forEach(onChannel);showRate(list)});

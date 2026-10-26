@@ -92,6 +92,7 @@ a.pl svg{display:block}
 .row.parked .jk span{color:#8f8571}
 .row .band,.row .notice{display:block;margin-top:4px;font-family:var(--type);font-size:12.5px;color:#3d3b37;text-shadow:0 0 .6px rgba(53,52,49,.5)}
 .row .band[hidden]{display:none}
+.grpnote{padding:8px 0 9px;border-bottom:1px solid rgba(47,90,75,.3);font-family:var(--type);font-size:12.5px;line-height:1.45;color:#3d3b37;text-shadow:0 0 .6px rgba(53,52,49,.5)}
 .notfitted{margin-top:8px;padding:10px 12px;border:1px dashed rgba(124,35,29,.5);font-family:var(--type);font-size:12.5px;line-height:1.45;color:#5c3a33;background:rgba(124,35,29,.05)}
 .card-f{border-top:1.5px solid var(--green-ink);padding:8px 22px 12px;display:flex;justify-content:space-between;align-items:baseline;font-family:var(--print);font-size:12px;color:var(--green-ink)}
 .card-f b{font-family:var(--type);font-weight:400;color:var(--type-ink);font-size:13px}
@@ -150,7 +151,7 @@ a.pl svg{display:block}
 <script type="module">
 import { createMachine, engravingFace } from './machine-kit.js';
 import { bridge } from './bridge.js';
-import { SETTING_ROWS, ONLY_IN_PERSON } from './edition.js';
+import { SETTING_ROWS, ONLY_IN_PERSON, GROUP_NOTES } from './edition.js';
 
 const Q=new URLSearchParams(location.search);
 const REDUCED=matchMedia('(prefers-reduced-motion: reduce)').matches||Q.has('still');
@@ -204,7 +205,9 @@ for(const g of GROUPS){
   const items=SETTINGS.filter(s=>s.g===g);
   const waits=items.length&&items.every(s=>s.parked);
   const h=document.createElement('div');h.className='grp';h.innerHTML=`<span>${g}</span><small>${!fitted(g)?'not fitted':waits?'plugs parked':items.length+(items.length===1?' plug':' plugs')}</small>`;sched.appendChild(h);
-  if(!fitted(g)){const n=document.createElement('div');n.className='notfitted';n.textContent='This build carries no Bluetooth code, so there is nothing here to switch on. The standard build adds discovery and requests to connect from people you have not met.';sched.appendChild(n);continue}
+  if(!fitted(g)){const n=document.createElement('div');n.className='notfitted';n.textContent=GROUP_NOTES[g]||'Not fitted to this build.';sched.appendChild(n);continue}
+  // what the build has to say about a group it fits, typed under the group's name
+  if(GROUP_NOTES[g]){const n=document.createElement('p');n.className='grpnote';n.textContent=GROUP_NOTES[g];sched.appendChild(n)}
   for(const s of items){
     const r=document.createElement('div');r.className='row'+(s.held?' held':'')+(s.parked?' parked':'');r.dataset.id=s.id;
     const off=s.held?' disabled aria-disabled="true"':'';
