@@ -353,7 +353,7 @@ async function build(){
   // into five bundles of two or three, one in the gap between two column numbers, and each bundle goes up into the duct
   const GROUPS=[[0,1],[2,3,4],[5,6],[7,8,9],[10,11]],GAPS=[0,3,5,7,10];
   const HB=CY0+1.38,HT=CY0+1.92;// the duct's open underside and its top
-  const trunkCords=[];
+  const trunkCords=[],ductParts=[];
   GROUPS.forEach((grp,gi)=>{const gb=GAPS[gi],xb=conX(gb)+CPX/2;
     const cords=[];grp.forEach(c=>{const n=rnd()<.3?2:1;for(let k=0;k<n;k++)cords.push(c)});
     while(cords.length>3)cords.splice(Math.floor(rnd()*cords.length),1);
@@ -373,12 +373,27 @@ async function build(){
     part(W,H,.05,0,yc,D);part(W,.05,D,0,HT-.025,D/2);[-1,1].forEach(sx=>part(.05,H,D,sx*W/2,yc,D/2));
     part(W+.04,.06,.12,0,HB+.03,D+.01);// the rolled lip
     for(let i=0;i<7;i++)bolt(-W/2+.35+i*(W-.7)/6,yc+.06,{z:D+.03,scale:.75});
-    for(const t of trunkCords){const ex=t.xb+t.off,ez=.38+((t.k*7+t.gi)%3)*.05;
-      addCord([...rise(t),new THREE.Vector3(ex,HB-.22,ez+.06),new THREE.Vector3(ex,HB+.1,ez),new THREE.Vector3(ex,HB+.6,ez)],t)}
-    GROUPS.forEach((g,gi)=>{const ts=trunkCords.filter(t=>t.gi===gi);if(!ts.length)return;const x0=Math.min(...ts.map(t=>t.xb+t.off)),x1=Math.max(...ts.map(t=>t.xb+t.off)),w=x1-x0+.34,x=(x0+x1)/2;
-      // the clamp: a brass saddle across the bundle, screwed into the lip at both ends
-      const sad=new THREE.Mesh(new THREE.BoxGeometry(w,.11,.03),M.brassDull);sad.position.set(x,HB-.1,.6);sad.castShadow=true;scene.add(sad);
-      [-1,1].forEach(sx=>{const ear=new THREE.Mesh(new THREE.BoxGeometry(.16,.11,.03),M.brassDull);ear.position.set(x+sx*(w/2+.06),HB-.1,.6);scene.add(ear);bolt(x+sx*(w/2+.07),HB-.1,{z:.63,scale:.4})})})}
+    // each bundle rests on a steel hanger plate that drops from inside the duct, and a brass saddle strap wraps its
+    // front and sides and is screwed to the plate through its ears: the strap stands in front of every cord, and the
+    // cords go on up behind the duct's lip and end inside it
+    const CH=.11,CT=.03,ZM=.34,yC=HB-.1;// strap height and thickness, the hanger plate's face, the strap's middle
+    for(const t of trunkCords){const ex=t.xb+t.off,zc=ZM+t.r;
+      t.mesh=addCord([...rise(t).slice(0,4),new THREE.Vector3(ex,HB-.36,zc+.12),new THREE.Vector3(ex,yC-.1,zc+.01),new THREE.Vector3(ex,yC,zc),new THREE.Vector3(ex,HB+.12,zc),new THREE.Vector3(ex,HT-.15,zc)],t,160)}
+    GROUPS.forEach((g,gi)=>{const ts=trunkCords.filter(t=>t.gi===gi);if(!ts.length)return;
+      const x0=Math.min(...ts.map(t=>t.xb+t.off-t.r)),x1=Math.max(...ts.map(t=>t.xb+t.off+t.r)),x=(x0+x1)/2,hw=(x1-x0)/2+.02;
+      const zf=ZM+2*Math.max(...ts.map(t=>t.r))+.02+CT/2;// the strap's middle line at its front
+      // the strap's middle line across x: flat ears on the plate, then a rounded box over the bundle
+      const line=[],E=hw+.2,N=64;for(let i=0;i<=N;i++){const u=-E+2*E*i/N,q=Math.abs(u)/(hw+CT);
+        line.push([u,q>=1?ZM+CT/2:ZM+CT/2+(zf-ZM-CT/2)*Math.pow(1-Math.pow(q,5),1/5)])}
+      const outer=[],inner=[];line.forEach(([u,z],i)=>{const [pu,pz]=line[Math.max(0,i-1)],[nu,nz]=line[Math.min(N,i+1)];let tx=nu-pu,tz=nz-pz;const l=Math.hypot(tx,tz);tx/=l;tz/=l;
+        outer.push([u-tz*CT/2,z+tx*CT/2]);inner.push([u+tz*CT/2,z-tx*CT/2])});
+      const sh=new THREE.Shape();[...outer,...inner.reverse()].forEach(([u,z],i)=>i?sh.lineTo(u,-z):sh.moveTo(u,-z));
+      const geo=new THREE.ExtrudeGeometry(sh,{depth:CH,bevelEnabled:false});geo.rotateX(-Math.PI/2);
+      const strap=new THREE.Mesh(geo,M.brassDull);strap.position.set(x,yC-CH/2,0);strap.castShadow=true;strap.receiveShadow=true;scene.add(strap);
+      const hang=new THREE.Mesh(new THREE.BoxGeometry(2*E+.12,HT-.03-(yC-CH/2-.04),.04),hoodMat);hang.position.set(x,(HT-.03+yC-CH/2-.04)/2,ZM-.02);hang.receiveShadow=true;scene.add(hang);
+      [-1,1].forEach(sx=>bolt(x+sx*(hw+CT+.1),yC,{z:ZM+CT,scale:.4}));
+      ductParts.push({gi,x0:x-hw,x1:x+hw,y0:yC-CH/2,y1:yC+CH/2,innerZ:zf-CT/2})})
+    ductParts.lip={HB,HT,back:D+.01-.06,front:D}}
 
   // the cable trough along the bottom: an open steel channel with a bundle running sideways through it
   {const TY=-8.05;const chMat=new THREE.MeshStandardMaterial({color:'#2b2c29',roughness:.42,metalness:.85,bumpMap:wrinkle,bumpScale:.25});
@@ -574,7 +589,11 @@ async function build(){
   const parts=()=>({view:(r=>({left:r.left,top:r.top,right:r.right,bottom:r.bottom}))(renderer.domElement.getBoundingClientRect()),
     topBolts:topBolts.map(screenBox),colNums:colNums.map(screenBox),rowSigns:rowSigns.map(s=>screenBox(s.mesh)),connectors:conMeshes.map(m=>screenBox(m.ring)),
     looms:looms.map(screenBox),makersPlate:screenBox(makers),groupPlates:groupPlates.map(screenBox)});
-  return {focus,move,seat,plugs,camera,screen,at,row,rowBand,connectors,rowSigns:()=>rowSigns.map(s=>s.text),parts,get ready(){return frames>2},endOf:id=>{const P=plugs[id];return {x:P.end.x,jack:P.jacks.findIndex(j=>Math.abs(j.x-P.end.x)<1e-3&&Math.abs(j.y-P.end.y)<1e-3),lift:P.lift,parked:!!P.park&&P.end.distanceTo(P.park)<1e-3,dim:P.dim}}};
+  // for checks: each trunk cord sampled along its length against the duct's clamps and lip, in panel units
+  const duct=()=>({...ductParts.lip,clamps:ductParts.map(c=>({...c})),cords:trunkCords.map(t=>{const pts=t.mesh.geometry.parameters.path.getSpacedPoints(400),c=ductParts.find(c=>c.gi===t.gi);
+    const at=pts.filter(p=>p.y>=c.y0&&p.y<=c.y1),up=pts.filter(p=>p.y>=ductParts.lip.HB),end=pts[pts.length-1];
+    return {gi:t.gi,r:t.r,end:{y:end.y,z:end.z},atClamp:{front:Math.max(...at.map(p=>p.z))+t.r,x0:Math.min(...at.map(p=>p.x))-t.r,x1:Math.max(...at.map(p=>p.x))+t.r},underLip:Math.max(...up.map(p=>p.z))+t.r,top:Math.max(...pts.map(p=>p.y))+t.r}})});
+  return {focus,move,seat,plugs,camera,screen,at,row,rowBand,connectors,duct,rowSigns:()=>rowSigns.map(s=>s.text),parts,get ready(){return frames>2},endOf:id=>{const P=plugs[id];return {x:P.end.x,jack:P.jacks.findIndex(j=>Math.abs(j.x-P.end.x)<1e-3&&Math.abs(j.y-P.end.y)<1e-3),lift:P.lift,parked:!!P.park&&P.end.distanceTo(P.park)<1e-3,dim:P.dim}}};
 }
 
 /* arriving from the front: finish the turn the front started */
@@ -584,7 +603,7 @@ try{if(sessionStorage.getItem('bombechat-turn')==='front-to-back'&&!REDUCED){ses
 // back here by history (bfcache): the settings may have moved on the front, so read them again from the machine
 // and show them, sending nothing
 addEventListener('pageshow',e=>{if(!e.persisted)return;bridge.settings().then(kept=>{for(const id of takeKept(kept)){syncRow(id);machine&&machine.seat(id,byId[id].v)}},()=>{})});
-window.__bc={screen:id=>machine.screen(id),rowBand:id=>machine.rowBand(id),tag:()=>{const r=document.getElementById('tag').getBoundingClientRect();return {top:r.top,bottom:r.bottom,on:document.getElementById('tag').classList.contains('on')}},focused:()=>focusId,get:id=>byId[id].v,held:()=>Object.fromEntries(SETTINGS.filter(s=>s.held).map(s=>[s.id,{note:s.held,parked:!!s.parked}])),set:(id,i)=>setValue(id,i,'test'),focus:id=>focusSetting(id,'pin'),at:(x,y,z)=>machine.at(x,y,z),row:id=>machine.row(id),connectors:()=>machine.connectors(),rowSigns:()=>machine.rowSigns(),parts:()=>machine.parts(),end:id=>machine&&machine.endOf(id),settings:SETTINGS.map(s=>s.id)};
+window.__bc={screen:id=>machine.screen(id),rowBand:id=>machine.rowBand(id),tag:()=>{const r=document.getElementById('tag').getBoundingClientRect();return {top:r.top,bottom:r.bottom,on:document.getElementById('tag').classList.contains('on')}},focused:()=>focusId,get:id=>byId[id].v,held:()=>Object.fromEntries(SETTINGS.filter(s=>s.held).map(s=>[s.id,{note:s.held,parked:!!s.parked}])),set:(id,i)=>setValue(id,i,'test'),focus:id=>focusSetting(id,'pin'),at:(x,y,z)=>machine.at(x,y,z),row:id=>machine.row(id),connectors:()=>machine.connectors(),rowSigns:()=>machine.rowSigns(),parts:()=>machine.parts(),duct:()=>machine.duct(),end:id=>machine&&machine.endOf(id),settings:SETTINGS.map(s=>s.id)};
 if(Q.has('focus'))focusSetting(Q.get('focus'),'pin');
 document.getElementById('back').addEventListener('click',e=>{if(REDUCED)return;e.preventDefault();const href=e.currentTarget.href;try{sessionStorage.setItem('bombechat-turn','back-to-front')}catch(_){}document.body.animate([{transform:'perspective(1600px) rotateY(0deg)',opacity:1},{transform:'perspective(1600px) rotateY(-80deg)',opacity:0}],{duration:420,easing:'cubic-bezier(.5,0,.75,0)'}).onfinish=()=>location.href=href});
 </script>

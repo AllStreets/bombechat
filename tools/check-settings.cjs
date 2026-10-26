@@ -86,6 +86,17 @@ const url = q => 'http://127.0.0.1:4811/' + path.relative(ROOTDIR, page) + (q ? 
     field.parts.looms.forEach((l, i) => below.forEach(b => overlap(l, b) && why.push(`loom ${i} hangs over a plate (to ${Math.round(l.bottom)}, the plate from ${Math.round(b.top)})`)));
     field.parts.rowSigns.forEach((s, i) => field.parts.connectors.forEach(c => overlap(s, c) && why.push(`Row ${i + 1}'s sign touches a connector`)));
     if (why.length) problems.push('the back\'s drum connectors: ' + [...new Set(why)].join('; '));
+    // the duct's clamps: every trunk cord passes behind its brass strap and inside its sides, goes up behind the
+    // duct's lip, and ends inside the duct under its top, so no cord shows over a clamp or out of the duct
+    const duct = await p.evaluate(() => window.__bc.duct()), cw = [];
+    duct.cords.forEach((t, i) => { const c = duct.clamps.find(c => c.gi === t.gi);
+      if (!c) { cw.push(`cord ${i} has no clamp`); return; }
+      if (t.atClamp.front >= c.innerZ) cw.push(`cord ${i} stands ${(t.atClamp.front - c.innerZ).toFixed(3)} in front of its clamp`);
+      if (t.atClamp.x0 < c.x0 - 1e-6 || t.atClamp.x1 > c.x1 + 1e-6) cw.push(`cord ${i} runs outside its clamp's sides`);
+      if (t.underLip >= duct.back) cw.push(`cord ${i} comes in front of the duct's lip`);
+      if (!(t.end.y > duct.HB && t.top < duct.HT)) cw.push(`cord ${i} ends at ${t.end.y.toFixed(2)}, reaching ${t.top.toFixed(2)}, not inside the duct (${duct.HB} to ${duct.HT})`); });
+    if (duct.clamps.length !== 5) cw.push(`${duct.clamps.length} clamps`);
+    if (cw.length) problems.push('the duct: ' + cw.join('; '));
     field = { signs: field.signs, rowsY: rowsY.map(Math.round), pitch: Math.round(C.filter(c => c.row === 1).sort((a, b) => a.x - b.x).slice(0, 2).reduce((a, b) => b.x - a.x)), problems: why.length };
   }
   // frame rate over 2 s
