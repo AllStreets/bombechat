@@ -10,10 +10,10 @@ use bombechat_bluetooth::wire::{
 };
 use bombechat_bluetooth::{
     bucket, Advert, BleHandle, BleTransport, FakeRadio, LinkId, Mode, Radio, RadioEvent, Room,
-    SeededRng, TestClock, ACK_DELAY_MAX_MS, FUTURE_TOKENS, HOLD_MS, IDLE_MS, KEEPALIVE_MS,
-    MAX_LINKS, PAST_TOKENS, QUEUE_CAP, REQUESTS_CAP, REQUESTS_NEED_OPEN, REQUESTS_PART_WAY_CAP,
-    REQUEST_ATTEMPTS, REQUEST_MS, SEEN_CAP, SEEN_MS, SILENCE_MS, STRANGER_MS, TOKEN_MS, TRIAL_CAP,
-    TRIAL_RETRY_MS,
+    SeededRng, TestClock, ACK_DELAY_MAX_MS, CONTACT_LINKS, FUTURE_TOKENS, HOLD_MS, IDLE_MS,
+    KEEPALIVE_MS, MAX_LINKS_IN, MAX_LINKS_OUT, PAST_TOKENS, QUEUE_CAP, REQUESTS_CAP,
+    REQUESTS_NEED_OPEN, REQUESTS_PART_WAY_CAP, REQUEST_ATTEMPTS, REQUEST_MS, SEEN_CAP, SEEN_MS,
+    SILENCE_MS, STRANGER_MS, TOKEN_MS, TRIAL_CAP, TRIAL_RETRY_MS,
 };
 use bombechat_core::{seal_private, seal_public, Envelope, Identity, PublicIdentity};
 use bombechat_modem::{split, Event, Reassembler};
@@ -1559,16 +1559,94 @@ fn a_link_this_device_opened_is_replaced_before_its_token_goes_stale() {
 }
 
 #[test]
-fn no_more_than_the_link_cap_are_kept() {
+fn links_to_strangers_adverts_stop_short_of_the_room_kept_for_contacts() {
     let room = Room::new(54);
     let mut a = Device::new(&room, 1);
     a.h.set_mode(Some(Mode::Open));
-    let raws: Vec<Raw> = (0..MAX_LINKS)
+    let raws: Vec<Raw> = (0..MAX_LINKS_OUT)
         .map(|i| Raw::with_token(&room, [i as u8; TOKEN_LEN]))
         .collect();
     a.poll(0);
     a.poll(STEP);
-    assert_eq!(a.t.links().len(), MAX_LINKS, "{} raws", raws.len());
+    let mine = room
+        .links()
+        .into_iter()
+        .filter(|(_, c, _)| *c == a.radio.index())
+        .count();
+    assert_eq!(mine, MAX_LINKS_OUT - CONTACT_LINKS, "{} raws", raws.len());
+}
+
+/// The links between `a` and `b` that `a` opened.
+fn opened_by(room: &Room, a: &Device, b: &Device) -> usize {
+    room.links()
+        .into_iter()
+        .filter(|(_, c, p)| *c == a.radio.index() && *p == b.radio.index())
+        .count()
+}
+
+#[test]
+fn strangers_subscribing_in_numbers_never_keep_a_from_dialling_its_contacts() {
+    let room = Room::new(55);
+    let mut a = Device::new(&room, 1);
+    a.h.set_mode(Some(Mode::Contacts));
+    // 40 strangers subscribe to a's advert, more than a takes
+    let mut strangers: Vec<Raw> = (0..40).map(|_| Raw::silent(&room)).collect();
+    a.poll(0);
+    a.poll(STEP);
+    for s in &mut strangers {
+        s.poll();
+    }
+    assert_eq!(a.t.links().len(), MAX_LINKS_IN, "a full house of strangers");
+    // a contact comes into range: a's link to its advert is let in, and
+    // a's hello goes out on it
+    let mut b = Device::new(&room, 2);
+    a.knows(&[&b]);
+    b.knows(&[&a]);
+    b.h.set_mode(Some(Mode::Contacts));
+    run(&mut [&mut a, &mut b], 2 * STEP, 10_000);
+    assert_eq!(opened_by(&room, &a, &b), 1, "a's own link to b is kept");
+    assert_eq!(a.h.peers().contacts, vec![b.me()]);
+    assert_eq!(b.h.peers().contacts, vec![a.me()]);
+}
+
+#[test]
+fn a_known_contacts_advert_gets_a_link_when_strangers_adverts_fill_the_rest() {
+    let room = Room::new(56);
+    let (mut a, mut b) = pair(&room);
+    let t = run(&mut [&mut a, &mut b], 0, 5_000);
+    assert_eq!(
+        a.h.peers().contacts,
+        vec![b.me()],
+        "they met, and told tokens"
+    );
+    room.set_in_range(&a.radio, &b.radio, false);
+    // more strangers' adverts than a opens links to, out of b's range
+    let raws: Vec<Raw> = (0..MAX_LINKS_OUT)
+        .map(|i| {
+            let raw = Raw::with_token(&room, [0x80 | i as u8; TOKEN_LEN]);
+            room.set_in_range(&raw.radio, &b.radio, false);
+            raw
+        })
+        .collect();
+    let t = run(&mut [&mut a, &mut b], t, t + 1_000);
+    let mine = |a: &Device| {
+        room.links()
+            .into_iter()
+            .filter(|(_, c, _)| *c == a.radio.index())
+            .count()
+    };
+    assert_eq!(
+        mine(&a),
+        MAX_LINKS_OUT - CONTACT_LINKS,
+        "{} raws",
+        raws.len()
+    );
+    // b is back: a knows its advert by the token b told it, and opens a
+    // link to it from the room kept back
+    room.set_in_range(&a.radio, &b.radio, true);
+    run(&mut [&mut a, &mut b], t, t + 5_000);
+    assert_eq!(opened_by(&room, &a, &b), 1);
+    assert_eq!(a.h.peers().contacts, vec![b.me()]);
 }
 
 // ---- presence -----------------------------------------------------------

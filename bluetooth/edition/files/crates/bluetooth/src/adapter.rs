@@ -94,7 +94,7 @@ use std::collections::{BTreeMap, VecDeque};
 use bombechat_session::TOKEN_LEN;
 
 use crate::radio::{Advert, LinkId, Mode, Radio, RadioEvent, TAG_LEN};
-use crate::transport::MAX_LINKS;
+use crate::transport::{MAX_LINKS_IN, MAX_LINKS_OUT};
 
 /// CoreBluetooth's identifier for a remote device (its `NSUUID` bytes).
 pub(crate) type PeerId = [u8; 16];
@@ -578,7 +578,7 @@ impl<S: Stack> Adapter<S> {
             .values()
             .filter(|c| matches!(c.state, State::Connecting { .. }))
             .count();
-        if central.count() >= MAX_LINKS || connecting >= CONNECTING_CAP {
+        if central.count() >= MAX_LINKS_OUT || connecting >= CONNECTING_CAP {
             return;
         }
         let link = self.fresh_link();
@@ -712,7 +712,7 @@ impl<S: Stack> Adapter<S> {
             .keys()
             .filter(|(r, _)| *r == Role::Peripheral)
             .count()
-            >= MAX_LINKS
+            >= MAX_LINKS_IN
         {
             return;
         }

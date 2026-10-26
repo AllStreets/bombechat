@@ -90,8 +90,19 @@ pub const REQUEST_ATTEMPTS: u8 = 3;
 
 /// A link with no session and no handshake for this long is closed.
 pub const IDLE_MS: u64 = 120_000;
-/// At most this many links; one more is closed at once.
-pub const MAX_LINKS: usize = 32;
+/// At most this many links other devices opened to this one (their
+/// subscriptions to its advert); one more is closed at once. Counted
+/// apart from the links this device opens, so strangers' subscriptions,
+/// which a peripheral cannot drop, never take the room that dialling a
+/// contact needs.
+pub const MAX_LINKS_IN: usize = 32;
+/// At most this many links this device opened to adverts; one more is
+/// closed at once...
+pub const MAX_LINKS_OUT: usize = 32;
+/// ...and this many of them are kept for adverts it knows as a
+/// contact's (by a token that contact told it in a session, or one it
+/// lost a contact's link on): links to other adverts stop short of them.
+pub const CONTACT_LINKS: usize = 8;
 
 /// A stranger's advert counts towards the strangers seen for this long
 /// after a link to it was last up: fifteen minutes, a token's life, so a
@@ -668,6 +679,23 @@ impl<R: Radio> BleTransport<R> {
         self.lost.insert(token, (who, now));
     }
 
+    /// Whether a new link would pass its cap: one the other device
+    /// opened against [`MAX_LINKS_IN`], one this device opened against
+    /// [`MAX_LINKS_OUT`], less the [`CONTACT_LINKS`] kept back unless it
+    /// is to a contact's advert.
+    fn full(&self, opened: bool, contact: bool) -> bool {
+        let mine = self.links.values().filter(|l| l.opened).count();
+        if !opened {
+            return self.links.len() - mine >= MAX_LINKS_IN;
+        }
+        let room = if contact {
+            MAX_LINKS_OUT
+        } else {
+            MAX_LINKS_OUT - CONTACT_LINKS
+        };
+        mine >= room
+    }
+
     fn link_gone(&mut self, id: LinkId) {
         if self.links.remove(&id).is_some() {
             self.redial.retain(|_, r| r.link != id);
@@ -679,10 +707,6 @@ impl<R: Radio> BleTransport<R> {
     fn on_radio(&mut self, event: RadioEvent) {
         match event {
             RadioEvent::Up { link, advert } => {
-                if self.links.len() >= MAX_LINKS {
-                    self.radio.disconnect(link);
-                    return;
-                }
                 // a contact's schedule names the advert by its tag first,
                 // then a token this device was given for it on a link it
                 // lost, then the token this link was given, if any
@@ -699,6 +723,10 @@ impl<R: Radio> BleTransport<R> {
                 let told = tag.and_then(|tag| self.contact_token_by_tag(tag));
                 let lost =
                     tag.and_then(|tag| self.lost.keys().copied().find(|k| k[..TAG_LEN] == tag));
+                if self.full(opened, told.is_some() || lost.is_some()) {
+                    self.radio.disconnect(link);
+                    return;
+                }
                 let token = told.or(lost).or(given);
                 // a link with no token to name is remembered by its tag,
                 // or, with none, by itself
