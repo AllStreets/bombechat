@@ -2,8 +2,6 @@
 //! switch, asking one stranger by label, accepting with proof, the
 //! in-person setting, and who is near.
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use bombechat_bluetooth::{
     BleHandle, BleTransport, BluetoothSwitch, Room, SeededRng, BLUETOOTH_SEND_OFF,
 };
@@ -11,13 +9,16 @@ use bombechat_core::Identity;
 use bombechat_node::{Node, NodeEvent, OutboxState, RequestState, MEET_FIRST, NOT_IN_RANGE};
 use bombechat_store::{Channel, Store};
 
-/// The node seals hellos and messages by the wall clock, so the
-/// transport's clock is set to it too: both sides read it the same.
-fn unix_now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64
+/// The transport's clock reads this Unix time at zero: a fixed moment in
+/// the past, so the hellos and messages the node seals by the wall clock
+/// are never stale against it. No test here reads a clock; the node does.
+const BASE: u64 = 1_700_000_000_000;
+/// An identity drawn from `seed`: the same every run.
+fn identity(seed: u64) -> Identity {
+    let mut bytes = [0u8; 64];
+    let mut rng = SeededRng::new(seed ^ 0x2B);
+    rand_core::RngCore::fill_bytes(&mut rng, &mut bytes);
+    Identity::from_secret_bytes(&bytes)
 }
 
 struct Peer {
@@ -30,7 +31,7 @@ struct Peer {
 impl Peer {
     fn new(room: &Room, base: u64, seed: u64, name: &str) -> Peer {
         let dir = tempfile::TempDir::new().unwrap();
-        let id = Identity::generate();
+        let id = identity(seed);
         let store = Store::create(&dir.path().join("s.db"), "pass", &id, name).unwrap();
         let ble = BleTransport::with_rng(room.radio(), base, Box::new(SeededRng::new(seed)));
         let h = ble.handle();
@@ -88,7 +89,7 @@ fn run(peers: &mut [&mut Peer], from: u64, to: u64) -> u64 {
 }
 
 fn open_pair(room: &Room) -> (Peer, Peer, u64) {
-    let base = unix_now_ms();
+    let base = BASE;
     let (mut a, mut b) = (
         Peer::new(room, base, 1, "Ann"),
         Peer::new(room, base, 2, "Ben"),
@@ -120,11 +121,11 @@ fn the_switch_starts_off_and_maps_onto_the_modes() {
 
     // at Off, a send by Bluetooth is refused in so many words
     let dir = tempfile::TempDir::new().unwrap();
-    let (me, ben) = (Identity::generate(), Identity::generate());
+    let (me, ben) = (identity(1), identity(2));
     let store = Store::create(&dir.path().join("s.db"), "pass", &me, "Ann").unwrap();
     let ben = store.add_contact("Ben", &ben.public(), true).unwrap();
     let room = Room::new(1);
-    let ble = BleTransport::with_rng(room.radio(), unix_now_ms(), Box::new(SeededRng::new(1)));
+    let ble = BleTransport::with_rng(room.radio(), BASE, Box::new(SeededRng::new(1)));
     let h = ble.handle();
     let mut node = Node::new(Some(store), vec![Box::new(ble)]);
     node.send(&[ben], "hi", Channel::Bluetooth);
@@ -231,7 +232,7 @@ fn with_key_checks_required_a_request_is_shown_but_not_accepted() {
 #[test]
 fn in_contacts_mode_no_request_is_shown_or_sent() {
     let room = Room::new(12);
-    let base = unix_now_ms();
+    let base = BASE;
     let (mut a, mut b) = (
         Peer::new(&room, base, 1, "Ann"),
         Peer::new(&room, base, 2, "Ben"),

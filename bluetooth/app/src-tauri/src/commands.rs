@@ -859,5 +859,8 @@ pub fn bridge_event(e: &NodeEvent) -> (&'static str, Value) {
             json!({ "contacts": contacts_in_range.iter().map(|c| c.0).collect::<Vec<_>>(),
                     "strangers": strangers_in_range }),
         ),
+        NodeEvent::ContactConfirmed { contact } => {
+            ("contactConfirmed", json!({ "contact": contact.0 }))
+        }
     }
 }

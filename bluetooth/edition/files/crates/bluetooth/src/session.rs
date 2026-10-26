@@ -146,6 +146,11 @@ pub(crate) struct LinkSession {
     /// went back), and whether the proof by contact handshake has begun.
     pub accepted_ms: Option<u64>,
     pub proving: bool,
+    /// For a request received: declined, pushed out, or dropped unshown.
+    /// It is held exactly as an ignored one is (taking and acknowledging
+    /// what comes, until its time is up) so the requester sees the same
+    /// bytes at the same moments, but it is never shown again.
+    pub quiet: bool,
 }
 
 impl LinkSession {
@@ -184,6 +189,7 @@ impl LinkSession {
             peer_token: None,
             accepted_ms: None,
             proving: false,
+            quiet: false,
         }
     }
 
@@ -193,6 +199,14 @@ impl LinkSession {
 
     pub fn has_room(&self) -> bool {
         self.unacked.len() < WINDOW
+    }
+
+    /// Hold a request received as an ignored one is, never to be shown:
+    /// what it carried of the requester is forgotten.
+    pub fn hush(&mut self) {
+        self.quiet = true;
+        self.remote = None;
+        self.peer_token = None;
     }
 
     pub fn all_acked(&self) -> bool {

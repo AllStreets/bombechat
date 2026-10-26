@@ -11,8 +11,9 @@ use bombechat_bluetooth::wire::{
 use bombechat_bluetooth::{
     bucket, Advert, BleHandle, BleTransport, FakeRadio, LinkId, Mode, Radio, RadioEvent, Room,
     SeededRng, ACK_DELAY_MAX_MS, FUTURE_TOKENS, HOLD_MS, IDLE_MS, KEEPALIVE_MS, MAX_LINKS,
-    PAST_TOKENS, QUEUE_CAP, REQUESTS_CAP, REQUESTS_NEED_OPEN, REQUEST_ATTEMPTS, REQUEST_MS,
-    SEEN_CAP, SEEN_MS, SILENCE_MS, STRANGER_MS, TOKEN_MS, TRIAL_CAP, TRIAL_RETRY_MS,
+    PAST_TOKENS, QUEUE_CAP, REQUESTS_CAP, REQUESTS_NEED_OPEN, REQUESTS_PART_WAY_CAP,
+    REQUEST_ATTEMPTS, REQUEST_MS, SEEN_CAP, SEEN_MS, SILENCE_MS, STRANGER_MS, TOKEN_MS, TRIAL_CAP,
+    TRIAL_RETRY_MS,
 };
 use bombechat_core::{seal_private, seal_public, Envelope, Identity, PublicIdentity};
 use bombechat_modem::{split, Event, Reassembler};
@@ -1672,7 +1673,8 @@ fn a_decline_sends_nothing_and_the_request_runs_out_unanswered() {
     c.radio.take_written();
     c.t.answer_request(req, None);
     let t = run_by(&mut [&mut a, &mut c], t, t + REQUEST_MS - 2_000, 1_000);
-    assert_eq!(c.t.requests_held(), 0, "nothing kept");
+    assert_eq!(c.t.requests_reported(), 0, "no longer shown");
+    assert_eq!(c.t.requests_held(), 1, "held quietly, as an ignored one is");
     assert!(
         written(&c.radio).iter().all(|(l, _)| l.0 != req),
         "nothing sent back"
@@ -1755,7 +1757,8 @@ fn a_hello_that_is_not_an_envelope_never_reaches_the_node() {
         STEP
     ));
     assert!(requests(&a).is_empty());
-    assert_eq!(a.t.requests_held(), 0);
+    assert_eq!(a.t.requests_reported(), 0, "never shown");
+    assert_eq!(a.t.requests_held(), 1, "but held as an ignored one is");
 }
 
 /// `raw` asks `a` to connect on `link`, as a stranger with `keys` would:
@@ -1866,6 +1869,93 @@ fn a_flood_of_requests_from_one_stranger_pushes_out_no_one_elses() {
     assert_eq!(requests(&a).len(), 7, "one more request");
     assert!(gone(&a).is_empty(), "no one else's request went");
     assert_eq!(a.t.requests_reported(), 7);
+}
+
+/// Whether a requester's handshake, begun before `churn` other links each
+/// send a message 1, still finishes: the part-way cap is the bound a
+/// stranger with that many links can hold against a real requester.
+fn finishes_after_churn(churn: usize) -> bool {
+    let room = Room::new(67);
+    let mut a = Device::new(&room, 1);
+    a.h.set_mode(Some(Mode::Open));
+    let mut now = STEP;
+    let (mut real, link) = stranger_beside(&room, &mut a, now);
+    let keys = SessionKeys::new(&identity(60));
+    let mut hs = Session::request_initiator(&keys);
+    let with_id = |rest: &[u8]| {
+        let mut b = 1u32.to_be_bytes().to_vec();
+        b.extend_from_slice(rest);
+        b
+    };
+    real.write(
+        link,
+        &LinkMessage {
+            kind: Kind::Request,
+            flags: FROM_INITIATOR,
+            body: with_id(&hs.write_message().unwrap()),
+        },
+    );
+    a.poll(now);
+    real.poll();
+    let reply = real
+        .got
+        .iter()
+        .find(|(l, m)| *l == link && m.kind == Kind::Handshake)
+        .map(|(_, m)| m.body[4..].to_vec())
+        .expect("answered");
+    // others open handshakes and leave them part way
+    for i in 0..churn {
+        now += STEP;
+        let (mut r, l) = stranger_beside(&room, &mut a, now);
+        let mut other = Session::request_initiator(&SessionKeys::new(&identity(200 + i as u64)));
+        r.write(
+            l,
+            &LinkMessage {
+                kind: Kind::Request,
+                flags: FROM_INITIATOR,
+                body: with_id(&other.write_message().unwrap()),
+            },
+        );
+        a.poll(now);
+    }
+    hs.read_message(&reply).unwrap();
+    real.write(
+        link,
+        &LinkMessage {
+            kind: Kind::Handshake,
+            flags: FROM_INITIATOR,
+            body: with_id(&hs.write_message().unwrap()),
+        },
+    );
+    let t = hs.into_transport().unwrap();
+    let hello = hello_of(&a).encode();
+    let mut plain = vec![1u8, 0, 0, 0, 0, 0, 0, 0, 0];
+    plain.extend_from_slice(&(hello.len() as u16).to_be_bytes());
+    plain.extend_from_slice(&hello);
+    plain.resize(bucket(plain.len()), 0);
+    let mut body = with_id(&0u64.to_be_bytes());
+    body.extend_from_slice(&t.encrypt(0, &plain).unwrap());
+    real.write(
+        link,
+        &LinkMessage {
+            kind: Kind::Sealed,
+            flags: FROM_INITIATOR,
+            body,
+        },
+    );
+    a.poll(now + STEP);
+    !requests(&a).is_empty()
+}
+
+/// Review M4: a stranger with that many radios can keep pushing out
+/// handshakes part way. The bound is pinned: fewer than
+/// REQUESTS_PART_WAY_CAP others leave a real requester's handshake
+/// alone, that many push it out. Once its hello has arrived it is never
+/// pushed out this way (the flood test).
+#[test]
+fn handshakes_part_way_are_pushed_out_only_past_their_cap() {
+    assert!(finishes_after_churn(REQUESTS_PART_WAY_CAP - 1));
+    assert!(!finishes_after_churn(REQUESTS_PART_WAY_CAP));
 }
 
 #[test]

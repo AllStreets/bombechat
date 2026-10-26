@@ -99,6 +99,16 @@ pub(crate) struct Requests {
     /// (transport, stranger, label).
     asked: Vec<(usize, u64, String)>,
     near: Vec<Near>,
+    /// Each contact's identity and id, as the store last had them: read
+    /// only when contacts change ([`Node::share_contacts`]), never per
+    /// tick.
+    known: Vec<(PublicIdentity, ContactId)>,
+    /// Contacts added by accepting a request whose proof never finished:
+    /// not confirmed until a proven session with them, as the store keeps
+    /// it.
+    unconfirmed: Vec<ContactId>,
+    /// Who is near may have changed since it was last reported.
+    stale: bool,
     /// What [`NodeEvent::Peers`] last said.
     said: Option<(Vec<ContactId>, usize)>,
 }
@@ -223,15 +233,30 @@ impl Node {
         let existing = store.contacts().into_iter().find(|c| c.who == w.from);
         let contact = match existing {
             Some(c) => c.id,
-            None => store
-                .add_contact(name, &w.from, false)
-                .map_err(|_| "not stored")?,
+            None => {
+                let id = store
+                    .add_contact(name, &w.from, false)
+                    .map_err(|_| "not stored")?;
+                // until a proven session shows they hold us too
+                let _ = store.set_confirmed(id, false);
+                id
+            }
         };
         let hello = control::pair_hello(me, &store.my_name(), random_id(), now_min(), TTL_MIN);
         let w = self.requests.waiting.remove(at).expect("found above");
         self.share_contacts();
         self.transports[w.ti].answer_request(w.request, Some(hello.encode()));
         Ok(contact)
+    }
+
+    /// Contacts added by accepting a request whose requester hasn't yet
+    /// been met in a proven session: they may not hold this device as a
+    /// contact (the proof never finished: the link went, or time ran out),
+    /// so the page shows them as not confirmed. Each is confirmed
+    /// ([`NodeEvent::ContactConfirmed`]) at its first proven session; kept
+    /// in the store across restarts.
+    pub fn unconfirmed(&self) -> Vec<ContactId> {
+        self.requests.unconfirmed.clone()
     }
 
     /// Decline the request `id`: it is forgotten, and nothing at all goes
@@ -246,10 +271,18 @@ impl Node {
     /// Tell every transport who this device's contacts are.
     pub(crate) fn share_contacts(&mut self) {
         let Some(store) = &self.store else { return };
-        let who: Vec<PublicIdentity> = store.contacts().into_iter().map(|c| c.who).collect();
+        let known: Vec<(PublicIdentity, ContactId)> = store
+            .contacts()
+            .into_iter()
+            .map(|c| (c.who, c.id))
+            .collect();
+        let who: Vec<PublicIdentity> = known.iter().map(|(w, _)| w.clone()).collect();
         for t in &mut self.transports {
             t.set_contacts(&who);
         }
+        self.requests.known = known;
+        self.requests.unconfirmed = store.unconfirmed();
+        self.requests.stale = true;
     }
 
     /// One of the request events a transport reported.
@@ -406,6 +439,7 @@ impl Node {
             r.near.resize(ti + 1, Near::default());
         }
         r.near[ti] = Near { contacts, seen };
+        r.stale = true;
         r.strangers.retain(|s| s.ti != ti || keys.contains(&s.key));
         for key in keys {
             if !r.strangers.iter().any(|s| (s.ti, s.key) == (ti, key)) {
@@ -419,19 +453,34 @@ impl Node {
     /// Report who is near if it changed: contacts present by any carrier,
     /// and strangers seen lately, summed over carriers.
     pub(crate) fn report_peers(&mut self, events: &mut Vec<NodeEvent>) {
-        if self.requests.near.is_empty() {
+        // no carrier has said who is near: nothing to report (sound and
+        // light never do)
+        if !self.requests.stale || self.requests.near.is_empty() {
             return;
         }
-        let known = self.contacts();
-        let mut contacts: Vec<ContactId> = self
-            .requests
+        self.requests.stale = false;
+        let r = &self.requests;
+        let mut contacts: Vec<ContactId> = r
             .near
             .iter()
             .flat_map(|n| n.contacts.iter())
-            .filter_map(|who| known.iter().find(|c| c.who == *who).map(|c| c.id))
+            .filter_map(|who| r.known.iter().find(|(w, _)| w == who).map(|(_, id)| *id))
             .collect();
         contacts.sort_by_key(|c| c.0);
         contacts.dedup();
+        // a proven session confirms a contact an accept left unconfirmed
+        let met: Vec<ContactId> = contacts
+            .iter()
+            .copied()
+            .filter(|c| self.requests.unconfirmed.contains(c))
+            .collect();
+        for c in met {
+            if let Some(store) = &self.store {
+                let _ = store.set_confirmed(c, true);
+            }
+            self.requests.unconfirmed.retain(|u| *u != c);
+            events.push(NodeEvent::ContactConfirmed { contact: c });
+        }
         let strangers = self.requests.near.iter().map(|n| n.seen).sum();
         let now = (contacts, strangers);
         if self.requests.said.as_ref() != Some(&now) {
@@ -605,6 +654,66 @@ mod tests {
         // answered: no longer waiting, and its end is not news
         reach.tell(TransportEvent::RequestGone { request: 7 });
         assert!(gone(&node.tick(10)).is_empty());
+    }
+
+    #[test]
+    fn a_request_from_someone_already_a_contact_is_declined_unseen() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (me, ben) = (Identity::generate(), Identity::generate());
+        let (mut node, reach) = node(&dir, &me);
+        let store = node.store.as_ref().unwrap();
+        store.add_contact("Ben", &ben.public(), true).unwrap();
+        reach.ask(7, &ben, "Ben");
+        assert!(asked(&node.tick(0)).is_empty(), "not shown");
+        assert_eq!(reach.answered(), vec![(7, None)]);
+    }
+
+    #[test]
+    fn an_accept_stays_unconfirmed_until_a_proven_session_and_across_restarts() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (me, ben) = (Identity::generate(), Identity::generate());
+        let (mut node, reach) = node(&dir, &me);
+        reach.ask(7, &ben, "Ben");
+        let id = asked(&node.tick(0))[0].0;
+        let contact = node.accept_request(id, "Ben").unwrap();
+        assert_eq!(node.unconfirmed(), vec![contact]);
+        // the proof never finished: the request just ends
+        reach.tell(TransportEvent::RequestGone { request: 7 });
+        node.tick(10);
+        assert_eq!(node.unconfirmed(), vec![contact]);
+        drop(node);
+        let store = Store::open(&dir.path().join("me.db"), "pass").unwrap();
+        let reach = Reach::default();
+        let mut node = Node::new(Some(store), vec![Box::new(reach.clone())]);
+        assert_eq!(node.unconfirmed(), vec![contact], "kept across restarts");
+        // a contact paired in person is never unconfirmed
+        let cat = node.confirm_pairing(&Identity::generate().public(), "Cat");
+        assert!(!node.unconfirmed().contains(&cat));
+        // met in a proven session: confirmed, once
+        reach.tell(TransportEvent::Peers {
+            contacts: vec![ben.public()],
+            strangers: vec![],
+            strangers_seen: 0,
+        });
+        let events = node.tick(20);
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, NodeEvent::ContactConfirmed { contact: c } if *c == contact)));
+        assert!(node.unconfirmed().is_empty());
+        reach.tell(TransportEvent::Peers {
+            contacts: vec![],
+            strangers: vec![],
+            strangers_seen: 0,
+        });
+        reach.tell(TransportEvent::Peers {
+            contacts: vec![ben.public()],
+            strangers: vec![],
+            strangers_seen: 0,
+        });
+        assert!(!node
+            .tick(30)
+            .iter()
+            .any(|e| matches!(e, NodeEvent::ContactConfirmed { .. })));
     }
 
     #[test]

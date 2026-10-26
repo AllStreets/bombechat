@@ -342,11 +342,12 @@ impl<R: Radio> BleTransport<R> {
         self.links
             .values()
             .flat_map(|l| l.exchanges.values())
-            .filter(|e| matches!(e, Exchange::Session(s) if s.kind == SessKind::RequestIn && s.heard_ms.is_some()))
+            .filter(|e| shown(e))
             .count()
     }
 
-    /// Requests received and held (answering, or heard and waiting).
+    /// Requests received and held: answering, shown and waiting, or held
+    /// quietly after a decline until their time is up.
     pub fn requests_held(&self) -> usize {
         self.links
             .values()
@@ -439,30 +440,31 @@ impl<R: Radio> BleTransport<R> {
     /// hello goes back inside the request session, and once the requester
     /// holds it, this device proves it sent it by a contact handshake
     /// naming the requester's token ([`BleTransport::prove_accepted`]).
-    /// Declined: the request is forgotten, and nothing goes back.
+    /// Declined: the request is no longer shown and nothing of ours goes
+    /// back, and its session is held exactly as an ignored one is
+    /// ([`LinkSession::hush`]), so the requester can't tell the two apart.
     fn answer(&mut self, link: LinkId, answer: Option<Vec<u8>>) {
         let now = self.now_ms;
         let Some(l) = self.links.get_mut(&link) else {
             return;
         };
         let Some(hello) = answer.filter(|h| h.len() <= MAX_ENVELOPE) else {
-            // the link is kept as long as an ignored request keeps it, so
-            // the requester can't tell a decline from no answer by when
-            // the link closes
-            let heard = l.exchanges.values().find_map(|e| match e {
-                Exchange::Session(s) if s.kind == SessKind::RequestIn => s.heard_ms,
-                _ => None,
-            });
-            if let Some(at) = heard {
-                l.busy_ms = l.busy_ms.max(at + REQUEST_MS);
+            for e in l.exchanges.values_mut() {
+                if let Exchange::Session(s) = e {
+                    if s.kind == SessKind::RequestIn && s.accepted_ms.is_none() {
+                        s.hush();
+                    }
+                }
             }
-            l.exchanges.retain(|_, e| !is_request_in(e));
             return;
         };
         let mut writes = Vec::new();
         for e in l.exchanges.values_mut() {
             if let Exchange::Session(s) = e {
-                if s.kind == SessKind::RequestIn && s.heard_ms.is_some() && s.accepted_ms.is_none()
+                if s.kind == SessKind::RequestIn
+                    && s.heard_ms.is_some()
+                    && s.accepted_ms.is_none()
+                    && !s.quiet
                 {
                     s.accepted_ms = Some(now);
                     writes.extend(s.send_envelope(&hello, None, now));
@@ -814,28 +816,26 @@ impl<R: Radio> BleTransport<R> {
     }
 
     /// Message 1 of a request to connect: answered in Open mode only, and
-    /// not on a link that brought a request in the last
-    /// [`REQUEST_GAP_MS`] or holds one reported: one per link, and a
-    /// stranger can't replace theirs to push others out. A request part
-    /// way on the link is replaced; past [`REQUESTS_PART_WAY_CAP`] part
-    /// way in all, the oldest of those goes, never one reported.
+    /// not on a link that holds a request whose hello arrived (shown,
+    /// accepted or held quietly): one per link, so a stranger can't
+    /// replace theirs to push others out. Whether it will be shown is
+    /// decided only when its hello arrives, and it is answered the same
+    /// way whatever is decided. A request part way on the link is
+    /// replaced; past [`REQUESTS_PART_WAY_CAP`] part way in all, the
+    /// oldest of those goes, never one whose hello arrived.
     fn request_message(&mut self, id: LinkId, xid: u32, noise: &[u8]) {
         if self.mode != Some(Mode::Open) || self.keys.is_none() {
             return;
         }
         let now = self.now_ms;
-        let recent = self
-            .request_links
-            .get(&id)
-            .is_some_and(|at| now.saturating_sub(*at) < REQUEST_GAP_MS);
         let Some(link) = self.links.get(&id) else {
             return;
         };
-        let reported = link
+        let held = link
             .exchanges
             .values()
             .any(|e| is_request_in(e) && !part_way(e));
-        if recent || reported || link.exchanges.contains_key(&(Side::Theirs, xid)) {
+        if held || link.exchanges.contains_key(&(Side::Theirs, xid)) {
             return;
         }
         let mut hs = Session::request_responder();
@@ -1013,7 +1013,7 @@ impl<R: Radio> BleTransport<R> {
         if first_hello && !d.envelopes.is_empty() {
             s.heard_ms = Some(now);
         }
-        if kind == SessKind::RequestIn {
+        if kind == SessKind::RequestIn && !s.quiet {
             if let Some(t) = d.tokens.first() {
                 s.peer_token = Some(*t);
             }
@@ -1091,9 +1091,12 @@ impl<R: Radio> BleTransport<R> {
     }
 
     /// A request's hello arrived: report it, unless the link or the
-    /// requester brought one in the last [`REQUEST_GAP_MS`] (then it is
-    /// dropped unreported), or it is no envelope. Past [`REQUESTS_CAP`]
-    /// reported, the oldest the person hasn't accepted goes.
+    /// requester brought one in the last [`REQUEST_GAP_MS`], or it is no
+    /// envelope; then it is held quietly, never shown. Past
+    /// [`REQUESTS_CAP`] shown, the oldest the person hasn't accepted is
+    /// held quietly from then on. Either way the requester sees what an
+    /// ignored request shows: its hello acknowledged, the session held
+    /// until its time is up.
     fn take_request(&mut self, id: LinkId, k: ExKey, from: PublicIdentity, hello: Vec<u8>) {
         let now = self.now_ms;
         let fresh =
@@ -1104,8 +1107,8 @@ impl<R: Radio> BleTransport<R> {
             && fresh(self.request_links.get(&id))
             && fresh(self.request_ids.get(&fk));
         if !ok {
-            if let Some(link) = self.links.get_mut(&id) {
-                link.exchanges.remove(&k);
+            if let Some(s) = self.links.get_mut(&id).and_then(|l| l.session(&k)) {
+                s.hush();
             }
             return;
         }
@@ -1137,9 +1140,7 @@ impl<R: Radio> BleTransport<R> {
             .iter()
             .flat_map(|(lid, l)| {
                 l.exchanges.iter().filter_map(move |(ek, e)| match e {
-                    Exchange::Session(s)
-                        if s.kind == SessKind::RequestIn && s.accepted_ms.is_none() =>
-                    {
+                    Exchange::Session(s) if shown(e) && s.accepted_ms.is_none() => {
                         s.heard_ms.map(|at| (at, *lid, *ek))
                     }
                     _ => None,
@@ -1150,8 +1151,8 @@ impl<R: Radio> BleTransport<R> {
         held.sort();
         while held.len() >= REQUESTS_CAP {
             let (_, lid, ek) = held.remove(0);
-            if let Some(l) = self.links.get_mut(&lid) {
-                l.exchanges.remove(&ek);
+            if let Some(s) = self.links.get_mut(&lid).and_then(|l| l.session(&ek)) {
+                s.hush();
             }
         }
         self.reported.insert(id);
@@ -1534,7 +1535,7 @@ impl<R: Radio> BleTransport<R> {
                 Exchange::Trial { .. } => true,
             });
             if !link.exchanges.is_empty() {
-                link.busy_ms = link.busy_ms.max(now);
+                link.busy_ms = now;
             }
             for w in writes {
                 link.put(&mut self.radio, id, &w);
@@ -1802,12 +1803,7 @@ impl<R: Radio> BleTransport<R> {
             .reported
             .iter()
             .copied()
-            .filter(|id| {
-                !self
-                    .links
-                    .get(id)
-                    .is_some_and(|l| holds(l, |e| is_request_in(e) && !part_way(e)))
-            })
+            .filter(|id| !self.links.get(id).is_some_and(|l| holds(l, shown)))
             .collect();
         for id in gone {
             self.reported.remove(&id);
@@ -1869,6 +1865,12 @@ fn is_request_in(e: &Exchange) -> bool {
         Exchange::Session(s) => s.kind == SessKind::RequestIn,
         _ => false,
     }
+}
+
+/// A request received whose hello arrived and that is shown (or accepted),
+/// not held quietly.
+fn shown(e: &Exchange) -> bool {
+    matches!(e, Exchange::Session(s) if s.kind == SessKind::RequestIn && s.heard_ms.is_some() && !s.quiet)
 }
 
 /// A request received that hasn't been reported: its handshake isn't done,

@@ -460,6 +460,9 @@ pub enum NodeEvent {
         contacts_in_range: Vec<ContactId>,
         strangers_in_range: usize,
     },
+    /// A contact added by accepting a request was met in a proven session:
+    /// no longer shown as not confirmed ([`Node::unconfirmed`]).
+    ContactConfirmed { contact: ContactId },
 }
 
 impl fmt::Debug for NodeEvent {
@@ -550,6 +553,10 @@ impl fmt::Debug for NodeEvent {
                 .debug_struct("Peers")
                 .field("contacts_in_range", contacts_in_range)
                 .field("strangers_in_range", strangers_in_range)
+                .finish(),
+            NodeEvent::ContactConfirmed { contact } => f
+                .debug_struct("ContactConfirmed")
+                .field("contact", contact)
                 .finish(),
         }
     }

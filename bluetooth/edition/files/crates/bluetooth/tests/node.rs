@@ -4,7 +4,6 @@
 //! up goes out once per channel at most.
 
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use bombechat_bluetooth::{BleTransport, FakeRadio, Mode, Room, SeededRng};
 use bombechat_core::{seal_private, Envelope, Identity, Kind};
@@ -21,6 +20,18 @@ const BASE: u64 = 1_800_000_000_000;
 /// node ever refuses envelopes from the future, seal at a fixed time
 /// instead and give the node that clock.
 const SENT_MIN: u32 = 4_000_000_000;
+/// For scenes where the node seals by the wall clock: a fixed moment in
+/// the past, so what it seals is never stale against the transport's
+/// clock. No test here reads a clock; the node itself does.
+const PAST: u64 = 1_700_000_000_000;
+
+/// An identity drawn from `seed`: the same every run.
+fn identity(seed: u64) -> Identity {
+    let mut bytes = [0u8; 64];
+    let mut rng = SeededRng::new(seed ^ 0x2B);
+    rand_core::RngCore::fill_bytes(&mut rng, &mut bytes);
+    Identity::from_secret_bytes(&bytes)
+}
 
 /// A sound transport the test plays into by hand, keeping what it sends.
 #[derive(Clone, Default)]
@@ -90,7 +101,7 @@ impl Scene {
 /// sent, or after it has arrived.
 fn both_ways(sound_first: bool) {
     let dir = tempfile::TempDir::new().unwrap();
-    let (a_id, b_id) = (Identity::generate(), Identity::generate());
+    let (a_id, b_id) = (identity(1), identity(2));
     let room = Room::new(70);
 
     // a: a bare transport, sending
@@ -258,15 +269,22 @@ fn tick_both(a: &mut Side, b: &mut Side, from: u64, to: u64) -> u64 {
 /// The same envelope then also arriving by sound changes nothing.
 #[test]
 fn a_message_goes_out_once_per_channel_and_the_receiver_takes_it_once() {
-    let base = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64;
     let room = Room::new(90);
-    let (a_id, b_id) = (Identity::generate(), Identity::generate());
-    let mut a = side(&room, base, 1, &a_id, &b_id);
-    let mut b = side(&room, base, 2, &b_id, &a_id);
+    let (a_id, b_id) = (identity(3), identity(4));
+    let mut a = side(&room, PAST, 1, &a_id, &b_id);
+    let mut b = side(&room, PAST, 2, &b_id, &a_id);
     let t = tick_both(&mut a, &mut b, 0, 2_000);
+    assert_eq!(room.links().len(), 2, "a link each way between the two");
+    let present = |s: &Side| {
+        s.events.iter().rev().find_map(|e| match e {
+            NodeEvent::Peers {
+                contacts_in_range, ..
+            } => Some(contacts_in_range.len()),
+            _ => None,
+        })
+    };
+    assert_eq!(present(&a), Some(1), "a session each way: b is present");
+    assert_eq!(present(&b), Some(1));
     let to_b = a.node.contacts()[0].id;
 
     let id = a.node.send(&[to_b], "once", Channel::Bluetooth);

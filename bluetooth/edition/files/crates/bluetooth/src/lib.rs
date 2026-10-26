@@ -120,10 +120,17 @@
 //! requester reports the accept and takes them as a contact. A hello
 //! claiming someone else proves nothing: its proof comes from another key.
 //!
-//! Declining forgets the request and sends nothing. The link is held as
-//! long as the request would have been, so the requester can't tell a
-//! decline from no answer by when the link closes; either way its request
-//! ends unanswered [`REQUEST_MS`] after it was delivered.
+//! A request that won't be shown is held quietly, exactly as an ignored
+//! one is: one the person declines, one pushed out by the cap (here or by
+//! the node), one past the per-link or per-identity gap, one whose hello
+//! doesn't decode or that the node turns down unseen (a hello not the
+//! requester's own, a requester already a contact, a locked machine). Its
+//! hello and anything after are acknowledged on the same held schedule,
+//! and the session lasts until [`REQUEST_MS`] after the hello, as an
+//! ignored one does; only what it carried of the requester is forgotten.
+//! So whatever becomes of a request, the requester sees the same bytes at
+//! the same moments: its request delivered, then, with no accept, ended
+//! unanswered [`REQUEST_MS`] after it was delivered.
 //!
 //! # Who is near
 //!
