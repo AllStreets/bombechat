@@ -1,21 +1,27 @@
 //! Tests of the whole stack below the node: transports over the
 //! CoreBluetooth radio's adapter, over a simulated CoreBluetooth whose
 //! device identifiers never change (as between two Macs that keep each
-//! other's identity), so every refusal rule is in play.
+//! other's identity), so every rule about withholding the token is in
+//! play.
 
 use std::sync::{Arc, Mutex};
 
 use bombechat_core::{seal_private, Envelope, Identity};
 use bombechat_modem::{split, Event, Reassembler};
 use bombechat_node::{Transport, TransportEvent};
-use bombechat_session::SessionKeys;
+use bombechat_session::{SessionKeys, TOKEN_LEN};
 
-use crate::adapter::{parse_tag, Access, Adapter, CbEvent, PeerId, Power, Role, Stack};
+use crate::adapter::{
+    parse_tag, Access, Adapter, CbEvent, PeerId, Power, Role, Stack, TOKEN_MARK, WITHHELD_MARK,
+};
 use crate::radio::Mode;
 use crate::transport::{BleTransport, TOKEN_MS};
 use crate::{BleHandle, SeededRng};
 
 struct Station {
+    /// The station whose identifier this one shows: itself, or another
+    /// it copies.
+    ident: usize,
     open: bool,
     advert: Option<String>,
     scanning: bool,
@@ -23,30 +29,44 @@ struct Station {
 }
 
 /// The air: every station, the connections between them (central,
-/// peripheral), the clock, and whether they are out of range.
+/// peripheral), the clock, whether they are out of range, and everything
+/// that crossed it.
 #[derive(Default)]
 struct Air {
     stations: Vec<Station>,
     conns: Vec<(usize, usize)>,
     now: u64,
     apart: bool,
+    /// (from, to, bytes, when): every write and notification delivered.
+    carried: Vec<(usize, usize, Vec<u8>, u64)>,
 }
 
 fn id(i: usize) -> PeerId {
     [i as u8 + 1; 16]
 }
 
-fn index(p: PeerId) -> usize {
-    p[0] as usize - 1
-}
-
 impl Air {
+    /// The identifier station `i` shows.
+    fn ident(&self, i: usize) -> PeerId {
+        id(self.stations[i].ident)
+    }
+
     /// Every connection ends, as when the two go out of range.
     fn cut_all(&mut self) {
         for (c, p) in std::mem::take(&mut self.conns) {
-            self.stations[c].inbox.push(CbEvent::Disconnected(id(p)));
-            self.stations[p].inbox.push(CbEvent::Unsubscribed(id(c)));
+            let (ic, ip) = (self.ident(c), self.ident(p));
+            self.stations[c].inbox.push(CbEvent::Disconnected(ip));
+            self.stations[p].inbox.push(CbEvent::Unsubscribed(ic));
         }
+    }
+
+    /// Notifications `from` sent `to`.
+    fn notified(&self, from: usize, to: usize, since: u64) -> Vec<&[u8]> {
+        self.carried
+            .iter()
+            .filter(|(f, t, _, at)| *f == from && *t == to && *at >= since)
+            .map(|(_, _, b, _)| b.as_slice())
+            .collect()
     }
 }
 
@@ -75,9 +95,11 @@ impl Stack for SimStack {
         air.conns = rest;
         for (c, p) in mine {
             if c == me {
-                air.stations[p].inbox.push(CbEvent::Unsubscribed(id(c)));
+                let ic = air.ident(c);
+                air.stations[p].inbox.push(CbEvent::Unsubscribed(ic));
             } else {
-                air.stations[c].inbox.push(CbEvent::Disconnected(id(p)));
+                let ip = air.ident(p);
+                air.stations[c].inbox.push(CbEvent::Disconnected(ip));
             }
         }
         let st = &mut air.stations[me];
@@ -97,14 +119,11 @@ impl Stack for SimStack {
         let me = self.me;
         // every advert in range is reported, as with AllowDuplicates
         if air.stations[me].scanning && !air.apart {
-            let seen: Vec<CbEvent> = air
-                .stations
-                .iter()
-                .enumerate()
-                .filter(|(i, s)| *i != me && s.open)
-                .filter_map(|(i, s)| {
-                    let name = s.advert.as_ref()?;
-                    Some(CbEvent::Discovered(id(i), parse_tag(name)))
+            let seen: Vec<CbEvent> = (0..air.stations.len())
+                .filter(|i| *i != me && air.stations[*i].open)
+                .filter_map(|i| {
+                    let name = air.stations[i].advert.as_ref()?;
+                    Some(CbEvent::Discovered(air.ident(i), parse_tag(name)))
                 })
                 .collect();
             air.stations[me].inbox.extend(seen);
@@ -135,45 +154,69 @@ impl Stack for SimStack {
     }
     fn connect(&mut self, peer: PeerId) {
         let mut air = self.air.lock().unwrap();
-        let (me, p) = (self.me, index(peer));
-        let there = air.stations[p].open && air.stations[p].advert.is_some() && !air.apart;
-        if !there {
+        let me = self.me;
+        let there = (0..air.stations.len()).find(|p| {
+            *p != me
+                && air.ident(*p) == peer
+                && air.stations[*p].open
+                && air.stations[*p].advert.is_some()
+        });
+        let Some(p) = there.filter(|_| !air.apart) else {
             air.stations[me].inbox.push(CbEvent::Failed(peer));
             return;
-        }
+        };
         air.conns.push((me, p));
+        let im = air.ident(me);
         air.stations[me].inbox.push(CbEvent::Ready(peer));
-        air.stations[p].inbox.push(CbEvent::Subscribed(id(me)));
+        air.stations[p].inbox.push(CbEvent::Subscribed(im));
     }
     fn cancel(&mut self, peer: PeerId) {
         let mut air = self.air.lock().unwrap();
-        let (me, p) = (self.me, index(peer));
-        let before = air.conns.len();
-        air.conns.retain(|c| *c != (me, p));
-        if air.conns.len() < before {
-            air.stations[p].inbox.push(CbEvent::Unsubscribed(id(me)));
+        let me = self.me;
+        let gone: Vec<(usize, usize)> = air
+            .conns
+            .iter()
+            .copied()
+            .filter(|(c, p)| *c == me && air.ident(*p) == peer)
+            .collect();
+        air.conns.retain(|c| !gone.contains(c));
+        let im = air.ident(me);
+        for (_, p) in gone {
+            air.stations[p].inbox.push(CbEvent::Unsubscribed(im));
         }
     }
     fn write(&mut self, peer: PeerId, bytes: &[u8]) -> bool {
         let mut air = self.air.lock().unwrap();
-        let (me, p) = (self.me, index(peer));
-        if !air.conns.contains(&(me, p)) {
+        let me = self.me;
+        let Some(&(_, p)) = air
+            .conns
+            .iter()
+            .find(|(c, p)| *c == me && air.ident(*p) == peer)
+        else {
             return false;
-        }
+        };
+        let (im, now) = (air.ident(me), air.now);
+        air.carried.push((me, p, bytes.to_vec(), now));
         air.stations[p]
             .inbox
-            .push(CbEvent::Written(id(me), bytes.to_vec()));
+            .push(CbEvent::Written(im, bytes.to_vec()));
         true
     }
     fn notify(&mut self, central: PeerId, bytes: &[u8]) -> bool {
         let mut air = self.air.lock().unwrap();
-        let (me, c) = (self.me, index(central));
-        if !air.conns.contains(&(c, me)) {
+        let me = self.me;
+        let Some(&(c, _)) = air
+            .conns
+            .iter()
+            .find(|(c, p)| *p == me && air.ident(*c) == central)
+        else {
             return false;
-        }
+        };
+        let (im, now) = (air.ident(me), air.now);
+        air.carried.push((me, c, bytes.to_vec(), now));
         air.stations[c]
             .inbox
-            .push(CbEvent::Notified(id(me), bytes.to_vec()));
+            .push(CbEvent::Notified(im, bytes.to_vec()));
         true
     }
     fn max_write(&self, _peer: PeerId) -> usize {
@@ -187,27 +230,37 @@ impl Stack for SimStack {
 type Radio = Adapter<SimStack>;
 
 struct Mac {
+    me: usize,
     t: BleTransport<Radio>,
     h: BleHandle,
     id: Identity,
     heard: Reassembler,
     got: Vec<Envelope>,
     events: Vec<TransportEvent>,
+    /// Every token it advertised, and when it began.
+    tokens: Vec<([u8; TOKEN_LEN], u64)>,
 }
 
 const BASE: u64 = 1_800_000_000_000;
 
 impl Mac {
     fn new(air: &Arc<Mutex<Air>>, seed: u64) -> Mac {
+        Mac::showing(air, seed, None)
+    }
+
+    /// A station showing another's identifier (`copy`), or its own.
+    fn showing(air: &Arc<Mutex<Air>>, seed: u64, copy: Option<usize>) -> Mac {
         let me = {
             let mut a = air.lock().unwrap();
+            let me = a.stations.len();
             a.stations.push(Station {
+                ident: copy.unwrap_or(me),
                 open: false,
                 advert: None,
                 scanning: false,
                 inbox: Vec::new(),
             });
-            a.stations.len() - 1
+            me
         };
         let radio = Adapter::new(SimStack {
             air: air.clone(),
@@ -220,12 +273,14 @@ impl Mac {
         let id = Identity::from_secret_bytes(&secret);
         h.set_identity(Some(SessionKeys::new(&id)));
         Mac {
+            me,
             t,
             h,
             id,
             heard: Reassembler::new(),
             got: Vec::new(),
             events: Vec::new(),
+            tokens: Vec::new(),
         }
     }
 
@@ -243,6 +298,15 @@ impl Mac {
             self.events.push(e);
         }
         self.h.take_events();
+        if let Some(&t) = self.t.tokens().first() {
+            if self.tokens.last().is_none_or(|(last, _)| *last != t) {
+                self.tokens.push((t, now));
+            }
+        }
+    }
+
+    fn token(&self) -> [u8; TOKEN_LEN] {
+        self.tokens.last().expect("running").0
     }
 
     fn send(&mut self, to: &Mac, text: &str, tag: u16) -> Envelope {
@@ -280,10 +344,24 @@ fn talk(air: &Arc<Mutex<Air>>, a: &mut Mac, b: &mut Mac, t: u64, tag: u16) -> u6
     t
 }
 
-/// Two contacts whose identifiers never change: each refuses the other
-/// as a stranger once both have rotated, but their confirmed sessions
-/// exempt them, so they reconnect after every rotation and after a
-/// blackout, and keep talking.
+fn counts(notes: &[&[u8]]) -> (usize, usize) {
+    let tokens = notes
+        .iter()
+        .filter(|n| n.len() == 1 + TOKEN_LEN && n[0] == TOKEN_MARK)
+        .count();
+    let withheld = notes.iter().filter(|n| **n == [WITHHELD_MARK]).count();
+    (tokens, withheld)
+}
+
+fn contains(hay: &[u8], needle: &[u8]) -> bool {
+    hay.windows(needle.len()).any(|w| w == needle)
+}
+
+/// Two contacts whose identifiers never change: once both have rotated,
+/// each withholds its token from the other in both directions. They keep
+/// meeting anyway, on the tokens they tell each other inside their
+/// sessions, after three rotations each and after a 90 s blackout that
+/// spans a rotation, and keep talking.
 #[test]
 fn contacts_with_stable_identifiers_keep_meeting_across_rotations_and_a_blackout() {
     let air = Arc::new(Mutex::new(Air::default()));
@@ -301,15 +379,93 @@ fn contacts_with_stable_identifiers_keep_meeting_across_rotations_and_a_blackout
     for round in 0..3u16 {
         t = run(&air, &mut [&mut a, &mut b], t, t + TOKEN_MS + 60_000);
         assert!(present(&a, &b), "together after rotation {round}");
+        assert_eq!(a.t.contact_token(&b.id.public()), Some(b.token()));
+        assert_eq!(b.t.contact_token(&a.id.public()), Some(a.token()));
         t = talk(&air, &mut a, &mut b, t, 10 + round);
     }
-    // a blackout longer than every session's silence limit
+    assert!(
+        a.tokens.len() > 3 && b.tokens.len() > 3,
+        "three rotations each"
+    );
+    // once both had rotated, no clear token passed between them, either
+    // way, and each was linked without one
+    let since = a.tokens[1].1.max(b.tokens[1].1);
+    for (from, to) in [(a.me, b.me), (b.me, a.me)] {
+        let (tokens, withheld) = counts(&air.lock().unwrap().notified(from, to, since));
+        assert_eq!(tokens, 0, "{from} gave {to} its token");
+        assert!(withheld > 0, "{from} never linked {to} without the token");
+    }
+
+    // a blackout longer than every session's silence limit, across one
+    // rotation
+    let (na, nb) = (
+        a.t.next_rotation_ms().unwrap(),
+        b.t.next_rotation_ms().unwrap(),
+    );
+    let first = na.min(nb);
+    assert!(na.max(nb) > first + 60_000, "only one rotates in the dark");
+    t = run(&air, &mut [&mut a, &mut b], t, first - 30_000);
+    let before = (a.tokens.len(), b.tokens.len());
     air.lock().unwrap().apart = true;
     air.lock().unwrap().cut_all();
     t = run(&air, &mut [&mut a, &mut b], t, t + 90_000);
     assert!(!present(&a, &b), "apart");
+    assert_eq!(
+        a.tokens.len() + b.tokens.len(),
+        before.0 + before.1 + 1,
+        "a rotation in the dark"
+    );
     air.lock().unwrap().apart = false;
     t = run(&air, &mut [&mut a, &mut b], t, t + 60_000);
     assert!(present(&a, &b), "together again after the blackout");
     talk(&air, &mut a, &mut b, t, 20);
+}
+
+/// A stranger that copies a contact's identifier (its address), after
+/// this device's rotation: it gets a link but no token, its hellos get no
+/// answer, and as it is no contact no session tells it the token. It
+/// learns nothing of the new token.
+#[test]
+fn a_stranger_with_a_copied_identifier_gains_nothing_after_a_rotation() {
+    let air = Arc::new(Mutex::new(Air::default()));
+    let mut a = Mac::new(&air, 1);
+    let mut b = Mac::new(&air, 2);
+    a.h.set_contacts(vec![b.id.public()]);
+    b.h.set_contacts(vec![a.id.public()]);
+    a.h.set_mode(Some(Mode::Contacts));
+    b.h.set_mode(Some(Mode::Contacts));
+    let t = run(&air, &mut [&mut a, &mut b], 0, 5_000);
+    assert!(present(&a, &b));
+    // past b's rotation, then a leaves
+    let rotated = b.t.next_rotation_ms().unwrap() + 1_000;
+    let t = run(&air, &mut [&mut a, &mut b], t, rotated);
+    assert!(b.tokens.len() >= 2);
+    a.h.set_mode(None);
+    let t = run(&air, &mut [&mut a, &mut b], t, t + 1_000);
+    // the stranger shows a's identifier, and knows b's key
+    let mut s = Mac::showing(&air, 3, Some(a.me));
+    s.h.set_contacts(vec![b.id.public()]);
+    s.h.set_mode(Some(Mode::Contacts));
+    let from = t;
+    let t = run(&air, &mut [&mut b, &mut s], t, t + 60_000);
+    let air_now = air.lock().unwrap();
+    let (tokens, withheld) = counts(&air_now.notified(b.me, s.me, from));
+    assert_eq!(tokens, 0, "no clear token");
+    assert!(withheld > 0, "a link, without the token");
+    // nothing that reached it carries b's token, in the clear or not
+    let current = b.token();
+    let reached: Vec<&Vec<u8>> = air_now
+        .carried
+        .iter()
+        .filter(|(_, to, _, at)| *to == s.me && *at >= from)
+        .map(|(_, _, bytes, _)| bytes)
+        .collect();
+    assert!(!reached.is_empty());
+    assert!(reached.iter().all(|bytes| !contains(bytes, &current)));
+    drop(air_now);
+    assert_eq!(s.t.contact_token(&b.id.public()), None);
+    assert!(s.h.peers().contacts.is_empty(), "no session");
+    assert!(b.h.peers().contacts.is_empty());
+    assert_eq!(b.token(), current, "within one token");
+    let _ = t;
 }

@@ -3,8 +3,8 @@
 //!
 //! Every started radio that sees another's advert connects to it, so two
 //! devices in range share two links, one each way. The radio that
-//! connected learns the other's token in [`RadioEvent::Up`]; the other
-//! learns none. Nothing here reads a clock: knobs draw from a seeded
+//! connected learns the other's token in [`RadioEvent::Up`] (or only its
+//! advert's tag, if the other withholds it); the other learns none. Nothing here reads a clock: knobs draw from a seeded
 //! generator, so a test runs the same every time.
 
 use std::collections::BTreeMap;
@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use bombechat_session::TOKEN_LEN;
 use rand_core::{impls, RngCore};
 
-use crate::radio::{LinkId, Mode, Radio, RadioEvent};
+use crate::radio::{Advert, LinkId, Mode, Radio, RadioEvent, TAG_LEN};
 
 /// A write size typical of a Mac: a 185-byte ATT MTU less its header.
 pub const FAKE_MAX_WRITE: usize = 182;
@@ -28,7 +28,6 @@ struct Station {
     starts: u32,
     stops: u32,
     written: Vec<(LinkId, Vec<u8>)>,
-    marks: Vec<(LinkId, bool)>,
 }
 
 #[derive(Clone, Copy)]
@@ -48,9 +47,9 @@ struct RoomState {
     duplicate_per_mille: u32,
     reorder_per_mille: u32,
     apart: HashSet<(usize, usize)>,
-    /// (central, peripheral) pairs the peripheral refuses: no link is
-    /// made that way, as when it heard that central under an earlier
-    /// token.
+    /// (central, peripheral) pairs where the peripheral withholds its
+    /// token, as when it heard that central under an earlier one: the
+    /// central learns only the advert's tag.
     refused: HashSet<(usize, usize)>,
     /// Links a radio closed, by (central, peripheral, the advert it had
     /// connected to): not reopened while the peripheral still shows it.
@@ -84,12 +83,7 @@ impl RoomState {
         let n = self.stations.len();
         for c in 0..n {
             for p in 0..n {
-                if c == p
-                    || !self.stations[c].on
-                    || !self.stations[p].on
-                    || !self.in_range(c, p)
-                    || self.refused.contains(&(c, p))
-                {
+                if c == p || !self.stations[c].on || !self.stations[p].on || !self.in_range(c, p) {
                     continue;
                 }
                 let Some(token) = self.stations[p].token else {
@@ -113,13 +107,19 @@ impl RoomState {
                         token,
                     },
                 );
-                self.stations[c].inbox.push(RadioEvent::Up {
-                    link: id,
-                    token: Some(token),
-                });
+                let advert = if self.refused.contains(&(c, p)) {
+                    let mut tag = [0u8; TAG_LEN];
+                    tag.copy_from_slice(&token[..TAG_LEN]);
+                    Advert::Withheld(Some(tag))
+                } else {
+                    Advert::Token(token)
+                };
+                self.stations[c]
+                    .inbox
+                    .push(RadioEvent::Up { link: id, advert });
                 self.stations[p].inbox.push(RadioEvent::Up {
                     link: id,
-                    token: None,
+                    advert: Advert::Unseen,
                 });
             }
         }
@@ -197,7 +197,6 @@ impl Room {
             starts: 0,
             stops: 0,
             written: Vec::new(),
-            marks: Vec::new(),
         });
         FakeRadio {
             room: self.0.clone(),
@@ -243,8 +242,9 @@ impl Room {
         }
     }
 
-    /// Have `peripheral` refuse `central`: no link from `central` to its
-    /// advert (the other way is unaffected), and any such link goes down.
+    /// Have `peripheral` withhold its token from `central` from now on:
+    /// links from `central` to its advert show only the tag (the other way
+    /// is unaffected), and any such link now goes down.
     pub fn refuse(&self, central: &FakeRadio, peripheral: &FakeRadio) {
         let mut s = self.0.lock().unwrap();
         s.refused.insert((central.me, peripheral.me));
@@ -257,6 +257,7 @@ impl Room {
         for id in gone {
             s.cut(id);
         }
+        s.connect();
     }
 
     /// Take one link down, as a radio dropping out mid-message would.
@@ -327,11 +328,6 @@ impl FakeRadio {
     pub fn take_written(&self) -> Vec<(LinkId, Vec<u8>)> {
         std::mem::take(&mut self.room.lock().unwrap().stations[self.me].written)
     }
-
-    /// Every [`Radio::mark_contact`] it was given, in order.
-    pub fn contact_marks(&self) -> Vec<(LinkId, bool)> {
-        self.room.lock().unwrap().stations[self.me].marks.clone()
-    }
 }
 
 impl Radio for FakeRadio {
@@ -396,12 +392,6 @@ impl Radio for FakeRadio {
         s.stations[me]
             .inbox
             .retain(|e| !matches!(e, RadioEvent::Bytes(l, _) if *l == link));
-    }
-
-    fn mark_contact(&mut self, link: LinkId, contact: bool) {
-        self.room.lock().unwrap().stations[self.me]
-            .marks
-            .push((link, contact));
     }
 
     fn write(&mut self, link: LinkId, bytes: &[u8]) {

@@ -47,29 +47,34 @@
 //! A peripheral manager cannot drop a central, so a central that connects
 //! to this device may keep its connection as long as it likes, across
 //! this device's rotations and even past `stop`. What this side controls
-//! is the token: each central (by its CoreBluetooth identifier, which
-//! follows its address and so its connection) gets the whole token at
-//! most once, and only if it was first heard in the current token's
-//! period. A central heard before a rotation gets nothing new over its old
-//! connection: unsubscribing and subscribing again yields no token and no
-//! link. A link that already carries a contact's session is untouched by
-//! a rotation and keeps working. `disconnect` on such a link stops using
-//! it: its writes are ignored and nothing more is sent. Centrals are
-//! remembered while subscribed and for [`CENTRAL_MEMORY_MS`] after their
-//! last accepted traffic (a refused subscription refreshes nothing); one
-//! that holds a connection silent and unsubscribed longer than that is
-//! taken for a new one. So any central first heard under an earlier token
-//! can't open a link to this device until its address changes (a new
-//! identifier) or it has been silent an hour. Two Macs on the same Apple
-//! ID may keep the same identifier for each other across address
-//! changes, so they could refuse each other both ways; contacts are
-//! exempt. Once a link carries a confirmed contact session
-//! ([`Radio::mark_contact`]; only a contact can confirm one), the device
-//! at its other end is never refused and gets the current token whenever
-//! it subscribes, for [`EXEMPT_MS`] after its last confirmed session. A
-//! stranger gains nothing from this. The side that is refused
-//! waits for a new tag on the advert, or [`REFUSED_MS`], before asking
-//! again, so a refusal is not retried every few seconds.
+//! is the token. Each central (by its CoreBluetooth identifier, which
+//! follows its address and so its connection) is given the whole token
+//! at most once, and only if it was first heard in the current token's
+//! period. Every other subscription still gets a link, but its first
+//! notification is `WITHHELD_MARK` instead of the token: a central heard
+//! before a rotation learns nothing new over its old connection, however
+//! it subscribes again. A link that already carries a contact's session is
+//! untouched by a rotation and keeps working. `disconnect` on a
+//! peripheral-side link stops using it: its writes are ignored and nothing
+//! more is sent, until the central subscribes again (and is then given a
+//! link without the token).
+//!
+//! Centrals are remembered while subscribed and for [`CENTRAL_MEMORY_MS`]
+//! after their last traffic on a link that was given the token (traffic on
+//! a link without it refreshes nothing); one that holds a connection
+//! silent and unsubscribed longer than that is taken for a new one. So
+//! any central first heard under an earlier token gets no token from this
+//! device until its address changes (a new identifier) or it has been
+//! silent an hour. Two Macs on the same Apple ID may keep the same
+//! identifier for each other across address changes, so each may withhold
+//! its token from the other in both directions. Contacts don't need it:
+//! each side tells its contacts its token inside their encrypted session,
+//! when the session is confirmed and at every rotation, and a contact
+//! recognises the advert by its tag and names that token in its hello.
+//! Nothing here is keyed to an identifier a stranger could copy. The
+//! central side treats a peripheral that subscribed it but sent nothing
+//! as refusing: it waits for a new tag on the advert, or [`REFUSED_MS`],
+//! before asking again.
 //!
 //! Writes are queued per link and handed to CoreBluetooth only while it
 //! has room (`canSendWriteWithoutResponse`, and `updateValue` returning
@@ -81,18 +86,19 @@ use std::collections::{BTreeMap, VecDeque};
 
 use bombechat_session::TOKEN_LEN;
 
-use crate::radio::{LinkId, Mode, Radio, RadioEvent};
+use crate::radio::{Advert, LinkId, Mode, Radio, RadioEvent, TAG_LEN};
 use crate::transport::MAX_LINKS;
 
 /// CoreBluetooth's identifier for a remote device (its `NSUUID` bytes).
 pub(crate) type PeerId = [u8; 16];
 
 /// The part of the token the advert shows.
-pub(crate) const TAG_LEN: usize = 6;
 pub(crate) type Tag = [u8; TAG_LEN];
 
 /// The first byte of the notification that carries the whole token.
 pub(crate) const TOKEN_MARK: u8 = 0x54;
+/// The whole first notification to a central that is not given the token.
+pub(crate) const WITHHELD_MARK: u8 = 0x4e;
 
 /// The sentence shown when Bluetooth is switched off on the Mac.
 pub const BLUETOOTH_OFF: &str = "Bluetooth is off in System Settings.";
@@ -122,14 +128,8 @@ pub const CLOSED_CAP: usize = 256;
 pub const CENTRAL_MEMORY_MS: u64 = 60 * 60_000;
 /// ...and at most this many are remembered.
 pub const CENTRALS_CAP: usize = 1024;
-/// A device that held a confirmed contact session with this one is never
-/// refused for this long after it last did...
-pub const EXEMPT_MS: u64 = 24 * 60 * 60_000;
-/// ...and at most this many are remembered (the oldest goes).
-pub const EXEMPT_CAP: usize = 256;
-/// A peripheral that took our subscription but sent no token (it heard
-/// this device under an earlier token) is not asked again until its
-/// advert shows a new tag, or this long.
+/// A peripheral that took our subscription but sent nothing at all is not
+/// asked again until its advert shows a new tag, or this long.
 pub const REFUSED_MS: u64 = 10 * 60_000;
 /// At most this many connections being made at once.
 pub const CONNECTING_CAP: usize = 4;
@@ -303,8 +303,9 @@ struct Conn {
     tag: Option<Tag>,
     queue: VecDeque<Vec<u8>>,
     queued: usize,
-    /// Carries a confirmed session with a contact ([`Radio::mark_contact`]).
-    contact: bool,
+    /// A peripheral-side link whose central was not given the token: its
+    /// traffic keeps nothing remembered.
+    withheld: bool,
 }
 
 /// A remembered advert this side won't connect to.
@@ -350,10 +351,6 @@ pub(crate) struct Adapter<S: Stack> {
     /// Remote centrals heard from, kept across `stop` (their connections
     /// may outlive it), forgotten when Bluetooth goes off.
     centrals: BTreeMap<PeerId, Heard>,
-    /// Devices that held a confirmed contact session with this one, by
-    /// identifier, and when they last did: never refused, for
-    /// [`EXEMPT_MS`] after that. Kept and cleared as `centrals` is.
-    exempt: BTreeMap<PeerId, u64>,
     /// What happened that the hardware tests print.
     #[cfg(test)]
     pub notes: Vec<String>,
@@ -380,7 +377,6 @@ impl<S: Stack> Adapter<S> {
             closed: Vec::new(),
             epoch: 0,
             centrals: BTreeMap::new(),
-            exempt: BTreeMap::new(),
             #[cfg(test)]
             notes: Vec::new(),
             next_link: 1,
@@ -525,7 +521,6 @@ impl<S: Stack> Adapter<S> {
                 // central's connection may outlive that.)
                 if matches!(power, Power::Off | Power::Resetting) {
                     self.centrals.clear();
-                    self.exempt.clear();
                 }
             }
         }
@@ -589,7 +584,7 @@ impl<S: Stack> Adapter<S> {
                 tag,
                 queue: VecDeque::new(),
                 queued: 0,
-                contact: false,
+                withheld: false,
             },
         );
         self.ids.insert(link, key);
@@ -605,10 +600,9 @@ impl<S: Stack> Adapter<S> {
         }
     }
 
-    /// A peripheral took our subscription but sent no token: it doesn't
-    /// serve this device (it heard this device under an earlier token).
-    /// Asking again before its advert changes would get the same answer,
-    /// so wait for a new tag, or [`REFUSED_MS`].
+    /// A peripheral took our subscription but sent nothing: it doesn't
+    /// serve this device. Asking again before its advert changes would get
+    /// the same answer, so wait for a new tag, or [`REFUSED_MS`].
     fn refused(&mut self, peer: PeerId) {
         if let Some(conn) = self.drop_conn((Role::Central, peer), true) {
             self.stack.cancel(peer);
@@ -624,20 +618,27 @@ impl<S: Stack> Adapter<S> {
             self.events.push(RadioEvent::Bytes(conn.link, bytes));
             return;
         }
-        // the first notification must be the token, and nothing else
-        if bytes.len() != 1 + TOKEN_LEN || bytes[0] != TOKEN_MARK {
+        // the first notification must be the token, or the sign that it
+        // is withheld, and nothing else
+        let advert = if bytes == [WITHHELD_MARK] {
+            Advert::Withheld(conn.tag)
+        } else if bytes.len() == 1 + TOKEN_LEN && bytes[0] == TOKEN_MARK {
+            let mut token = [0u8; TOKEN_LEN];
+            token.copy_from_slice(&bytes[1..]);
+            Advert::Token(token)
+        } else {
             self.fail(peer);
             return;
-        }
-        let mut token = [0u8; TOKEN_LEN];
-        token.copy_from_slice(&bytes[1..]);
+        };
         if let Some(conn) = self.conns.get_mut(&(Role::Central, peer)) {
             conn.state = State::Up;
-            // the link is to the advert with this token now
-            conn.tag = Some(tag_of(&token));
+            if let Advert::Token(token) = advert {
+                // the link is to the advert with this token now
+                conn.tag = Some(tag_of(&token));
+            }
             self.events.push(RadioEvent::Up {
                 link: conn.link,
-                token: Some(token),
+                advert,
             });
         }
     }
@@ -648,8 +649,8 @@ impl<S: Stack> Adapter<S> {
     /// full, a record from this token's period goes to make room (that
     /// central could only be served the token it may have had already);
     /// if every record is from an earlier period, none is forgotten and
-    /// the newcomer is refused (`None`): that side fails closed, and links
-    /// this device opens are unaffected.
+    /// the newcomer is not given the token (`None`): that side fails
+    /// closed, and links this device opens are unaffected.
     fn record(&mut self, central: PeerId) -> Option<&mut Heard> {
         let (now, epoch) = (self.stack.now_ms(), self.epoch);
         if !self.centrals.contains_key(&central) && self.centrals.len() >= CENTRALS_CAP {
@@ -669,18 +670,6 @@ impl<S: Stack> Adapter<S> {
         }))
     }
 
-    /// Exempt `peer` from now, the oldest exemption going if too many.
-    fn exempt_now(&mut self, peer: PeerId) {
-        let now = self.stack.now_ms();
-        if !self.exempt.contains_key(&peer) && self.exempt.len() >= EXEMPT_CAP {
-            let oldest = self.exempt.iter().min_by_key(|(_, t)| **t).map(|(p, _)| *p);
-            if let Some(p) = oldest {
-                self.exempt.remove(&p);
-            }
-        }
-        self.exempt.insert(peer, now);
-    }
-
     /// Accepted traffic from `central`: only this keeps its record fresh.
     fn touch(&mut self, central: PeerId) {
         let now = self.stack.now_ms();
@@ -695,30 +684,17 @@ impl<S: Stack> Adapter<S> {
             return;
         }
         let epoch = self.epoch;
-        // a contact is never refused: it gets the current token whenever
-        // it subscribes, as a central first heard now would
-        let contact = self.exempt.contains_key(&central);
-        match self.record(central) {
+        // the token at most once per connection, and only to a central
+        // first heard in this token's period; every other subscription
+        // gets a link without it (a full memory of earlier centrals gives
+        // none either)
+        let given = match self.record(central) {
             Some(h) => {
                 h.subscribed = true;
-                // otherwise, the token at most once per connection, and
-                // only to a central first heard in this token's period; a
-                // refusal doesn't refresh the record, so the hour counts
-                // from accepted traffic
-                if !contact && (h.served || h.epoch != epoch) {
-                    return;
-                }
+                !h.served && h.epoch == epoch
             }
-            None if contact => {}
-            None => return,
-        }
-        #[cfg(test)]
-        if contact {
-            self.notes.push(format!(
-                "central {:02x}{:02x}{:02x}{:02x} served the token as a contact",
-                central[0], central[1], central[2], central[3]
-            ));
-        }
+            None => false,
+        };
         let Some(token) = self.token else { return };
         if self
             .conns
@@ -729,14 +705,25 @@ impl<S: Stack> Adapter<S> {
         {
             return;
         }
-        if let Some(h) = self.centrals.get_mut(&central) {
-            h.served = true;
-        }
-        self.touch(central);
+        let first = if given {
+            if let Some(h) = self.centrals.get_mut(&central) {
+                h.served = true;
+            }
+            // only a link given the token keeps its central remembered
+            self.touch(central);
+            let mut first = Vec::with_capacity(1 + TOKEN_LEN);
+            first.push(TOKEN_MARK);
+            first.extend_from_slice(&token);
+            first
+        } else {
+            #[cfg(test)]
+            self.notes.push(format!(
+                "central {:02x}{:02x}{:02x}{:02x} linked without the token",
+                central[0], central[1], central[2], central[3]
+            ));
+            vec![WITHHELD_MARK]
+        };
         let link = self.fresh_link();
-        let mut first = Vec::with_capacity(1 + TOKEN_LEN);
-        first.push(TOKEN_MARK);
-        first.extend_from_slice(&token);
         self.conns.insert(
             key,
             Conn {
@@ -745,12 +732,15 @@ impl<S: Stack> Adapter<S> {
                 tag: None,
                 queue: VecDeque::new(),
                 queued: 0,
-                contact: false,
+                withheld: !given,
             },
         );
         self.ids.insert(link, key);
-        self.events.push(RadioEvent::Up { link, token: None });
-        // the token goes before anything else on the link
+        self.events.push(RadioEvent::Up {
+            link,
+            advert: Advert::Unseen,
+        });
+        // the token, or the sign there is none, goes before anything else
         self.enqueue(key, first);
     }
 
@@ -805,7 +795,8 @@ impl<S: Stack> Adapter<S> {
                     self.remember_closed(key.1, conn.tag, RETRY_MS, false);
                 }
             }
-            // it was served already, so it gets no link again
+            // it was served already: a new subscription gets a link
+            // without the token
             Role::Peripheral => {}
         }
     }
@@ -850,16 +841,21 @@ impl<S: Stack> Adapter<S> {
                 if let Some(h) = self.centrals.get_mut(&central) {
                     h.subscribed = false;
                 }
-                if self.drop_conn((Role::Peripheral, central), true).is_some() {
-                    self.touch(central);
+                if let Some(conn) = self.drop_conn((Role::Peripheral, central), true) {
+                    if !conn.withheld {
+                        self.touch(central);
+                    }
                 }
             }
             CbEvent::Written(central, bytes) => {
                 // first heard now, if never before
                 let _ = self.record(central);
                 if let Some(conn) = self.conns.get(&(Role::Peripheral, central)) {
+                    let given = !conn.withheld;
                     self.events.push(RadioEvent::Bytes(conn.link, bytes));
-                    self.touch(central);
+                    if given {
+                        self.touch(central);
+                    }
                 }
             }
             CbEvent::CanNotify => {
@@ -903,18 +899,6 @@ impl<S: Stack> Adapter<S> {
         self.closed.retain(|c| now < c.until_ms);
         self.centrals
             .retain(|_, h| h.subscribed || now.saturating_sub(h.last_ms) < CENTRAL_MEMORY_MS);
-        // a contact's session still on a link keeps its exemption fresh
-        let live: Vec<PeerId> = self
-            .conns
-            .iter()
-            .filter(|(_, c)| c.contact)
-            .map(|((_, p), _)| *p)
-            .collect();
-        for p in live {
-            self.exempt.insert(p, now);
-        }
-        self.exempt
-            .retain(|_, at| now.saturating_sub(*at) < EXEMPT_MS);
     }
 }
 
@@ -991,21 +975,6 @@ impl<S: Stack + Send> Radio for Adapter<S> {
         }
         if self.running {
             self.advertise_now();
-        }
-    }
-
-    fn mark_contact(&mut self, link: LinkId, contact: bool) {
-        let Some(&key) = self.ids.get(&link) else {
-            return;
-        };
-        let Some(conn) = self.conns.get_mut(&key) else {
-            return;
-        };
-        conn.contact = contact;
-        if contact {
-            self.exempt_now(key.1);
-        } else {
-            self.exempt.remove(&key.1);
         }
     }
 
@@ -1232,8 +1201,11 @@ mod tests {
             ],
         );
         match ev.as_slice() {
-            [RadioEvent::Up { link, token: t }] => {
-                assert_eq!(*t, Some(token(n)));
+            [RadioEvent::Up {
+                link,
+                advert: Advert::Token(t),
+            }] => {
+                assert_eq!(*t, token(n));
                 *link
             }
             other => panic!("expected one Up, got {other:?}"),
@@ -1243,7 +1215,10 @@ mod tests {
     /// A peripheral-side link from central `n`.
     fn link_from(a: &mut Radio_, n: u8) -> LinkId {
         match push(a, [CbEvent::Subscribed(peer(n))]).as_slice() {
-            [RadioEvent::Up { link, token: None }] => *link,
+            [RadioEvent::Up {
+                link,
+                advert: Advert::Unseen,
+            }] => *link,
             other => panic!("expected one Up, got {other:?}"),
         }
     }
@@ -1460,7 +1435,7 @@ mod tests {
         let ev = push(&mut a, [CbEvent::Notified(peer(1), token_note(token(1)))]);
         let [RadioEvent::Up {
             link,
-            token: Some(t),
+            advert: Advert::Token(t),
         }] = ev.as_slice()
         else {
             panic!("{ev:?}");
@@ -1608,28 +1583,43 @@ mod tests {
         let link = link_from(&mut a, 2);
         a.disconnect(link);
         assert!(a.poll().is_empty(), "no Down for a link this side closed");
-        let ev = push(
-            &mut a,
-            [
-                CbEvent::Written(peer(2), b"still here".to_vec()),
-                CbEvent::Subscribed(peer(2)),
-            ],
-        );
+        let ev = push(&mut a, [CbEvent::Written(peer(2), b"still here".to_vec())]);
         assert!(ev.is_empty());
         a.write(link, b"nothing goes");
         assert_eq!(a.stack().notes.len(), 1, "only the token, earlier");
-        // letting go and subscribing again on the same connection: still
-        // nothing, the token was served once already
+        // letting go and subscribing again on the same connection: a new
+        // link, but no token, the token was given once already
         let ev = push(
             &mut a,
             [CbEvent::Unsubscribed(peer(2)), CbEvent::Subscribed(peer(2))],
         );
-        assert!(ev.is_empty(), "{ev:?}");
-        assert_eq!(a.stack().notes.len(), 1);
+        let again = match ev.as_slice() {
+            [RadioEvent::Up {
+                link,
+                advert: Advert::Unseen,
+            }] => *link,
+            other => panic!("{other:?}"),
+        };
+        assert_ne!(again, link);
+        assert_eq!(
+            a.stack().notes,
+            vec![(peer(2), token_note(TOKEN)), (peer(2), vec![WITHHELD_MARK])]
+        );
+    }
+
+    /// The notifications `a` has sent `central`, since the last look.
+    fn told(a: &mut Radio_, central: u8) -> Vec<Vec<u8>> {
+        let notes = std::mem::take(&mut a.stack_mut().notes);
+        notes
+            .into_iter()
+            .filter(|(c, _)| *c == peer(central))
+            .map(|(_, n)| n)
+            .collect()
     }
 
     /// C1: a central holding its connection across this device's rotation
-    /// gets no new token, however it subscribes again.
+    /// gets no new token, however it subscribes again. It still gets a
+    /// link, with the sign that the token is withheld first.
     #[test]
     fn a_central_from_before_a_rotation_never_hears_the_new_token() {
         let mut a = running();
@@ -1642,18 +1632,35 @@ mod tests {
             &mut a,
             [CbEvent::Advertising(true), CbEvent::Subscribed(peer(2))],
         );
-        assert!(ev.is_empty(), "no link: {ev:?}");
-        assert!(a.stack().notes.is_empty(), "no token, old or new");
+        assert!(
+            matches!(
+                ev.as_slice(),
+                [RadioEvent::Up {
+                    advert: Advert::Unseen,
+                    ..
+                }]
+            ),
+            "a link: {ev:?}"
+        );
+        assert_eq!(told(&mut a, 2), vec![vec![WITHHELD_MARK]], "no token");
         // a central heard (only writing) before the rotation is no better
         let mut b = running();
         push(&mut b, [CbEvent::Written(peer(3), b"hello?".to_vec())]);
         b.advertise(token(9));
-        assert!(push(&mut b, [CbEvent::Subscribed(peer(3))]).is_empty());
-        assert!(b.stack().notes.is_empty());
-        // forgetting takes being silent and unsubscribed for an hour
+        push(&mut b, [CbEvent::Subscribed(peer(3))]);
+        assert_eq!(told(&mut b, 3), vec![vec![WITHHELD_MARK]]);
+        // forgetting takes being silent and unsubscribed for an hour, and
+        // traffic on a link without the token isn't heard as such
+        push(
+            &mut b,
+            [
+                CbEvent::Written(peer(3), b"still me".to_vec()),
+                CbEvent::Unsubscribed(peer(3)),
+            ],
+        );
         b.stack_mut().now += CENTRAL_MEMORY_MS - 1;
-        assert!(push(&mut b, [CbEvent::Subscribed(peer(3))]).is_empty());
-        assert!(b.stack().notes.is_empty());
+        push(&mut b, [CbEvent::Subscribed(peer(3))]);
+        assert_eq!(told(&mut b, 3), vec![vec![WITHHELD_MARK]]);
     }
 
     /// C1: a contact's link across a rotation keeps working both ways.
@@ -1738,7 +1745,7 @@ mod tests {
     }
 
     /// I-new-1: a refused central's attempts keep nothing alive: the hour
-    /// counts from its last accepted traffic.
+    /// counts from its last traffic on a link that was given the token.
     #[test]
     fn a_refused_central_retrying_is_forgotten_an_hour_after_it_was_served() {
         let mut a = running();
@@ -1746,14 +1753,19 @@ mod tests {
         push(&mut a, [CbEvent::Unsubscribed(peer(2))]); // last accepted, at 0
         a.advertise(token(9));
         push(&mut a, [CbEvent::Advertising(true)]);
+        told(&mut a, 2);
         let mut served_at = None;
         while a.stack().now < CENTRAL_MEMORY_MS + 60_000 {
             a.stack_mut().now += 15_000;
-            let ev = push(
+            push(
                 &mut a,
-                [CbEvent::Subscribed(peer(2)), CbEvent::Unsubscribed(peer(2))],
+                [
+                    CbEvent::Subscribed(peer(2)),
+                    CbEvent::Written(peer(2), b"a hello".to_vec()),
+                    CbEvent::Unsubscribed(peer(2)),
+                ],
             );
-            if ev.iter().any(|e| matches!(e, RadioEvent::Up { .. })) {
+            if told(&mut a, 2) == vec![token_note(token(9))] {
                 served_at = Some(a.stack().now);
                 break;
             }
@@ -1763,6 +1775,51 @@ mod tests {
             (CENTRAL_MEMORY_MS..=CENTRAL_MEMORY_MS + 15_000).contains(&at),
             "{at}"
         );
+    }
+
+    /// The central side: a peripheral that withholds its token still
+    /// gives a link, up at once, with the tag its advert showed.
+    #[test]
+    fn a_withheld_token_brings_the_link_up_with_the_adverts_tag() {
+        let mut a = running();
+        push(
+            &mut a,
+            [
+                CbEvent::Discovered(peer(1), tag(1)),
+                CbEvent::Ready(peer(1)),
+            ],
+        );
+        let ev = push(&mut a, [CbEvent::Notified(peer(1), vec![WITHHELD_MARK])]);
+        let [RadioEvent::Up {
+            link,
+            advert: Advert::Withheld(t),
+        }] = ev.as_slice()
+        else {
+            panic!("{ev:?}");
+        };
+        assert_eq!(*t, tag(1));
+        let ev = push(&mut a, [CbEvent::Notified(peer(1), b"hello".to_vec())]);
+        assert_eq!(ev, vec![RadioEvent::Bytes(*link, b"hello".to_vec())]);
+        // closed on purpose, it is left alone until the tag changes
+        a.disconnect(*link);
+        push(&mut a, [CbEvent::Discovered(peer(1), tag(1))]);
+        assert!(a.stack().connections.is_empty());
+        push(&mut a, [CbEvent::Discovered(peer(1), tag(2))]);
+        assert!(a.stack().connections.contains(&peer(1)));
+        // an advert that showed no tag comes up withheld with none
+        let mut b = running();
+        push(
+            &mut b,
+            [CbEvent::Discovered(peer(1), None), CbEvent::Ready(peer(1))],
+        );
+        let ev = push(&mut b, [CbEvent::Notified(peer(1), vec![WITHHELD_MARK])]);
+        assert!(matches!(
+            ev.as_slice(),
+            [RadioEvent::Up {
+                advert: Advert::Withheld(None),
+                ..
+            }]
+        ));
     }
 
     /// I-new-1: the central side doesn't ask a refusing peripheral again
@@ -1805,7 +1862,7 @@ mod tests {
     }
 
     /// N1: with the memory full of centrals from earlier tokens, a
-    /// newcomer is refused rather than one of them forgotten.
+    /// newcomer is not given the token rather than one of them forgotten.
     #[test]
     fn a_full_memory_refuses_newcomers_rather_than_forget_earlier_centrals() {
         let mut a = running();
@@ -1814,10 +1871,20 @@ mod tests {
         }
         a.advertise(token(9));
         push(&mut a, [CbEvent::Advertising(true)]);
-        let ev = push(&mut a, [CbEvent::Subscribed(peer(200))]);
-        assert!(ev.is_empty(), "the newcomer is refused: {ev:?}");
+        push(&mut a, [CbEvent::Subscribed(peer(200))]);
+        assert_eq!(
+            told(&mut a, 200),
+            vec![vec![WITHHELD_MARK]],
+            "the newcomer gets no token"
+        );
         let ev = push(&mut a, [CbEvent::Subscribed(many(0))]);
-        assert!(ev.is_empty(), "the earlier one is still remembered");
+        assert_eq!(ev.len(), 1, "a link");
+        let notes = std::mem::take(&mut a.stack_mut().notes);
+        assert_eq!(
+            notes,
+            vec![(many(0), vec![WITHHELD_MARK])],
+            "the earlier one is still remembered"
+        );
     }
 
     /// N1: a flood under this token pushes out only this token's
@@ -1838,10 +1905,16 @@ mod tests {
                 ],
             );
         }
-        let ev = push(&mut a, [CbEvent::Subscribed(peer(2))]);
-        assert!(ev.is_empty(), "the held central from before: {ev:?}");
+        told(&mut a, 2);
+        push(&mut a, [CbEvent::Subscribed(peer(2))]);
+        assert_eq!(
+            told(&mut a, 2),
+            vec![vec![WITHHELD_MARK]],
+            "the held central from before"
+        );
         // and a newcomer under this token is served
         link_from(&mut a, 77);
+        assert_eq!(told(&mut a, 77), vec![token_note(token(9))]);
     }
 
     /// N1: losing permission doesn't forget centrals (their connections
@@ -1862,146 +1935,10 @@ mod tests {
                     CbEvent::Advertising(true),
                 ],
             );
-            let ev = push(&mut a, [CbEvent::Subscribed(peer(2))]);
-            let up = ev.iter().any(|e| matches!(e, RadioEvent::Up { .. }));
-            assert_eq!(up, !remembered, "{power:?}");
-        }
-    }
-
-    /// Rotate to `token(n)` and have it confirmed.
-    fn rotate(a: &mut Radio_, n: u8) {
-        a.advertise(token(n));
-        push(a, [CbEvent::Advertising(true)]);
-    }
-
-    fn served(a: &mut Radio_, central: u8) -> bool {
-        let ev = push(a, [CbEvent::Subscribed(peer(central))]);
-        let up = ev.iter().any(|e| matches!(e, RadioEvent::Up { .. }));
-        push(a, [CbEvent::Unsubscribed(peer(central))]);
-        up
-    }
-
-    /// A contact (a link marked as carrying a confirmed contact session)
-    /// is served the new token after a rotation; a stranger with the
-    /// same kind of stable identifier is not.
-    #[test]
-    fn a_contact_gets_the_new_token_after_a_rotation_and_a_stranger_does_not() {
-        let mut a = running();
-        let stranger = link_from(&mut a, 2);
-        let contact = link_from(&mut a, 3);
-        a.mark_contact(contact, true);
-        a.disconnect(stranger); // as the transport does at rotation
-        push(
-            &mut a,
-            [
-                CbEvent::Unsubscribed(peer(2)),
-                CbEvent::Unsubscribed(peer(3)),
-            ],
-        );
-        rotate(&mut a, 9);
-        a.stack_mut().notes.clear();
-        assert!(!served(&mut a, 2), "the stranger is refused");
-        assert!(a.stack().notes.is_empty());
-        assert!(served(&mut a, 3), "the contact is served");
-        assert_eq!(
-            a.stack().notes.last(),
-            Some(&(peer(3), token_note(token(9))))
-        );
-        assert!(a.notes[0].contains("served the token as a contact"));
-        // and again after the next rotation
-        rotate(&mut a, 10);
-        assert!(served(&mut a, 3));
-        assert!(!served(&mut a, 2));
-    }
-
-    /// The exemption lasts 24 hours from the last confirmed session, kept
-    /// fresh while one is on a link, and ends when the contact is removed.
-    #[test]
-    fn an_exemption_lasts_a_day_after_the_last_contact_session() {
-        let mut a = running();
-        let contact = link_from(&mut a, 3);
-        a.mark_contact(contact, true);
-        // a day and more on a live contact link keeps it fresh
-        for _ in 0..26 {
-            a.stack_mut().now += 60 * 60_000;
-            a.poll();
-        }
-        let last = a.stack().now;
-        push(&mut a, [CbEvent::Unsubscribed(peer(3))]);
-        rotate(&mut a, 9);
-        // served as a contact whenever it comes back (which also keeps it
-        // remembered as a central), until a day after its last session
-        while a.stack().now + 50 * 60_000 < last + EXEMPT_MS {
-            a.stack_mut().now += 50 * 60_000;
-            a.poll();
-            assert!(served(&mut a, 3), "a contact at {}", a.stack().now);
-        }
-        a.stack_mut().now = last + EXEMPT_MS - 1;
-        a.poll();
-        assert!(served(&mut a, 3), "still a contact just under a day on");
-        a.stack_mut().now = last + EXEMPT_MS;
-        a.poll();
-        assert!(!served(&mut a, 3), "a day after the last session: refused");
-
-        // removing the contact ends it at once
-        let mut b = running();
-        let contact = link_from(&mut b, 3);
-        b.mark_contact(contact, true);
-        b.mark_contact(contact, false);
-        push(&mut b, [CbEvent::Unsubscribed(peer(3))]);
-        rotate(&mut b, 9);
-        assert!(!served(&mut b, 3));
-    }
-
-    /// Exemptions are kept and cleared as the refusal memory is: across a
-    /// stop and start and a permission change, not across Bluetooth off.
-    #[test]
-    fn exemptions_survive_a_restart_and_a_permission_change_but_not_bluetooth_off() {
-        for (what, kept) in [("restart", true), ("unauthorized", true), ("off", false)] {
-            let mut a = running();
-            let contact = link_from(&mut a, 3);
-            a.mark_contact(contact, true);
-            push(&mut a, [CbEvent::Unsubscribed(peer(3))]);
-            match what {
-                "restart" => {
-                    a.stop();
-                    a.start(Mode::Contacts);
-                    a.advertise(token(9));
-                    push(
-                        &mut a,
-                        [
-                            CbEvent::State(Role::Central, Power::On),
-                            CbEvent::State(Role::Peripheral, Power::On),
-                            CbEvent::ServiceAdded(true),
-                            CbEvent::Advertising(true),
-                        ],
-                    );
-                }
-                _ => {
-                    let power = if what == "off" {
-                        Power::Off
-                    } else {
-                        Power::Unauthorized
-                    };
-                    rotate(&mut a, 9);
-                    push(
-                        &mut a,
-                        [
-                            CbEvent::State(Role::Peripheral, power),
-                            CbEvent::State(Role::Peripheral, Power::On),
-                            CbEvent::ServiceAdded(true),
-                            CbEvent::Advertising(true),
-                        ],
-                    );
-                }
-            }
-            // after Off every central is new anyway (that memory is
-            // cleared too), so look at the exemptions themselves
-            if kept {
-                assert!(served(&mut a, 3), "{what}: kept");
-            } else {
-                assert!(a.exempt.is_empty(), "{what}: cleared");
-            }
+            told(&mut a, 2);
+            push(&mut a, [CbEvent::Subscribed(peer(2))]);
+            let given = told(&mut a, 2) == vec![token_note(token(9))];
+            assert_eq!(given, !remembered, "{power:?}");
         }
     }
 

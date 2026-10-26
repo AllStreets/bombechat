@@ -11,9 +11,10 @@
 //! token, replaced at a random moment between 12 and 15 minutes
 //! ([`TOKEN_MIN_MS`], [`TOKEN_MS`]). Nothing in the advert is
 //! stable. On macOS the advert can hold only the token's first six bytes
-//! (as the local name); the radio hands the whole token to each device
-//! that connects, before anything else on the link (see
-//! [`CoreBluetoothRadio`]). Links carry writes on one characteristic ([`CHARACTERISTIC_UUID`]),
+//! (as the local name, its tag); the radio hands the whole token to each
+//! device that connects, before anything else on the link, unless it heard
+//! that device under an earlier token, when it withholds it (see
+//! [`CoreBluetoothRadio`] and [`Advert`]). Links carry writes on one characteristic ([`CHARACTERISTIC_UUID`]),
 //! write without response one way and notify the other.
 //!
 //! # Link messages
@@ -37,17 +38,26 @@
 //! | 4 sealed | `nonce u64` and a transport message |
 //!
 //! Inside a sealed message, padded to 256, 512, 1024 or 2048 bytes or a
-//! whole number of 4 KiB, is what it is (envelope, acknowledgement or
-//! keepalive), so only the two ends can tell those apart or tell how long
-//! an envelope is. Any device sends any kind: a device with no contacts
+//! whole number of 4 KiB, is what it is (envelope, acknowledgement,
+//! keepalive or token), so only the two ends can tell those apart or tell
+//! how long an envelope is. Any device sends any kind: a device with no contacts
 //! sends decoy hellos.
 //!
 //! # Contacts (`Noise_IK`)
 //!
-//! A link this device opened knows the advert's token. Each token gets one
-//! round of exactly [`TRIAL_CAP`] hellos: contacts most recently seen
-//! first (then least recently tried), and decoys of the same size, to keys
-//! no one holds, for the rest. So the number of hellos says nothing about
+//! A hello names the token of the device it is for, so only a link this
+//! device opened can carry one. Usually the radio heard the advert's
+//! token. Where the other device withheld it (it heard this device under
+//! an earlier token), a contact's token is still known if that contact
+//! gave it inside a session ([`BleTransport::contact_token`]) and the
+//! advert's tag matches it; otherwise the link has no token to name.
+//!
+//! Each token (or advert without one) gets one round of exactly
+//! [`TRIAL_CAP`] hellos: a contact who gave this token first, then
+//! contacts most recently seen (then least recently tried), and decoys of
+//! the same size, to keys no one holds, for the rest. Where the token was
+//! withheld, only a contact who gave it is dialled, and the rest of the
+//! round is decoys, so the round looks the same either way. So the number of hellos says nothing about
 //! the number of contacts. A round's hellos unanswered after
 //! [`TRIAL_RETRY_MS`] go once more, afresh, and that is all for that token:
 //! reconnecting gives a tracker nothing more.
@@ -58,13 +68,18 @@
 //! such a link, its contacts are redialled at once on the next link to
 //! the same advert, which gets no round of its own.
 //!
-//! The transport tells the radio which links carry a confirmed contact
-//! session ([`Radio::mark_contact`]), and when that contact is removed.
+//! Every confirmed contact session carries each side's current token, in
+//! a token message inside the encryption, padded like every other: once
+//! when it is confirmed, once at every rotation, and in place of every
+//! keepalive. Each side keeps, in memory, the latest token each contact
+//! gave ([`CONTACT_TOKEN_MS`]). A removed contact's sessions end at once,
+//! so it is told nothing more, and what it gave is forgotten.
 //!
 //! The answering side builds a contact responder for each message 1 with
-//! its clock and its current and previous tokens. It answers only if the
+//! its clock, its current token and the [`PAST_TOKENS`] before it (about
+//! an hour). It answers only if the
 //! message reads, was sent within two minutes of its own clock, names one
-//! of its tokens, comes from a contact (not a stranger, not itself), and
+//! of those tokens, comes from a contact (not a stranger, not itself), and
 //! carries an ephemeral key it hasn't answered in the last four minutes.
 //! The ephemeral is added to that cache ([`SEEN_CAP`] keys, [`SEEN_MS`])
 //! only after such a read. Everything else, stale, wrong target, stranger,
@@ -184,14 +199,15 @@ pub use handle::{BleEvent, BleHandle, Peers, EVENTS_CAP};
 #[cfg(target_os = "macos")]
 pub use macos::CoreBluetoothRadio;
 pub use queue::{HOLD_MS, QUEUE_CAP};
-pub use radio::{LinkId, Mode, Radio, RadioEvent};
+pub use radio::{Advert, LinkId, Mode, Radio, RadioEvent, TAG_LEN};
 pub use session::{
     bucket, ACK_DELAY_MAX_MS, AHEAD_BYTES, KEEPALIVE_MS, RESEND_MS, SILENCE_MS, WINDOW,
 };
 pub use transport::{
-    BleTransport, HANDSHAKE_MS, IDLE_MS, MAX_LINKS, REDIAL_FIRST_MS, REDIAL_MAX_MS, REQUESTS_CAP,
-    REQUEST_ATTEMPTS, REQUEST_MS, ROUNDS_CAP, ROUND_MEMORY_MS, SEEN_CAP, SEEN_MS, STRANGER_MS,
-    TOKEN_MIN_MS, TOKEN_MS, TRIAL_ATTEMPTS, TRIAL_CAP, TRIAL_RETRY_MS,
+    BleTransport, CONTACT_TOKEN_MS, HANDSHAKE_MS, IDLE_MS, MAX_LINKS, PAST_TOKENS, REDIAL_FIRST_MS,
+    REDIAL_MAX_MS, REQUESTS_CAP, REQUEST_ATTEMPTS, REQUEST_MS, ROUNDS_CAP, ROUND_MEMORY_MS,
+    SEEN_CAP, SEEN_MS, STRANGER_MS, TOKEN_MIN_MS, TOKEN_MS, TRIAL_ATTEMPTS, TRIAL_CAP,
+    TRIAL_RETRY_MS,
 };
 
 /// Our GATT service, generated once for Bombechat (never Bitchat's).

@@ -1013,10 +1013,6 @@ impl Radio for CoreBluetoothRadio {
         self.inner.disconnect(link);
     }
 
-    fn mark_contact(&mut self, link: LinkId, contact: bool) {
-        self.inner.mark_contact(link, contact);
-    }
-
     fn write(&mut self, link: LinkId, bytes: &[u8]) {
         self.inner.write(link, bytes);
     }
@@ -1057,6 +1053,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::*;
+    use crate::radio::Advert;
 
     /// Whether this process may use Bluetooth, read without asking.
     #[test]
@@ -1155,28 +1152,60 @@ mod tests {
         panic!("not done within {within:?}; saw {seen:?}");
     }
 
-    /// Poll for `how_long`, printing what CoreBluetooth reports.
-    /// With `as_contacts`, every link counts as carrying a confirmed
-    /// contact session (the two Macs stand in for contacts), as the
-    /// transport would mark it.
+    /// The other Mac's identifiers, as this Mac's two roles see it
+    /// (measurement 6): as a peripheral (`discovered` lines) and as a
+    /// central (`central … subscribed` lines), each with when it was first
+    /// seen, in seconds since the test began.
+    #[derive(Default)]
+    struct Identifiers {
+        began: Option<Instant>,
+        as_peripheral: Vec<(String, u64)>,
+        as_central: Vec<(String, u64)>,
+    }
+
+    impl Identifiers {
+        fn note(&mut self, line: &str) {
+            let at = self
+                .began
+                .get_or_insert_with(Instant::now)
+                .elapsed()
+                .as_secs();
+            let mut words = line.split(' ');
+            let (list, id) = match (words.next(), words.next(), words.next()) {
+                (Some("discovered"), Some(id), _) => (&mut self.as_peripheral, id),
+                (Some("central"), Some(id), Some("subscribed")) => (&mut self.as_central, id),
+                _ => return,
+            };
+            if !list.iter().any(|(seen, _)| seen == id) {
+                list.push((id.to_string(), at));
+            }
+        }
+
+        fn print(&self) {
+            println!("measurement 6: the other Mac's identifiers, with the second first seen");
+            println!("  as a peripheral: {:?}", self.as_peripheral);
+            println!("  as a central:    {:?}", self.as_central);
+        }
+    }
+
+    /// Poll for `how_long`, printing what CoreBluetooth reports, and
+    /// noting the other Mac's identifiers.
     fn watch(
         radio: &mut CoreBluetoothRadio,
         how_long: Duration,
-        as_contacts: bool,
+        ids: &mut Identifiers,
     ) -> Vec<RadioEvent> {
         let start = Instant::now();
         let mut seen = Vec::new();
         while start.elapsed() < how_long {
             let events = radio.poll();
             for line in radio.take_trace() {
+                ids.note(&line);
                 println!("{:7.1} s  {line}", start.elapsed().as_secs_f64());
             }
             for e in &events {
                 if matches!(e, RadioEvent::Up { .. } | RadioEvent::Down(_)) {
                     println!("{:7.1} s  {e:?}", start.elapsed().as_secs_f64());
-                }
-                if let (true, RadioEvent::Up { link, .. }) = (as_contacts, e) {
-                    radio.mark_contact(*link, true);
                 }
             }
             seen.extend(events);
@@ -1268,7 +1297,7 @@ mod tests {
     /// cargo test -p bombechat-bluetooth --lib macos -- --ignored --nocapture two_macs                          # B
     /// ```
     ///
-    /// For measurements 2 and 5, add `BOMBECHAT_WATCH_MIN=25` on both,
+    /// For measurements 2, 5 and 6, add `BOMBECHAT_WATCH_MIN=25` on both,
     /// and on A also `BOMBECHAT_RESTART_EVERY_MIN=5`.
     ///
     /// Measurements, from the printed lines (each Mac prints the other's
@@ -1305,25 +1334,43 @@ mod tests {
     ///    - the same before and after a restart: new managers see the same
     ///      identifier for B, so a held connection gets nothing new after
     ///      a stop and start (and B, first heard under an earlier token,
-    ///      gets no link from A until its identifier changes; look for an
-    ///      `Up` after `central … subscribed`);
+    ///      gets no token from A until its identifier changes);
     ///    - a new identifier after B's address rotates: the block on B
     ///      ends with its rotation. The same identifier for the whole
     ///      watch (as may happen between two Macs on the same Apple ID)
-    ///      means the block lasts until B is silent for an hour, and links
-    ///      run from A to B only.
+    ///      means the block lasts until B is silent for an hour.
     ///
-    ///    In this mode every link counts as a contact's (the two Macs stand
-    ///    in for contacts, as the transport would mark them), so B should
-    ///    be served after every restart anyway: look for `central …
-    ///    served the token as a contact` lines, one per restart once B
-    ///    has been marked, each followed by an `Up`. B being refused
-    ///    instead (no such line, no `Up`) means the exemption doesn't
-    ///    reach B, for instance because its identifier changed.
+    ///    Either way B gets a link: a `central … linked without the token`
+    ///    line followed by an `Up` is A withholding its token from B (B
+    ///    prints `Up { .. advert: Withheld(..) }`). Contacts get past that
+    ///    with the token they tell each other inside a session, which this
+    ///    test doesn't run; `sim.rs` covers it.
     ///
     ///    The `Central manager …`/`Peripheral manager …` lines after each
     ///    restart show the managers' first states (they must reach `On`
     ///    without `Off` or `Resetting` in between, or A forgets B).
+    ///
+    /// 6. **Is a remote's identifier the same in both roles, and does it
+    ///    change with its address?** At the end each Mac prints
+    ///    `measurement 6`: the other Mac's identifiers as a peripheral (its
+    ///    adverts, `discovered`) and as a central (its subscriptions,
+    ///    `central … subscribed`), each with when it was first seen. Read
+    ///    it after a run with `BOMBECHAT_WATCH_MIN=25`:
+    ///    - one identifier in both lists: CoreBluetooth gives the other Mac
+    ///      the same identifier in both roles, so an advert's address
+    ///      names the device in its other role too;
+    ///    - different identifiers in the two lists: the roles are kept
+    ///      apart;
+    ///    - a new identifier part way through a list: it follows the
+    ///      address, which changed then (if both lists change at about the
+    ///      same time, both roles follow the one address). The other Mac's
+    ///      own run says when it restarted its advert (measurement 1), so
+    ///      a change at no restart is macOS's own rotation;
+    ///    - one identifier per list for the whole 25 minutes, past at least
+    ///      one of the other Mac's address rotations: CoreBluetooth
+    ///      resolves its address (likely the same Apple ID), so the
+    ///      identifier is stable, and a central first heard under an
+    ///      earlier token stays without the token for an hour.
     ///
     /// Send back both Macs' output.
     #[test]
@@ -1344,10 +1391,19 @@ mod tests {
         radio.advertise(random_token());
         // the link this Mac opened (it knows the other's token)
         let seen = poll_until(&mut radio, Duration::from_secs(60), |_, seen| {
-            seen.iter()
-                .any(|e| matches!(e, RadioEvent::Up { token: Some(_), .. }))
+            seen.iter().any(|e| {
+                matches!(
+                    e,
+                    RadioEvent::Up {
+                        advert: Advert::Token(_) | Advert::Withheld(_),
+                        ..
+                    }
+                )
+            })
         });
+        let mut ids = Identifiers::default();
         for line in radio.take_trace() {
+            ids.note(&line);
             println!("{line}");
         }
         let mine = seen
@@ -1355,7 +1411,7 @@ mod tests {
             .find_map(|e| match e {
                 RadioEvent::Up {
                     link,
-                    token: Some(_),
+                    advert: Advert::Token(_) | Advert::Withheld(_),
                 } => Some(*link),
                 _ => None,
             })
@@ -1391,12 +1447,12 @@ mod tests {
         );
         assert_eq!(&got[..SIZE], &payload[..], "the other Mac's 4 KB, whole");
         // give the other Mac time to finish hearing ours
-        watch(&mut radio, Duration::from_secs(10), false);
+        watch(&mut radio, Duration::from_secs(10), &mut ids);
 
         // measurement 1: a new token, and what the other Mac's adverts do
         println!("new token");
         radio.advertise(random_token());
-        watch(&mut radio, Duration::from_secs(30), false);
+        watch(&mut radio, Duration::from_secs(30), &mut ids);
         // measurement 2: the same token for a long while
         if watch_min > 0 && restart_every > 0 {
             // measurement 5: restart now and then, and see who comes back
@@ -1404,7 +1460,7 @@ mod tests {
             let mut left = watch_min;
             while left > 0 {
                 let now = restart_every.min(left);
-                watch(&mut radio, Duration::from_secs(60 * now), true);
+                watch(&mut radio, Duration::from_secs(60 * now), &mut ids);
                 left -= now;
                 radio.stop();
                 radio.start(Mode::Contacts);
@@ -1413,15 +1469,16 @@ mod tests {
             }
         } else if watch_min > 0 {
             println!("watching {watch_min} min without a new token");
-            watch(&mut radio, Duration::from_secs(60 * watch_min), false);
+            watch(&mut radio, Duration::from_secs(60 * watch_min), &mut ids);
         }
+        ids.print();
         // measurement 4: one Mac stops, the other watches
         if stop_first {
             println!("stopping first");
             stop_and_check_freed(&mut radio);
         } else {
             println!("watching the other Mac stop");
-            watch(&mut radio, Duration::from_secs(30), false);
+            watch(&mut radio, Duration::from_secs(30), &mut ids);
             stop_and_check_freed(&mut radio);
         }
     }

@@ -18,18 +18,34 @@ pub enum Mode {
     Open,
 }
 
+/// The part of an advertising token an advert shows: its first bytes.
+pub const TAG_LEN: usize = 6;
+
+/// What this side knows of the advert behind a link.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Advert {
+    /// The other device connected to this one: this side never saw its
+    /// advert.
+    Unseen,
+    /// This side connected to the other device's advert and heard its
+    /// whole token.
+    Token([u8; TOKEN_LEN]),
+    /// This side connected, but the other device withheld its token,
+    /// because it heard this device under an earlier one. The tag its
+    /// advert showed (the token's first [`TAG_LEN`] bytes), if any: a
+    /// contact who told this device its token inside a session is
+    /// recognised by it.
+    Withheld(Option<[u8; TAG_LEN]>),
+}
+
 /// What a radio reports from one [`Radio::poll`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RadioEvent {
-    /// A link came up. `token` is the advertising token the other device
-    /// was showing when this radio connected to it, or `None` when the
-    /// other device connected to this one (the radio then never saw its
-    /// advert). Only a link with a token can begin a contact handshake,
-    /// which must name the token it is for.
-    Up {
-        link: LinkId,
-        token: Option<[u8; TOKEN_LEN]>,
-    },
+    /// A link came up, and what this side knows of the advert behind it.
+    /// Only a link this device opened can begin a contact handshake,
+    /// which must name the token of the device it is for: the one heard
+    /// here, or one the contact gave inside an earlier session.
+    Up { link: LinkId, advert: Advert },
     /// The link is gone. Nothing more arrives on it.
     Down(LinkId),
     /// One write from the other end, exactly as it was written.
@@ -53,7 +69,9 @@ pub trait Radio: Send {
     fn stop(&mut self);
 
     /// Advertise `token` from now on, in place of any earlier one. The
-    /// advert carries our service and this token, nothing stable.
+    /// advert carries our service and this token, nothing stable. A device
+    /// that connects is given the token only if this radio hasn't heard it
+    /// under an earlier one; otherwise its link comes up without it.
     fn advertise(&mut self, token: [u8; TOKEN_LEN]);
 
     /// Close `link`. The radio sends no [`RadioEvent::Down`] for it, and
@@ -61,13 +79,6 @@ pub trait Radio: Send {
     /// that device waits until it shows a token other than the one this
     /// link was made to.
     fn disconnect(&mut self, link: LinkId);
-
-    /// Say whether `link` carries a confirmed session with a contact
-    /// (`true` once one is confirmed, `false` if that contact is removed).
-    /// A radio that refuses devices it heard under an earlier token may
-    /// exempt the device at the other end of such a link: only a contact
-    /// can confirm a session, so a stranger gains nothing.
-    fn mark_contact(&mut self, link: LinkId, contact: bool);
 
     /// Write `bytes` to `link`, at most [`Radio::max_write`] of them.
     fn write(&mut self, link: LinkId, bytes: &[u8]);

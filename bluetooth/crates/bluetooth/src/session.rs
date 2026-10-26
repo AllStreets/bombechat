@@ -12,16 +12,20 @@
 //! type u8 | ack u32 | seq u32 | len u16 | body[len] | zeros
 //! ```
 //!
-//! `type` is keepalive, envelope or ack. `ack` is the next envelope
+//! `type` is keepalive, envelope, ack or token. `ack` is the next envelope
 //! sequence number this side is waiting for: every message acknowledges,
 //! and acknowledgements are as authenticated as everything else. `seq`
 //! numbers envelopes, which are delivered once each, in order, and sent
-//! again until acknowledged.
+//! again until acknowledged. A token message is a keepalive that also
+//! carries the sender's current advertising token: contact sessions send
+//! one as soon as they are confirmed, at the sender's every rotation, and
+//! in place of every keepalive, so a lost one is made good within
+//! [`KEEPALIVE_MS`].
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use bombechat_core::PublicIdentity;
-use bombechat_session::{Transport as Cipher, MAX_NONCE};
+use bombechat_session::{Transport as Cipher, MAX_NONCE, TOKEN_LEN};
 
 use crate::wire::{Kind, LinkMessage};
 
@@ -48,9 +52,11 @@ const REPLAY_WINDOW: u64 = 1024;
 const KEEPALIVE: u8 = 0;
 const ENVELOPE: u8 = 1;
 const ACK: u8 = 2;
+const TOKEN: u8 = 3;
 const INNER_HEADER: usize = 1 + 4 + 4 + 2;
-/// Keepalives and acknowledgements are padded to the size of a short
-/// private message, the commonest envelope, so they pass for one.
+/// Keepalives, token messages and acknowledgements are padded to the size
+/// of a short private message, the commonest envelope, so they pass for
+/// one.
 const CONTROL_PAD: usize = 512;
 
 /// The padded size of `n` bytes of plaintext: 256, 512, 1024, 2048, then
@@ -86,6 +92,9 @@ pub(crate) struct Delivery {
     pub envelopes: Vec<Vec<u8>>,
     /// Tags of envelopes the other side now holds.
     pub acked: Vec<u16>,
+    /// The other side's current advertising token, if this was a token
+    /// message.
+    pub token: Option<[u8; TOKEN_LEN]>,
 }
 
 pub(crate) struct LinkSession {
@@ -111,6 +120,9 @@ pub(crate) struct LinkSession {
     ack_due: bool,
     /// When an acknowledgement on its own may go; `None` is at once.
     ack_at: Option<u64>,
+    /// The advertising token this side last told the other, sent again in
+    /// place of each keepalive.
+    pub shared: Option<[u8; TOKEN_LEN]>,
     /// For a request sent: the hello and which attempt this is.
     pub hello: Option<(Vec<u8>, u8)>,
     /// For a request received: when its hello arrived, and whether the
@@ -147,6 +159,7 @@ impl LinkSession {
             accepted: BTreeSet::new(),
             ack_due: false,
             ack_at: None,
+            shared: None,
             hello: None,
             heard_ms: None,
             accepted_by_person: false,
@@ -247,9 +260,21 @@ impl LinkSession {
         }
     }
 
-    /// A keepalive, which also acknowledges.
+    /// A keepalive, which also acknowledges: a token message, once a
+    /// token has been shared.
     pub fn keepalive(&mut self, now_ms: u64) -> Option<Vec<u8>> {
-        self.seal(KEEPALIVE, 0, &[], now_ms)
+        match self.shared {
+            Some(token) => self.seal(TOKEN, 0, &token, now_ms),
+            None => self.seal(KEEPALIVE, 0, &[], now_ms),
+        }
+    }
+
+    /// Tell the other side this side's advertising token, now and in
+    /// place of every keepalive from now on. Only for a confirmed contact
+    /// session: the caller checks.
+    pub fn send_token(&mut self, token: [u8; TOKEN_LEN], now_ms: u64) -> Option<Vec<u8>> {
+        self.shared = Some(token);
+        self.keepalive(now_ms)
     }
 
     /// Take one sealed message. `None` if it isn't authentic or was
@@ -282,11 +307,16 @@ impl LinkSession {
         let mut d = Delivery {
             acked: self.acknowledge(ack, now_ms),
             envelopes: Vec::new(),
+            token: None,
         };
-        // Envelopes and keepalives both draw an acknowledgement, so
-        // whether a reply follows doesn't tell them apart.
-        if ty == ENVELOPE || ty == KEEPALIVE {
+        // Envelopes, keepalives and token messages all draw an
+        // acknowledgement, so whether a reply follows doesn't tell them
+        // apart.
+        if ty == ENVELOPE || ty == KEEPALIVE || ty == TOKEN {
             self.ack_due = true;
+        }
+        if ty == TOKEN {
+            d.token = body.try_into().ok();
         }
         if ty == ENVELOPE && listening {
             if seq == self.recv_next {
@@ -529,6 +559,33 @@ mod tests {
         assert!(
             a.upkeep(1_700).0.is_empty(),
             "an acknowledgement isn't answered"
+        );
+    }
+
+    /// A token message is the size of a keepalive and of a short
+    /// envelope on the wire, carries the token, draws an acknowledgement
+    /// like them, and once sent takes the place of every keepalive.
+    #[test]
+    fn a_token_message_looks_like_a_keepalive_or_an_envelope() {
+        let (mut a, mut b) = pair();
+        let keepalive = a.keepalive(0).unwrap();
+        let envelope = a.send_envelope(&[1; 300], None, 0).unwrap();
+        let token = a.send_token([9; TOKEN_LEN], 0).unwrap();
+        assert_eq!(token.len(), keepalive.len());
+        assert_eq!(token.len(), envelope.len());
+        let (n, c) = open(&keepalive);
+        assert_eq!(b.receive(n, &c, true, 0).unwrap().token, None);
+        let (n, c) = open(&token);
+        let d = b.receive(n, &c, true, 0).unwrap();
+        assert_eq!(d.token, Some([9; TOKEN_LEN]));
+        assert!(d.envelopes.is_empty());
+        b.hold_ack(10);
+        assert_eq!(b.upkeep(10).0.len(), 1, "answered");
+        // from now on a keepalive carries the token
+        let (n, c) = open(&a.keepalive(20).unwrap());
+        assert_eq!(
+            b.receive(n, &c, true, 20).unwrap().token,
+            Some([9; TOKEN_LEN])
         );
     }
 

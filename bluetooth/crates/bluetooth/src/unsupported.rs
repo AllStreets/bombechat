@@ -40,8 +40,6 @@ impl Radio for UnsupportedRadio {
 
     fn disconnect(&mut self, _link: LinkId) {}
 
-    fn mark_contact(&mut self, _link: LinkId, _contact: bool) {}
-
     fn write(&mut self, _link: LinkId, _bytes: &[u8]) {}
 
     fn poll(&mut self) -> Vec<RadioEvent> {

@@ -52,7 +52,8 @@
 //! more than [`CONTACT_WINDOW_MS`] (120 s) from its own clock either way
 //! ([`SessionError::Stale`]). The target token is the advertising token of
 //! the device the initiator meant to reach; the responder refuses it unless
-//! it is one of its own current or previous tokens
+//! it is one of its own recent tokens, as the caller lists them (the link
+//! layer passes its current one and the four before it)
 //! ([`SessionError::WrongTarget`]), so a message 1 relayed to another device
 //! fails there. Both live inside the encrypted, authenticated payload, so a
 //! relay or replay can't rewrite them.
@@ -431,7 +432,7 @@ impl Session {
     }
 
     /// Answer a contact session. `now_ms` is this device's clock (Unix ms)
-    /// and `my_tokens` its current and previous advertising tokens; a
+    /// and `my_tokens` the advertising tokens it answers to; a
     /// message 1 sent at another time or to another token fails with
     /// [`SessionError::Stale`] or [`SessionError::WrongTarget`]. After
     /// reading message 1, look at [`Handshake::remote_identity`] and either

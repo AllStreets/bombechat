@@ -9,10 +9,10 @@ use bombechat_bluetooth::wire::{
     MAX_MESSAGE,
 };
 use bombechat_bluetooth::{
-    bucket, BleEvent, BleHandle, BleTransport, FakeRadio, LinkId, Mode, Radio, RadioEvent, Room,
-    SeededRng, ACK_DELAY_MAX_MS, HOLD_MS, IDLE_MS, MAX_LINKS, QUEUE_CAP, REQUESTS_CAP,
-    REQUEST_ATTEMPTS, REQUEST_MS, SEEN_CAP, SEEN_MS, SILENCE_MS, STRANGER_MS, TOKEN_MS, TRIAL_CAP,
-    TRIAL_RETRY_MS,
+    bucket, Advert, BleEvent, BleHandle, BleTransport, FakeRadio, LinkId, Mode, Radio, RadioEvent,
+    Room, SeededRng, ACK_DELAY_MAX_MS, HOLD_MS, IDLE_MS, MAX_LINKS, PAST_TOKENS, QUEUE_CAP,
+    REQUESTS_CAP, REQUEST_ATTEMPTS, REQUEST_MS, SEEN_CAP, SEEN_MS, SILENCE_MS, STRANGER_MS,
+    TOKEN_MS, TRIAL_CAP, TRIAL_RETRY_MS,
 };
 use bombechat_core::{seal_private, seal_public, Envelope, Identity, PublicIdentity};
 use bombechat_modem::{split, Event, Reassembler};
@@ -158,7 +158,7 @@ fn pair(room: &Room) -> (Device, Device) {
 /// arrives, as whole link messages.
 struct Raw {
     radio: FakeRadio,
-    ups: Vec<(LinkId, Option<[u8; TOKEN_LEN]>)>,
+    ups: Vec<(LinkId, Advert)>,
     downs: Vec<LinkId>,
     got: Vec<(LinkId, LinkMessage)>,
     assembly: HashMap<LinkId, Reassembly>,
@@ -187,7 +187,7 @@ impl Raw {
     fn poll(&mut self) {
         for e in self.radio.poll() {
             match e {
-                RadioEvent::Up { link, token } => self.ups.push((link, token)),
+                RadioEvent::Up { link, advert } => self.ups.push((link, advert)),
                 RadioEvent::Down(link) => self.downs.push(link),
                 RadioEvent::Bytes(link, b) => {
                     let r = self.assembly.entry(link).or_default();
@@ -205,7 +205,10 @@ impl Raw {
         self.ups
             .iter()
             .rev()
-            .find_map(|(l, t)| t.map(|t| (*l, t)))
+            .find_map(|(l, a)| match a {
+                Advert::Token(t) => Some((*l, *t)),
+                _ => None,
+            })
             .expect("a link to an advert")
     }
 
@@ -214,7 +217,7 @@ impl Raw {
         self.ups
             .iter()
             .rev()
-            .find_map(|(l, t)| t.is_none().then_some(*l))
+            .find_map(|(l, a)| (*a == Advert::Unseen).then_some(*l))
             .expect("a link from the device")
     }
 
@@ -296,22 +299,24 @@ fn two_contacts_exchange_envelopes_both_ways() {
     assert_eq!(a.t.name(), Channel::Bluetooth);
 }
 
-/// When one Mac refuses the other's links (it heard that Mac under an
-/// earlier token, and the identifier never changes, as between two Macs
-/// on the same Apple ID), the pair still talks over the links the other
-/// way, in both directions, and stays present to each other.
+/// When one Mac withholds its token from the other (it heard that Mac
+/// under an earlier token, and the identifier never changes, as between
+/// two Macs on the same Apple ID), the pair still meets over the links the
+/// other way, in both directions, and stays present to each other. Once
+/// they have talked, the withholding Mac's advert is recognised by the
+/// token it gave inside the session, so the other reaches it over its own
+/// link too.
 #[test]
-fn a_pair_with_one_direction_refused_still_talks_both_ways() {
-    for (refused_by_b, seed) in [(true, 11), (false, 12)] {
+fn a_pair_with_one_direction_withheld_still_talks_both_ways() {
+    for (withheld_by_b, seed) in [(true, 11), (false, 12)] {
         let room = Room::new(seed);
         let (mut a, mut b) = pair(&room);
-        if refused_by_b {
+        if withheld_by_b {
             room.refuse(&a.radio, &b.radio);
         } else {
             room.refuse(&b.radio, &a.radio);
         }
         let t = run(&mut [&mut a, &mut b], 0, 3_000);
-        assert_eq!(room.links().len(), 1, "one direction only");
         assert_eq!(a.h.peers().contacts, vec![b.me()]);
         assert_eq!(b.h.peers().contacts, vec![a.me()]);
         let to_b = private(&a, &[&b], "for b");
@@ -322,44 +327,85 @@ fn a_pair_with_one_direction_refused_still_talks_both_ways() {
         assert_eq!(b.heard(), vec![to_b]);
         assert_eq!(a.heard(), vec![to_a]);
         assert!(a.has(&TransportEvent::Sent(7)) && b.has(&TransportEvent::Sent(9)));
-        // and it carries on across tokens and the link's own replacement
-        run_by(&mut [&mut a, &mut b], t, t + 2 * TOKEN_MS, 250);
+        // and it carries on across tokens and the links' own replacement
+        let t = run_by(&mut [&mut a, &mut b], t, t + 2 * TOKEN_MS, 250);
         assert_eq!(a.h.peers().contacts, vec![b.me()]);
         assert_eq!(b.h.peers().contacts, vec![a.me()]);
+        // the side denied the token now has a session on a link it opened
+        let (denied, other) = if withheld_by_b { (&a, &b) } else { (&b, &a) };
+        assert_eq!(
+            denied.t.contact_token(&other.me()),
+            other.radio.token(),
+            "it knows the other's current token"
+        );
+        let opened: Vec<LinkId> = room
+            .links()
+            .into_iter()
+            .filter(|(_, c, p)| *c == denied.radio.index() && *p == other.radio.index())
+            .map(|(l, _, _)| l)
+            .collect();
+        denied.radio.take_written();
+        let (denied, other) = if withheld_by_b {
+            (&mut a, &mut b)
+        } else {
+            (&mut b, &mut a)
+        };
+        run_by(&mut [denied, other], t, t + KEEPALIVE_SPAN, 250);
+        let denied = if withheld_by_b { &a } else { &b };
+        let sealed = written(&denied.radio)
+            .iter()
+            .any(|(l, m)| opened.contains(l) && m.kind == Kind::Sealed);
+        assert!(sealed, "a session on its own link, though withheld");
     }
 }
 
-/// The transport tells the radio which links carry a confirmed session
-/// with a contact, once each, and takes it back when the contact goes.
+/// Contacts tell each other their tokens inside the session: when it is
+/// confirmed, and at once at every rotation.
 #[test]
-fn links_with_a_confirmed_contact_session_are_marked_and_unmarked() {
+fn contacts_tell_each_other_their_token_in_session_and_at_every_rotation() {
     let room = Room::new(13);
     let (mut a, mut b) = pair(&room);
-    let t = run(&mut [&mut a, &mut b], 0, 3_000);
-    let marks = a.radio.contact_marks();
-    assert!(
-        !marks.is_empty() && marks.iter().all(|(_, on)| *on),
-        "{marks:?}"
-    );
-    let links: Vec<LinkId> = marks.iter().map(|(l, _)| *l).collect();
-    let mut once = links.clone();
-    once.dedup();
-    assert_eq!(links, once, "once per link");
-    assert!(!b.radio.contact_marks().is_empty());
-    // a stranger's links are never marked
-    let c = Device::new(&room, 3);
+    let mut t = run(&mut [&mut a, &mut b], 0, 3_000);
+    assert_eq!(a.t.contact_token(&b.me()), b.radio.token());
+    assert_eq!(b.t.contact_token(&a.me()), a.radio.token());
+    for _ in 0..3 {
+        let before = b.radio.token();
+        let at = run_until(&mut [&mut a, &mut b], t, t + TOKEN_MS + 1_000, |d| {
+            d[1].radio.token() != before
+        })
+        .expect("b rotates");
+        // the next step, a knows
+        t = run(&mut [&mut a, &mut b], at + STEP, at + STEP);
+        assert_eq!(a.t.contact_token(&b.me()), b.radio.token(), "at {at}");
+    }
+    // a stranger is never told
+    let mut c = Device::new(&room, 3);
+    c.knows(&[&a, &b]);
     c.h.set_mode(Some(Mode::Contacts));
-    let mut c = c;
-    let t = run(&mut [&mut a, &mut b, &mut c], t, t + 3_000);
-    assert!(c.radio.contact_marks().is_empty());
-    // removing the contact takes the mark back
+    run(&mut [&mut a, &mut b, &mut c], t, t + 30_000);
+    assert_eq!(c.t.contact_token(&a.me()), None);
+    assert_eq!(c.t.contact_token(&b.me()), None);
+}
+
+/// A removed contact's sessions end at once, so it hears no further
+/// token, and what it told this device is forgotten.
+#[test]
+fn a_removed_contact_is_told_no_further_tokens() {
+    let room = Room::new(14);
+    let (mut a, mut b) = pair(&room);
+    let t = run(&mut [&mut a, &mut b], 0, 3_000);
+    let known = a.radio.token();
+    assert_eq!(b.t.contact_token(&a.me()), known);
     a.h.set_contacts(vec![]);
-    run(&mut [&mut a, &mut b, &mut c], t, t + 1_000);
-    let after = a.radio.contact_marks();
-    assert!(
-        after[marks.len()..].iter().all(|(_, on)| !*on) && after.len() > marks.len(),
-        "{after:?}"
-    );
+    let t = run(&mut [&mut a, &mut b], t, t + STEP);
+    assert_eq!(a.t.contact_token(&b.me()), None, "forgotten");
+    // a rotates, more than once; b still counts a as a contact and keeps
+    // dialling, but a answers nothing and tells it nothing
+    let t = run_by(&mut [&mut a, &mut b], t, t + 2 * TOKEN_MS, 250);
+    assert_ne!(a.radio.token(), known, "a rotated");
+    assert_eq!(b.t.contact_token(&a.me()), known, "nothing newer reached b");
+    assert!(b.h.peers().contacts.is_empty());
+    let _ = t;
 }
 
 #[test]
@@ -1078,6 +1124,100 @@ fn the_token_rotates_between_12_and_15_minutes_and_the_previous_still_answers() 
         dial(&mut raw, &mut a, &fk, BASE + t, Some(first), t),
         vec![Kind::Handshake]
     );
+}
+
+/// A device that withholds its token gets no hello it could relay to a
+/// contact: a contact's token learned in session is named only on a link
+/// to an advert showing that token's tag, so on any other link the round
+/// is all decoys, and replaying it to the contact gets no answer.
+#[test]
+fn a_device_withholding_its_token_gets_no_hello_worth_relaying() {
+    let room = Room::new(15);
+    let (mut a, mut b) = pair(&room);
+    let t = run(&mut [&mut a, &mut b], 0, 3_000);
+    assert_eq!(a.t.contact_token(&b.me()), b.radio.token());
+    a.radio.take_written();
+    // x withholds its token from a; y holds a link into b
+    let mut x = Raw::with_token(&room, [0x3c; TOKEN_LEN]);
+    room.refuse(&a.radio, &x.radio);
+    let mut y = Raw::with_token(&room, [0x4d; TOKEN_LEN]);
+    let t = run(&mut [&mut a, &mut b], t, t + STEP);
+    x.poll();
+    y.poll();
+    let to_x = links_between(&room, &a.radio, &x.radio);
+    let hellos_to_x: Vec<LinkMessage> = written(&a.radio)
+        .into_iter()
+        .filter(|(l, m)| to_x.contains(l) && m.kind == Kind::Contact)
+        .map(|(_, m)| m)
+        .collect();
+    assert_eq!(hellos_to_x.len(), TRIAL_CAP, "a whole round, all decoys");
+    let into_b = room
+        .links()
+        .into_iter()
+        .find(|(_, c, p)| *c == y.radio.index() && *p == b.radio.index())
+        .map(|(l, _, _)| l)
+        .expect("y's link into b");
+    let mut answers = Vec::new();
+    for m in &hellos_to_x {
+        answers.extend(replay(&mut y, &mut b, into_b, m, t + STEP));
+    }
+    assert!(
+        answers.is_empty(),
+        "b answered a relayed hello: {answers:?}"
+    );
+}
+
+/// A contact who learned a token inside a session may name it for about
+/// an hour: the current token and the four before it answer, the fifth
+/// back doesn't, and neither does another device's.
+#[test]
+fn a_hello_may_name_the_last_four_tokens_but_not_the_fifth_or_anothers() {
+    assert_eq!(PAST_TOKENS, 4);
+    let room = Room::new(35);
+    let (mut a, mut raw, _) = raw_beside(&room);
+    let mut other = Device::new(&room, 9);
+    other.h.set_mode(Some(Mode::Open));
+    let friend = identity(40);
+    let fk = SessionKeys::new(&friend);
+    a.h.set_contacts(vec![friend.public()]);
+    let mut t = STEP;
+    a.poll(t);
+    other.poll(t);
+    let mut mine = vec![a.radio.token().unwrap()];
+    let mut theirs = vec![other.radio.token().unwrap()];
+    while mine.len() < 6 {
+        t += 1_000;
+        a.poll(t);
+        other.poll(t);
+        let now = a.radio.token().unwrap();
+        if *mine.last().unwrap() != now {
+            mine.push(now);
+        }
+        let now = other.radio.token().unwrap();
+        if *theirs.last().unwrap() != now {
+            theirs.push(now);
+        }
+    }
+    mine.reverse(); // newest first: mine[k] is k tokens back
+    assert_eq!(a.t.tokens(), mine[..5].to_vec());
+    raw.poll();
+    a.poll(t);
+    raw.poll();
+    for (back, token) in mine.iter().enumerate() {
+        t += STEP;
+        let answered = dial(&mut raw, &mut a, &fk, BASE + t, Some(*token), t);
+        if back <= PAST_TOKENS {
+            assert_eq!(answered, vec![Kind::Handshake], "{back} back");
+        } else {
+            assert!(answered.is_empty(), "{back} back: {answered:?}");
+        }
+    }
+    // a hello meant for another device, naming any of its recent tokens,
+    // relayed here: no answer
+    for token in &theirs {
+        t += STEP;
+        assert!(dial(&mut raw, &mut a, &fk, BASE + t, Some(*token), t).is_empty());
+    }
 }
 
 /// Contact hellos `radio` wrote on `link` (or on every link).

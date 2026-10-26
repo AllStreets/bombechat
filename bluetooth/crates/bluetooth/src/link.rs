@@ -6,7 +6,7 @@ use bombechat_core::PublicIdentity;
 use bombechat_session::{Handshake, TOKEN_LEN};
 use rand_core::RngCore;
 
-use crate::radio::{LinkId, Radio};
+use crate::radio::{LinkId, Radio, TAG_LEN};
 use crate::session::{LinkSession, SessKind};
 use crate::wire::{fragment, Reassembly, FROM_INITIATOR};
 
@@ -66,30 +66,49 @@ pub(crate) enum Exchange {
 }
 
 pub(crate) struct Link {
-    /// The token the other device advertised when this device connected
-    /// to it; `None` for a link the other device opened.
+    /// This device connected to the other's advert (so it may send
+    /// contact hellos here); otherwise the other device connected to it.
+    pub opened: bool,
+    /// On a link this device opened, the other device withheld its token
+    /// (it heard this device under an earlier one)...
+    pub withheld: bool,
+    /// ...and the tag its advert showed, if any.
+    pub tag: Option<[u8; TAG_LEN]>,
+    /// The token contact hellos on this link name: the one the other
+    /// device gave, or, where it withheld it, the one a contact gave
+    /// inside a session whose tag the advert showed. `None` if neither.
     pub token: Option<[u8; TOKEN_LEN]>,
+    /// What this link's one round of hellos is remembered by: its token,
+    /// or for a link without one, something standing for the advert.
+    /// `None` for a link the other device opened.
+    pub round: Option<[u8; TOKEN_LEN]>,
     pub up_ms: u64,
     /// The last time the link had a session or a handshake on it.
     pub busy_ms: u64,
     pub reassembly: Reassembly,
     next_fragment: u16,
     pub exchanges: BTreeMap<ExKey, Exchange>,
-    /// The contact this link was marked as carrying a confirmed session
-    /// with ([`Radio::mark_contact`]), if any.
-    pub marked: Option<[u8; 64]>,
 }
 
 impl Link {
-    pub fn new(token: Option<[u8; TOKEN_LEN]>, now_ms: u64) -> Link {
+    pub fn new(
+        opened: bool,
+        withheld: Option<Option<[u8; TAG_LEN]>>,
+        token: Option<[u8; TOKEN_LEN]>,
+        round: Option<[u8; TOKEN_LEN]>,
+        now_ms: u64,
+    ) -> Link {
         Link {
+            opened,
+            withheld: withheld.is_some(),
+            tag: withheld.flatten(),
             token,
+            round,
             up_ms: now_ms,
             busy_ms: now_ms,
             reassembly: Reassembly::new(),
             next_fragment: 0,
             exchanges: BTreeMap::new(),
-            marked: None,
         }
     }
 
