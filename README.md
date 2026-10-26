@@ -208,6 +208,6 @@ CI runs the Rust tests and the airgapped check on Linux and on macOS, where the 
 
 ## License
 
-MIT, copyright 2026 AllStreets. See [LICENSE](LICENSE).
+MIT, copyright 2026 Connor Evans. See [LICENSE](LICENSE).
 
 The engraving face is Marcellus SC, with Libre Caslon Text for the forms and Cutive Mono for the typewriter, all under the SIL Open Font License with their texts beside them in `app/ui/fonts`. three.js is vendored under the MIT License in `app/ui/vendor/three`. [NOTICE](NOTICE) lists everything bundled and its license.
