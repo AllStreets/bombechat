@@ -39,7 +39,7 @@ a.pl:hover,button.pl:hover{box-shadow:inset 0 0 0 1px rgba(231,166,60,.5),0 1px 
 a.pl:active,button.pl:active{transform:translateY(1px);box-shadow:inset 0 0 0 1px rgba(231,166,60,.5),0 1px 0 #000}
 a.pl:focus-visible,button.pl:focus-visible{outline:1px solid var(--amber);outline-offset:3px}
 a.pl svg{display:block}
-.top .rt{margin-left:auto;display:flex;gap:10px;align-items:center}
+.top .rt{margin-left:auto;display:flex;gap:10px;align-items:center;min-width:0}
 .maker,.pl,a.pl,button.pl{-webkit-text-stroke:.25px currentColor}
 .saved{font-family:var(--type);font-size:12.5px;color:#9d978a;min-width:150px;text-align:right;transition:opacity .4s}
 
@@ -110,12 +110,15 @@ a.pl svg{display:block}
 .fullview[hidden]{display:none!important}
 .fullview{position:absolute!important;left:16px;top:12px;z-index:3}
 .fullview .kb{font-family:var(--type);font-size:12px;letter-spacing:0;color:#9d978a;border:1px solid rgba(236,230,214,.25);padding:0 4px;border-radius:2px;margin-left:2px}
-.hint{position:absolute;right:16px;top:12px;background:rgba(11,11,10,.72);padding:4px 9px;border-radius:2px;font-family:var(--type);font-size:12.5px;color:#8d887a;pointer-events:none;transition:opacity .6s}
+/* what the machine answers to, typed in the top bar where it never covers the panel */
+.hint{font-family:var(--type);font-size:12.5px;color:#8d887a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:0 1 auto}
+.hint[hidden]{display:none}
 .fallback{position:absolute;inset:0;display:none;place-items:center;font-family:var(--type);color:#9d978a;padding:40px;text-align:center}
 .loading{position:absolute;inset:0;display:grid;place-items:center;font-family:var(--type);font-size:13px;color:#8d887a;transition:opacity .6s;pointer-events:none}
 
 @media (max-width:980px){
   body{height:auto;overflow:auto}
+  .top .hint{display:none}
   .stage{grid-template-columns:1fr;grid-template-rows:56vh auto}
   .view{order:-1;position:sticky;top:0;height:56vh;z-index:1}
   .cardwrap{padding:12px}
@@ -128,7 +131,7 @@ a.pl svg{display:block}
 <div class="top">
   <a class="pl" href="bombechat.html" id="back" aria-label="Back to the front of the machine"><svg width="11" height="9" viewBox="0 0 11 9" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M4.5 1 1 4.5 4.5 8M1 4.5h9.5"/></svg>Front of the machine</a>
   <span class="maker">Bombechat<small></small></span>
-  <div class="rt"><span class="saved" id="saved" aria-live="polite"></span><span class="pl">Build 0.4</span></div>
+  <div class="rt"><span class="hint" id="hint">drag a plug to another jack</span><span class="saved" id="saved" aria-live="polite"></span><span class="pl">Build 0.4</span></div>
 </div>
 
 <div class="stage">
@@ -142,7 +145,6 @@ a.pl svg{display:block}
   <div class="view" id="view">
     <div class="loading" id="loading">warming up the machine</div>
     <div class="tag" id="tag"></div>
-    <div class="hint" id="hint">drag a plug to another jack</div>
     <button class="pl fullview" id="fullview" hidden>Full view<span class="kb">Esc</span></button>
     <div class="fallback" id="fallback">This view needs WebGL. Every setting still works from the wiring schedule.</div>
   </div>
@@ -276,7 +278,7 @@ addEventListener('pointerdown',()=>Snd.arm(),{once:true});addEventListener('keyd
 /* ---------- the machine ---------- */
 const view=document.getElementById('view');
 let machine=null;
-try{machine=await build()}catch(err){console.error(err);document.getElementById('fallback').style.display='grid';document.getElementById('loading').style.opacity=0}
+try{machine=await build()}catch(err){console.warn('the back stays flat:',err.message);document.getElementById('fallback').style.display='grid';document.getElementById('loading').style.opacity=0;document.getElementById('hint').hidden=true}
 
 async function build(){
   await engravingFace();
@@ -293,8 +295,8 @@ async function build(){
   // pitch is .98 of its column pitch), so these read as the same drums seen from behind.
   const CROWS=3,CCOLS=12,CPX=1.4,CPY=1.38,CY0=3.42+(CROWS-1)*CPY;// Row 3 sits where the plate's gap above it has always been
   const conX=c=>(c-(CCOLS-1)/2)*CPX,conY=r=>CY0-r*CPY;
-  const PTOP=CY0+1.9,PBOT=-9.2;
-  const PW=19.6,PH=PTOP-PBOT,CY=(PTOP+PBOT)/2;// the panel runs from y -9.2 up to its top bolt row, 1.9 above Row 1
+  const PTOP=CY0+2.65,PBOT=-9.2;
+  const PW=19.6,PH=PTOP-PBOT,CY=(PTOP+PBOT)/2;// the panel runs from y -9.2 up to its top bolt row, above the trunks' duct
   const panel=new THREE.Mesh(new THREE.BoxGeometry(PW,PH,.3),M.panel);panel.position.set(0,CY,-.15);panel.receiveShadow=true;scene.add(panel);
   const rimFrame=new THREE.Mesh(new THREE.BoxGeometry(PW+.5,PH+.5,.2),new THREE.MeshStandardMaterial({color:'#121311',roughness:.6,metalness:.5}));rimFrame.position.set(0,CY,-.32);scene.add(rimFrame);
   const topBolts=[];for(let i=0;i<=12;i++){topBolts.push(bolt(-PW/2+.35+i*(PW-.7)/12,CY+PH/2-.35));bolt(-PW/2+.35+i*(PW-.7)/12,CY-PH/2+.35)}
@@ -311,11 +313,13 @@ async function build(){
     const k=new THREE.Mesh(new THREE.CylinderGeometry(.305,.305,.1,48,1,true),new THREE.MeshStandardMaterial({color:'#2a2a28',roughness:.4,metalness:.8,bumpMap:knurl,bumpScale:2}));k.rotation.x=Math.PI/2;k.position.set(x,y,.5);scene.add(k);
     bigCons.push(new THREE.Vector3(x,y,.95));conMeshes.push({row:r+1,col:CCOLS-c,ring,label:'Row '+(r+1)})}
   const colNums=[...Array(CCOLS)].map((_,c)=>engrave(String(CCOLS-c),conX(c),CY0+.92,.17));
-  // each row signed on a traffolyte plate at its left, screwed on at both ends, as the front's Plain, Heard and Key are
+  // each row signed on a traffolyte plate at its left, screwed on at both ends, as the front's Plain, Heard and Key are,
+  // and the size they are beside their drums: the front's plates stand 21 px against a 112.7 px drum pitch at 1512
+  const SIGN_H=CPX*21/112.7;
   const rowSigns=[...Array(CROWS)].map((_,r)=>{const text='Row '+(r+1);
-    const m=plate(text.toUpperCase(),0,conY(r),{h:.22,size:56,pad:.7});const w=m.geometry.parameters.width;
-    m.position.x=conX(0)-.6-w/2;
-    [-1,1].forEach(sx=>bolt(m.position.x+sx*(w/2-.085),conY(r),{scale:.4,z:.04}));
+    const m=plate(text.toUpperCase(),0,conY(r),{h:SIGN_H,size:56,pad:.7});const w=m.geometry.parameters.width;
+    m.position.x=conX(0)-.5-w/2;
+    [-1,1].forEach(sx=>bolt(m.position.x+sx*(w/2-SIGN_H*.4),conY(r),{scale:SIGN_H*1.6,z:.04}));
     return {text,mesh:m}});
 
   /* cable builder: a hanging curve that leaves each end straight out of its socket */
@@ -340,16 +344,36 @@ async function build(){
   for(let i=0;i<14;i++){const a=bigCons[NC-12+Math.floor(rnd()*12)],b=bigCons[NC-12+Math.floor(rnd()*12)];if(a===b)continue;
     const m=tube(hangPoints(a,b,{sag:.4+rnd()*.25,out:.35,bulge:.5+rnd()*.5,droop:.3}),.1,cableMat(CABLE_COLORS[i%CABLE_COLORS.length]),110);scene.add(m);decor.push(m);looms.push(m)}
 
-  // trunks: heavy cables from the top row to the rest of the machine. Each leaves its connector, rises through the gap
-  // between two column numbers, then goes over the panel's top edge between two of its bolts and down behind it
-  const boltXs=topBolts.map(b=>b.position.x);
-  for(let g=0;g<CCOLS-1;g++){const gx=conX(g)+CPX/2;if(Math.min(...boltXs.map(x=>Math.abs(x-gx)))<.3)continue;
-    const mids=boltXs.slice(1).map((x,i)=>(x+boltXs[i])/2),tx=mids.reduce((a,b)=>Math.abs(b-gx)<Math.abs(a-gx)?b:a);
-    const from=[g,g+1].filter(()=>rnd()<.65);if(!from.length)from.push(g+(rnd()<.5?0:1));
-    from.forEach((c,k)=>{const a=bigCons[c],side=from.length>1?(k?.09:-.09):0,x=gx+side*.6,xt=tx+side,z=.75+rnd()*.25;
-      const pts=[a.clone(),a.clone().add(new THREE.Vector3(0,.1,.3)),new THREE.Vector3(a.x*.35+x*.65,a.y+.6,z),new THREE.Vector3((x+xt)/2,CY0+1.2,z*.9),
-        new THREE.Vector3(xt,PTOP+.05,.45),new THREE.Vector3(xt,PTOP+.4,0),new THREE.Vector3(xt,PTOP+.32,-.6),new THREE.Vector3(xt,PTOP-.3,-1)];
-      const m=tube(pts,.1+rnd()*.025,cableMat(CABLE_COLORS[(c*5+k)%CABLE_COLORS.length]),110);scene.add(m);decor.push(m)})}
+  // trunks: heavy cables from the top row to the rest of the machine. The cords of neighbouring connectors are gathered
+  // into five bundles of two or three, one in the gap between two column numbers, and each bundle goes up into the duct
+  const GROUPS=[[0,1],[2,3,4],[5,6],[7,8,9],[10,11]],GAPS=[0,3,5,7,10];
+  const HB=CY0+1.38,HT=CY0+1.92;// the duct's open underside and its top
+  const trunkCords=[];
+  GROUPS.forEach((grp,gi)=>{const gb=GAPS[gi],xb=conX(gb)+CPX/2;
+    const cords=[];grp.forEach(c=>{const n=rnd()<.3?2:1;for(let k=0;k<n;k++)cords.push(c)});
+    while(cords.length>3)cords.splice(Math.floor(rnd()*cords.length),1);
+    cords.sort((p,q)=>p-q);
+    cords.forEach((c,k)=>{const a=bigCons[c],off=(k-(cords.length-1)/2)*.2;
+      trunkCords.push({c,a,off,xb,gi,k,n:cords.length,r:.095+rnd()*.025,lay:rnd(),col:CABLE_COLORS[(c*5+k*3+gi)%CABLE_COLORS.length]})})});
+  // each cord crosses over its neighbours' tops below the numbers, so it passes the numbers at its bundle's own gap
+  function rise(t){const {a}=t,ex=t.xb+t.off,z=.85+t.lay*.3;
+    return [a.clone(),a.clone().add(new THREE.Vector3(0,.12,.32)),new THREE.Vector3(a.x*.25+ex*.75,a.y+.45,z),new THREE.Vector3(ex,CY0+.72,z*.85),new THREE.Vector3(ex,CY0+1.05,z*.7)]}
+  const addCord=(pts,t,seg=120)=>{const m=tube(pts,t.r,cableMat(t.col),seg);scene.add(m);decor.push(m);return m};
+  {
+    // a duct along the top in the panel's own enamel, screwed to it and open underneath: each bundle is held by a
+    // brass clamp under the duct's lip, and goes up into it
+    const W=PW-1.5,H=HT-HB,D=.72,yc=(HB+HT)/2;
+    const hoodMat=new THREE.MeshStandardMaterial({color:'#232420',roughness:.6,metalness:.5,bumpMap:wrinkle,bumpScale:.5});
+    const part=(w,h,d,x,y,z)=>{const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),hoodMat);m.position.set(x,y,z);m.castShadow=true;m.receiveShadow=true;scene.add(m);return m};
+    part(W,H,.05,0,yc,D);part(W,.05,D,0,HT-.025,D/2);[-1,1].forEach(sx=>part(.05,H,D,sx*W/2,yc,D/2));
+    part(W+.04,.06,.12,0,HB+.03,D+.01);// the rolled lip
+    for(let i=0;i<7;i++)bolt(-W/2+.35+i*(W-.7)/6,yc+.06,{z:D+.03,scale:.75});
+    for(const t of trunkCords){const ex=t.xb+t.off,ez=.38+((t.k*7+t.gi)%3)*.05;
+      addCord([...rise(t),new THREE.Vector3(ex,HB-.22,ez+.06),new THREE.Vector3(ex,HB+.1,ez),new THREE.Vector3(ex,HB+.6,ez)],t)}
+    GROUPS.forEach((g,gi)=>{const ts=trunkCords.filter(t=>t.gi===gi);if(!ts.length)return;const x0=Math.min(...ts.map(t=>t.xb+t.off)),x1=Math.max(...ts.map(t=>t.xb+t.off)),w=x1-x0+.34,x=(x0+x1)/2;
+      // the clamp: a brass saddle across the bundle, screwed into the lip at both ends
+      const sad=new THREE.Mesh(new THREE.BoxGeometry(w,.11,.03),M.brassDull);sad.position.set(x,HB-.1,.6);sad.castShadow=true;scene.add(sad);
+      [-1,1].forEach(sx=>{const ear=new THREE.Mesh(new THREE.BoxGeometry(.16,.11,.03),M.brassDull);ear.position.set(x+sx*(w/2+.06),HB-.1,.6);scene.add(ear);bolt(x+sx*(w/2+.07),HB-.1,{z:.63,scale:.4})})})}
 
   // the cable trough along the bottom: an open steel channel with a bundle running sideways through it
   {const TY=-8.05;const chMat=new THREE.MeshStandardMaterial({color:'#2b2c29',roughness:.42,metalness:.85,bumpMap:wrinkle,bumpScale:.25});
@@ -436,13 +460,15 @@ async function build(){
   /* ---------- camera framing ---------- */
   const look=new THREE.Vector3(),lookT=new THREE.Vector3(0,0,0),pos=new THREE.Vector3(),posT=new THREE.Vector3();let par={x:0,y:0},parT={x:0,y:0};
   function fitDist(w,h){const fov=camera.fov*Math.PI/180;return Math.max(h/2/Math.tan(fov/2),w/2/Math.tan(fov/2)/camera.aspect)}
-  // the first view: the whole panel, its top bolt row to the cable trough with a little margin, centred on it. A window
+  // the first view: the whole panel, its top bolt row to the cable trough with a little margin. A window
   // too wide and short for all of it at a size the plates still read (no smaller than nine tenths of the width-filling
   // view the back always opened on) keeps that size and hangs the view from the panel's top edge: the bolts, the column
   // numbers and Row 1 always show, and the rest is a row's focus away.
-  const VIEW_TOP=PTOP+.25+.35,VIEW_BOT=-8.65-.3,SMALLEST=.9;
+  const VIEW_TOP=PTOP+.3,VIEW_BOT=-8.65-.3,SMALLEST=.9;
   function overview(){const fov=camera.fov*Math.PI/180,h=VIEW_TOP-VIEW_BOT,cap=fitDist(PW-.3,12.5)/SMALLEST;let d=fitDist(PW-.3,h),cy=(VIEW_TOP+VIEW_BOT)/2;
-    if(d>cap){d=cap;cy=VIEW_TOP-d*Math.tan(fov/2)}
+    // too wide and short: hang it from the top. Room to spare above and below: a third of it above, the rest below,
+    // so the panel's top stays near the top of the window
+    if(d>cap){d=cap;cy=VIEW_TOP-d*Math.tan(fov/2)}else{const spare=d*Math.tan(fov/2)*2-h;cy-=spare/6}
     lookT.set(0,cy,0);posT.set(.7,cy-.6,d)}
   // the row from its name to its last jack, or to the end of the tape beside it
   // a focused row is framed with the rows of its group beside it in full: the view reaches as far right as any of them

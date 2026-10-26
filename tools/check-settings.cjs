@@ -5,7 +5,8 @@
 // Fails on page errors, a plug that does not end in the jack its setting names, or a slow frame rate,
 // and for the app's interface on any request that leaves this machine, on a drum connector field that is not
 // three rows of twelve signed Row 1 to Row 3 with columns 12 to 1 clear of the plates below it, and on a first
-// view that does not show the panel's top (bolts, column numbers, Row 1) at every window size.
+// view that does not show the panel's top (bolts, column numbers, Row 1) or puts the hint over the machine at every
+// window size, and on a back without WebGL that is not the wiring schedule alone and working.
 const path = require('path'), fs = require('fs');
 const { chromium } = require('playwright');
 const ROOTDIR = path.resolve(__dirname, '..');
@@ -219,8 +220,13 @@ const url = q => 'http://127.0.0.1:4811/' + path.relative(ROOTDIR, page) + (q ? 
     const quarter = v.top + (v.bottom - v.top) * .25, why = [];
     for (const [name, list] of [['top bolt', got.topBolts], ['column number', got.colNums], ['Row 1 sign', [got.rowSigns[0]]]])
       list.forEach((b, i) => { if (!inside(b)) why.push(`${name} ${i} cut`); else if (b.bottom > quarter) why.push(`${name} ${i} below the top quarter (${Math.round(b.bottom - v.top)} of ${Math.round(v.bottom - v.top)})`); });
+    // the hint never lies on the machine: it is in the top bar, or hidden where the bar has no room for it
+    const hint = await f.evaluate(() => { const h = document.getElementById('hint'), r = h.getBoundingClientRect(), v = document.getElementById('view').getBoundingClientRect();
+      return { shown: !!(r.width && r.height), over: r.left < v.right && v.left < r.right && r.top < v.bottom && v.top < r.bottom, cut: h.scrollWidth > h.clientWidth + 1 }; });
+    if (hint.over) why.push('the hint lies over the machine');
+    if (hint.shown && hint.cut) why.push('the hint is cut short');
     const conRow = got.connectors.slice(0, 12).sort((a, b) => a.left - b.left);
-    framing[`${width}x${height}`] = { whole: inside(got.makersPlate) && got.groupPlates.every(inside), topBolts: Math.round(got.topBolts[0].top - v.top), pitch: +(((conRow[11].left - conRow[0].left) / 11)).toFixed(1), problems: why.length };
+    framing[`${width}x${height}`] = { whole: inside(got.makersPlate) && got.groupPlates.every(inside), hint: hint.shown, topBolts: Math.round(got.topBolts[0].top - v.top), pitch: +(((conRow[11].left - conRow[0].left) / 11)).toFixed(1), problems: why.length };
     if (why.length) problems.push(`${width}x${height}: the back's first view does not show its top: ${[...new Set(why)].slice(0, 6).join('; ')}`);
     if (width === 1512) await f.screenshot({ path: path.join(out, 'overview-1512x982.png') });
     await f.context().close();
@@ -429,7 +435,29 @@ const url = q => 'http://127.0.0.1:4811/' + path.relative(ROOTDIR, page) + (q ? 
     await kp.context().close();
   }
   await browser.close();
-  console.log(JSON.stringify({ out, fps, field, framing, results, keyboard: [before, after], atBoot, history, refused, band, lockNotice, heldPress, problems }, null, 2));
+  // without WebGL the back is the wiring schedule alone: the view says so, no hint about plugs on a machine that is not
+  // drawn, every setting still changes from the card, and nothing goes wrong on the page (three.js saying it found no
+  // WebGL is the fallback being taken)
+  let flat = null;
+  if (APP) {
+    const fb = await chromium.launch({ channel: 'chrome', args: ['--disable-webgl', '--disable-3d-apis'] });
+    const fp = await (await fb.newContext({ viewport: vp, deviceScaleFactor: 2 })).newPage();
+    fp.on('pageerror', e => problems.push('flat: page error: ' + e.message));
+    fp.on('console', m => m.type() === 'error' && !/^THREE\.WebGLRenderer: (A WebGL context could not be created|Error creating WebGL context)/.test(m.text()) && problems.push('flat: console: ' + m.text()));
+    fp.on('request', r => { const u = r.url(); if (!/^(data:|blob:|http:\/\/127\.0\.0\.1:4811\/)/.test(u)) problems.push('flat: asked the network for ' + u); });
+    await fp.goto(url('still'), { waitUntil: 'domcontentloaded', timeout: 120000 });
+    await fp.waitForFunction(() => getComputedStyle(document.getElementById('fallback')).display !== 'none', null, { timeout: 60000 });
+    const was = await fp.evaluate(() => window.__bc.get('volume'));
+    await fp.click(`.row[data-id="volume"] .jk[data-i="${(was + 1) % 5}"]`);
+    await fp.waitForTimeout(300);
+    flat = await fp.evaluate(() => ({ fallback: getComputedStyle(document.getElementById('fallback')).display, hint: !!document.getElementById('hint').getBoundingClientRect().width,
+      volume: window.__bc.get('volume'), label: document.querySelector('.row[data-id="volume"] .val').textContent }));
+    flat.was = was;
+    if (flat.fallback === 'none' || flat.hint || flat.volume !== (was + 1) % 5 || flat.label !== String((was + 1) % 5 + 1)) problems.push(`flat: the back without WebGL: ${JSON.stringify(flat)}`);
+    await fp.screenshot({ path: path.join(out, 'flat.png') });
+    await fb.close();
+  }
+  console.log(JSON.stringify({ out, fps, field, framing, flat, results, keyboard: [before, after], atBoot, history, refused, band, lockNotice, heldPress, problems }, null, 2));
   server.close();
   process.exit(problems.length ? 1 : 0);
 })();

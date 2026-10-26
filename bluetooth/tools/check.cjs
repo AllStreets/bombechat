@@ -1731,7 +1731,7 @@ function measureText() {
     const fp = await flat.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 });
     // three.js says on the console that it found no WebGL: that is the fallback being taken, not a fault
     fp.on('pageerror', e => problems.push('flat: page error: ' + e.message));
-    fp.on('console', m => m.type() === 'error' && !/WebGL context/.test(m.text()) && problems.push('flat: console: ' + m.text()));
+    fp.on('console', m => m.type() === 'error' && !/^THREE\.WebGLRenderer: (A WebGL context could not be created|Error creating WebGL context)/.test(m.text()) && problems.push('flat: console: ' + m.text()));
     fp.on('request', r => { const u = r.url(); if (!/^(data:|blob:|http:\/\/127\.0\.0\.1:4812\/)/.test(u)) problems.push(`flat: asked the network for ${u}`); });
     await fp.goto(url());
     await fp.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
