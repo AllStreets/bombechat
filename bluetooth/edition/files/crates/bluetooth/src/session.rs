@@ -283,25 +283,27 @@ impl LinkSession {
             acked: self.acknowledge(ack, now_ms),
             envelopes: Vec::new(),
         };
-        if ty == ENVELOPE {
+        // Envelopes and keepalives both draw an acknowledgement, so
+        // whether a reply follows doesn't tell them apart.
+        if ty == ENVELOPE || ty == KEEPALIVE {
             self.ack_due = true;
-            if listening {
-                if seq == self.recv_next {
-                    d.envelopes.push(body.to_vec());
+        }
+        if ty == ENVELOPE && listening {
+            if seq == self.recv_next {
+                d.envelopes.push(body.to_vec());
+                self.recv_next += 1;
+                while let Some(next) = self.ahead.remove(&self.recv_next) {
+                    self.ahead_bytes -= next.len();
+                    d.envelopes.push(next);
                     self.recv_next += 1;
-                    while let Some(next) = self.ahead.remove(&self.recv_next) {
-                        self.ahead_bytes -= next.len();
-                        d.envelopes.push(next);
-                        self.recv_next += 1;
-                    }
-                } else if seq > self.recv_next
-                    && (seq - self.recv_next) as usize <= WINDOW
-                    && self.ahead_bytes + body.len() <= AHEAD_BYTES
-                    && !self.ahead.contains_key(&seq)
-                {
-                    self.ahead_bytes += body.len();
-                    self.ahead.insert(seq, body.to_vec());
                 }
+            } else if seq > self.recv_next
+                && (seq - self.recv_next) as usize <= WINDOW
+                && self.ahead_bytes + body.len() <= AHEAD_BYTES
+                && !self.ahead.contains_key(&seq)
+            {
+                self.ahead_bytes += body.len();
+                self.ahead.insert(seq, body.to_vec());
             }
         }
         Some(d)
@@ -504,6 +506,30 @@ mod tests {
         let (n, c) = open(&a.send_envelope(b"three", Some(3), 900).unwrap());
         b.receive(n, &c, true, 900).unwrap();
         assert_eq!(b.upkeep(900).0.len(), 1);
+    }
+
+    /// I1: a keepalive draws an acknowledgement just as an envelope
+    /// does, at a held moment, and the acknowledgement draws nothing.
+    #[test]
+    fn a_keepalive_draws_an_acknowledgement_and_an_acknowledgement_none() {
+        let (mut a, mut b) = pair();
+        let (n, c) = open(&a.keepalive(1_000).unwrap());
+        b.receive(n, &c, true, 1_000).unwrap();
+        b.hold_ack(1_250);
+        assert!(b.upkeep(1_249).0.is_empty());
+        let (writes, _) = b.upkeep(1_250);
+        assert_eq!(
+            writes.len(),
+            1,
+            "an answer, though b's own keepalive isn't due"
+        );
+        let (n, c) = open(&writes[0]);
+        a.receive(n, &c, true, 1_250).unwrap();
+        a.hold_ack(1_250);
+        assert!(
+            a.upkeep(1_700).0.is_empty(),
+            "an acknowledgement isn't answered"
+        );
     }
 
     #[test]

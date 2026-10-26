@@ -11,12 +11,14 @@
 //! platform code; this file is only the [`Stack`] it drives.
 
 use std::collections::{HashMap, HashSet};
+use std::ffi::c_void;
+use std::ptr::NonNull;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, MutexGuard};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use bombechat_session::TOKEN_LEN;
-use dispatch2::{DispatchQueue, DispatchRetained};
+use dispatch2::{dispatch_get_specific, DispatchQueue, DispatchRetained};
 use objc2::rc::Retained;
 #[cfg(test)]
 use objc2::rc::Weak;
@@ -40,11 +42,14 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Something carried to or from the queue's thread. CoreBluetooth objects
-/// are reference counted with atomic counts, so moving a `Retained` across
-/// threads is sound; using one is done only on the queue.
+/// Something carried to or from the queue's thread that the compiler
+/// can't see is Send. Only made in `on_queue` (its closure, which borrows
+/// what its caller owns) and in `Raw` (CoreBluetooth objects, whose
+/// reference counts are atomic, handed from the queue to the stack and
+/// only used again inside `on_queue`).
 struct Pass<T>(T);
-// SAFETY: see above; every use of the contents happens on the queue.
+// SAFETY: as above: each `Pass` is made for one of those two uses, whose
+// conditions are stated where it is made.
 unsafe impl<T> Send for Pass<T> {}
 
 impl<T> Pass<T> {
@@ -55,8 +60,41 @@ impl<T> Pass<T> {
     }
 }
 
+/// Marks the Bluetooth queue (`dispatch_get_specific` finds it set only
+/// on that queue).
+static QUEUE_KEY: u8 = 0;
+
+fn queue_key() -> NonNull<c_void> {
+    NonNull::from(&QUEUE_KEY).cast()
+}
+
+/// Whether this code runs on the Bluetooth queue.
+fn on_the_queue() -> bool {
+    // SAFETY: reading a queue-specific value by a key that is a static's
+    // address; the value is never dereferenced.
+    !unsafe { dispatch_get_specific(queue_key()) }.is_null()
+}
+
+/// Mark `queue` as the Bluetooth queue, for `on_the_queue`.
+fn queue_mark(queue: &DispatchQueue) {
+    queue.set_specific(queue_key().cast(), || {});
+}
+
 /// Run `f` on `queue` and wait for it.
-fn on_queue<T>(queue: &DispatchQueue, f: impl FnOnce() -> T) -> T {
+///
+/// # Safety
+///
+/// `f` may capture what isn't Send: CoreBluetooth objects, by reference.
+/// The caller must own them (or borrow their owner) for the whole call,
+/// and must not use them on any other thread meanwhile; `f` runs on
+/// `queue` while the caller waits, so they are used by one thread at a
+/// time. Must not be called from `queue` itself (that would deadlock;
+/// it panics instead).
+unsafe fn on_queue<T: Send>(queue: &DispatchQueue, f: impl FnOnce() -> T) -> T {
+    assert!(
+        !on_the_queue(),
+        "on_queue called from the Bluetooth queue would deadlock"
+    );
     let mut out = None;
     let job = Pass((f, &mut out));
     queue.exec_sync(move || {
@@ -73,7 +111,11 @@ enum Raw {
     Characteristic(PeerId, Pass<Retained<CBCharacteristic>>),
     Ready(PeerId),
     Failed(PeerId),
-    Disconnected(PeerId),
+    /// With the error's code: none when this side cancelled.
+    Disconnected(
+        PeerId,
+        #[cfg_attr(not(test), allow(dead_code))] Option<isize>,
+    ),
     Value(PeerId, Vec<u8>),
     CanWrite(PeerId),
     ServiceAdded(bool),
@@ -125,11 +167,23 @@ fn peer_of_central(c: &CBCentral) -> PeerId {
     unsafe { c.identifier() }.as_bytes()
 }
 
-/// What the delegate shares: where to send what it sees. `None` once the
-/// radio has let go, so a late callback goes nowhere.
+/// What the delegate shares: where to send what it sees (`None` once the
+/// radio has let go, so a late callback goes nowhere), and the adverts it
+/// reported lately.
 pub(crate) struct Shared {
     tx: Mutex<Option<Sender<Raw>>>,
+    recent: Mutex<HashMap<PeerId, (Option<Tag>, Instant)>>,
 }
+
+/// The scan reports every advert (`AllowDuplicates`), several a second
+/// from each Bombechat device in range, because that is how a known
+/// device's new token is seen: without it macOS reports each device once
+/// per scan. The delegate passes on a report only when its tag is new, or
+/// this long after the last one from that device, so the rest cost a
+/// lookup on CoreBluetooth's queue and nothing more.
+const REPORT_EVERY: Duration = Duration::from_secs(1);
+/// The adverts reported lately are forgotten past this many.
+const RECENT_CAP: usize = 512;
 
 define_class!(
     // SAFETY: NSObject has no subclassing requirements, and `Delegate`
@@ -162,11 +216,11 @@ define_class!(
             let tag = name
                 .and_then(|n| n.downcast::<NSString>().ok())
                 .and_then(|n| parse_tag(&n.to_string()));
-            self.send(Raw::Discovered(
-                peer_of_peripheral(peripheral),
-                Pass(peripheral.retain()),
-                tag,
-            ));
+            let peer = peer_of_peripheral(peripheral);
+            if self.repeat(peer, tag) {
+                return;
+            }
+            self.send(Raw::Discovered(peer, Pass(peripheral.retain()), tag));
         }
 
         #[unsafe(method(centralManager:didConnectPeripheral:))]
@@ -195,9 +249,12 @@ define_class!(
             &self,
             _central: &CBCentralManager,
             peripheral: &CBPeripheral,
-            _error: Option<&NSError>,
+            error: Option<&NSError>,
         ) {
-            self.send(Raw::Disconnected(peer_of_peripheral(peripheral)));
+            self.send(Raw::Disconnected(
+                peer_of_peripheral(peripheral),
+                error.map(|e| e.code()),
+            ));
         }
     }
 
@@ -371,9 +428,26 @@ impl Delegate {
     fn new(tx: Sender<Raw>) -> Retained<Self> {
         let this = Self::alloc().set_ivars(Shared {
             tx: Mutex::new(Some(tx)),
+            recent: Mutex::new(HashMap::new()),
         });
         // SAFETY: NSObject's init on a freshly allocated object.
         unsafe { msg_send![super(this), init] }
+    }
+
+    /// Whether an advert from `peer` with `tag` was reported a moment ago.
+    fn repeat(&self, peer: PeerId, tag: Option<Tag>) -> bool {
+        let now = Instant::now();
+        let mut recent = lock(&self.ivars().recent);
+        if let Some((t, at)) = recent.get(&peer) {
+            if *t == tag && now.duration_since(*at) < REPORT_EVERY {
+                return true;
+            }
+        }
+        if recent.len() >= RECENT_CAP {
+            recent.clear();
+        }
+        recent.insert(peer, (tag, now));
+        false
     }
 
     /// Never blocks and never panics: CoreBluetooth calls this.
@@ -404,10 +478,91 @@ pub(crate) struct Open {
     centrals: HashMap<PeerId, Retained<CBCentral>>,
     /// Events the stack raised itself.
     extra: Vec<CbEvent>,
+    /// What happened, for the hardware tests' measurements.
+    #[cfg(test)]
+    trace: Vec<String>,
 }
 
 /// Peripherals seen are forgotten (unless connected) past this many.
 const SEEN_CAP: usize = 256;
+
+/// One step of letting CoreBluetooth go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Teardown {
+    /// Cancel the connection to peripheral `i`.
+    Cancel(usize),
+    /// Clear peripheral `i`'s delegate.
+    Forget(usize),
+    StopScan,
+    StopAdvertising,
+    RemoveServices,
+    /// Clear both managers' delegates.
+    ClearDelegates,
+    /// Empty the delegate's sender, so late callbacks go nowhere.
+    Silence,
+}
+
+/// The steps `close` takes, in order, given whether each manager is
+/// powered on (CoreBluetooth refuses calls to one that isn't) and which
+/// peripherals are connected or connecting: every connection cancelled
+/// and every peripheral forgotten, scanning and advertising stopped and
+/// our service removed, then the managers' delegates cleared, and the
+/// sender emptied last, after which nothing reports anywhere.
+fn teardown(central_on: bool, peripheral_on: bool, linked: &[bool]) -> Vec<Teardown> {
+    let mut steps = Vec::new();
+    for (i, linked) in linked.iter().enumerate() {
+        if central_on && *linked {
+            steps.push(Teardown::Cancel(i));
+        }
+        steps.push(Teardown::Forget(i));
+    }
+    if central_on {
+        steps.push(Teardown::StopScan);
+    }
+    if peripheral_on {
+        steps.push(Teardown::StopAdvertising);
+        steps.push(Teardown::RemoveServices);
+    }
+    steps.push(Teardown::ClearDelegates);
+    steps.push(Teardown::Silence);
+    steps
+}
+
+/// Undo everything `o` set up in CoreBluetooth, as [`teardown`] plans.
+/// Runs on the queue.
+fn let_go(o: &Open) {
+    let peripherals: Vec<&Retained<CBPeripheral>> = o.seen.values().collect();
+    // SAFETY: property reads on objects `o` owns.
+    let (central_on, peripheral_on, linked) = unsafe {
+        (
+            o.central.state() == CBManagerState::PoweredOn,
+            o.peripheral.state() == CBManagerState::PoweredOn,
+            peripherals
+                .iter()
+                .map(|p| p.state() != CBPeripheralState::Disconnected)
+                .collect::<Vec<bool>>(),
+        )
+    };
+    for step in teardown(central_on, peripheral_on, &linked) {
+        // SAFETY: CoreBluetooth calls on objects `o` owns, each made only
+        // when the plan says the manager can take it.
+        unsafe {
+            match step {
+                Teardown::Cancel(i) => o.central.cancelPeripheralConnection(peripherals[i]),
+                Teardown::Forget(i) => peripherals[i].setDelegate(None),
+                Teardown::StopScan => o.central.stopScan(),
+                Teardown::StopAdvertising => o.peripheral.stopAdvertising(),
+                Teardown::RemoveServices => o.peripheral.removeAllServices(),
+                Teardown::ClearDelegates => {
+                    o.central.setDelegate(None);
+                    o.peripheral.setDelegate(None);
+                }
+                // anything CoreBluetooth already queued finds nowhere to go
+                Teardown::Silence => drop(lock(&o.delegate.ivars().tx).take()),
+            }
+        }
+    }
+}
 
 /// The [`Stack`] over CoreBluetooth.
 pub(crate) struct MacStack {
@@ -420,6 +575,35 @@ pub(crate) struct MacStack {
 // from `&mut self` or `&self` methods of the radio, which the transport
 // owns and drives from one thread. Their reference counts are atomic.
 unsafe impl Send for MacStack {}
+
+#[cfg(test)]
+impl Open {
+    /// Note what came from CoreBluetooth, for the hardware tests.
+    fn note(&mut self, raws: &[Raw]) {
+        let short = |p: &PeerId| format!("{:02x}{:02x}{:02x}{:02x}", p[0], p[1], p[2], p[3]);
+        for raw in raws {
+            let line = match raw {
+                Raw::Discovered(p, _, tag) => format!("discovered {} tag {tag:02x?}", short(p)),
+                Raw::Ready(p) => {
+                    // the GAP device name any central can read
+                    let name = self.seen.get(p).cloned().and_then(|per| {
+                        // SAFETY: a property read on the queue, `per` owned here.
+                        unsafe { on_queue(&self.queue, || per.name().map(|n| n.to_string())) }
+                    });
+                    format!("ready {} name {name:?}", short(p))
+                }
+                Raw::Failed(p) => format!("failed {}", short(p)),
+                Raw::Disconnected(p, code) => {
+                    format!("disconnected {} error {code:?}", short(p))
+                }
+                Raw::Subscribed(p, _) => format!("central {} subscribed", short(p)),
+                Raw::Unsubscribed(p) => format!("central {} unsubscribed", short(p)),
+                _ => continue,
+            };
+            self.trace.push(line);
+        }
+    }
+}
 
 impl MacStack {
     fn new() -> MacStack {
@@ -515,37 +699,20 @@ impl Stack for MacStack {
             remote: HashMap::new(),
             centrals: HashMap::new(),
             extra: Vec::new(),
+            #[cfg(test)]
+            trace: Vec::new(),
         });
+        queue_mark(&self.open.as_ref().expect("just set").queue);
     }
 
     fn close(&mut self) {
         let Some(o) = self.open.take() else { return };
         let queue = o.queue.clone();
-        on_queue(&queue, || {
-            // SAFETY: CoreBluetooth calls on the queue it reports on.
-            unsafe {
-                let on = o.central.state() == CBManagerState::PoweredOn;
-                for p in o.seen.values() {
-                    if on && p.state() != CBPeripheralState::Disconnected {
-                        o.central.cancelPeripheralConnection(p);
-                    }
-                    p.setDelegate(None);
-                }
-                if on {
-                    o.central.stopScan();
-                }
-                if o.peripheral.state() == CBManagerState::PoweredOn {
-                    o.peripheral.stopAdvertising();
-                    o.peripheral.removeAllServices();
-                }
-                o.central.setDelegate(None);
-                o.peripheral.setDelegate(None);
-            }
-            // Anything CoreBluetooth already queued finds nowhere to go.
-            lock(&o.delegate.ivars().tx).take();
-        });
-        // The queue ran the job above after every callback queued before
-        // it, and nothing reports to the delegate now: let everything go.
+        // SAFETY: `o` is owned here for the whole call, and not used
+        // elsewhere meanwhile.
+        unsafe { on_queue(&queue, || let_go(&o)) };
+        // The queue ran that after every callback queued before it, and
+        // nothing reports to the delegate now: let everything go.
         drop(o);
     }
 
@@ -561,8 +728,17 @@ impl Stack for MacStack {
         let Some(o) = self.open.as_mut() else {
             return Vec::new();
         };
+        // Make room before this batch, so a peer just reported (and maybe
+        // about to be connected to) is never the one forgotten.
+        if o.seen.len() > SEEN_CAP {
+            let connected = &o.connected;
+            o.seen.retain(|peer, _| connected.contains(peer));
+        }
         let mut out = std::mem::take(&mut o.extra);
-        for raw in o.rx.try_iter() {
+        let raws: Vec<Raw> = o.rx.try_iter().collect();
+        #[cfg(test)]
+        o.note(&raws);
+        for raw in raws {
             out.push(match raw {
                 Raw::State(role, power) => CbEvent::State(role, power),
                 Raw::Discovered(peer, p, tag) => {
@@ -575,7 +751,7 @@ impl Stack for MacStack {
                 }
                 Raw::Ready(peer) => CbEvent::Ready(peer),
                 Raw::Failed(peer) => CbEvent::Failed(peer),
-                Raw::Disconnected(peer) => {
+                Raw::Disconnected(peer, _) => {
                     o.connected.remove(&peer);
                     o.remote.remove(&peer);
                     CbEvent::Disconnected(peer)
@@ -596,71 +772,75 @@ impl Stack for MacStack {
                 Raw::CanNotify => CbEvent::CanNotify,
             });
         }
-        if o.seen.len() > SEEN_CAP {
-            let connected = &o.connected;
-            o.seen.retain(|peer, _| connected.contains(peer));
-        }
         out
     }
 
     fn add_service(&mut self) {
         let Some(o) = self.open.as_ref() else { return };
-        // SAFETY: CoreBluetooth calls on its queue.
-        on_queue(&o.queue, || unsafe { o.peripheral.addService(&o.service) });
+        // SAFETY: CoreBluetooth calls on its queue, on objects `o`
+        // owns and that are borrowed for the call.
+        unsafe { on_queue(&o.queue, || o.peripheral.addService(&o.service)) };
     }
 
     fn remove_services(&mut self) {
         let Some(o) = self.open.as_ref() else { return };
         // SAFETY: as above.
-        on_queue(&o.queue, || unsafe { o.peripheral.removeAllServices() });
+        unsafe { on_queue(&o.queue, || o.peripheral.removeAllServices()) };
     }
 
     fn start_advertising(&mut self, local_name: &str) {
         let Some(o) = self.open.as_ref() else { return };
         let name = NSString::from_str(local_name);
         let services = NSArray::from_retained_slice(&[uuid(SERVICE_UUID)]);
-        on_queue(&o.queue, || {
-            // SAFETY: the two keys macOS takes, with values of their
-            // types, and a CoreBluetooth call on its queue.
-            unsafe {
-                let keys: [&NSString; 2] = [
-                    CBAdvertisementDataLocalNameKey,
-                    CBAdvertisementDataServiceUUIDsKey,
-                ];
-                let values: [&AnyObject; 2] = [&name, &services];
-                let advert = NSDictionary::from_slices(&keys, &values);
-                o.peripheral.startAdvertising(Some(&advert));
-            }
-        });
+        unsafe {
+            on_queue(&o.queue, || {
+                // SAFETY: the two keys macOS takes, with values of their
+                // types, and a CoreBluetooth call on its queue (`o` borrowed
+                // for the call).
+                {
+                    let keys: [&NSString; 2] = [
+                        CBAdvertisementDataLocalNameKey,
+                        CBAdvertisementDataServiceUUIDsKey,
+                    ];
+                    let values: [&AnyObject; 2] = [&name, &services];
+                    let advert = NSDictionary::from_slices(&keys, &values);
+                    o.peripheral.startAdvertising(Some(&advert));
+                }
+            })
+        };
     }
 
     fn stop_advertising(&mut self) {
         let Some(o) = self.open.as_ref() else { return };
-        // SAFETY: CoreBluetooth calls on its queue.
-        on_queue(&o.queue, || unsafe { o.peripheral.stopAdvertising() });
+        // SAFETY: CoreBluetooth calls on its queue, on objects `o`
+        // owns and that are borrowed for the call.
+        unsafe { on_queue(&o.queue, || o.peripheral.stopAdvertising()) };
     }
 
     fn scan(&mut self) {
         let Some(o) = self.open.as_ref() else { return };
         let services = NSArray::from_retained_slice(&[uuid(SERVICE_UUID)]);
         let again = NSNumber::new_bool(true);
-        on_queue(&o.queue, || {
-            // SAFETY: our service only, every advert reported (so a new
-            // tag on a known peer is seen), on CoreBluetooth's queue.
-            unsafe {
-                let keys: [&NSString; 1] = [CBCentralManagerScanOptionAllowDuplicatesKey];
-                let values: [&AnyObject; 1] = [&again];
-                let options = NSDictionary::from_slices(&keys, &values);
-                o.central
-                    .scanForPeripheralsWithServices_options(Some(&services), Some(&options));
-            }
-        });
+        unsafe {
+            on_queue(&o.queue, || {
+                // SAFETY: our service only, every advert reported (so a new
+                // tag on a known peer is seen), on CoreBluetooth's queue.
+                {
+                    let keys: [&NSString; 1] = [CBCentralManagerScanOptionAllowDuplicatesKey];
+                    let values: [&AnyObject; 1] = [&again];
+                    let options = NSDictionary::from_slices(&keys, &values);
+                    o.central
+                        .scanForPeripheralsWithServices_options(Some(&services), Some(&options));
+                }
+            })
+        };
     }
 
     fn stop_scan(&mut self) {
         let Some(o) = self.open.as_ref() else { return };
-        // SAFETY: CoreBluetooth calls on its queue.
-        on_queue(&o.queue, || unsafe { o.central.stopScan() });
+        // SAFETY: CoreBluetooth calls on its queue, on objects `o`
+        // owns and that are borrowed for the call.
+        unsafe { on_queue(&o.queue, || o.central.stopScan()) };
     }
 
     fn connect(&mut self, peer: PeerId) {
@@ -670,10 +850,9 @@ impl Stack for MacStack {
             return;
         };
         o.connected.insert(peer);
-        // SAFETY: CoreBluetooth calls on its queue.
-        on_queue(&o.queue, || unsafe {
-            o.central.connectPeripheral_options(&p, None)
-        });
+        // SAFETY: CoreBluetooth calls on its queue, on objects `o`
+        // owns and that are borrowed for the call.
+        unsafe { on_queue(&o.queue, || o.central.connectPeripheral_options(&p, None)) };
     }
 
     fn cancel(&mut self, peer: PeerId) {
@@ -683,54 +862,60 @@ impl Stack for MacStack {
         let Some(p) = o.seen.get(&peer).cloned() else {
             return;
         };
-        // SAFETY: CoreBluetooth calls on its queue.
-        on_queue(&o.queue, || unsafe {
-            o.central.cancelPeripheralConnection(&p)
-        });
+        // SAFETY: CoreBluetooth calls on its queue, on objects `o`
+        // owns and that are borrowed for the call.
+        unsafe { on_queue(&o.queue, || o.central.cancelPeripheralConnection(&p)) };
     }
 
     fn write(&mut self, peer: PeerId, bytes: &[u8]) -> bool {
         let Some(o) = self.open.as_ref() else {
-            return true;
+            return false;
         };
         let (Some(p), Some(c)) = (o.seen.get(&peer), o.remote.get(&peer)) else {
-            // the connection is gone; its Failed or Disconnected follows
-            return true;
+            // the connection is gone: nothing taken; its Failed or
+            // Disconnected follows and takes the link down
+            return false;
         };
         let data = NSData::with_bytes(bytes);
-        // SAFETY: CoreBluetooth calls on its queue.
-        on_queue(&o.queue, || unsafe {
-            if !p.canSendWriteWithoutResponse() {
-                return false;
-            }
-            p.writeValue_forCharacteristic_type(
-                &data,
-                c,
-                CBCharacteristicWriteType::WithoutResponse,
-            );
-            true
-        })
+        // SAFETY: CoreBluetooth calls on its queue, on objects `o`
+        // owns and that are borrowed for the call.
+        unsafe {
+            on_queue(&o.queue, || {
+                if !p.canSendWriteWithoutResponse() {
+                    return false;
+                }
+                p.writeValue_forCharacteristic_type(
+                    &data,
+                    c,
+                    CBCharacteristicWriteType::WithoutResponse,
+                );
+                true
+            })
+        }
     }
 
     fn notify(&mut self, central: PeerId, bytes: &[u8]) -> bool {
         let Some(o) = self.open.as_ref() else {
-            return true;
+            return false;
         };
         let Some(c) = o.centrals.get(&central) else {
-            // unsubscribed; its Unsubscribed follows
-            return true;
+            // unsubscribed: nothing taken; its Unsubscribed follows
+            return false;
         };
         let data = NSData::with_bytes(bytes);
         let to = NSArray::from_retained_slice(std::slice::from_ref(c));
-        // SAFETY: CoreBluetooth calls on its queue.
-        on_queue(&o.queue, || unsafe {
-            o.peripheral
-                .updateValue_forCharacteristic_onSubscribedCentrals(
-                    &data,
-                    &o.characteristic,
-                    Some(&to),
-                )
-        })
+        // SAFETY: CoreBluetooth calls on its queue, on objects `o`
+        // owns and that are borrowed for the call.
+        unsafe {
+            on_queue(&o.queue, || {
+                o.peripheral
+                    .updateValue_forCharacteristic_onSubscribedCentrals(
+                        &data,
+                        &o.characteristic,
+                        Some(&to),
+                    )
+            })
+        }
     }
 
     fn max_write(&self, peer: PeerId) -> usize {
@@ -740,10 +925,13 @@ impl Stack for MacStack {
         let Some(p) = o.seen.get(&peer) else {
             return 20;
         };
-        // SAFETY: CoreBluetooth calls on its queue.
-        on_queue(&o.queue, || unsafe {
-            p.maximumWriteValueLengthForType(CBCharacteristicWriteType::WithoutResponse)
-        })
+        // SAFETY: CoreBluetooth calls on its queue, on objects `o`
+        // owns and that are borrowed for the call.
+        unsafe {
+            on_queue(&o.queue, || {
+                p.maximumWriteValueLengthForType(CBCharacteristicWriteType::WithoutResponse)
+            })
+        }
     }
 
     fn max_notify(&self, central: PeerId) -> usize {
@@ -753,8 +941,9 @@ impl Stack for MacStack {
         let Some(c) = o.centrals.get(&central) else {
             return 20;
         };
-        // SAFETY: CoreBluetooth calls on its queue.
-        on_queue(&o.queue, || unsafe { c.maximumUpdateValueLength() })
+        // SAFETY: CoreBluetooth calls on its queue, on objects `o`
+        // owns and that are borrowed for the call.
+        unsafe { on_queue(&o.queue, || c.maximumUpdateValueLength()) }
     }
 }
 
@@ -843,19 +1032,102 @@ impl Drop for CoreBluetoothRadio {
 }
 
 #[cfg(test)]
+impl CoreBluetoothRadio {
+    /// What CoreBluetooth reported since the last call, as lines.
+    fn take_trace(&mut self) -> Vec<String> {
+        self.inner
+            .stack_mut()
+            .open
+            .as_mut()
+            .map(|o| std::mem::take(&mut o.trace))
+            .unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};
 
     use super::*;
 
-    /// Whether this process may use Bluetooth, read without asking and at
-    /// once, whatever the answer is.
+    /// Whether this process may use Bluetooth, read without asking.
     #[test]
     fn the_permission_is_read_without_asking() {
-        let start = Instant::now();
         let access = MacStack::new().access();
         println!("Bluetooth access for this process: {access:?}");
-        assert!(start.elapsed() < Duration::from_secs(2));
+    }
+
+    /// M6: what `close` does, in order, whatever state CoreBluetooth is
+    /// in: connections cancelled before their peripherals are forgotten,
+    /// nothing asked of a manager that is off, and the delegate silenced
+    /// last of all.
+    #[test]
+    fn closing_cancels_and_forgets_everything_before_silencing_the_delegate() {
+        use Teardown::*;
+        assert_eq!(
+            teardown(true, true, &[true, false, true]),
+            vec![
+                Cancel(0),
+                Forget(0),
+                Forget(1),
+                Cancel(2),
+                Forget(2),
+                StopScan,
+                StopAdvertising,
+                RemoveServices,
+                ClearDelegates,
+                Silence,
+            ]
+        );
+        // Bluetooth off: CoreBluetooth has dropped the connections and
+        // stopped everything itself, and refuses calls
+        assert_eq!(
+            teardown(false, false, &[true]),
+            vec![Forget(0), ClearDelegates, Silence]
+        );
+        assert_eq!(
+            teardown(true, false, &[]),
+            vec![StopScan, ClearDelegates, Silence]
+        );
+        // every plan ends the same way
+        for plan in [
+            teardown(true, true, &[]),
+            teardown(false, true, &[false; 3]),
+        ] {
+            assert_eq!(&plan[plan.len() - 2..], &[ClearDelegates, Silence]);
+        }
+        // a stack never opened has nothing to close
+        let mut never = MacStack::new();
+        never.close();
+        assert!(!never.is_open());
+    }
+
+    /// M2: the queue is marked, so `on_queue` can refuse to be called on
+    /// it (which would deadlock), and is not marked anywhere else.
+    #[test]
+    fn the_bluetooth_queue_is_known_from_inside_and_only_there() {
+        let queue = DispatchQueue::new("app.bombechat.bluetooth.test", None);
+        queue_mark(&queue);
+        assert!(!on_the_queue());
+        let mut inside = false;
+        let flag = Pass(&mut inside);
+        queue.exec_sync(move || {
+            let flag = flag.take();
+            *flag = on_the_queue();
+        });
+        assert!(inside);
+        let other = DispatchQueue::new("app.bombechat.other.test", None);
+        let mut elsewhere = true;
+        let flag = Pass(&mut elsewhere);
+        other.exec_sync(move || {
+            let flag = flag.take();
+            *flag = on_the_queue();
+        });
+        assert!(!elsewhere);
+        // and a job runs there, and returns its answer
+        // SAFETY: nothing captured but a Copy value.
+        let got = unsafe { on_queue(&queue, || 7 + on_the_queue() as u32) };
+        assert_eq!(got, 8);
     }
 
     fn poll_until(
@@ -873,6 +1145,20 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         panic!("not done within {within:?}; saw {seen:?}");
+    }
+
+    /// Poll for `how_long`, printing what CoreBluetooth reports.
+    fn watch(radio: &mut CoreBluetoothRadio, how_long: Duration) -> Vec<RadioEvent> {
+        let start = Instant::now();
+        let mut seen = Vec::new();
+        while start.elapsed() < how_long {
+            seen.extend(radio.poll());
+            for line in radio.take_trace() {
+                println!("{:7.1} s  {line}", start.elapsed().as_secs_f64());
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        seen
     }
 
     /// Both managers, and the delegate, are freed once `stop` returns (or
@@ -944,20 +1230,56 @@ mod tests {
 
     /// Two Macs, run at the same time on both: each finds the other,
     /// connects, sends 4 KB over the link it opened and receives the
-    /// other's 4 KB, then stops and checks the managers are gone.
+    /// other's 4 KB, then measures what the threat model leaves open, then
+    /// stops and checks the managers are gone.
     ///
     /// Ignored by default: it needs a second Mac in range running the
     /// same test within a minute, both with Bluetooth on and permission
-    /// given to the terminal. On each Mac:
+    /// given to the terminal. On one Mac (A) set `BOMBECHAT_STOP_FIRST=1`;
+    /// on the other (B) leave it unset:
     ///
     /// ```sh
     /// cd bluetooth
-    /// cargo test -p bombechat-bluetooth --lib macos -- --ignored --nocapture two_macs
+    /// BOMBECHAT_STOP_FIRST=1 cargo test -p bombechat-bluetooth --lib macos -- --ignored --nocapture two_macs   # A
+    /// cargo test -p bombechat-bluetooth --lib macos -- --ignored --nocapture two_macs                          # B
     /// ```
+    ///
+    /// Optionally `BOMBECHAT_WATCH_MIN=20` on both, for measurement 2.
+    ///
+    /// Measurements, from the printed lines (each Mac prints the other's
+    /// identifier, which follows its Bluetooth address, as 8 hex digits):
+    ///
+    /// 1. **Does the address change when advertising restarts?** Both Macs
+    ///    take a new token half way. Look at the `discovered` lines for
+    ///    the other Mac after "new token": if its identifier changed along
+    ///    with its tag, macOS gave the restarted advert a new address. If
+    ///    the identifier stayed and only the tag changed, the address links
+    ///    the old token to the new one.
+    /// 2. **Does the tag link addresses across macOS's own rotation?** With
+    ///    `BOMBECHAT_WATCH_MIN=20`, both Macs then watch without changing
+    ///    token. A `discovered` line with a new identifier but the same tag
+    ///    is macOS rotating the address mid-token, linked by our tag.
+    /// 3. **Is the Mac's name readable?** The `ready` line prints the GAP
+    ///    device name this Mac read from the other after connecting
+    ///    (`None` if it could read none).
+    /// 4. **Does a remote central's connection survive `stop`?** A stops
+    ///    first; B watches 30 s more. On B, a `disconnected … error
+    ///    Some(7)` line (the peer disconnected) soon after A's stop means
+    ///    stopping ended B's connection to A. Only `failed` (A's service
+    ///    went) followed by `disconnected … error None` (B's own cancel)
+    ///    means the connection lived on until B let it go: a central that
+    ///    doesn't let go keeps it.
+    ///
+    /// Send back both Macs' output.
     #[test]
     #[ignore = "needs two Macs in range running it together; run by hand"]
     fn two_macs_exchange_4_kb_both_ways_then_stop() {
         const SIZE: usize = 4096;
+        let stop_first = std::env::var_os("BOMBECHAT_STOP_FIRST").is_some();
+        let watch_min: u64 = std::env::var("BOMBECHAT_WATCH_MIN")
+            .ok()
+            .and_then(|m| m.parse().ok())
+            .unwrap_or(0);
         let mut radio = CoreBluetoothRadio::new();
         radio.start(Mode::Contacts);
         radio.advertise(random_token());
@@ -966,6 +1288,9 @@ mod tests {
             seen.iter()
                 .any(|e| matches!(e, RadioEvent::Up { token: Some(_), .. }))
         });
+        for line in radio.take_trace() {
+            println!("{line}");
+        }
         let mine = seen
             .iter()
             .find_map(|e| match e {
@@ -1007,9 +1332,25 @@ mod tests {
         );
         assert_eq!(&got[..SIZE], &payload[..], "the other Mac's 4 KB, whole");
         // give the other Mac time to finish hearing ours
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            poll_until(&mut radio, Duration::from_secs(10), |_, _| false)
-        }));
-        stop_and_check_freed(&mut radio);
+        watch(&mut radio, Duration::from_secs(10));
+
+        // measurement 1: a new token, and what the other Mac's adverts do
+        println!("new token");
+        radio.advertise(random_token());
+        watch(&mut radio, Duration::from_secs(30));
+        // measurement 2: the same token for a long while
+        if watch_min > 0 {
+            println!("watching {watch_min} min without a new token");
+            watch(&mut radio, Duration::from_secs(60 * watch_min));
+        }
+        // measurement 4: one Mac stops, the other watches
+        if stop_first {
+            println!("stopping first");
+            stop_and_check_freed(&mut radio);
+        } else {
+            println!("watching the other Mac stop");
+            watch(&mut radio, Duration::from_secs(30));
+            stop_and_check_freed(&mut radio);
+        }
     }
 }

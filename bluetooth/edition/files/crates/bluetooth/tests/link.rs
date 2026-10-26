@@ -2,7 +2,7 @@
 //! test passes to `poll`, identities and transport randomness are seeded:
 //! no test reads a clock, and every run makes the same writes.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use bombechat_bluetooth::wire::{
     fragment, Kind, LinkMessage, Reassembly, ASSEMBLY_MS, FROM_INITIATOR, MAX_ASSEMBLIES,
@@ -360,6 +360,113 @@ fn an_acknowledgement_waits_a_random_moment_of_up_to_400_ms() {
     );
     let (lo, hi) = (delays.iter().min().unwrap(), delays.iter().max().unwrap());
     assert!(hi - lo >= 100, "they vary: {delays:?}");
+}
+
+/// One message from `a` and `b`'s answer, watched from outside at 10 ms
+/// steps: what `a` wrote (bytes), and how long after it `b` wrote and how
+/// much, if it did within two seconds. `spontaneous` waits for a write of
+/// `a`'s own (not an answer to something `b` just wrote).
+fn exchange(
+    a: &mut Device,
+    b: &mut Device,
+    mut now: u64,
+    spontaneous: bool,
+) -> (u64, usize, Option<(u64, usize)>) {
+    const FINE: u64 = 10;
+    let size = |w: Vec<(LinkId, Vec<u8>)>| w.iter().map(|(_, b)| b.len()).sum::<usize>();
+    let mut b_last = None::<u64>;
+    let (at, sent, same_step) = loop {
+        now += FINE;
+        a.poll(now);
+        let aw = a.radio.take_written();
+        b.poll(now);
+        let bw = b.radio.take_written();
+        // a's answer to something b just wrote is not the sample
+        let sample = !(spontaneous && b_last.is_some_and(|t| now - t < 1_000));
+        if sample && !aw.is_empty() {
+            // b may answer in the very step it hears
+            break (now, size(aw), (!bw.is_empty()).then(|| size(bw)));
+        }
+        if !bw.is_empty() {
+            b_last = Some(now);
+        }
+        assert!(now < 60_000_000, "a never wrote");
+    };
+    let mut t = at;
+    let mut reply = same_step.map(|n| (0, n));
+    while reply.is_none() && t < at + 2_000 {
+        t += FINE;
+        a.poll(t);
+        a.radio.take_written();
+        b.poll(t);
+        let bw = b.radio.take_written();
+        if !bw.is_empty() {
+            reply = Some((t - at, size(bw)));
+        }
+    }
+    (t, sent, reply)
+}
+
+/// I1: an envelope and a keepalive draw the same answer. Whether a reply
+/// comes, its size, and when (a random 0 to 400 ms, from the same
+/// generator) are alike, so an observer of the link can't tell which of
+/// the two was received. (In steady state the two sides' keepalive timers
+/// also fall into step a held moment apart, so this holds partly by that;
+/// `session::a_keepalive_draws_an_acknowledgement_and_an_acknowledgement_none`
+/// pins the acknowledgement itself.)
+#[test]
+fn an_envelope_and_a_keepalive_draw_the_same_answer() {
+    let (mut envelopes, mut keepalives) = (Vec::new(), Vec::new());
+    for k in 0..12u64 {
+        let room = Room::new(200 + k);
+        let (mut a, mut b) = (
+            Device::new(&room, 2 * k + 41),
+            Device::new(&room, 2 * k + 42),
+        );
+        a.knows(&[&b]);
+        b.knows(&[&a]);
+        a.h.set_mode(Some(Mode::Contacts));
+        b.h.set_mode(Some(Mode::Contacts));
+        let t = run_until(&mut [&mut a, &mut b], 0, 10_000, |d| {
+            d.iter().all(|d| !d.h.peers().contacts.is_empty())
+        })
+        .expect("together");
+        let t = run(&mut [&mut a, &mut b], t, t + 3_000);
+        a.radio.take_written();
+        b.radio.take_written();
+        a.send(&private(&a, &[&b], "short"), 1);
+        let (t, sent, reply) = exchange(&mut a, &mut b, t, false);
+        envelopes.push((sent, reply.expect("an envelope is answered")));
+        // let it settle, then the next thing a writes on its own is a
+        // keepalive
+        let t = run(&mut [&mut a, &mut b], t, t + 3_000);
+        a.radio.take_written();
+        b.radio.take_written();
+        let (_, sent, reply) = exchange(&mut a, &mut b, t, true);
+        keepalives.push((sent, reply.expect("a keepalive is answered")));
+    }
+    let sizes: BTreeSet<usize> = envelopes
+        .iter()
+        .chain(&keepalives)
+        .flat_map(|(sent, (_, got))| [*sent, *got])
+        .collect();
+    assert_eq!(
+        sizes.len(),
+        1,
+        "one size for everything: {envelopes:?} {keepalives:?}"
+    );
+    let delays = |v: &[(usize, (u64, usize))]| v.iter().map(|(_, (d, _))| *d).collect::<Vec<u64>>();
+    let (de, dk) = (delays(&envelopes), delays(&keepalives));
+    for d in [&de, &dk] {
+        assert!(d.iter().all(|d| *d <= ACK_DELAY_MAX_MS + 10), "{d:?}");
+        let spread = d.iter().max().unwrap() - d.iter().min().unwrap();
+        assert!(spread >= 150, "spread over the range: {d:?}");
+    }
+    let mean = |d: &[u64]| d.iter().sum::<u64>() as f64 / d.len() as f64;
+    assert!(
+        (mean(&de) - mean(&dk)).abs() < 150.0,
+        "same distribution: {de:?} {dk:?}"
+    );
 }
 
 #[test]

@@ -19,16 +19,17 @@
 //!
 //! # Address rotation
 //!
-//! macOS picks the Bluetooth address and rotates it on its own schedule;
-//! no API lets an app ask for a new one. What an app can do is stop and
+//! macOS picks the Bluetooth address and rotates it on its own timer; no
+//! API lets an app ask for a new one. What an app can do is stop and
 //! start advertising with each new token, which is what
-//! [`Radio::advertise`] does here: when macOS gives the restarted advert a
-//! fresh random address, the token and the address change together.
-//! When it doesn't, an observer can link the old token to the new one by
-//! the address. They can also link them by timing (one advert stops and
-//! another with our service starts at once), by a connection that lives
-//! across the change, and by our service UUID, which every Bombechat
-//! device advertises.
+//! [`Radio::advertise`] does here. Whether macOS gives the restarted
+//! advert a new address, and whether the tag (which lasts a token's life)
+//! links addresses when macOS rotates one mid-token, are not known yet:
+//! the two-Mac hardware test measures both (see the spec's threat model).
+//! An observer can link tokens anyway by timing (one advert with our
+//! service stops as another starts), by a contact's connection that
+//! lives across the change, and by our service UUID, which every
+//! Bombechat device advertises.
 //!
 //! # Links
 //!
@@ -40,10 +41,26 @@
 //!
 //! [`Radio::disconnect`] cancels a central-side connection and remembers
 //! the peer and the advert's tag: neither that peer showing that tag nor
-//! another peer showing it is connected to again, until the tag changes
-//! or [`CLOSED_MS`] passes. A peripheral manager cannot drop a central, so
-//! on the peripheral side `disconnect` stops using the link: its writes
-//! are ignored and nothing is sent to it until the central unsubscribes.
+//! another peer showing it, nor that peer showing no tag, is connected to
+//! again, until the tag changes or [`CLOSED_MS`] passes.
+//!
+//! A peripheral manager cannot drop a central, so a central that connects
+//! to this device may keep its connection as long as it likes, across
+//! this device's rotations and even past `stop`. What this side controls
+//! is the token: each central (by its CoreBluetooth identifier, which
+//! follows its address and so its connection) gets the whole token at
+//! most once, and only if it was first heard in the current token's
+//! period. A central heard before a rotation gets nothing new over its old
+//! connection: unsubscribing and subscribing again yields no token and no
+//! link. A link that already carries a contact's session is untouched by
+//! a rotation and keeps working. `disconnect` on such a link stops using
+//! it: its writes are ignored and nothing more is sent. Centrals are
+//! remembered while subscribed and for [`CENTRAL_MEMORY_MS`] after they
+//! were last heard; one that holds a connection silent and unsubscribed
+//! longer than that is taken for a new one. A device whose address hasn't
+//! changed since it was last served can't open a new link to this one
+//! until it does (its own rotation, about every 15 minutes); links this
+//! device opens to it are unaffected.
 //!
 //! Writes are queued per link and handed to CoreBluetooth only while it
 //! has room (`canSendWriteWithoutResponse`, and `updateValue` returning
@@ -51,7 +68,7 @@
 //! dropped quietly: a link whose queue passes [`QUEUE_BYTES`] is closed
 //! with [`RadioEvent::Down`].
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 
 use bombechat_session::TOKEN_LEN;
 
@@ -75,9 +92,10 @@ pub const BLUETOOTH_DENIED: &str =
     "Bombechat may not use Bluetooth. Allow it in System Settings, Privacy and Security, Bluetooth.";
 /// The sentence shown when the Mac's Bluetooth can't advertise or connect
 /// as Bombechat needs.
-pub const BLUETOOTH_UNSUPPORTED: &str = "This Mac's Bluetooth can't be used for Bombechat.";
+pub const BLUETOOTH_UNSUPPORTED: &str = "This Mac has no Bluetooth that Bombechat can use.";
 /// The sentence shown when CoreBluetooth refused our service or advert.
-pub const BLUETOOTH_FAILED: &str = "Bluetooth didn't start. Turn it off and on again.";
+pub const BLUETOOTH_FAILED: &str =
+    "Bluetooth would not start. Turn it off and on again in System Settings.";
 
 /// Connecting, discovering, subscribing and hearing the token must take
 /// no longer than this, or the attempt is cancelled.
@@ -90,6 +108,11 @@ pub const RETRY_MS: u64 = 5_000;
 pub const CLOSED_MS: u64 = 20 * 60_000;
 /// At most this many closed adverts are remembered.
 pub const CLOSED_CAP: usize = 256;
+/// A remote central is remembered this long after it was last heard
+/// from (it is always remembered while subscribed)...
+pub const CENTRAL_MEMORY_MS: u64 = 60 * 60_000;
+/// ...and at most this many are remembered.
+pub const CENTRALS_CAP: usize = 1024;
 /// At most this many connections being made at once.
 pub const CONNECTING_CAP: usize = 4;
 /// A link whose writes waiting for room pass this many bytes is closed.
@@ -273,6 +296,17 @@ struct Closed {
     until_new_tag: bool,
 }
 
+/// What this side remembers of a remote central, by its identifier.
+#[derive(Debug, Clone, Copy)]
+struct Heard {
+    /// The token period it was first heard in.
+    epoch: u64,
+    /// It has had the token: never again.
+    served: bool,
+    subscribed: bool,
+    last_ms: u64,
+}
+
 /// The CoreBluetooth radio over any [`Stack`].
 pub(crate) struct Adapter<S: Stack> {
     stack: S,
@@ -289,9 +323,11 @@ pub(crate) struct Adapter<S: Stack> {
     conns: BTreeMap<(Role, PeerId), Conn>,
     ids: BTreeMap<LinkId, (Role, PeerId)>,
     closed: Vec<Closed>,
-    /// Centrals whose link this side closed: ignored until they
-    /// unsubscribe.
-    ignored: BTreeSet<PeerId>,
+    /// Which token period this is: one more at every new token.
+    epoch: u64,
+    /// Remote centrals heard from, kept across `stop` (their connections
+    /// may outlive it), forgotten when Bluetooth goes off.
+    centrals: BTreeMap<PeerId, Heard>,
     next_link: u64,
     events: Vec<RadioEvent>,
 }
@@ -313,7 +349,8 @@ impl<S: Stack> Adapter<S> {
             conns: BTreeMap::new(),
             ids: BTreeMap::new(),
             closed: Vec::new(),
-            ignored: BTreeSet::new(),
+            epoch: 0,
+            centrals: BTreeMap::new(),
             next_link: 1,
             events: Vec::new(),
         }
@@ -390,8 +427,10 @@ impl<S: Stack> Adapter<S> {
                 return false;
             }
             if c.until_new_tag {
-                // the same advert, by this peer or another showing its tag
-                c.tag == tag && (c.peer == peer || c.tag.is_some())
+                // the same advert, by this peer or another showing its
+                // tag; or this peer with no tag, so no sign of a new one
+                (c.tag == tag && (c.peer == peer || c.tag.is_some()))
+                    || (c.peer == peer && tag.is_none())
             } else {
                 c.peer == peer
             }
@@ -441,7 +480,8 @@ impl<S: Stack> Adapter<S> {
                 self.adding_service = false;
                 self.advertising = false;
                 self.advert_confirmed = false;
-                self.ignored.clear();
+                // Bluetooth went down: every connection with it
+                self.centrals.clear();
             }
         }
     }
@@ -544,9 +584,30 @@ impl<S: Stack> Adapter<S> {
 
     // ---- peripheral side ----------------------------------------------
 
+    /// Remember hearing from `central` now.
+    fn hear(&mut self, central: PeerId) -> &mut Heard {
+        let (now, epoch) = (self.stack.now_ms(), self.epoch);
+        let h = self.centrals.entry(central).or_insert(Heard {
+            epoch,
+            served: false,
+            subscribed: false,
+            last_ms: now,
+        });
+        h.last_ms = now;
+        h
+    }
+
     fn on_subscribed(&mut self, central: PeerId) {
         let key = (Role::Peripheral, central);
-        if !self.running || self.conns.contains_key(&key) || self.ignored.contains(&central) {
+        if !self.running || self.conns.contains_key(&key) {
+            return;
+        }
+        let epoch = self.epoch;
+        let h = self.hear(central);
+        h.subscribed = true;
+        // the token at most once per connection, and only to a central
+        // first heard in this token's period
+        if h.served || h.epoch != epoch {
             return;
         }
         let Some(token) = self.token else { return };
@@ -557,9 +618,9 @@ impl<S: Stack> Adapter<S> {
             .count()
             >= MAX_LINKS
         {
-            self.ignored.insert(central);
             return;
         }
+        self.hear(central).served = true;
         let link = self.fresh_link();
         let mut first = Vec::with_capacity(1 + TOKEN_LEN);
         first.push(TOKEN_MARK);
@@ -589,8 +650,9 @@ impl<S: Stack> Adapter<S> {
         conn.queued += bytes.len();
         conn.queue.push_back(bytes);
         if conn.queued > QUEUE_BYTES {
-            // never dropped quietly: the link closes, and says so
-            self.close(key, true);
+            // never dropped quietly: the link closes, and says so; it is
+            // congestion, not a choice, so the advert may be tried again
+            self.close(key, true, false);
             return;
         }
         self.pump(key);
@@ -615,19 +677,19 @@ impl<S: Stack> Adapter<S> {
     }
 
     /// Close a link: cancel a central-side connection and remember its
-    /// advert, or stop using a central's subscription.
-    fn close(&mut self, key: (Role, PeerId), announce: bool) {
+    /// advert (until its tag changes if `on_purpose`, else for
+    /// [`RETRY_MS`]), or stop using a central's subscription.
+    fn close(&mut self, key: (Role, PeerId), announce: bool, on_purpose: bool) {
         let Some(conn) = self.drop_conn(key, announce) else {
             return;
         };
         match key.0 {
             Role::Central => {
                 self.stack.cancel(key.1);
-                self.remember_closed(key.1, conn.tag, true);
+                self.remember_closed(key.1, conn.tag, on_purpose);
             }
-            Role::Peripheral => {
-                self.ignored.insert(key.1);
-            }
+            // it was served already, so it gets no link again
+            Role::Peripheral => {}
         }
     }
 
@@ -662,10 +724,11 @@ impl<S: Stack> Adapter<S> {
             }
             CbEvent::Subscribed(central) => self.on_subscribed(central),
             CbEvent::Unsubscribed(central) => {
-                self.ignored.remove(&central);
+                self.hear(central).subscribed = false;
                 self.drop_conn((Role::Peripheral, central), true);
             }
             CbEvent::Written(central, bytes) => {
+                self.hear(central);
                 if let Some(conn) = self.conns.get(&(Role::Peripheral, central)) {
                     self.events.push(RadioEvent::Bytes(conn.link, bytes));
                 }
@@ -704,6 +767,20 @@ impl<S: Stack> Adapter<S> {
             self.fail(peer);
         }
         self.closed.retain(|c| now < c.until_ms);
+        self.centrals
+            .retain(|_, h| h.subscribed || now.saturating_sub(h.last_ms) < CENTRAL_MEMORY_MS);
+        while self.centrals.len() > CENTRALS_CAP {
+            let oldest = self
+                .centrals
+                .iter()
+                .filter(|(_, h)| !h.subscribed)
+                .min_by_key(|(_, h)| h.last_ms)
+                .map(|(c, _)| *c);
+            match oldest {
+                Some(c) => self.centrals.remove(&c),
+                None => break,
+            };
+        }
     }
 }
 
@@ -762,11 +839,14 @@ impl<S: Stack + Send> Radio for Adapter<S> {
         self.conns.clear();
         self.ids.clear();
         self.closed.clear();
-        self.ignored.clear();
         self.events.clear();
     }
 
     fn advertise(&mut self, token: [u8; TOKEN_LEN]) {
+        if self.token != Some(token) {
+            // a new token period: no central heard before gets this one
+            self.epoch += 1;
+        }
         self.token = Some(token);
         if self.advertising {
             // stop and start again, so macOS may give the new advert a
@@ -782,7 +862,7 @@ impl<S: Stack + Send> Radio for Adapter<S> {
 
     fn disconnect(&mut self, link: LinkId) {
         if let Some(&key) = self.ids.get(&link) {
-            self.close(key, false);
+            self.close(key, false, true);
         }
     }
 
@@ -818,6 +898,8 @@ impl<S: Stack + Send> Radio for Adapter<S> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
 
     /// CoreBluetooth as the adapter sees it, keeping score of what is
@@ -1372,7 +1454,7 @@ mod tests {
     }
 
     #[test]
-    fn a_central_this_side_closed_is_ignored_until_it_lets_go() {
+    fn a_central_this_side_closed_is_ignored_and_never_served_again() {
         let mut a = running();
         let link = link_from(&mut a, 2);
         a.disconnect(link);
@@ -1387,10 +1469,117 @@ mod tests {
         assert!(ev.is_empty());
         a.write(link, b"nothing goes");
         assert_eq!(a.stack().notes.len(), 1, "only the token, earlier");
-        // once it unsubscribes, a new subscription is a new link
-        push(&mut a, [CbEvent::Unsubscribed(peer(2))]);
-        let again = link_from(&mut a, 2);
-        assert_ne!(again, link);
+        // letting go and subscribing again on the same connection: still
+        // nothing, the token was served once already
+        let ev = push(
+            &mut a,
+            [CbEvent::Unsubscribed(peer(2)), CbEvent::Subscribed(peer(2))],
+        );
+        assert!(ev.is_empty(), "{ev:?}");
+        assert_eq!(a.stack().notes.len(), 1);
+    }
+
+    /// C1: a central holding its connection across this device's rotation
+    /// gets no new token, however it subscribes again.
+    #[test]
+    fn a_central_from_before_a_rotation_never_hears_the_new_token() {
+        let mut a = running();
+        link_from(&mut a, 2);
+        a.stack_mut().notes.clear();
+        let ev = push(&mut a, [CbEvent::Unsubscribed(peer(2))]);
+        assert_eq!(ev.len(), 1, "Down");
+        a.advertise(token(9));
+        let ev = push(
+            &mut a,
+            [CbEvent::Advertising(true), CbEvent::Subscribed(peer(2))],
+        );
+        assert!(ev.is_empty(), "no link: {ev:?}");
+        assert!(a.stack().notes.is_empty(), "no token, old or new");
+        // a central heard (only writing) before the rotation is no better
+        let mut b = running();
+        push(&mut b, [CbEvent::Written(peer(3), b"hello?".to_vec())]);
+        b.advertise(token(9));
+        assert!(push(&mut b, [CbEvent::Subscribed(peer(3))]).is_empty());
+        assert!(b.stack().notes.is_empty());
+        // forgetting takes being silent and unsubscribed for an hour
+        b.stack_mut().now += CENTRAL_MEMORY_MS - 1;
+        assert!(push(&mut b, [CbEvent::Subscribed(peer(3))]).is_empty());
+        assert!(b.stack().notes.is_empty());
+    }
+
+    /// C1: a contact's link across a rotation keeps working both ways.
+    #[test]
+    fn a_link_carried_across_a_rotation_is_still_served() {
+        let mut a = running();
+        let link = link_from(&mut a, 2);
+        a.stack_mut().notes.clear();
+        a.advertise(token(9));
+        push(&mut a, [CbEvent::Advertising(true)]);
+        let ev = push(
+            &mut a,
+            [CbEvent::Written(peer(2), b"from a contact".to_vec())],
+        );
+        assert_eq!(
+            ev,
+            vec![RadioEvent::Bytes(link, b"from a contact".to_vec())]
+        );
+        a.write(link, b"to the contact");
+        assert_eq!(a.stack().notes, vec![(peer(2), b"to the contact".to_vec())]);
+    }
+
+    /// C1: a central first heard after the rotation gets the new token.
+    #[test]
+    fn a_new_central_after_a_rotation_hears_the_new_token() {
+        let mut a = running();
+        link_from(&mut a, 2);
+        a.advertise(token(9));
+        push(&mut a, [CbEvent::Advertising(true)]);
+        a.stack_mut().notes.clear();
+        link_from(&mut a, 4);
+        assert_eq!(a.stack().notes, vec![(peer(4), token_note(token(9)))]);
+        // and a central forgotten after an hour's silence counts as new
+        let mut b = running();
+        push(&mut b, [CbEvent::Written(peer(3), b"x".to_vec())]);
+        b.advertise(token(9));
+        b.stack_mut().now += CENTRAL_MEMORY_MS;
+        b.poll();
+        b.stack_mut().notes.clear();
+        link_from(&mut b, 3);
+        assert_eq!(b.stack().notes, vec![(peer(3), token_note(token(9)))]);
+    }
+
+    /// M1: an advert report without a tag doesn't reopen a closed link.
+    #[test]
+    fn a_report_with_no_tag_does_not_reopen_a_closed_advert() {
+        let mut a = running();
+        let link = link_to(&mut a, 1);
+        a.disconnect(link);
+        push(&mut a, [CbEvent::Discovered(peer(1), None)]);
+        assert!(a.stack().connections.is_empty());
+        // a tagless report from another peer is a different device
+        push(&mut a, [CbEvent::Discovered(peer(2), None)]);
+        assert!(a.stack().connections.contains(&peer(2)));
+    }
+
+    /// M4: closing for congestion only holds the advert off a moment.
+    #[test]
+    fn a_congestion_close_is_retried_soon() {
+        let mut a = running();
+        let mine = link_to(&mut a, 1);
+        a.stack_mut().room = false;
+        for _ in 0..=QUEUE_BYTES / 182 {
+            a.write(mine, &[0; 182]);
+        }
+        assert_eq!(a.poll(), vec![RadioEvent::Down(mine)]);
+        a.stack_mut().room = true;
+        push(&mut a, [CbEvent::Discovered(peer(1), tag(1))]);
+        assert!(a.stack().connections.is_empty(), "not at once");
+        a.stack_mut().now += RETRY_MS;
+        push(&mut a, [CbEvent::Discovered(peer(1), tag(1))]);
+        assert!(
+            a.stack().connections.contains(&peer(1)),
+            "same advert, soon"
+        );
     }
 
     #[test]

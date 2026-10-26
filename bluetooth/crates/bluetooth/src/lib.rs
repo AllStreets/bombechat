@@ -106,12 +106,13 @@
 //! encryption and are delivered in order, once each, with up to [`WINDOW`]
 //! messages or 64 KiB held ahead of a gap. Every message carries the
 //! receiver's cumulative acknowledgement, so acknowledgements are as
-//! authenticated as the data. An acknowledgement that goes on its own
-//! waits a random moment, up to [`ACK_DELAY_MAX_MS`], so how soon a reply
-//! follows doesn't mark what was received as an envelope. The sender
-//! keeps what is unacknowledged (at most [`WINDOW`]) and sends it all
-//! again, newly sealed, every [`RESEND_MS`]. A confirmed contact session sends a keepalive every
-//! [`KEEPALIVE_MS`] and closes after [`SILENCE_MS`] without hearing
+//! authenticated as the data. Envelopes and keepalives both draw an
+//! acknowledgement, which waits a random moment up to
+//! [`ACK_DELAY_MAX_MS`] unless something else carries it sooner, so
+//! whether and how soon a reply follows doesn't tell the two apart. The
+//! sender keeps what is unacknowledged (at most [`WINDOW`]) and sends it
+//! all again, newly sealed, every [`RESEND_MS`]. A confirmed contact
+//! session sends a keepalive every [`KEEPALIVE_MS`] and closes after [`SILENCE_MS`] without hearing
 //! anything, or without progress; it is then redialled, and its
 //! unacknowledged envelopes go again on the next session.
 //!
@@ -168,8 +169,8 @@ pub type CoreBluetoothRadio = UnsupportedRadio;
 mod macos;
 
 pub use adapter::{
-    BLUETOOTH_DENIED, BLUETOOTH_FAILED, BLUETOOTH_OFF, BLUETOOTH_UNSUPPORTED, CLOSED_MS,
-    CONNECT_MS, QUEUE_BYTES, RETRY_MS,
+    BLUETOOTH_DENIED, BLUETOOTH_FAILED, BLUETOOTH_OFF, BLUETOOTH_UNSUPPORTED, CENTRALS_CAP,
+    CENTRAL_MEMORY_MS, CLOSED_MS, CONNECT_MS, QUEUE_BYTES, RETRY_MS,
 };
 pub use fake::{FakeRadio, Room, SeededRng, FAKE_MAX_WRITE};
 pub use handle::{BleEvent, BleHandle, Peers, EVENTS_CAP};

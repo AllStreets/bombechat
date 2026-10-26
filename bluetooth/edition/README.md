@@ -51,3 +51,9 @@ Building and checking:
     npm run check
 
 Builds land in `bluetooth/target`, apart from the root's.
+
+The Mac's name: anyone in Bluetooth range can read it, Bombechat or not.
+People are told: "Anyone in Bluetooth range can read this Mac's name. Give
+it a plain name that doesn't say who you are, in System Settings, General,
+About." The Bluetooth settings note in the app (Task 6) carries the same
+sentence.
