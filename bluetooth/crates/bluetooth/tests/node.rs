@@ -1,11 +1,10 @@
 //! The Bluetooth transport inside a real node (Review Focus 4): the same
 //! contact in range by Bluetooth and by sound at once is one message and
-//! one receipt.
+//! one receipt, whichever arrives first.
 
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 
-use bombechat_bluetooth::{BleTransport, FakeRadio, Mode, Room};
+use bombechat_bluetooth::{BleTransport, FakeRadio, Mode, Room, SeededRng};
 use bombechat_core::{seal_private, Envelope, Identity, Kind};
 use bombechat_modem::{split, Event, Reassembler};
 use bombechat_node::{Node, NodeEvent, Transport, TransportEvent};
@@ -13,6 +12,8 @@ use bombechat_session::SessionKeys;
 use bombechat_store::{Channel, Store};
 
 const BASE: u64 = 1_800_000_000_000;
+/// Far ahead, so the envelope never expires and no clock is read.
+const SENT_MIN: u32 = 4_000_000_000;
 
 /// A sound transport the test plays into by hand, keeping what it sends.
 #[derive(Clone, Default)]
@@ -48,22 +49,45 @@ fn envelopes(frames: &[Vec<u8>]) -> Vec<Envelope> {
         .collect()
 }
 
-fn now_min() -> u32 {
-    (SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-        / 60) as u32
+struct Scene {
+    a: BleTransport<FakeRadio>,
+    b: Node,
+    sound: Wire,
+    now: u64,
+    events: Vec<NodeEvent>,
+    a_heard: Vec<Vec<u8>>,
+    a_sent: bool,
 }
 
-#[test]
-fn the_same_envelope_by_bluetooth_and_by_sound_is_one_message_and_one_receipt() {
+impl Scene {
+    fn step(&mut self) {
+        for e in self.a.poll(self.now) {
+            match e {
+                TransportEvent::Frame(f) => self.a_heard.push(f),
+                TransportEvent::Sent(11) => self.a_sent = true,
+                _ => {}
+            }
+        }
+        self.events.extend(self.b.tick(self.now));
+        self.now += 50;
+    }
+
+    fn run_to(&mut self, until: u64) {
+        while self.now < until {
+            self.step();
+        }
+    }
+}
+
+/// `sound_first`: the sound copy is heard before the Bluetooth one is
+/// sent, or after it has arrived.
+fn both_ways(sound_first: bool) {
     let dir = tempfile::TempDir::new().unwrap();
     let (a_id, b_id) = (Identity::generate(), Identity::generate());
     let room = Room::new(70);
 
     // a: a bare transport, sending
-    let mut a = BleTransport::new(room.radio(), BASE);
+    let a = BleTransport::with_rng(room.radio(), BASE, Box::new(SeededRng::new(1)));
     let ah = a.handle();
     ah.set_identity(Some(SessionKeys::new(&a_id)));
     ah.set_contacts(vec![b_id.public()]);
@@ -72,53 +96,62 @@ fn the_same_envelope_by_bluetooth_and_by_sound_is_one_message_and_one_receipt() 
     // b: a node with Bluetooth and sound
     let store = Store::create(&dir.path().join("b.db"), "pass", &b_id, "b").unwrap();
     store.add_contact("a", &a_id.public(), true).unwrap();
-    let ble = BleTransport::new(room.radio(), BASE);
+    let ble = BleTransport::with_rng(room.radio(), BASE, Box::new(SeededRng::new(2)));
     let bh = ble.handle();
     bh.set_identity(Some(SessionKeys::new(&b_id)));
     bh.set_contacts(vec![a_id.public()]);
     bh.set_mode(Some(Mode::Contacts));
     let sound = Wire::default();
-    let mut b = Node::new(Some(store), vec![Box::new(ble), Box::new(sound.clone())]);
+    let b = Node::new(Some(store), vec![Box::new(ble), Box::new(sound.clone())]);
 
-    let mut events = Vec::new();
-    let mut a_heard = Vec::new();
-    let mut a_sent = false;
-    let mut now = 0;
-    let mut step = |now: &mut u64, a: &mut BleTransport<FakeRadio>, events: &mut Vec<NodeEvent>| {
-        for e in a.poll(*now) {
-            match e {
-                TransportEvent::Frame(f) => a_heard.push(f),
-                TransportEvent::Sent(11) => a_sent = true,
-                _ => {}
-            }
-        }
-        events.extend(b.tick(*now));
-        *now += 50;
+    let mut s = Scene {
+        a,
+        b,
+        sound,
+        now: 0,
+        events: Vec::new(),
+        a_heard: Vec::new(),
+        a_sent: false,
     };
-    while now < 2_000 {
-        step(&mut now, &mut a, &mut events);
-    }
+    s.run_to(2_000);
     assert_eq!(bh.peers().contacts, vec![a_id.public()]);
 
-    let env = seal_private(&a_id, &[b_id.public()], "both ways at once", now_min(), 60);
-    for f in split(&env.encode(), 11) {
-        a.send(f);
+    let env = seal_private(&a_id, &[b_id.public()], "both ways at once", SENT_MIN, 60);
+    let by_sound = split(&env.encode(), 12);
+    if sound_first {
+        s.sound.inbox.lock().unwrap().extend(by_sound.clone());
+        s.run_to(3_000);
     }
-    sound.inbox.lock().unwrap().extend(split(&env.encode(), 12));
-    while now < 6_000 {
-        step(&mut now, &mut a, &mut events);
+    for f in split(&env.encode(), 11) {
+        s.a.send(f);
+    }
+    s.run_to(6_000);
+    assert!(s.a_sent, "the Bluetooth copy reached b");
+    if !sound_first {
+        s.sound.inbox.lock().unwrap().extend(by_sound);
+        s.run_to(8_000);
     }
 
-    let messages: Vec<&NodeEvent> = events
+    let messages = s
+        .events
         .iter()
         .filter(|e| matches!(e, NodeEvent::Message(m) if m.text == "both ways at once"))
-        .collect();
-    assert!(a_sent, "the Bluetooth copy reached b too");
-    assert_eq!(messages.len(), 1, "one message");
-    let receipts = envelopes(&sound.sent.lock().unwrap())
+        .count();
+    assert_eq!(messages, 1, "one message");
+    let receipts = envelopes(&s.sound.sent.lock().unwrap())
         .into_iter()
-        .chain(envelopes(&a_heard))
+        .chain(envelopes(&s.a_heard))
         .filter(|e| e.kind == Kind::Control)
         .count();
     assert_eq!(receipts, 1, "one receipt");
+}
+
+#[test]
+fn sound_then_bluetooth_is_one_message_and_one_receipt() {
+    both_ways(true);
+}
+
+#[test]
+fn bluetooth_then_sound_is_one_message_and_one_receipt() {
+    both_ways(false);
 }

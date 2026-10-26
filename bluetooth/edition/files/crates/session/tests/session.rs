@@ -7,7 +7,7 @@ mod common;
 use bombechat_core::{safety_number, Identity, PublicIdentity};
 use bombechat_session::{
     certificate, Session, SessionError, SessionKeys, CERTIFICATE_LEN, CONTACT_HELLO_LEN,
-    CONTACT_WINDOW_MS, MAX_MESSAGE, MAX_PLAINTEXT, TAG, TOKEN_LEN,
+    CONTACT_WINDOW_MS, MAX_MESSAGE, MAX_NONCE, MAX_PLAINTEXT, TAG, TOKEN_LEN,
 };
 use common::*;
 
@@ -44,11 +44,11 @@ fn a_contact_session_completes_and_the_responder_sees_who_it_is_before_answering
     );
     for i in 0..5u8 {
         let text = vec![i; 10 * i as usize];
-        let sealed = ta.encrypt(&text).unwrap();
+        let sealed = ta.encrypt(0, &text).unwrap();
         assert_eq!(sealed.len(), text.len() + TAG);
-        assert_eq!(tb.decrypt(&sealed).unwrap(), text);
-        let back = tb.encrypt(b"and back").unwrap();
-        assert_eq!(ta.decrypt(&back).unwrap(), b"and back");
+        assert_eq!(tb.decrypt(0, &sealed).unwrap(), text);
+        let back = tb.encrypt(0, b"and back").unwrap();
+        assert_eq!(ta.decrypt(0, &back).unwrap(), b"and back");
     }
 }
 
@@ -68,10 +68,10 @@ fn a_request_session_completes_with_the_recipient_anonymous_and_works_both_ways(
     assert_eq!(ta.remote_identity(), None);
     assert_eq!(tb.remote_identity(), Some(&alice.public()));
     // The recipient's hello, after it accepts, goes this way.
-    let hello = tb.encrypt(b"hello, accepted").unwrap();
-    assert_eq!(ta.decrypt(&hello).unwrap(), b"hello, accepted");
-    let reply = ta.encrypt(b"thanks").unwrap();
-    assert_eq!(tb.decrypt(&reply).unwrap(), b"thanks");
+    let hello = tb.encrypt(0, b"hello, accepted").unwrap();
+    assert_eq!(ta.decrypt(0, &hello).unwrap(), b"hello, accepted");
+    let reply = ta.encrypt(0, b"thanks").unwrap();
+    assert_eq!(tb.decrypt(0, &reply).unwrap(), b"thanks");
 }
 
 #[test]
@@ -90,9 +90,9 @@ fn a_bridge_session_completes_and_each_side_learns_the_other() {
     b.read_message(&a.write_message().unwrap()).unwrap();
     assert!(a.is_finished() && b.is_finished());
     assert_eq!(b.remote_identity(), Some(alice.public()));
-    let (mut ta, mut tb) = (a.into_transport().unwrap(), b.into_transport().unwrap());
-    let sealed = ta.encrypt(b"over the bridge").unwrap();
-    assert_eq!(tb.decrypt(&sealed).unwrap(), b"over the bridge");
+    let (ta, mut tb) = (a.into_transport().unwrap(), b.into_transport().unwrap());
+    let sealed = ta.encrypt(0, b"over the bridge").unwrap();
+    assert_eq!(tb.decrypt(0, &sealed).unwrap(), b"over the bridge");
 }
 
 #[test]
@@ -112,24 +112,24 @@ fn a_bridge_initiator_opened_to_one_identity_refuses_another() {
 #[test]
 fn a_message_of_the_largest_size_goes_through_and_one_byte_more_is_refused() {
     for kind in KINDS {
-        let (mut ta, mut tb) = connected(kind, &Identity::generate(), &Identity::generate());
+        let (ta, mut tb) = connected(kind, &Identity::generate(), &Identity::generate());
         assert_eq!(MAX_PLAINTEXT, 65519);
         let big = vec![0xA5; MAX_PLAINTEXT];
-        let sealed = ta.encrypt(&big).unwrap();
+        let sealed = ta.encrypt(0, &big).unwrap();
         assert_eq!(sealed.len(), MAX_MESSAGE);
-        assert_eq!(tb.decrypt(&sealed).unwrap(), big);
+        assert_eq!(tb.decrypt(0, &sealed).unwrap(), big);
         assert_eq!(
-            ta.encrypt(&vec![0; MAX_PLAINTEXT + 1]),
+            ta.encrypt(0, &vec![0; MAX_PLAINTEXT + 1]),
             Err(SessionError::TooLarge)
         );
         assert_eq!(
-            tb.decrypt(&vec![0; MAX_MESSAGE + 1]),
+            tb.decrypt(0, &vec![0; MAX_MESSAGE + 1]),
             Err(SessionError::Malformed)
         );
-        assert_eq!(tb.decrypt(&[0; TAG - 1]), Err(SessionError::Malformed));
-        let empty = ta.encrypt(&[]).unwrap();
+        assert_eq!(tb.decrypt(0, &[0; TAG - 1]), Err(SessionError::Malformed));
+        let empty = ta.encrypt(1, &[]).unwrap();
         assert_eq!(empty.len(), TAG);
-        assert_eq!(tb.decrypt(&empty).unwrap(), Vec::<u8>::new());
+        assert_eq!(tb.decrypt(1, &empty).unwrap(), Vec::<u8>::new());
     }
 }
 
@@ -204,10 +204,11 @@ fn a_request_recipient_never_reveals_its_static_key_or_certificate() {
     let mut wire = run(Kind::Request, &mut a, &mut b);
     let (mut ta, mut tb) = (a.into_transport().unwrap(), b.into_transport().unwrap());
     for i in 0..4u8 {
-        let there = ta.encrypt(&[i; 40]).unwrap();
-        tb.decrypt(&there).unwrap();
-        let back = tb.encrypt(&[i; 40]).unwrap();
-        ta.decrypt(&back).unwrap();
+        let n = u64::from(i);
+        let there = ta.encrypt(n, &[i; 40]).unwrap();
+        tb.decrypt(n, &there).unwrap();
+        let back = tb.encrypt(n, &[i; 40]).unwrap();
+        ta.decrypt(n, &back).unwrap();
         wire.push(there);
         wire.push(back);
     }
@@ -277,32 +278,63 @@ fn a_tampered_handshake_message_fails_and_ends_the_handshake() {
 #[test]
 fn a_tampered_transport_message_fails_and_the_next_genuine_one_still_decrypts() {
     for kind in KINDS {
-        let (mut ta, mut tb) = connected(kind, &Identity::generate(), &Identity::generate());
-        let sealed = ta.encrypt(b"meet at the bridge").unwrap();
+        let (ta, mut tb) = connected(kind, &Identity::generate(), &Identity::generate());
+        let sealed = ta.encrypt(0, b"meet at the bridge").unwrap();
         for i in 0..sealed.len() {
             let mut bad = sealed.clone();
             bad[i] ^= 0x80;
-            assert_eq!(tb.decrypt(&bad), Err(SessionError::Tampered), "byte {i}");
+            assert_eq!(tb.decrypt(0, &bad), Err(SessionError::Tampered), "byte {i}");
         }
         assert_eq!(
-            tb.decrypt(&sealed[..sealed.len() - 1]),
+            tb.decrypt(0, &sealed[..sealed.len() - 1]),
             Err(SessionError::Tampered)
         );
-        assert_eq!(tb.decrypt(&sealed).unwrap(), b"meet at the bridge");
+        assert_eq!(tb.decrypt(0, &sealed).unwrap(), b"meet at the bridge");
     }
 }
 
 #[test]
-fn a_replayed_or_reordered_transport_message_fails() {
+fn a_message_decrypts_only_under_its_own_nonce_in_any_order() {
+    for kind in KINDS {
+        let (ta, mut tb) = connected(kind, &Identity::generate(), &Identity::generate());
+        let first = ta.encrypt(0, b"one").unwrap();
+        let second = ta.encrypt(1, b"two").unwrap();
+        // out of order is fine: each carries its own nonce
+        assert_eq!(tb.decrypt(1, &second).unwrap(), b"two");
+        assert_eq!(tb.decrypt(0, &first).unwrap(), b"one");
+        // moved to another nonce, it fails
+        assert_eq!(tb.decrypt(1, &first), Err(SessionError::Tampered));
+        assert_eq!(tb.decrypt(0, &second), Err(SessionError::Tampered));
+        assert_eq!(tb.decrypt(7, &first), Err(SessionError::Tampered));
+        // a repeat under its own nonce decrypts again: refusing it is the
+        // caller's job (the link layer's replay window)
+        assert_eq!(tb.decrypt(0, &first).unwrap(), b"one");
+    }
+}
+
+#[test]
+fn the_largest_nonce_is_refused_and_the_one_below_it_works() {
+    for kind in KINDS {
+        let (ta, mut tb) = connected(kind, &Identity::generate(), &Identity::generate());
+        assert_eq!(ta.encrypt(u64::MAX, b"x"), Err(SessionError::Exhausted));
+        let last = ta.encrypt(MAX_NONCE, b"last").unwrap();
+        assert_eq!(tb.decrypt(MAX_NONCE, &last).unwrap(), b"last");
+        assert_eq!(tb.decrypt(u64::MAX, &last), Err(SessionError::Malformed));
+    }
+}
+
+#[test]
+fn each_direction_has_its_own_nonces() {
     for kind in KINDS {
         let (mut ta, mut tb) = connected(kind, &Identity::generate(), &Identity::generate());
-        let first = ta.encrypt(b"one").unwrap();
-        let second = ta.encrypt(b"two").unwrap();
-        assert_eq!(tb.decrypt(&second), Err(SessionError::Tampered));
-        assert_eq!(tb.decrypt(&first).unwrap(), b"one");
-        assert_eq!(tb.decrypt(&first), Err(SessionError::Tampered));
-        assert_eq!(tb.decrypt(&second).unwrap(), b"two");
-        assert_eq!(tb.decrypt(&first), Err(SessionError::Tampered));
+        // the same nonce both ways gives unrelated messages, neither of
+        // which reads as the other direction's
+        let there = ta.encrypt(5, b"there").unwrap();
+        let back = tb.encrypt(5, b"back").unwrap();
+        assert_eq!(tb.decrypt(5, &there).unwrap(), b"there");
+        assert_eq!(ta.decrypt(5, &back).unwrap(), b"back");
+        assert_eq!(ta.decrypt(5, &there), Err(SessionError::Tampered));
+        assert_eq!(tb.decrypt(5, &back), Err(SessionError::Tampered));
     }
 }
 
@@ -312,9 +344,9 @@ fn a_message_from_another_session_or_from_itself_fails() {
     let bob = Identity::generate();
     let (mut ta, _) = connected(Kind::Contact, &alice, &bob);
     let (_, mut tb) = connected(Kind::Contact, &alice, &bob);
-    let sealed = ta.encrypt(b"for the first session").unwrap();
-    assert_eq!(tb.decrypt(&sealed), Err(SessionError::Tampered));
-    assert_eq!(ta.decrypt(&sealed), Err(SessionError::Tampered));
+    let sealed = ta.encrypt(0, b"for the first session").unwrap();
+    assert_eq!(tb.decrypt(0, &sealed), Err(SessionError::Tampered));
+    assert_eq!(ta.decrypt(0, &sealed), Err(SessionError::Tampered));
 }
 
 // ---------------------------------------------------------------------------
@@ -595,9 +627,9 @@ fn steps_out_of_turn_are_refused_without_ending_the_handshake() {
         assert_eq!(b.write_message(), Err(SessionError::OutOfTurn));
         assert_eq!(a.read_message(&m2), Err(SessionError::OutOfTurn));
         assert_eq!(b.read_message(&m1), Err(SessionError::OutOfTurn));
-        let (mut ta, mut tb) = (a.into_transport().unwrap(), b.into_transport().unwrap());
-        let sealed = ta.encrypt(b"still fine").unwrap();
-        assert_eq!(tb.decrypt(&sealed).unwrap(), b"still fine");
+        let (ta, mut tb) = (a.into_transport().unwrap(), b.into_transport().unwrap());
+        let sealed = ta.encrypt(0, b"still fine").unwrap();
+        assert_eq!(tb.decrypt(0, &sealed).unwrap(), b"still fine");
     }
 }
 
@@ -767,18 +799,18 @@ fn the_remote_ephemeral_is_the_one_the_message_carried() {
 #[test]
 fn only_the_contact_responder_starts_unconfirmed() {
     for kind in KINDS {
-        let (mut ta, mut tb) = connected(kind, &Identity::generate(), &Identity::generate());
+        let (ta, mut tb) = connected(kind, &Identity::generate(), &Identity::generate());
         assert!(ta.confirmed(), "{kind:?} initiator");
         assert_eq!(tb.confirmed(), kind != Kind::Contact, "{kind:?} responder");
         // A message that fails to decrypt confirms nothing.
-        assert!(tb.decrypt(&[0x5a; TAG + 4]).is_err());
+        assert!(tb.decrypt(0, &[0x5a; TAG + 4]).is_err());
         assert_eq!(tb.confirmed(), kind != Kind::Contact);
         // The first genuine message from the initiator does.
-        let sealed = ta.encrypt(b"here").unwrap();
-        tb.decrypt(&sealed).unwrap();
+        let sealed = ta.encrypt(0, b"here").unwrap();
+        tb.decrypt(0, &sealed).unwrap();
         assert!(tb.confirmed());
         // Sending confirms nothing on the sender's side; it stays as it was.
-        ta.encrypt(b"more").unwrap();
+        ta.encrypt(0, b"more").unwrap();
         assert!(ta.confirmed());
     }
 }
@@ -801,7 +833,7 @@ fn a_replayed_contact_hello_never_confirms() {
     let mut rng = Rng(0xC0F1);
     for _ in 0..200 {
         let len = rng.below(64) + TAG;
-        assert!(tb.decrypt(&rng.bytes(len)).is_err());
+        assert!(tb.decrypt(0, &rng.bytes(len)).is_err());
     }
     assert!(!tb.confirmed());
 }

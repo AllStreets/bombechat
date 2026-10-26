@@ -12,6 +12,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use bombechat_session::TOKEN_LEN;
+use rand_core::{impls, RngCore};
 
 use crate::radio::{LinkId, Mode, Radio, RadioEvent};
 
@@ -33,6 +34,8 @@ struct Station {
 struct FakeLink {
     central: usize,
     peripheral: usize,
+    /// The advert the central connected to.
+    token: [u8; TOKEN_LEN],
 }
 
 struct RoomState {
@@ -44,6 +47,9 @@ struct RoomState {
     duplicate_per_mille: u32,
     reorder_per_mille: u32,
     apart: HashSet<(usize, usize)>,
+    /// Links a radio closed, by (central, peripheral, the advert it had
+    /// connected to): not reopened while the peripheral still shows it.
+    closed: Vec<(usize, usize, [u8; TOKEN_LEN])>,
 }
 
 impl RoomState {
@@ -67,6 +73,9 @@ impl RoomState {
     /// Link every started radio to every advertising one in range that it
     /// isn't linked to yet.
     fn connect(&mut self) {
+        let stations = &self.stations;
+        self.closed
+            .retain(|(_, p, t)| stations[*p].token == Some(*t));
         let n = self.stations.len();
         for c in 0..n {
             for p in 0..n {
@@ -80,6 +89,7 @@ impl RoomState {
                     .links
                     .values()
                     .any(|l| l.central == c && l.peripheral == p)
+                    || self.closed.iter().any(|(cc, pp, _)| *cc == c && *pp == p)
                 {
                     continue;
                 }
@@ -90,6 +100,7 @@ impl RoomState {
                     FakeLink {
                         central: c,
                         peripheral: p,
+                        token,
                     },
                 );
                 self.stations[c].inbox.push(RadioEvent::Up {
@@ -154,6 +165,7 @@ impl Room {
             duplicate_per_mille: 0,
             reorder_per_mille: 0,
             apart: HashSet::new(),
+            closed: Vec::new(),
         })))
     }
 
@@ -326,6 +338,33 @@ impl Radio for FakeRadio {
         s.connect();
     }
 
+    fn disconnect(&mut self, link: LinkId) {
+        let mut s = self.room.lock().unwrap();
+        let Some(l) = s.links.get(&link.0).copied() else {
+            return;
+        };
+        if l.central != self.me && l.peripheral != self.me {
+            return;
+        }
+        s.closed.push((l.central, l.peripheral, l.token));
+        // a stale advert may be showing a fresh one already
+        let me = self.me;
+        s.links.remove(&link.0);
+        let other = if l.central == self.me {
+            l.peripheral
+        } else {
+            l.central
+        };
+        if s.stations[other].on {
+            s.stations[other].inbox.push(RadioEvent::Down(link));
+        }
+        s.connect();
+        // anything still queued for this end on the link is gone
+        s.stations[me]
+            .inbox
+            .retain(|e| !matches!(e, RadioEvent::Bytes(l, _) if *l == link));
+    }
+
     fn write(&mut self, link: LinkId, bytes: &[u8]) {
         let mut s = self.room.lock().unwrap();
         let Some(l) = s.links.get(&link.0).copied() else {
@@ -369,5 +408,38 @@ impl Radio for FakeRadio {
                 .min(s.stations[l.peripheral].max_write),
             None => s.stations[self.me].max_write,
         }
+    }
+}
+
+/// A seeded random source for tests (SplitMix64), so a transport's
+/// exchange numbers, tokens and decoys come out the same every run.
+pub struct SeededRng(u64);
+
+impl SeededRng {
+    pub fn new(seed: u64) -> SeededRng {
+        SeededRng(seed)
+    }
+}
+
+impl RngCore for SeededRng {
+    fn next_u32(&mut self) -> u32 {
+        self.next_u64() as u32
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    }
+
+    fn fill_bytes(&mut self, dest: &mut [u8]) {
+        impls::fill_bytes_via_next(self, dest)
+    }
+
+    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand_core::Error> {
+        self.fill_bytes(dest);
+        Ok(())
     }
 }

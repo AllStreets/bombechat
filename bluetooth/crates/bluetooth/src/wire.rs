@@ -18,10 +18,9 @@ pub enum Kind {
     Request = 2,
     /// Any later handshake message, of either pattern.
     Handshake = 3,
-    /// A transport message inside a session.
-    Data = 4,
-    /// A cumulative acknowledgement of a session's transport messages.
-    Ack = 5,
+    /// A transport message inside a session: data, acknowledgement or
+    /// keepalive, which only the session's two ends can tell apart.
+    Sealed = 4,
 }
 
 impl Kind {
@@ -30,8 +29,7 @@ impl Kind {
             1 => Kind::Contact,
             2 => Kind::Request,
             3 => Kind::Handshake,
-            4 => Kind::Data,
-            5 => Kind::Ack,
+            4 => Kind::Sealed,
             _ => return None,
         })
     }
@@ -176,6 +174,11 @@ impl Reassembly {
         if count == 0 || index >= count || count as usize > MAX_FRAGMENTS {
             return None;
         }
+        // every fragment but the last fills at least the smallest write, so
+        // a message can't be held in thousands of tiny pieces
+        if index + 1 < count && fragment.len() < MIN_WRITE {
+            return None;
+        }
         if self.done.contains(&id) {
             return None;
         }
@@ -272,7 +275,7 @@ mod tests {
     #[test]
     fn link_messages_round_trip_and_refuse_what_is_not_one() {
         let m = LinkMessage {
-            kind: Kind::Data,
+            kind: Kind::Sealed,
             flags: FROM_INITIATOR,
             body: vec![1, 2, 3],
         };
@@ -288,6 +291,57 @@ mod tests {
         assert_eq!(LinkMessage::decode(&bad), None, "trailing byte");
         assert_eq!(LinkMessage::decode(&m.encode()[..5]), None, "short");
         assert_eq!(LinkMessage::decode(&[]), None);
+    }
+
+    #[test]
+    fn the_fragment_that_crosses_64_kib_drops_the_message() {
+        let mut r = Reassembly::new();
+        // 400 full fragments of 170 bytes would be 68,000 bytes
+        let piece = |index: u16| {
+            let mut f = 1u16.to_be_bytes().to_vec();
+            f.extend_from_slice(&index.to_be_bytes());
+            f.extend_from_slice(&400u16.to_be_bytes());
+            f.extend_from_slice(&[9u8; 170]);
+            f
+        };
+        let fits = MAX_MESSAGE / 170;
+        for i in 0..fits as u16 {
+            assert_eq!(r.push(&piece(i), 0), None);
+        }
+        assert_eq!(r.held_bytes(), fits * 170);
+        assert_eq!(r.push(&piece(fits as u16), 0), None);
+        assert_eq!(r.in_progress(), 0, "the crossing fragment dropped it");
+        assert_eq!(r.held_bytes(), 0);
+    }
+
+    #[test]
+    fn at_most_32_messages_are_part_way_and_each_lives_30_seconds() {
+        let mut r = Reassembly::new();
+        for id in 0..100u16 {
+            let mut f = id.to_be_bytes().to_vec();
+            f.extend_from_slice(&0u16.to_be_bytes());
+            f.extend_from_slice(&3u16.to_be_bytes());
+            f.extend_from_slice(&[1u8; 30]);
+            r.push(&f, u64::from(id));
+        }
+        assert_eq!(r.in_progress(), MAX_ASSEMBLIES);
+        r.expire(99 + ASSEMBLY_MS - 1);
+        assert!(r.in_progress() > 0);
+        r.expire(99 + ASSEMBLY_MS);
+        assert_eq!(r.in_progress(), 0);
+    }
+
+    #[test]
+    fn a_tiny_fragment_that_is_not_the_last_is_refused() {
+        let mut r = Reassembly::new();
+        let tiny = [0, 1, 0, 0, 0, 2, 7];
+        assert_eq!(r.push(&tiny, 0), None);
+        assert_eq!(r.in_progress(), 0);
+        // the last may be short
+        let mut first = vec![0, 1, 0, 0, 0, 2];
+        first.extend_from_slice(&[5u8; 14]);
+        r.push(&first, 0);
+        assert_eq!(r.push(&[0, 1, 0, 1, 0, 2, 6], 0).map(|m| m.len()), Some(15));
     }
 
     #[test]

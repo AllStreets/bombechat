@@ -56,6 +56,12 @@ pub trait Radio: Send {
     /// advert carries our service and this token, nothing stable.
     fn advertise(&mut self, token: [u8; TOKEN_LEN]);
 
+    /// Close `link`. The radio sends no [`RadioEvent::Down`] for it, and
+    /// does not connect again to the same advert on its own: a new link to
+    /// that device waits until it shows a token other than the one this
+    /// link was made to.
+    fn disconnect(&mut self, link: LinkId);
+
     /// Write `bytes` to `link`, at most [`Radio::max_write`] of them.
     fn write(&mut self, link: LinkId, bytes: &[u8]);
 

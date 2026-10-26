@@ -156,22 +156,22 @@ fn random_bytes_at_the_bridge_responder_reading_message_3_never_panic() {
 #[test]
 fn random_bytes_at_transport_decrypt_never_panic() {
     for (n, kind) in KINDS.into_iter().enumerate() {
-        let (mut ta, mut tb) = connected(kind, &Identity::generate(), &Identity::generate());
-        let valid = ta.encrypt(b"the one real message").unwrap();
+        let (ta, mut tb) = connected(kind, &Identity::generate(), &Identity::generate());
+        let valid = ta.encrypt(0, b"the one real message").unwrap();
         let mut rng = Rng(0x5E55_2000 + n as u64);
         for _ in 0..ROUNDS {
             let input = rng.input(&valid);
             if input == valid {
                 continue;
             }
-            let e = tb.decrypt(&input).unwrap_err();
+            let e = tb.decrypt(0, &input).unwrap_err();
             assert!(
                 matches!(e, SessionError::Malformed | SessionError::Tampered),
                 "{e:?}"
             );
         }
         // None of that moved the receive counter.
-        assert_eq!(tb.decrypt(&valid).unwrap(), b"the one real message");
+        assert_eq!(tb.decrypt(0, &valid).unwrap(), b"the one real message");
     }
 }
 

@@ -7,7 +7,8 @@
 //! # The advert
 //!
 //! A device advertises our service ([`SERVICE_UUID`]) and a random 16-byte
-//! token, replaced every 15 minutes ([`TOKEN_MS`]). Nothing in the advert is
+//! token, replaced at a random moment between 12 and 15 minutes
+//! ([`TOKEN_MIN_MS`], [`TOKEN_MS`]). Nothing in the advert is
 //! stable. Links carry writes on one characteristic ([`CHARACTERISTIC_UUID`]),
 //! write without response one way and notify the other.
 //!
@@ -29,22 +30,27 @@
 //! | 1 contact | `Noise_IK` message 1 |
 //! | 2 request | `Noise_XN` message 1 |
 //! | 3 handshake | any later handshake message |
-//! | 4 data | `seq u32` and a transport message |
-//! | 5 ack | `next u32`: every data message before it arrived |
+//! | 4 sealed | `nonce u64` and a transport message |
 //!
-//! Any device sends any kind, so a kind tells an observer what a message
-//! does, never who sent it.
+//! Inside a sealed message, padded to 256, 512, 1024 or 2048 bytes or a
+//! whole number of 4 KiB, is what it is (envelope, acknowledgement or
+//! keepalive), so only the two ends can tell those apart or tell how long
+//! an envelope is. Any device sends any kind: a device with no contacts
+//! sends decoy hellos.
 //!
 //! # Contacts (`Noise_IK`)
 //!
-//! A link opened to an advert knows the advert's token. On it this device
-//! sends message 1 to each contact in turn as a candidate, most recently
-//! seen first, at most [`TRIAL_CAP`] contacts per token per
-//! [`TRIAL_WINDOW_MS`]: only the contact who owns the device can read it.
-//! Unanswered, a candidate's message 1 goes again afresh after
-//! [`TRIAL_RETRY_MS`], [`TRIAL_ATTEMPTS`] times in all. The cap is per
-//! token rather than per link, so reconnecting doesn't buy a tracker more
-//! trials.
+//! A link this device opened knows the advert's token. Each token gets one
+//! round of exactly [`TRIAL_CAP`] hellos: contacts most recently seen
+//! first (then least recently tried), and decoys of the same size, to keys
+//! no one holds, for the rest. So the number of hellos says nothing about
+//! the number of contacts. A round's hellos unanswered after
+//! [`TRIAL_RETRY_MS`] go once more, afresh, and that is all for that token:
+//! reconnecting gives a tracker nothing more.
+//!
+//! When a contact session on such a link ends, the contact is redialled
+//! outside the rounds, after [`REDIAL_FIRST_MS`], doubling to
+//! [`REDIAL_MAX_MS`], for as long as the link lives.
 //!
 //! The answering side builds a contact responder for each message 1 with
 //! its clock and its current and previous tokens. It answers only if the
@@ -52,12 +58,12 @@
 //! of its tokens, comes from a contact (not a stranger, not itself), and
 //! carries an ephemeral key it hasn't answered in the last four minutes.
 //! The ephemeral is added to that cache ([`SEEN_CAP`] keys, [`SEEN_MS`])
-//! only after such a read. Everything else, stale, wrong target, stranger
-//! or replay, gets no byte back.
+//! only after such a read. Everything else, stale, wrong target, stranger,
+//! decoy or replay, gets no byte back.
 //!
-//! The initiator sends an empty transport message at once, so the
-//! answering side's session is confirmed. A contact counts as present only
-//! on a confirmed session.
+//! The initiator sends a keepalive at once, so the answering side's
+//! session is confirmed. A contact counts as present only on a confirmed
+//! session.
 //!
 //! # Requests to connect (`Noise_XN`)
 //!
@@ -65,24 +71,35 @@
 //! the requester's hello envelope goes as the first transport message. The
 //! recipient answers the handshake without any identity of its own, sends
 //! nothing but handshake and acknowledgement bytes, and reports
-//! [`BleEvent::Request`]. In [`Mode::Contacts`] a request's message 1 gets
-//! no byte back.
+//! [`BleEvent::Request`] once the hello decodes and fits. It holds one
+//! request per link, a new one replacing the last, and [`REQUESTS_CAP`] in
+//! all; each is forgotten [`REQUEST_MS`] after its hello unless the person
+//! accepts. In [`Mode::Contacts`] a request's message 1 gets no byte back.
+//!
+//! # Links
+//!
+//! A link is closed ([`Radio::disconnect`]) when it has had no session and
+//! no handshake for [`IDLE_MS`]; when this device opened it [`TOKEN_MS`]
+//! ago, so its token is never more than one rotation stale (the radio then
+//! connects to the fresh advert); in Contacts mode, when it shows a
+//! stranger's token whose round is over; and, on this device's own
+//! rotation, when it carries no confirmed contact session, so nobody
+//! connected to this device follows it from one token to the next.
 //!
 //! # Order and loss
 //!
-//! Noise counts its messages implicitly, so a session's transport messages
-//! must be decrypted in order, each exactly once. Writes may be lost,
-//! repeated or reordered. Each data message carries a sequence number in
-//! the clear; the receiver decrypts in order, holds up to [`WINDOW`]
-//! messages ahead of a gap, drops repeats, and acknowledges cumulatively.
-//! The sender keeps what is unacknowledged (at most [`WINDOW`]) and sends
-//! it all again every [`RESEND_MS`] without progress. This is simpler than
-//! starting a new session on every gap, which would also need the
-//! acknowledgements to know what to send again. A message that fails to
-//! decrypt in its turn (tampered, or a forged sequence number), or a
-//! session with no progress for [`STALL_MS`], closes the session; a
-//! contact is then dialled afresh and its unacknowledged envelopes go again
-//! on the new session.
+//! Transport messages are sealed under explicit nonces, a counter of each
+//! side's sends, so they decrypt in any order; a replay window refuses any
+//! nonce accepted before. Envelopes carry a sequence number inside the
+//! encryption and are delivered in order, once each, with up to [`WINDOW`]
+//! messages or 64 KiB held ahead of a gap. Every message carries the
+//! receiver's cumulative acknowledgement, so acknowledgements are as
+//! authenticated as the data. The sender keeps what is unacknowledged (at
+//! most [`WINDOW`]) and sends it all again, newly sealed, every
+//! [`RESEND_MS`]. A confirmed contact session sends a keepalive every
+//! [`KEEPALIVE_MS`] and closes after [`SILENCE_MS`] without hearing
+//! anything, or without progress; it is then redialled, and its
+//! unacknowledged envelopes go again on the next session.
 //!
 //! # Envelopes
 //!
@@ -112,17 +129,24 @@
 //! later, when a signal that tells the two apart exists.
 
 mod fake;
+mod handle;
+mod link;
+mod queue;
 mod radio;
 mod route;
+mod session;
 mod transport;
 pub mod wire;
 
-pub use fake::{FakeRadio, Room, FAKE_MAX_WRITE};
+pub use fake::{FakeRadio, Room, SeededRng, FAKE_MAX_WRITE};
+pub use handle::{BleEvent, BleHandle, Peers, EVENTS_CAP};
+pub use queue::{HOLD_MS, QUEUE_CAP};
 pub use radio::{LinkId, Mode, Radio, RadioEvent};
+pub use session::{bucket, AHEAD_BYTES, KEEPALIVE_MS, RESEND_MS, SILENCE_MS, WINDOW};
 pub use transport::{
-    BleEvent, BleHandle, BleTransport, Peers, EVENTS_CAP, HANDSHAKE_MS, HOLD_MS, QUEUE_CAP,
-    RESEND_MS, SEEN_CAP, SEEN_MS, STALL_MS, STRANGER_MS, TOKEN_MS, TRIAL_ATTEMPTS, TRIAL_CAP,
-    TRIAL_RETRY_MS, TRIAL_WINDOW_MS, WINDOW,
+    BleTransport, HANDSHAKE_MS, IDLE_MS, MAX_LINKS, REDIAL_FIRST_MS, REDIAL_MAX_MS, REQUESTS_CAP,
+    REQUEST_MS, ROUNDS_CAP, ROUND_MEMORY_MS, SEEN_CAP, SEEN_MS, STRANGER_MS, TOKEN_MIN_MS,
+    TOKEN_MS, TRIAL_ATTEMPTS, TRIAL_CAP, TRIAL_RETRY_MS,
 };
 
 /// Our GATT service, generated once for Bombechat (never Bitchat's).

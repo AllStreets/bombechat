@@ -103,9 +103,17 @@
 //! Nothing here panics on any input. A handshake that fails at any step is
 //! dead: every later call returns [`SessionError::Dead`], it no longer
 //! reports a remote identity, and the caller starts a new one. A transport
-//! message that fails to decrypt leaves the session as it was; the receive
-//! counter only moves on success, so a replayed or reordered message never
-//! decrypts.
+//! message that fails to decrypt leaves the session as it was.
+//!
+//! # Explicit nonces
+//!
+//! Transport messages carry no hidden counter: the caller names each
+//! message's nonce, and a message decrypts only under the nonce it was
+//! encrypted with. So messages can be decrypted in any order, and a lost
+//! one stalls nothing. The caller must never encrypt twice under one nonce
+//! in one direction, and must refuse a nonce it has already accepted
+//! (a replay decrypts again; the link layer keeps the window that stops
+//! it). A message moved to another nonce fails as [`SessionError::Tampered`].
 //!
 //! # Sizes
 //!
@@ -134,7 +142,7 @@ use std::fmt;
 use bombechat_core::{Identity, PublicIdentity};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use snow::error::{Error as NoiseError, StateProblem};
-use snow::{Builder, HandshakeState, TransportState};
+use snow::{Builder, HandshakeState, StatelessTransportState};
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
 use zeroize::Zeroizing;
 
@@ -193,8 +201,8 @@ pub enum SessionError {
     Dead,
     /// The bytes do not have the shape of a session message.
     Malformed,
-    /// Authenticated decryption failed: the message was altered, replayed,
-    /// reordered, or belongs to another session or another key.
+    /// Authenticated decryption failed: the message was altered, was read
+    /// under another nonce, or belongs to another session or another key.
     Tampered,
     /// The peer's certificate signature did not verify.
     BadSignature,
@@ -214,7 +222,7 @@ pub enum SessionError {
     WrongTarget,
     /// The plaintext is longer than [`MAX_PLAINTEXT`].
     TooLarge,
-    /// The session's message counter is used up.
+    /// A nonce past [`MAX_NONCE`], or a message counter used up.
     Exhausted,
     /// The system's random number source failed.
     Random,
@@ -267,7 +275,7 @@ impl fmt::Display for SessionError {
             ),
             SessionError::Exhausted => write!(
                 f,
-                "the session has used up its message counter, so start a new one"
+                "the session has used up its nonces, so start a new one"
             ),
             SessionError::Random => write!(f, "the system's random number source failed"),
             SessionError::Noise => write!(f, "the Noise library refused the step"),
@@ -694,7 +702,7 @@ impl Handshake {
         // waits for the first transport message.
         let confirmed = !(self.kind == Kind::Contact && self.role == Role::Responder);
         Ok(Transport {
-            noise: Box::new(noise.into_transport_mode()?),
+            noise: Box::new(noise.into_stateless_transport_mode()?),
             remote: self.remote,
             confirmed,
         })
@@ -830,35 +838,49 @@ fn build(
     Ok(Box::new(state))
 }
 
-/// An established session: one cipher each way, with implicit counters.
-/// Messages must be decrypted in the order they were encrypted.
+/// The largest nonce a transport message may use; the one above it is
+/// reserved by Noise.
+pub const MAX_NONCE: u64 = u64::MAX - 1;
+
+/// An established session: one cipher each way, with explicit nonces.
+/// Each message is encrypted under a nonce the caller chooses, never
+/// reused in that direction, and decrypts only under the same nonce.
 pub struct Transport {
-    noise: Box<TransportState>,
+    noise: Box<StatelessTransportState>,
     remote: Option<PublicIdentity>,
     confirmed: bool,
 }
 
 impl Transport {
-    /// Encrypt one message of at most [`MAX_PLAINTEXT`] bytes. The result
-    /// is [`TAG`] bytes longer than `plaintext`.
-    pub fn encrypt(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, SessionError> {
+    /// Encrypt one message of at most [`MAX_PLAINTEXT`] bytes under
+    /// `nonce` (at most [`MAX_NONCE`]), which must not have been used to
+    /// encrypt before in this session. The result is [`TAG`] bytes longer
+    /// than `plaintext`.
+    pub fn encrypt(&self, nonce: u64, plaintext: &[u8]) -> Result<Vec<u8>, SessionError> {
         if plaintext.len() > MAX_PLAINTEXT {
             return Err(SessionError::TooLarge);
         }
+        if nonce > MAX_NONCE {
+            return Err(SessionError::Exhausted);
+        }
         let mut out = vec![0u8; plaintext.len() + TAG];
-        let len = self.noise.write_message(plaintext, &mut out)?;
+        let len = self.noise.write_message(nonce, plaintext, &mut out)?;
         out.truncate(len);
         Ok(out)
     }
 
-    /// Decrypt the next message from the peer. A failure leaves the session
-    /// unchanged, so the next genuine message still decrypts.
-    pub fn decrypt(&mut self, message: &[u8]) -> Result<Vec<u8>, SessionError> {
+    /// Decrypt a message from the peer sent under `nonce`. A failure
+    /// changes nothing. Replay protection is the caller's: the same
+    /// message under the same nonce decrypts again.
+    pub fn decrypt(&mut self, nonce: u64, message: &[u8]) -> Result<Vec<u8>, SessionError> {
         if message.len() < TAG || message.len() > MAX_MESSAGE {
             return Err(SessionError::Malformed);
         }
+        if nonce > MAX_NONCE {
+            return Err(SessionError::Malformed);
+        }
         let mut out = vec![0u8; message.len() - TAG];
-        let len = self.noise.read_message(message, &mut out)?;
+        let len = self.noise.read_message(nonce, message, &mut out)?;
         out.truncate(len);
         self.confirmed = true;
         Ok(out)

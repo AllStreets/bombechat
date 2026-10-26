@@ -92,10 +92,10 @@ fn transcript(kind: Kind) -> Vec<String> {
 
     let mut ta = a.into_transport().unwrap();
     let mut tb = b.into_transport().unwrap();
-    let there = ta.encrypt(b"hello").unwrap();
-    assert_eq!(tb.decrypt(&there).unwrap(), b"hello");
-    let back = tb.encrypt(b"hi").unwrap();
-    assert_eq!(ta.decrypt(&back).unwrap(), b"hi");
+    let there = ta.encrypt(0, b"hello").unwrap();
+    assert_eq!(tb.decrypt(0, &there).unwrap(), b"hello");
+    let back = tb.encrypt(0, b"hi").unwrap();
+    assert_eq!(ta.decrypt(0, &back).unwrap(), b"hi");
     out.push(hex(&there));
     out.push(hex(&back));
     out
