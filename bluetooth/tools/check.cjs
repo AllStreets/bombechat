@@ -31,8 +31,9 @@
 // not cut as Pair by sound's are, refused at Off and Listen in sentence case with nothing asked of the machine, the
 // run waiting for quiet, the drums not spelling it, its entry not under the margin note self-test with what came
 // back, the rate and band and the stamp, anything of it in the outbox, Escape not stopping it, a test nobody hears
-// not saying what to try, Test by light not on the lamp for a mirror, an empty sheet's typed line missing or not
-// pointing at the stamp, or Test the machine outside the first screen at any window size, empty or full), when writing a public notice doesn't work in the browser or on the app
+// not saying what to try, Test by light not on the lamp for a mirror, an empty sheet's typed line missing or its
+// mark not pointing at the stamp, or at any window size, empty or full, Test the machine outside the first screen, the
+// sheet's head running together or its foot running past the sheet), when writing a public notice doesn't work in the browser or on the app
 // path (the Reply/Public toggle, the line saying who can read it and the key that signs it,
 // empty, too long and Sound at Listen refused in sentence case with nothing sent, a sent
 // notice on the sheet as a signed public entry with its outbox status, the toggle springing
@@ -1114,35 +1115,49 @@ function measureText() {
     const logWithout = tp => tp.evaluate(() => { const r = document.querySelector('.teststamps'), n = document.getElementById('testnote'), h0 = document.getElementById('log').clientHeight;
       r.style.display = 'none'; n.style.display = 'none'; const h1 = document.getElementById('log').clientHeight; r.style.display = ''; n.style.display = ''; return { with: h0, without: h1 }; });
     // the stamp is found from the first moment: at every window size, with the sheet empty (the app, first run) and full
-    // (the simulator's conversation), Test the machine is inside the first screen with nothing scrolled; on the empty
-    // sheet one typed line says to press it, in the sheet's own face and ink, with the index mark under it standing over
-    // the stamp and pointing down at it
+    // (the simulator's conversation), Test the machine is inside the first screen with nothing scrolled, the sheet's head
+    // keeps its spacing (12px at least between its parts) and nothing in its foot runs past the sheet. On the empty sheet
+    // one typed line in the foot says to press it, in the sheet's own face and ink, set against the index mark, which
+    // stands level with the stamp just short of its left edge and points at it, with no key in the way
     report.emptySheet = {};
     for (const [w, h] of VIEWPORTS) for (const where of ['app', 'browser']) {
       const tag = `stamp in view ${where} ${w}x${h}`;
       const tp = await testPage(where, w, h, { query: '' });
       const v = await tp.evaluate(() => {
-        const b = document.getElementById('testbtn').getBoundingClientRect(), l = document.getElementById('emptyline'), log = document.getElementById('log');
-        const r = { stamp: [b.left, b.top, b.right, b.bottom].map(Math.round), view: [innerWidth, innerHeight], scrolled: scrollY, entries: log.querySelectorAll('.ent').length, line: l.hidden ? null : l.textContent };
+        const box = e => { const r = e.getBoundingClientRect(); return { l: r.left, r: r.right, t: r.top, b: r.bottom }; };
+        const s = box(document.getElementById('testbtn')), l = document.getElementById('emptyline'), log = document.getElementById('log'), sheet = box(document.querySelector('.sheet'));
+        const head = [...document.querySelector('.sh-head').children].filter(e => e.getClientRects().length).map(box);
+        const foot = [...document.querySelectorAll('.sh-foot *')].filter(e => e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden').map(box);
+        const r = { stamp: [s.l, s.t, s.r, s.b].map(Math.round), view: [innerWidth, innerHeight], scrolled: scrollY, entries: log.querySelectorAll('.ent').length, line: l.hidden ? null : l.textContent,
+          headGaps: head.slice(1).map((b, i) => Math.round(b.l - head[i].r)), footOut: Math.round(Math.max(0, ...foot.map(b => b.r - sheet.r), ...foot.map(b => sheet.l - b.l))) };
         if (!l.hidden) {
-          const lr = l.getBoundingClientRect(), m = getComputedStyle(l, '::after'), c = getComputedStyle(l), first = log.getBoundingClientRect();
-          const markX = lr.right - parseFloat(m.right) - parseFloat(m.borderLeftWidth);
-          r.mark = { x: Math.round(markX), bottom: Math.round(lr.bottom), down: parseFloat(m.borderTopWidth) > 0 && parseFloat(m.borderBottomWidth) === 0, ink: m.borderTopColor };
-          r.face = c.fontFamily.split(',')[0] + ' ' + c.fontSize + ' ' + c.color;
-          r.inLog = lr.top >= first.top && lr.bottom <= first.bottom && lr.left >= first.left + 100;
+          const f = box(l.parentElement), m = getComputedStyle(l, '::after'), c = getComputedStyle(l);
+          const mk = { l: f.l + parseFloat(m.left), t: f.t + parseFloat(m.top) }; mk.r = mk.l + parseFloat(m.borderLeftWidth); mk.b = mk.t + parseFloat(m.borderTopWidth) + parseFloat(m.borderBottomWidth);
+          const range = document.createRange(); range.selectNodeContents(l); const text = [...range.getClientRects()];
+          const keys = [...document.querySelectorAll('.compose .key')].map(box).filter(k => k.r > mk.l && k.l < mk.r && k.b > mk.t && k.t < mk.b);
+          r.mark = { at: [mk.l, mk.t, mk.r, mk.b].map(Math.round), right: parseFloat(m.borderLeftWidth) > 0 && m.borderTopColor === 'rgba(0, 0, 0, 0)' && m.borderBottomColor === 'rgba(0, 0, 0, 0)', ink: m.borderLeftColor, keys: keys.length };
+          r.textEnd = Math.round(Math.max(...text.map(t => t.right)));
+          r.face = c.fontFamily.split(',')[0] + ' ' + c.color;
+          r.inFoot = text.every(t => t.top >= f.t && t.bottom <= f.b && t.left >= sheet.l);
         }
         return r;
       });
       const [x0, y0, x1, y1] = v.stamp;
       if (v.scrolled || x0 < 0 || y0 < 0 || x1 > v.view[0] || y1 > v.view[1]) problems.push(`${tag}: Test the machine is not in the first screen: ${JSON.stringify(v)}`);
+      if (v.headGaps.some(g => g < 12)) problems.push(`${tag}: the sheet's head runs together: gaps ${v.headGaps.join(', ')}`);
+      if (v.footOut > 0) problems.push(`${tag}: the sheet's foot runs ${v.footOut}px past the sheet`);
       if (where === 'app') {
-        const typed = await tp.evaluate(() => { const t = document.createElement('div'); t.className = 'typed'; document.body.append(t); const c = getComputedStyle(t), f = c.fontFamily.split(',')[0] + ' ' + c.fontSize + ' ' + c.color; t.remove(); return f; });
+        const typed = await tp.evaluate(() => { const t = document.createElement('div'); t.className = 'typed'; document.body.append(t); const c = getComputedStyle(t), f = c.fontFamily.split(',')[0] + ' ' + c.color; t.remove(); return f; });
         const ink = await tp.evaluate(() => getComputedStyle(document.querySelector('.sh-head')).color);
         if (v.entries || v.line !== EMPTY_LINE) problems.push(`${tag}: the empty sheet does not say how to test the machine: ${JSON.stringify(v)}`);
-        else if (v.face !== typed || !v.inLog || !v.mark.down || v.mark.ink !== ink || v.mark.x < x0 + 8 || v.mark.x > x1 - 8 || v.mark.bottom > y0) problems.push(`${tag}: the empty sheet's line is not typed as the sheet is with its mark over the stamp: ${JSON.stringify(v)} (typed ${typed}, ink ${ink})`);
+        else {
+          const [ml, mt, mr, mb] = v.mark.at, mid = (mt + mb) / 2;
+          if (v.face !== typed || !v.inFoot) problems.push(`${tag}: the empty sheet's line is not typed as the sheet is, in its foot: ${JSON.stringify(v)} (typed ${typed})`);
+          if (!v.mark.right || v.mark.ink !== ink || mr > x0 || x0 - mr > 10 || mid < y0 || mid > y1 || v.mark.keys || v.textEnd > ml) problems.push(`${tag}: the index mark does not point at the stamp: ${JSON.stringify(v)} (ink ${ink})`);
+        }
         if (w === 1440 || w === 1024 || w === 1728) await tp.locator('.sheet').screenshot({ path: path.join(out, `empty-${w}.png`) });
       } else if (!v.entries || v.line !== null) problems.push(`${tag}: a sheet with messages on it still says how to test the machine: ${JSON.stringify(v)}`);
-      report.emptySheet[tag] = { stamp: v.stamp, line: !!v.line, mark: v.mark && v.mark.x };
+      report.emptySheet[tag] = { stamp: v.stamp, line: !!v.line, mark: v.mark && v.mark.at, headGaps: v.headGaps };
       await tp.close();
     }
     for (const where of ['browser', 'app']) for (const [w, h] of [[1024, 768], [1440, 900], [1728, 1117]]) {
@@ -1176,7 +1191,8 @@ function measureText() {
       }
       await turn(tp, tag, 'k1', 2);
       const cleared = await tp.evaluate(testView);
-      if (cleared.note || cleared.fields.some(v => v !== 'visible')) problems.push(`${tag}: turning Sound did not clear the refusal: ${JSON.stringify(cleared)}`);
+      // the foot's fields come back, unless the empty sheet's line stands in their place
+      if (cleared.note || cleared.fields.some(v => v !== (cleared.emptyLine ? 'hidden' : 'visible'))) problems.push(`${tag}: turning Sound did not clear the refusal: ${JSON.stringify(cleared)}`);
       // a run: held waiting for quiet, then the drums spelling it, then on the sheet as heard
       await tp.click('#testbtn');
       await until(tp, tag, 'the test waiting for quiet', testState, '^sealed to this machine, waiting for quiet');

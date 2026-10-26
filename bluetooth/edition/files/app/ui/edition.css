@@ -12,7 +12,7 @@
 
 /* three switches of one size: the panel is cut wide enough that their engraving stays at 12px or more */
 .app .deck{grid-template-columns:minmax(470px,1.55fr) minmax(286px,322px) minmax(410px,1fr)}
-@media (max-width:1239px){.app .deck{grid-template-columns:minmax(0,1fr) 410px}
+@media (max-width:1399px){.app .deck{grid-template-columns:minmax(0,1fr) 410px}
   /* the sheet gives the panel its room from its foot's two fields, so the test stamps stay on the sheet */
   .sheet .sh-foot{grid-template-columns:128px 128px 1fr}}
 .panel .mods{grid-template-columns:repeat(3,minmax(0,1fr))}
@@ -47,7 +47,7 @@
 .intray .slip.near.folded small{margin:0;line-height:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 /* where the panel stands beside the sheet and the card, the tray has the room between the switches and the stations
    and no more: it scrolls inside, fading at its foot as the sheet's log fades at its head, and nothing moves */
-@media (min-width:1240px){
+@media (min-width:1400px){
   /* the row takes the room left between the switches and the stations, and more only for what the machine itself has
      to send (as on the airgapped build); while Bluetooth has slips in it, its columns take that room and no more */
   .app .panel{grid-template-rows:auto minmax(auto,1fr) auto}
@@ -62,7 +62,7 @@
      switches keep their room for Light's tape), the switches and the stations where they were */
   .app .panel{gap:12px}
   /* (the narrowest of these keeps 10, which Light's tape still clears, so the strangers' line fits under the meter) */
-  @media (max-width:1359px){.app .panel{gap:10px}}
+  @media (max-width:1439px){.app .panel{gap:10px}}
   .intray .slip{padding:5px 10px 6px}
 }
 .intray .slip{position:relative;padding:8px 10px 9px}

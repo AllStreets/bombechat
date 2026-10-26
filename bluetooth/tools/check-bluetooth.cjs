@@ -22,7 +22,7 @@
 // not working isn't on the tape under the switch, within the switch's width (after a resize too), or working again
 // isn't said; Send by Bluetooth isn't beside Flash and Send by sound with the line uncrowded, isn't refused under the line
 // at Off, when the contact is out of range or for a public notice, doesn't send and get heard in range, or doesn't wait
-// for a contact who left and go when they are back; a station's line is cut short; or, at 1280 and up, the deck or the
+// for a contact who left and go when they are back; a station's line is cut short; or, at 1440 and up, the deck or the
 // stations move when the tray fills; or the strangers' list doesn't follow a change in who is in range with the counts
 // the same. Every wait is on a condition in the page, and one that never comes fails.
 const path = require('path'), fs = require('fs');
@@ -450,7 +450,7 @@ const GROUP_NOTE = 'Anyone in Bluetooth range can read this Mac\'s name. Give it
   }
 
   // 9. every state at each laptop size: 2x crops of the panel as it is on screen; nothing scrolls sideways, nothing is
-  //    under 12px, no station's line is cut short; where the panel stands beside the sheet (1280 and up), the deck and
+  //    under 12px, no station's line is cut short; where the panel stands beside the sheet (1440 and up), the deck and
   //    the stations are where they are at Off, whatever the tray holds
   const settle = async (p, what, f) => wait(p, what, f);
   const CROPS = [
@@ -493,7 +493,7 @@ const GROUP_NOTE = 'Anyone in Bluetooth range can read this Mac\'s name. Give it
       const over = await overlaps(p);
       if (over.length) fail(`${name} ${w}: ${over.join('; ')}`);
       if (name === 'off') atOff = m;
-      else if (w >= 1280 && (m.deck !== atOff.deck || m.row3 !== atOff.row3)) fail(`${name} ${w}: the deck or the stations moved: ${JSON.stringify({ off: atOff, now: m })}`);
+      else if (w >= 1440 && (m.deck !== atOff.deck || m.row3 !== atOff.row3)) fail(`${name} ${w}: the deck or the stations moved: ${JSON.stringify({ off: atOff, now: m })}`);
       const small = await smallText(p);
       if (small.length) fail(`${name} ${w}: text under 12px: ${small.join('; ')}`);
       if (w !== 1280) {
