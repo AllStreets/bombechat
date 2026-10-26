@@ -10,9 +10,9 @@ use bombechat_bluetooth::wire::{
 };
 use bombechat_bluetooth::{
     bucket, Advert, BleEvent, BleHandle, BleTransport, FakeRadio, LinkId, Mode, Radio, RadioEvent,
-    Room, SeededRng, ACK_DELAY_MAX_MS, FUTURE_TOKENS, HOLD_MS, IDLE_MS, MAX_LINKS, PAST_TOKENS,
-    QUEUE_CAP, REQUESTS_CAP, REQUEST_ATTEMPTS, REQUEST_MS, SEEN_CAP, SEEN_MS, SILENCE_MS,
-    STRANGER_MS, TOKEN_MS, TRIAL_CAP, TRIAL_RETRY_MS,
+    Room, SeededRng, ACK_DELAY_MAX_MS, FUTURE_TOKENS, HOLD_MS, IDLE_MS, KEEPALIVE_MS, MAX_LINKS,
+    PAST_TOKENS, QUEUE_CAP, REQUESTS_CAP, REQUEST_ATTEMPTS, REQUEST_MS, SEEN_CAP, SEEN_MS,
+    SILENCE_MS, STRANGER_MS, TOKEN_MS, TRIAL_CAP, TRIAL_RETRY_MS,
 };
 use bombechat_core::{seal_private, seal_public, Envelope, Identity, PublicIdentity};
 use bombechat_modem::{split, Event, Reassembler};
@@ -422,6 +422,41 @@ fn a_removed_contact_is_told_no_further_tokens() {
     );
     assert!(b.h.peers().contacts.is_empty());
     let _ = t;
+}
+
+/// M-new-3: removing a contact draws new tokens ahead, but the contacts
+/// that remain hear the new schedule with their sessions' next
+/// keepalives, never in a burst at the moment of removal.
+#[test]
+fn a_removal_retells_the_schedule_only_with_the_next_keepalive() {
+    let room = Room::new(16);
+    let (mut a, mut b) = pair(&room);
+    let gone = identity(77).public();
+    a.h.set_contacts(vec![b.me(), gone]);
+    let t = run(&mut [&mut a, &mut b], 0, 5_000);
+    let before = a.t.token_schedule();
+    assert_eq!(b.t.contact_schedule(&a.me()), before);
+    a.radio.take_written();
+    a.h.set_contacts(vec![b.me()]);
+    a.poll(t); // the same moment: only the removal is new
+    assert!(
+        written(&a.radio)
+            .iter()
+            .all(|(_, m)| m.kind != Kind::Sealed),
+        "nothing sealed went at the removal"
+    );
+    let after = a.t.token_schedule();
+    assert_eq!(after[0], before[0], "the current token stays");
+    assert_ne!(after, before, "the tokens ahead are new");
+    assert_eq!(b.t.contact_schedule(&a.me()), before, "not yet told");
+    let told = run_until(
+        &mut [&mut a, &mut b],
+        t + STEP,
+        t + KEEPALIVE_MS + 2_000,
+        |d| d[1].t.contact_schedule(&d[0].me()) == after,
+    )
+    .expect("told with the next keepalive");
+    assert!(told > t + STEP, "{told}");
 }
 
 #[test]
@@ -1142,10 +1177,11 @@ fn the_token_rotates_between_12_and_15_minutes_and_the_previous_still_answers() 
     );
 }
 
-/// A device that withholds its token gets no hello it could relay to a
-/// contact: a contact's token learned in session is named only on a link
-/// to an advert showing that token's tag, so on any other link the round
-/// is all decoys, and replaying it to the contact gets no answer.
+/// A device that withholds its token (giving a decoy) gets no hello it
+/// could relay to a contact: a contact's token learned in session is
+/// named only on a link to an advert showing that token's tag, so on any
+/// other link the hellos name the decoy, and replaying them to the
+/// contact gets no answer.
 #[test]
 fn a_device_withholding_its_token_gets_no_hello_worth_relaying() {
     let room = Room::new(15);
@@ -1166,7 +1202,7 @@ fn a_device_withholding_its_token_gets_no_hello_worth_relaying() {
         .filter(|(l, m)| to_x.contains(l) && m.kind == Kind::Contact)
         .map(|(_, m)| m)
         .collect();
-    assert_eq!(hellos_to_x.len(), TRIAL_CAP, "a whole round, all decoys");
+    assert_eq!(hellos_to_x.len(), TRIAL_CAP, "a whole round");
     let into_b = room
         .links()
         .into_iter()

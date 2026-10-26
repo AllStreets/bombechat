@@ -219,6 +219,21 @@ impl<R: Radio> BleTransport<R> {
         self.running
     }
 
+    /// Forget every schedule contacts told, as if none had been.
+    #[cfg(test)]
+    pub(crate) fn forget_told(&mut self) {
+        self.contact_tokens.clear();
+    }
+
+    /// Links this device opened that carry a contact session it began.
+    #[cfg(test)]
+    pub(crate) fn own_sessions(&self) -> usize {
+        self.links
+            .values()
+            .filter(|l| l.opened && l.has_own_session())
+            .count()
+    }
+
     /// When the token next changes, while running.
     #[cfg(test)]
     pub(crate) fn next_rotation_ms(&self) -> Option<u64> {
@@ -584,26 +599,23 @@ impl<R: Radio> BleTransport<R> {
                     self.radio.disconnect(link);
                     return;
                 }
-                let (opened, withheld, token, round) = match advert {
+                let (opened, tag, token, lost) = match advert {
                     Advert::Unseen => (false, None, None, None),
-                    Advert::Token(t) => (true, None, Some(t), Some(t)),
-                    Advert::Withheld(tag) => {
-                        let token = tag.and_then(|tag| self.contact_token_by_tag(tag));
-                        let round = match (token, tag) {
-                            (Some(t), _) => t,
-                            (None, Some(tag)) => {
-                                let mut r = [0u8; TOKEN_LEN];
-                                r[..TAG_LEN].copy_from_slice(&tag);
-                                r
-                            }
-                            (None, None) => self.random_token(),
-                        };
-                        (true, Some(tag), token, Some(round))
+                    Advert::Token(given) => {
+                        let mut tag = [0u8; TAG_LEN];
+                        tag.copy_from_slice(&given[..TAG_LEN]);
+                        // the token given may be a decoy: a contact's
+                        // schedule names this advert first, then a token
+                        // this device was given for it on a link it lost
+                        let told = self.contact_token_by_tag(tag);
+                        let lost = self.lost.keys().copied().find(|k| k[..TAG_LEN] == tag);
+                        let token = told.or(lost).unwrap_or(given);
+                        (true, Some(tag), Some(token), lost)
                     }
                 };
                 self.links
-                    .insert(link, Link::new(opened, withheld, token, round, self.now_ms));
-                if let Some((who, _)) = round.and_then(|t| self.lost.remove(&t)) {
+                    .insert(link, Link::new(opened, tag, token, self.now_ms));
+                if let Some((who, _)) = lost.and_then(|t| self.lost.remove(&t)) {
                     for contact in who {
                         let k = key_of(&contact);
                         if self.contact_keys.contains(&k) {
@@ -1103,12 +1115,12 @@ impl<R: Radio> BleTransport<R> {
             .retain(|_, since| now.saturating_sub(*since) < ROUND_MEMORY_MS);
         let ids: Vec<LinkId> = self.links.keys().copied().collect();
         for id in ids {
-            // a link whose token was withheld, to an advert whose tag a
-            // contact's token (told since it came up) now matches: that
-            // token is the one to name, and it gets its own round
+            // a link to an advert whose tag a contact's schedule (told
+            // since it came up) now matches: that token is the one to
+            // name, whatever the link was given, and it gets its own round
             let told = self.links.get(&id).and_then(|l| {
-                let tag = l.tag.filter(|_| l.withheld && l.token.is_none())?;
-                self.contact_token_by_tag(tag)
+                let m = self.contact_token_by_tag(l.tag?)?;
+                (Some(m) != l.token).then_some(m)
             });
             let Some(link) = self.links.get_mut(&id) else {
                 continue;
@@ -1118,7 +1130,7 @@ impl<R: Radio> BleTransport<R> {
                 link.round = told;
             }
             let Some(round) = link.round else { continue };
-            let (named, withheld) = (link.token, link.withheld);
+            let named = link.token;
             if link.has_own_session() {
                 continue;
             }
@@ -1189,9 +1201,7 @@ impl<R: Radio> BleTransport<R> {
             }
             self.rounds.insert(round, now);
             // a contact who gave this link's token inside a session goes
-            // first; where the token was withheld, only such a contact
-            // can be reached here at all (a hello must name the token of
-            // the device it is for)
+            // first
             let (seen, tried, given) = (&self.last_seen, &self.last_tried, &self.contact_tokens);
             let gave = |c: &PublicIdentity| {
                 named.is_some_and(|n| given.get(&key_of(c)).is_some_and(|(ts, _)| ts.contains(&n)))
@@ -1200,7 +1210,7 @@ impl<R: Radio> BleTransport<R> {
                 .contacts
                 .iter()
                 .enumerate()
-                .filter(|(_, c)| named.is_some() && (!withheld || gave(c)))
+                .filter(|_| named.is_some())
                 .collect();
             order.sort_by_key(|(i, c)| {
                 let k = key_of(c);
@@ -1425,11 +1435,13 @@ impl<R: Radio> BleTransport<R> {
 
     /// Tell every contact in a confirmed session this device's token
     /// schedule (current, then the next [`FUTURE_TOKENS`]), inside the
-    /// session: once when the session is confirmed and once whenever it
-    /// changes, at every rotation or when a contact is removed (and again
-    /// with each keepalive). A contact whose advert scan meets this device
-    /// again, even after it rotated up to three times out of range, names
-    /// that token in its hello, where the radio withheld it.
+    /// session: at once when the session is confirmed and at every
+    /// rotation, and with each keepalive. A schedule that changed only
+    /// ahead (a contact was removed) waits for each session's next
+    /// keepalive, so a removal sends nothing out of rhythm. A contact
+    /// whose advert scan meets this device again, even after it rotated
+    /// up to three times out of range, names that token in its hello,
+    /// whatever token or decoy the radio gave it.
     fn share_tokens(&mut self) {
         let now = self.now_ms;
         let schedule = self.token_schedule();
@@ -1444,12 +1456,17 @@ impl<R: Radio> BleTransport<R> {
                     .remote
                     .as_ref()
                     .is_some_and(|r| self.contact_keys.contains(&key_of(r)));
-                if s.kind == SessKind::Contact
-                    && s.confirmed()
-                    && contact
-                    && s.shared.as_ref() != Some(&schedule)
-                {
-                    writes.extend(s.send_token(&schedule, now));
+                if s.kind != SessKind::Contact || !s.confirmed() || !contact {
+                    continue;
+                }
+                match &s.shared {
+                    Some(told) if told == &schedule => {}
+                    // only the tokens ahead changed: the next keepalive
+                    // carries them
+                    Some(told) if told.first() == schedule.first() => {
+                        s.shared = Some(schedule.clone());
+                    }
+                    _ => writes.extend(s.send_token(&schedule, now)),
                 }
             }
             for w in writes {

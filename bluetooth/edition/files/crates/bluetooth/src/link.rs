@@ -69,18 +69,15 @@ pub(crate) struct Link {
     /// This device connected to the other's advert (so it may send
     /// contact hellos here); otherwise the other device connected to it.
     pub opened: bool,
-    /// On a link this device opened, the other device withheld its token
-    /// (it heard this device under an earlier one)...
-    pub withheld: bool,
-    /// ...and the tag its advert showed, if any.
+    /// On a link this device opened, the advert's tag.
     pub tag: Option<[u8; TAG_LEN]>,
-    /// The token contact hellos on this link name: the one the other
-    /// device gave, or, where it withheld it, the one a contact gave
-    /// inside a session whose tag the advert showed. `None` if neither.
-    pub token: Option<[u8; TOKEN_LEN]>,
-    /// What this link's one round of hellos is remembered by: its token,
-    /// or for a link without one, something standing for the advert.
+    /// The token contact hellos on this link name: one a contact gave
+    /// inside a session whose tag the advert shows, if any (the token the
+    /// link was given may be a decoy); else one this device was given
+    /// earlier for that advert, on a link it lost; else the one given.
     /// `None` for a link the other device opened.
+    pub token: Option<[u8; TOKEN_LEN]>,
+    /// What this link's one round of hellos is remembered by: its token.
     pub round: Option<[u8; TOKEN_LEN]>,
     pub up_ms: u64,
     /// The last time the link had a session or a handshake on it.
@@ -93,17 +90,15 @@ pub(crate) struct Link {
 impl Link {
     pub fn new(
         opened: bool,
-        withheld: Option<Option<[u8; TAG_LEN]>>,
+        tag: Option<[u8; TAG_LEN]>,
         token: Option<[u8; TOKEN_LEN]>,
-        round: Option<[u8; TOKEN_LEN]>,
         now_ms: u64,
     ) -> Link {
         Link {
             opened,
-            withheld: withheld.is_some(),
-            tag: withheld.flatten(),
+            tag,
             token,
-            round,
+            round: token,
             up_ms: now_ms,
             busy_ms: now_ms,
             reassembly: Reassembly::new(),

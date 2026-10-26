@@ -27,15 +27,13 @@ pub enum Advert {
     /// The other device connected to this one: this side never saw its
     /// advert.
     Unseen,
-    /// This side connected to the other device's advert and heard its
-    /// whole token.
+    /// This side connected to the other device's advert and was given a
+    /// token for it. Its first [`TAG_LEN`] bytes are the advert's tag, but
+    /// the rest may be a decoy: a device that heard this one under an
+    /// earlier token gives a decoy, which no one can tell from its token
+    /// without its key. A contact recognises the advert by the tag, from
+    /// the tokens it was told inside a session.
     Token([u8; TOKEN_LEN]),
-    /// This side connected, but the other device withheld its token,
-    /// because it heard this device under an earlier one. The tag its
-    /// advert showed (the token's first [`TAG_LEN`] bytes), if any: a
-    /// contact who told this device its token inside a session is
-    /// recognised by it.
-    Withheld(Option<[u8; TAG_LEN]>),
 }
 
 /// What a radio reports from one [`Radio::poll`].
@@ -71,7 +69,8 @@ pub trait Radio: Send {
     /// Advertise `token` from now on, in place of any earlier one. The
     /// advert carries our service and this token, nothing stable. A device
     /// that connects is given the token only if this radio hasn't heard it
-    /// under an earlier one; otherwise its link comes up without it.
+    /// under an earlier one; otherwise it is given a decoy that looks the
+    /// same (the token's tag, then random bytes drawn afresh).
     fn advertise(&mut self, token: [u8; TOKEN_LEN]);
 
     /// Close `link`. The radio sends no [`RadioEvent::Down`] for it, and

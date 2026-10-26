@@ -3,8 +3,9 @@
 //!
 //! Every started radio that sees another's advert connects to it, so two
 //! devices in range share two links, one each way. The radio that
-//! connected learns the other's token in [`RadioEvent::Up`] (or only its
-//! advert's tag, if the other withholds it); the other learns none. Nothing here reads a clock: knobs draw from a seeded
+//! connected learns the other's token in [`RadioEvent::Up`] (or a decoy
+//! with its advert's tag, if the other withholds it); the other learns
+//! none. Nothing here reads a clock: knobs draw from a seeded
 //! generator, so a test runs the same every time.
 
 use std::collections::BTreeMap;
@@ -49,7 +50,7 @@ struct RoomState {
     apart: HashSet<(usize, usize)>,
     /// (central, peripheral) pairs where the peripheral withholds its
     /// token, as when it heard that central under an earlier one: the
-    /// central learns only the advert's tag.
+    /// central is given a decoy with the advert's tag.
     refused: HashSet<(usize, usize)>,
     /// Links a radio closed, by (central, peripheral, the advert it had
     /// connected to): not reopened while the peripheral still shows it.
@@ -108,9 +109,12 @@ impl RoomState {
                     },
                 );
                 let advert = if self.refused.contains(&(c, p)) {
-                    let mut tag = [0u8; TAG_LEN];
-                    tag.copy_from_slice(&token[..TAG_LEN]);
-                    Advert::Withheld(Some(tag))
+                    // a decoy: the advert's tag, then random bytes
+                    let mut decoy = token;
+                    for b in &mut decoy[TAG_LEN..] {
+                        *b = self.next() as u8;
+                    }
+                    Advert::Token(decoy)
                 } else {
                     Advert::Token(token)
                 };
@@ -243,7 +247,7 @@ impl Room {
     }
 
     /// Have `peripheral` withhold its token from `central` from now on:
-    /// links from `central` to its advert show only the tag (the other way
+    /// links from `central` to its advert are given a decoy (the other way
     /// is unaffected), and any such link now goes down.
     pub fn refuse(&self, central: &FakeRadio, peripheral: &FakeRadio) {
         let mut s = self.0.lock().unwrap();

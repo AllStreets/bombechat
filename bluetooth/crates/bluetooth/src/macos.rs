@@ -946,6 +946,10 @@ impl Stack for MacStack {
         // owns and that are borrowed for the call.
         unsafe { on_queue(&o.queue, || c.maximumUpdateValueLength()) }
     }
+
+    fn random(&mut self, out: &mut [u8]) {
+        rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, out);
+    }
 }
 
 /// The Bluetooth radio on macOS, through CoreBluetooth.
@@ -1340,9 +1344,9 @@ mod tests {
     ///      watch (as may happen between two Macs on the same Apple ID)
     ///      means the block lasts until B is silent for an hour.
     ///
-    ///    Either way B gets a link: a `central … linked without the token`
-    ///    line followed by an `Up` is A withholding its token from B (B
-    ///    prints `Up { .. advert: Withheld(..) }`). Contacts get past that
+    ///    Either way B gets a link: a `central … given a decoy` line
+    ///    followed by an `Up` is A withholding its token from B (B can't
+    ///    tell: it sees a token with A's tag either way). Contacts get past that
     ///    with the token they tell each other inside a session, which this
     ///    test doesn't run; `sim.rs` covers it.
     ///
@@ -1395,7 +1399,7 @@ mod tests {
                 matches!(
                     e,
                     RadioEvent::Up {
-                        advert: Advert::Token(_) | Advert::Withheld(_),
+                        advert: Advert::Token(_),
                         ..
                     }
                 )
@@ -1411,7 +1415,7 @@ mod tests {
             .find_map(|e| match e {
                 RadioEvent::Up {
                     link,
-                    advert: Advert::Token(_) | Advert::Withheld(_),
+                    advert: Advert::Token(_),
                 } => Some(*link),
                 _ => None,
             })
