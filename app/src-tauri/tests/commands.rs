@@ -1502,9 +1502,20 @@ fn the_page_and_the_simulator_end_pairing_when_the_node_does() {
 
 #[test]
 fn requests_to_connect_reach_the_machine_and_come_back_as_the_page_reads_them() {
-    let (m, _) = fake(Lock::Locked);
-    assert_eq!(commands::requests(&m), Err("locked".to_string()));
-    assert_eq!(commands::unconfirmed(&m), Err("locked".to_string()));
+    // nothing of requests or who is near until the store is open
+    let (m, calls) = fake(Lock::Locked);
+    let locked = Some("locked".to_string());
+    assert_eq!(commands::requests(&m).err(), locked);
+    assert_eq!(commands::unconfirmed(&m).err(), locked);
+    assert_eq!(commands::strangers(&m).err(), locked);
+    assert_eq!(commands::peers(&m).err(), locked);
+    assert_eq!(commands::accept_request(&m, 3, "Ines".into()).err(), locked);
+    assert_eq!(commands::decline_request(&m, 3).err(), locked);
+    assert_eq!(commands::send_request(&m, "K7MX".into()).err(), locked);
+    {
+        let c = calls.lock().unwrap();
+        assert!(c.accepted.is_empty() && c.declined.is_empty() && c.asked.is_empty());
+    }
     let (m, calls) = fake(Lock::Unlocked);
     calls.lock().unwrap().waiting.push(WaitingRequest {
         id: 3,
@@ -1532,10 +1543,10 @@ fn requests_to_connect_reach_the_machine_and_come_back_as_the_page_reads_them() 
         commands::accept_request(&m, 3, "Ines".into()),
         Err(REQUEST_GONE.to_string())
     );
-    commands::decline_request(&m, 9);
+    commands::decline_request(&m, 9).unwrap();
     assert_eq!(calls.lock().unwrap().declined, vec![9]);
 
-    assert_eq!(commands::strangers(&m), vec!["K7MX".to_string()]);
+    assert_eq!(commands::strangers(&m).unwrap(), vec!["K7MX".to_string()]);
     assert_eq!(commands::send_request(&m, "K7MX".into()), Ok(()));
     assert_eq!(
         commands::send_request(&m, "AAAA".into()),
@@ -1543,7 +1554,7 @@ fn requests_to_connect_reach_the_machine_and_come_back_as_the_page_reads_them() 
     );
     assert_eq!(calls.lock().unwrap().asked, vec!["K7MX".to_string()]);
     assert_eq!(
-        serde_json::to_value(commands::peers(&m)).unwrap(),
+        serde_json::to_value(commands::peers(&m).unwrap()).unwrap(),
         json!({ "contacts": [1], "strangers": 2 })
     );
     assert_eq!(commands::unconfirmed(&m), Ok(vec![5]));

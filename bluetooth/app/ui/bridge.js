@@ -76,16 +76,18 @@
 //   acceptRequest(id, name)      [accept_request { id, name }]      resolves to the new contact id: kept under name (as the
 //                                person corrected it), unchecked until keys are compared in person, and not confirmed
 //                                until they show they hold this machine too (contactConfirmed). Rejects with a sentence
-//                                to show: 'Write their name first', 'That request is no longer waiting.', or 'Meet them
+//                                to show: 'locked', 'Write their name first', 'That request is no longer waiting.', or 'Meet them
 //                                and compare keys first: this machine only adds people checked in person.'
-//   declineRequest(id)           [decline_request { id }]           forgets the request; nothing at all goes back
+//   declineRequest(id)           [decline_request { id }]           forgets the request; nothing at all goes back. Rejects
+//                                with 'locked' until the store is open, as every command here does
 //   sendRequest(label)           [send_request { label }]           asks the stranger under label (from strangers()) to
 //                                connect, with this machine's hello alone; how it goes arrives as requested. Rejects with
 //                                a sentence to show: 'locked', the key check one above, 'They are no longer in range.',
 //                                or the carrier's own (Bluetooth not at Open)
 //   strangers()                  [strangers]                        resolves to the strangers a request can go to now, each
-//                                by a short random label, never anything of theirs
-//   peers()                      [peers]                            resolves to who is near, as the last peers event said
+//                                by a short random label, never anything of theirs; rejects with 'locked' until unlocked
+//   peers()                      [peers]                            resolves to who is near, as the last peers event said;
+//                                rejects with 'locked' until unlocked
 //   unconfirmed()                [unconfirmed]                      resolves to the ids of contacts an accept added that have
 //                                not yet shown they hold this machine too
 //

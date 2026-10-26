@@ -435,6 +435,7 @@ impl Device {
         }
         self.node.unlock(store);
         self.unlocked = true;
+        self.fittings.unlocked();
         if self.lock_is_off() {
             if let Err(e) = self.keeper.put(&key) {
                 eprintln!("bombechat: {e}; Lock with passphrase is back on");

@@ -11,7 +11,9 @@
 use std::path::{Path, PathBuf};
 
 use bombechat_app::commands::{self, bridge_event, Shared};
-use bombechat_app::edition::{Fittings, BLUETOOTH_OFF, CONTACTS_ONLY, OPEN_TO_REQUESTS};
+use bombechat_app::edition::{
+    Fittings, BLUETOOTH_OFF, CONTACTS_ONLY, OPEN_TO_REQUESTS, WAITING_FOR_PASSPHRASE,
+};
 use bombechat_app::Device;
 use bombechat_bluetooth::{
     BleTransport, FakeRadio, Mode, Room, SeededRng, BLUETOOTH_OFF as SYSTEM_OFF,
@@ -183,11 +185,54 @@ fn the_switch_moves_the_radio_says_so_and_is_kept() {
     drop(b);
     let mut b = Bench::new(&room, &store(&dir, "a.db"), 1, "Ana");
     assert_eq!(commands::settings(&b.s)["bluetooth"], 2);
-    assert_eq!(b.bluetooth()["state"], OPEN_TO_REQUESTS);
     assert!(!b.radio.is_on(), "not before the store is open: no keys");
     b.unlock();
     b.step();
     assert_eq!(b.radio.mode(), Some(Mode::Open));
+}
+
+/// While the store is locked the radio has no keys and stays idle, so the
+/// channel says it waits for the passphrase, not the switch's word: in
+/// `channels` and in the event, before and after the unlock.
+#[test]
+fn while_locked_the_channel_says_it_waits_for_the_passphrase() {
+    let dir = TempDir::new().unwrap();
+    let room = Room::new(10);
+    let b = Bench::new(&room, &store(&dir, "a.db"), 1, "Ana");
+    b.set("bluetooth", 2);
+    drop(b);
+    let mut b = Bench::new(&room, &store(&dir, "a.db"), 1, "Ana");
+    assert_eq!(
+        b.bluetooth(),
+        json!({ "channel": "bluetooth", "state": WAITING_FOR_PASSPHRASE }),
+        "before any tick"
+    );
+    run(&mut [&mut b], 1_000);
+    assert!(!b.radio.is_on());
+    let said = b.said();
+    assert!(!said.is_empty(), "said on the first tick");
+    assert!(
+        said.iter().all(|s| s == WAITING_FOR_PASSPHRASE),
+        "never the switch's word while locked: {said:?}"
+    );
+    assert_eq!(b.bluetooth()["state"], WAITING_FOR_PASSPHRASE);
+    // turned while locked: still waiting; Off is Off, locked or not
+    b.set("bluetooth", 1);
+    b.step();
+    assert_eq!(b.said(), vec![WAITING_FOR_PASSPHRASE.to_string()]);
+    b.set("bluetooth", 0);
+    b.step();
+    assert_eq!(b.said(), vec![BLUETOOTH_OFF.to_string()]);
+    assert_eq!(b.bluetooth()["state"], BLUETOOTH_OFF);
+    b.set("bluetooth", 2);
+    b.step();
+    assert_eq!(b.said(), vec![WAITING_FOR_PASSPHRASE.to_string()]);
+
+    b.unlock();
+    run(&mut [&mut b], 200);
+    assert_eq!(b.radio.mode(), Some(Mode::Open), "started once unlocked");
+    assert_eq!(b.said(), vec![OPEN_TO_REQUESTS.to_string()]);
+    assert_eq!(b.bluetooth()["state"], OPEN_TO_REQUESTS);
 }
 
 #[test]
@@ -290,7 +335,7 @@ fn a_request_goes_by_label_and_an_accept_makes_both_contacts() {
     let dir = TempDir::new().unwrap();
     let room = Room::new(6);
     let (mut a, mut b) = pair(&room, &dir, false);
-    let labels = commands::strangers(&a.s);
+    let labels = commands::strangers(&a.s).unwrap();
     assert_eq!(labels.len(), 1, "Ben, by a label");
     assert_eq!(
         a.events("peers").last(),
@@ -343,15 +388,15 @@ fn a_request_goes_by_label_and_an_accept_makes_both_contacts() {
     // Ana in range; her advert still counts among strangers seen lately
     // (an upper bound, for fifteen minutes)
     assert_eq!(
-        serde_json::to_value(commands::peers(&b.s)).unwrap()["contacts"],
+        serde_json::to_value(commands::peers(&b.s).unwrap()).unwrap()["contacts"],
         json!([ana])
     );
     assert_eq!(
-        serde_json::to_value(commands::peers(&a.s)).unwrap()["contacts"],
+        serde_json::to_value(commands::peers(&a.s).unwrap()).unwrap()["contacts"],
         json!([bens[0].id])
     );
     assert!(
-        commands::strangers(&a.s).is_empty(),
+        commands::strangers(&a.s).unwrap().is_empty(),
         "Ben is no stranger now"
     );
 
@@ -379,7 +424,7 @@ fn with_key_checks_on_a_request_is_shown_but_accepting_and_asking_are_refused() 
     let room = Room::new(7);
     let (mut a, mut b) = pair(&room, &dir, false);
     b.set("inperson", 1);
-    let label = commands::strangers(&a.s)[0].clone();
+    let label = commands::strangers(&a.s).unwrap()[0].clone();
     commands::send_request(&a.s, label).unwrap();
     run(&mut [&mut a, &mut b], 2_000);
     let id = b.events("request")[0]["id"].as_u64().unwrap();
@@ -392,7 +437,7 @@ fn with_key_checks_on_a_request_is_shown_but_accepting_and_asking_are_refused() 
         "Meet them and compare keys first: this machine only adds people checked in person."
     );
     assert_eq!(commands::requests(&b.s).unwrap().len(), 1, "it stays");
-    let ana_label = commands::strangers(&b.s)[0].clone();
+    let ana_label = commands::strangers(&b.s).unwrap()[0].clone();
     assert_eq!(
         commands::send_request(&b.s, ana_label),
         Err(MEET_FIRST.to_string())
@@ -407,11 +452,11 @@ fn a_decline_keeps_nothing_and_says_the_request_is_gone() {
     let dir = TempDir::new().unwrap();
     let room = Room::new(8);
     let (mut a, mut b) = pair(&room, &dir, false);
-    let label = commands::strangers(&a.s)[0].clone();
+    let label = commands::strangers(&a.s).unwrap()[0].clone();
     commands::send_request(&a.s, label).unwrap();
     run(&mut [&mut a, &mut b], 2_000);
     let id = b.events("request")[0]["id"].as_u64().unwrap();
-    commands::decline_request(&b.s, id);
+    commands::decline_request(&b.s, id).unwrap();
     run(&mut [&mut a, &mut b], 2_000);
     assert!(commands::requests(&b.s).unwrap().is_empty());
     assert!(commands::contacts(&b.s).unwrap().is_empty());
@@ -426,10 +471,13 @@ fn at_contacts_no_request_goes_and_the_switch_says_why() {
     let dir = TempDir::new().unwrap();
     let room = Room::new(9);
     let (mut a, mut b) = pair(&room, &dir, false);
-    let label = commands::strangers(&a.s)[0].clone();
+    let label = commands::strangers(&a.s).unwrap()[0].clone();
     a.set("bluetooth", 1);
     run(&mut [&mut a, &mut b], 200);
-    assert!(commands::strangers(&a.s).is_empty(), "no stranger offered");
+    assert!(
+        commands::strangers(&a.s).unwrap().is_empty(),
+        "no stranger offered"
+    );
     assert_eq!(
         commands::send_request(&a.s, label),
         Err(NOT_IN_RANGE.to_string())
@@ -437,7 +485,7 @@ fn at_contacts_no_request_goes_and_the_switch_says_why() {
     // asked before the poll applies the switch: the switch's own sentence
     a.set("bluetooth", 2);
     run(&mut [&mut a, &mut b], 1_000);
-    let label = commands::strangers(&a.s)[0].clone();
+    let label = commands::strangers(&a.s).unwrap()[0].clone();
     a.set("bluetooth", 1);
     assert_eq!(
         commands::send_request(&a.s, label),

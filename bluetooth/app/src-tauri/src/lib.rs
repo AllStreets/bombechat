@@ -146,7 +146,7 @@ fn accept_request(state: State<'_, Shared>, id: u64, name: String) -> Result<i64
 }
 
 #[tauri::command]
-fn decline_request(state: State<'_, Shared>, id: u64) {
+fn decline_request(state: State<'_, Shared>, id: u64) -> Result<(), String> {
     commands::decline_request(&state, id)
 }
 
@@ -156,12 +156,12 @@ fn send_request(state: State<'_, Shared>, label: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn strangers(state: State<'_, Shared>) -> Vec<String> {
+fn strangers(state: State<'_, Shared>) -> Result<Vec<String>, String> {
     commands::strangers(&state)
 }
 
 #[tauri::command]
-fn peers(state: State<'_, Shared>) -> commands::PeersView {
+fn peers(state: State<'_, Shared>) -> Result<commands::PeersView, String> {
     commands::peers(&state)
 }
 

@@ -793,13 +793,18 @@ pub fn accept_request(s: &Shared, id: u64, name: String) -> Result<i64, String> 
     if name.is_empty() {
         return Err("Write their name first".to_string());
     }
-    s.machine().accept_request(id, &name).map(|c| c.0)
+    let mut machine = s.machine();
+    unlocked(machine.as_ref())?;
+    machine.accept_request(id, &name).map(|c| c.0)
 }
 
 /// `decline_request { id }`: the request is forgotten, and nothing at all
-/// goes back. Nothing to refuse.
-pub fn decline_request(s: &Shared, id: u64) {
-    s.machine().decline_request(id);
+/// goes back. Refused only with "locked" until the store is open.
+pub fn decline_request(s: &Shared, id: u64) -> Result<(), String> {
+    let mut machine = s.machine();
+    unlocked(machine.as_ref())?;
+    machine.decline_request(id);
+    Ok(())
 }
 
 /// `send_request { label }`: ask the stranger under `label` (from
@@ -808,24 +813,31 @@ pub fn decline_request(s: &Shared, id: u64) {
 /// locked, new contacts need a key check, they are no longer in range, or
 /// the carrier will not send requests now.
 pub fn send_request(s: &Shared, label: String) -> Result<(), String> {
-    s.machine().send_request(&label)
+    let mut machine = s.machine();
+    unlocked(machine.as_ref())?;
+    machine.send_request(&label)
 }
 
 /// `strangers`: the strangers nearby a request can go to, each by a short
-/// random label (never anything of theirs), in a steady order.
-pub fn strangers(s: &Shared) -> Vec<String> {
-    s.machine().strangers()
+/// random label (never anything of theirs), in a steady order. Fails
+/// with "locked" until the store is open.
+pub fn strangers(s: &Shared) -> Result<Vec<String>, String> {
+    let machine = s.machine();
+    unlocked(machine.as_ref())?;
+    Ok(machine.strangers())
 }
 
 /// `peers`: who is near, as the last `peers` event said: the contacts in
 /// range, by id, and how many strangers were seen lately (an upper
-/// bound).
-pub fn peers(s: &Shared) -> PeersView {
-    let (contacts, strangers) = s.machine().peers();
-    PeersView {
+/// bound). Fails with "locked" until the store is open.
+pub fn peers(s: &Shared) -> Result<PeersView, String> {
+    let machine = s.machine();
+    unlocked(machine.as_ref())?;
+    let (contacts, strangers) = machine.peers();
+    Ok(PeersView {
         contacts: contacts.into_iter().map(|c| c.0).collect(),
         strangers,
-    }
+    })
 }
 
 /// `unconfirmed`: the contacts an accept added that have not yet shown

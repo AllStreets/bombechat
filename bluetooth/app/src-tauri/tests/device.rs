@@ -612,14 +612,14 @@ fn a_machine_with_no_carrier_for_requests_answers_as_for_nobody_near() {
         commands::accept_request(&s, 1, "Ines".into()),
         Err(bombechat_node::REQUEST_GONE.to_string())
     );
-    assert!(commands::strangers(&s).is_empty());
+    assert!(commands::strangers(&s).unwrap().is_empty());
     // new contacts need a key check, On until the person says otherwise
     assert_eq!(
         commands::send_request(&s, "K7MX".into()),
         Err(bombechat_node::MEET_FIRST.to_string())
     );
     assert_eq!(
-        serde_json::to_value(commands::peers(&s)).unwrap(),
+        serde_json::to_value(commands::peers(&s).unwrap()).unwrap(),
         serde_json::json!({ "contacts": [], "strangers": 0 })
     );
     assert_eq!(commands::unconfirmed(&s), Ok(vec![]));

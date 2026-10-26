@@ -13,12 +13,11 @@ const out = path.join(ROOTDIR, 'checks', path.relative(ROOTDIR, path.dirname(pag
 fs.rmSync(out, { recursive: true, force: true });
 fs.mkdirSync(out, { recursive: true });
 const { start } = require('./serve.cjs');
-// whether this build adds contacts only in person (app/ui/edition.js says, as the device's edition.rs does): then the
-// key check is held On; where requests to connect add them too, it is the person's choice
-const ONLY_IN_PERSON = /^export const ONLY_IN_PERSON = true;$/m.test(fs.readFileSync(path.join(ROOTDIR, 'app/ui/edition.js'), 'utf8'));
-// what the device's setting_notes answers on this build (a Mac): relay waits, and the key check is always on where
-// there is no other way to add a contact
-const NOTES = { carry: { note: 'comes with relay' }, hops: { note: 'comes with relay' }, hold: { note: 'comes with relay' }, ...(ONLY_IN_PERSON ? { inperson: { note: 'always, on this build', value: 1 } } : {}) };
+// what the device's setting_notes answers on this build (a Mac): relay waits, and where there is no other way to add
+// a contact than in person, the key check is always on. The page says which this build is (window.__edition, from
+// edition.js, as the device's edition.rs has it): read once the first page is open
+let NOTES = { carry: { note: 'comes with relay' }, hops: { note: 'comes with relay' }, hold: { note: 'comes with relay' } };
+let ONLY_IN_PERSON = true;
 const url = q => 'http://127.0.0.1:4811/' + path.relative(ROOTDIR, page) + (q ? '?' + q : '');
 (async () => {
   const server = await start(4811);
@@ -39,6 +38,12 @@ const url = q => 'http://127.0.0.1:4811/' + path.relative(ROOTDIR, page) + (q ? 
   };
   const vp = { width: 1440, height: 900 };
   const p = await open(vp);
+  if (APP) {
+    const held = await p.evaluate(() => window.__edition && window.__edition.keyCheckHeld);
+    if (typeof held !== 'boolean') problems.push('the page does not say whether the key check is held (window.__edition)');
+    ONLY_IN_PERSON = held !== false;
+  }
+  if (ONLY_IN_PERSON) NOTES.inperson = { note: 'always, on this build', value: 1 };
   await p.screenshot({ path: path.join(out, 'overview.png') });
   // frame rate over 2 s
   const fps = await p.evaluate(() => new Promise(r => { let n = 0; const t0 = performance.now(); const f = () => { n++; performance.now() - t0 < 2000 ? requestAnimationFrame(f) : r(Math.round(n / 2)) }; requestAnimationFrame(f) }));

@@ -150,7 +150,7 @@ a.pl svg{display:block}
 <script type="module">
 import { createMachine, engravingFace } from './machine-kit.js';
 import { bridge } from './bridge.js';
-import { SETTING_ROWS } from './edition.js';
+import { SETTING_ROWS, ONLY_IN_PERSON } from './edition.js';
 
 const Q=new URLSearchParams(location.search);
 const REDUCED=matchMedia('(prefers-reduced-motion: reduce)').matches||Q.has('still');
@@ -176,6 +176,8 @@ const SETTINGS=[
  // and the rows this build fits beyond sound and light (edition.js)
  ...SETTING_ROWS,
 ];
+// what this build is, for checks: whether New contacts need a key check is held On (no other way to add a contact)
+window.__edition={keyCheckHeld:ONLY_IN_PERSON};
 // a group this build has no rows for is a blanking plate: not fitted to this build
 const fitted=g=>SETTINGS.some(s=>s.g===g);
 const byId=Object.fromEntries(SETTINGS.map(s=>[s.id,s]));

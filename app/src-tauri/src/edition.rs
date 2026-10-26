@@ -37,6 +37,9 @@ impl Fittings {
     /// at start.
     pub fn apply(&mut self, _id: &str, _value_index: usize) {}
 
+    /// The store was opened: these parts may now work.
+    pub fn unlocked(&mut self) {}
+
     /// The state of each channel these parts carry, as its switch alone
     /// says it: what `channels` shows before the channel has reported.
     pub fn states(&self) -> Vec<(Channel, String)> {

@@ -30,7 +30,10 @@ proptest! {
 fn rejects_truncated() {
     let e = sample();
     let b = e.encode();
-    assert_eq!(Envelope::decode(&b[..b.len() - 1]), Err(WireError::Truncated));
+    assert_eq!(
+        Envelope::decode(&b[..b.len() - 1]),
+        Err(WireError::Truncated)
+    );
 }
 
 #[test]
@@ -44,7 +47,10 @@ fn rejects_version_2() {
 fn rejects_oversize() {
     let mut e = sample();
     e.body = vec![0; MAX_ENVELOPE];
-    assert!(matches!(Envelope::decode(&e.encode()), Err(WireError::TooLarge)));
+    assert!(matches!(
+        Envelope::decode(&e.encode()),
+        Err(WireError::TooLarge)
+    ));
 }
 
 #[test]

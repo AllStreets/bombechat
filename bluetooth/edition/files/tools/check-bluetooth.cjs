@@ -4,7 +4,8 @@
 // Writes checks/app-ui/bluetooth/: 2x crops of the front's Bluetooth tile at each switch position and the settings
 // card's Bluetooth row at 1024, 1440 and 1728.
 // Fails on page errors, a request to another host, and when: the settings card has no live Bluetooth row (Off,
-// Contacts, Open; Off by default, kept across pages) or still shows the blanking plate; New contacts need a key check
+// Contacts, Open; Off by default, kept across pages, its plug dragged on the machine landing where it is let go) or
+// still shows the blanking plate; New contacts need a key check
 // is held instead of live; the Bluetooth channel doesn't say the switch's word ('off', 'contacts only', 'open to
 // requests'), or 'unavailable: ' and why, and its own word again once the radio works; the front's Bluetooth tile
 // doesn't follow (its jewel lit only while the radio works, its title saying the state, who is near and the requests
@@ -86,6 +87,22 @@ const NEED_OPEN = 'Requests go out only with Bluetooth set to Open.';
       if (row.blank) fail('settings: the blanking plate is still there');
       if (row.small !== '1 plug') fail(`settings: the Bluetooth group says ${JSON.stringify(row.small)}`);
     }
+    if (await p.evaluate(() => window.__edition && window.__edition.keyCheckHeld) !== false) fail('settings: the page says the key check is held on this build');
+    // drag the Bluetooth plug on the machine itself, from Off to Open, then back to Off
+    await p.evaluate(() => window.__bc.focus('bluetooth'));
+    await p.waitForTimeout(1600);
+    for (const to of [2, 0]) {
+      const g = await p.evaluate(to => { const s = window.__bc.screen('bluetooth'), r = window.__bc.row('bluetooth'); return { plug: s.plug, jack: window.__bc.at(r.jacks[to], r.y, .3) }; }, to);
+      await p.mouse.move(g.plug.x, g.plug.y); await p.mouse.down();
+      await p.mouse.move((g.plug.x + g.jack.x) / 2, g.jack.y, { steps: 8 });
+      await p.mouse.move(g.jack.x, g.jack.y, { steps: 8 }); await p.mouse.up();
+      await p.waitForTimeout(1000);
+      const now = await p.evaluate(() => ({ v: window.__bc.get('bluetooth'), end: window.__bc.end('bluetooth'), on: +document.querySelector('.row[data-id="bluetooth"] .jk[aria-checked="true"]').dataset.i }));
+      const kept = await p.evaluate(() => import('./bridge.js').then(m => m.bridge.settings()));
+      if (now.v !== to || now.end.jack !== to || now.on !== to || kept.bluetooth !== to) fail(`settings: dragging the Bluetooth plug to jack ${to} left ${JSON.stringify({ ...now, kept: kept.bluetooth })}`);
+      await p.screenshot({ path: path.join(out, `drag-bluetooth-${to}.png`) });
+    }
+    await p.evaluate(() => window.__bc.focus(null));
     const held = await p.evaluate(() => window.__bc.held());
     if (held.inperson) fail(`settings: New contacts need a key check is held: ${JSON.stringify(held.inperson)}`);
     if (held.bluetooth) fail('settings: the Bluetooth switch is held');

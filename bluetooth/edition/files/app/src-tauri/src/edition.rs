@@ -7,7 +7,9 @@
 //! switch has it doing, in the machine's words: [`BLUETOOTH_OFF`],
 //! [`CONTACTS_ONLY`] or [`OPEN_TO_REQUESTS`]; "receiving" while a message
 //! arrives; "unavailable: " and a sentence the person can act on while
-//! the radio can't work, until it works again.
+//! the radio can't work, until it works again; and at Contacts or Open
+//! before the store is opened, [`WAITING_FOR_PASSPHRASE`]: the radio has
+//! no keys yet, so it is idle.
 //!
 //! Requests to connect make a second way to add a contact, so New
 //! contacts need a key check is the person's choice here, On until they
@@ -33,6 +35,10 @@ pub const CONTACTS_ONLY: &str = "contacts only";
 /// At Open: contacts, and requests to connect both ways.
 pub const OPEN_TO_REQUESTS: &str = "open to requests";
 
+/// At Contacts or Open before the store is opened: the radio waits for
+/// the keys it opens with.
+pub const WAITING_FOR_PASSPHRASE: &str = "waiting for the passphrase";
+
 /// The unavailable states, as the node words them.
 const UNAVAILABLE: &str = "unavailable: ";
 
@@ -52,6 +58,8 @@ pub struct Fittings {
     switch: BluetoothSwitch,
     /// Why the radio can't work, as last reported, while it can't.
     unavailable: Option<String>,
+    /// The store is not open yet: the radio has no keys, so it is idle.
+    locked: bool,
     /// The switch was turned (or set at start) since the last tick.
     turned: bool,
 }
@@ -63,6 +71,7 @@ impl Fittings {
             bluetooth: None,
             switch: BluetoothSwitch::Off,
             unavailable: None,
+            locked: true,
             turned: false,
         }
     }
@@ -93,6 +102,13 @@ impl Fittings {
         (fittings, vec![Box::new(ble)], Vec::new())
     }
 
+    /// The store was opened: the radio starts as the switch has it, and
+    /// the channel says so at the next tick.
+    pub fn unlocked(&mut self) {
+        self.locked = false;
+        self.turned = true;
+    }
+
     /// The Bluetooth switch was set: the radio follows at the transport's
     /// next poll, and the channel says so at the next tick.
     pub fn apply(&mut self, id: &str, value_index: usize) {
@@ -113,12 +129,19 @@ impl Fittings {
         self.turned = true;
     }
 
-    /// The Bluetooth channel's state as the switch says it, or why the
-    /// radio can't work while it can't.
+    /// The Bluetooth channel's state as the switch says it; while the
+    /// store is locked, that the radio waits for it; or why the radio
+    /// can't work while it can't.
     fn state(&self) -> String {
+        if self.switch == BluetoothSwitch::Off {
+            return BLUETOOTH_OFF.to_string();
+        }
+        if self.locked {
+            return WAITING_FOR_PASSPHRASE.to_string();
+        }
         match &self.unavailable {
-            Some(why) if self.switch != BluetoothSwitch::Off => why.clone(),
-            _ => word(self.switch).to_string(),
+            Some(why) => why.clone(),
+            None => word(self.switch).to_string(),
         }
     }
 
@@ -156,7 +179,7 @@ impl Fittings {
                 }
             } else if state == "listening" || (off && state == "receiving") {
                 self.unavailable = None;
-                *state = word(self.switch).to_string();
+                *state = self.state();
             }
         }
         if std::mem::take(&mut self.turned) {

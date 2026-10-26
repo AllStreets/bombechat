@@ -5,7 +5,8 @@
 // channel ('bluetooth', in channels() and the channel event) says what the switch has it doing: 'off', 'contacts only'
 // or 'open to requests'; 'receiving' while a message arrives; 'unavailable: ' and a sentence the person can act on
 // while the radio can't work ('unavailable: Bluetooth is off in System Settings.'), until the switch's own word says it
-// works again. It measures no rate, so it has none. A send by Bluetooth at Off says 'not sent: bluetooth is off'.
+// works again; and at Contacts or Open while the store is locked, 'waiting for the passphrase' (the radio has no keys
+// yet, so it is idle). It measures no rate, so it has none. A send by Bluetooth at Off says 'not sent: bluetooth is off'.
 // Requests to connect (the request, requestGone, requested, peers and contactConfirmed events, and the commands beside
 // them in bridge.js) come only at Open; at Contacts the switch's own sentence refuses asking: 'Requests go out only with
 // Bluetooth set to Open.' Accepting is a second way to add a contact, so New contacts need a key check is the person's
