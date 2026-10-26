@@ -130,10 +130,22 @@ pub(crate) struct LinkSession {
     pub shared: Option<Vec<[u8; TOKEN_LEN]>>,
     /// For a request sent: the hello and which attempt this is.
     pub hello: Option<(Vec<u8>, u8)>,
-    /// For a request received: when its hello arrived, and whether the
-    /// person accepted it.
+    /// For a request sent: when the other side acknowledged the hello.
+    pub delivered_ms: Option<u64>,
+    /// For a request sent: who the other side's answer (their hello)
+    /// claims they are, and the hello. Only a contact handshake on this
+    /// link proves it.
+    pub answer: Option<(PublicIdentity, Vec<u8>)>,
+    /// For a request received: when its hello arrived.
     pub heard_ms: Option<u64>,
-    pub accepted_by_person: bool,
+    /// For a request received: the requester's current token, which they
+    /// sent with their hello, so an accept can prove who answered by a
+    /// contact handshake naming it.
+    pub peer_token: Option<[u8; TOKEN_LEN]>,
+    /// For a request received: when the person accepted it (and our hello
+    /// went back), and whether the proof by contact handshake has begun.
+    pub accepted_ms: Option<u64>,
+    pub proving: bool,
 }
 
 impl LinkSession {
@@ -166,8 +178,12 @@ impl LinkSession {
             ack_at: None,
             shared: None,
             hello: None,
+            delivered_ms: None,
+            answer: None,
             heard_ms: None,
-            accepted_by_person: false,
+            peer_token: None,
+            accepted_ms: None,
+            proving: false,
         }
     }
 
@@ -277,7 +293,8 @@ impl LinkSession {
     /// Tell the other side this side's token schedule (current first, at
     /// most [`SCHEDULE_MAX`]), now and in
     /// place of every keepalive from now on. Only for a confirmed contact
-    /// session: the caller checks.
+    /// session, or the current token alone in a request this side sends:
+    /// the caller checks.
     pub fn send_token(&mut self, tokens: &[[u8; TOKEN_LEN]], now_ms: u64) -> Option<Vec<u8>> {
         self.shared = Some(tokens[..tokens.len().min(SCHEDULE_MAX)].to_vec());
         self.keepalive(now_ms)

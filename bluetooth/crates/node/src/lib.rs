@@ -98,9 +98,21 @@
 //! and only once: it is then remembered as handled like any other, so a
 //! replay is ignored. Everything else this machine sends is remembered as
 //! handled the moment it goes out, so its own echo is never heard.
+//!
+//! # Requests to connect
+//!
+//! A carrier that reaches people one by one may let a stranger nearby ask
+//! to connect ([`NodeEvent::Request`]), and let this device ask one
+//! ([`Node::strangers`], [`Node::request`]). Nothing of this device's goes
+//! to a stranger until the person accepts ([`Node::accept_request`]),
+//! which adds them as a contact, unchecked; declining or ignoring keeps
+//! nothing. Requests are held in memory only. While new contacts need a
+//! key check ([`Node::set_in_person_only`], on by default) none is sent
+//! or accepted. See the `requests` module for the caps.
 
 mod control;
 mod light;
+mod requests;
 mod sound;
 mod transport;
 
@@ -120,6 +132,9 @@ use bombechat_store::{
 use rand_core::{OsRng, RngCore};
 
 pub use light::{LightTransport, ReaderWatch, PICTURES_HELD, SEND_WINDOW, STILL_MS};
+pub use requests::{
+    RequestState, MEET_FIRST, NOT_IN_RANGE, REQUESTS_WAITING, REQUEST_GAP_MS, REQUEST_GONE,
+};
 pub use sound::{SoundTransport, MAX_QUEUED_ENVELOPES, QUEUE_FULL};
 pub use transport::{Transport, TransportEvent};
 
@@ -420,6 +435,31 @@ pub enum NodeEvent {
         height: u32,
         pixels: Vec<u8>,
     },
+    /// A stranger nearby asks to connect ([`Node::accept_request`],
+    /// [`Node::decline_request`]). Held in memory only, until answered or
+    /// [`NodeEvent::RequestGone`]. `name` is the name their hello gives;
+    /// `fingerprint` is their key's ([`PublicIdentity::fingerprint`]);
+    /// `safety` is the safety number to compare when you meet.
+    Request {
+        id: u64,
+        name: String,
+        fingerprint: [u8; 8],
+        safety: String,
+    },
+    /// The request `id` can no longer be answered: it ran out, the
+    /// stranger went, or a newer one pushed it out.
+    RequestGone { id: u64 },
+    /// A request this node sent ([`Node::request`]) to the stranger under
+    /// `label` moved on.
+    Requested { label: String, state: RequestState },
+    /// Who is near, when it changes: contacts with a proven connection
+    /// now, and how many strangers were seen lately (an upper bound: a
+    /// stranger's carrier may show them under a new random name, and
+    /// nothing links the two).
+    Peers {
+        contacts_in_range: Vec<ContactId>,
+        strangers_in_range: usize,
+    },
 }
 
 impl fmt::Debug for NodeEvent {
@@ -493,6 +533,24 @@ impl fmt::Debug for NodeEvent {
                 .field("width", width)
                 .field("height", height)
                 .finish_non_exhaustive(),
+            NodeEvent::Request { id, .. } => f
+                .debug_struct("Request")
+                .field("id", id)
+                .finish_non_exhaustive(),
+            NodeEvent::RequestGone { id } => f.debug_struct("RequestGone").field("id", id).finish(),
+            NodeEvent::Requested { label, state } => f
+                .debug_struct("Requested")
+                .field("label", label)
+                .field("state", state)
+                .finish(),
+            NodeEvent::Peers {
+                contacts_in_range,
+                strangers_in_range,
+            } => f
+                .debug_struct("Peers")
+                .field("contacts_in_range", contacts_in_range)
+                .field("strangers_in_range", strangers_in_range)
+                .finish(),
         }
     }
 }
@@ -604,6 +662,20 @@ fn now_min() -> u32 {
     u32::try_from(secs / 60).unwrap_or(u32::MAX)
 }
 
+/// Who a pairing hello is from and the name it gives, if `envelope` is
+/// one, its signature verifies and it has not expired by `now_min` (minutes
+/// since the Unix epoch). Only the signer is proved: a hello is public, so
+/// anyone may pass one on.
+pub fn read_hello(envelope: &[u8], now_min: u32) -> Option<(PublicIdentity, String)> {
+    control::read_hello(&Envelope::decode(envelope).ok()?, now_min)
+}
+
+/// A pairing hello from `me` under `name`, valid for a day from `now_min`,
+/// as [`Node::start_pairing`] sends: for carriers and tests that need one.
+pub fn pairing_hello(me: &Identity, name: &str, now_min: u32) -> Envelope {
+    control::pair_hello(me, name, random_id(), now_min, TTL_MIN)
+}
+
 fn random_id() -> [u8; 16] {
     let mut id = [0u8; 16];
     OsRng.fill_bytes(&mut id);
@@ -702,6 +774,10 @@ pub struct Node {
     clock: Option<(u64, u32)>,
     /// The wall clock, in minutes since the Unix epoch.
     wall: fn() -> u32,
+    /// Requests to connect, both ways, and who is near.
+    requests: requests::Requests,
+    /// New contacts need a key check: no request is sent or accepted.
+    in_person_only: bool,
 }
 
 impl Node {
@@ -740,6 +816,8 @@ impl Node {
             self_test: None,
             clock: None,
             wall: now_min,
+            requests: Default::default(),
+            in_person_only: true,
         };
         node.set_light(LightSwitch::Off);
         if let Some(store) = store {
@@ -754,10 +832,15 @@ impl Node {
     /// broadcasts) are queued again under the same envelope, or marked
     /// failed if it has expired.
     pub fn unlock(&mut self, store: Store) {
-        self.me = Some(store.me());
+        let me = store.me();
+        for t in &mut self.transports {
+            t.set_identity(Some(&me));
+        }
+        self.me = Some(me);
         let waiting = store.waiting();
         let notices = store.waiting_broadcasts();
         self.store = Some(store);
+        self.share_contacts();
         let now = now_min();
         for (m, bytes) in waiting {
             match Envelope::decode(&bytes) {
@@ -948,8 +1031,17 @@ impl Node {
                 LightSwitch::Read => Some(READ_ONLY),
                 LightSwitch::ReadAndFlash => None,
             },
-            Channel::Bluetooth => Some(NOT_IN_THIS_PLAN),
+            // no switch here: the carrier says, if this build has one
+            Channel::Bluetooth => match self.transports.iter().find(|t| t.name() == channel) {
+                Some(t) => t.refusal(),
+                None => Some(NOT_IN_THIS_PLAN),
+            },
         }
+    }
+
+    /// Whether some transport carries `channel`.
+    fn carries(&self, channel: Channel) -> bool {
+        self.transports.iter().any(|t| t.name() == channel)
     }
 
     /// Whether `channel`'s switch has it closed: not hearing at all.
@@ -1041,20 +1133,21 @@ impl Node {
     /// locked, no listed contact can be sealed to, or the text is too
     /// long for one envelope.
     ///
-    /// [`Channel::Sound`] and [`Channel::Light`] are built in this plan.
-    /// [`Channel::Bluetooth`] sends nothing, returns [`NOT_SENT`] and
-    /// reports the channel as [`NOT_IN_THIS_PLAN`] on the next tick.
+    /// With no transport for [`Channel::Bluetooth`] (the airgapped build)
+    /// a send on it sends nothing, returns [`NOT_SENT`] and reports the
+    /// channel as [`NOT_IN_THIS_PLAN`] on the next tick.
     ///
     /// With the channel's switch not allowing sends (Sound at Listen or
-    /// Off, Light at Read or Off) the message is sealed and stored but not
-    /// sent: it is reported [`OutboxState::Failed`] and the channel as
-    /// [`LISTEN_ONLY`], [`SOUND_OFF`], [`READ_ONLY`] or [`LIGHT_OFF`] on
-    /// the next tick.
+    /// Off, Light at Read or Off, or a carrier with no switch here whose
+    /// [`Transport::refusal`] says why) the message is sealed and stored
+    /// but not sent: it is reported [`OutboxState::Failed`] and the
+    /// channel as [`LISTEN_ONLY`], [`SOUND_OFF`], [`READ_ONLY`],
+    /// [`LIGHT_OFF`] or the carrier's reason on the next tick.
     ///
     /// A message to several contacts is one envelope; the store keeps one
     /// row per message id, so it is filed under the first of them.
     pub fn send(&mut self, to: &[ContactId], text: &str, channel: Channel) -> [u8; 16] {
-        if channel == Channel::Bluetooth {
+        if channel == Channel::Bluetooth && !self.carries(channel) {
             self.pending.push(NodeEvent::ChannelState {
                 channel,
                 state: NOT_IN_THIS_PLAN.to_string(),
@@ -1127,7 +1220,7 @@ impl Node {
     /// channel's switch as [`Node::send`] is, and on
     /// [`Channel::Bluetooth`] likewise.
     pub fn broadcast(&mut self, text: &str, channel: Channel) -> [u8; 16] {
-        if channel == Channel::Bluetooth {
+        if channel == Channel::Bluetooth && !self.carries(channel) {
             self.pending.push(NodeEvent::ChannelState {
                 channel,
                 state: NOT_IN_THIS_PLAN.to_string(),
@@ -1325,7 +1418,9 @@ impl Node {
                 Err(_) => NOT_STORED,
             };
         }
-        store.add_contact(name, peer, true).unwrap_or(NOT_STORED)
+        let id = store.add_contact(name, peer, true).unwrap_or(NOT_STORED);
+        self.share_contacts();
+        id
     }
 
     /// Test the machine on `channel` (sound or light): seal
@@ -1593,6 +1688,14 @@ impl Node {
                     TransportEvent::Notice(state) => {
                         events.push(NodeEvent::ChannelState { channel, state })
                     }
+                    request @ (TransportEvent::Request { .. }
+                    | TransportEvent::RequestGone { .. }
+                    | TransportEvent::RequestDelivered { .. }
+                    | TransportEvent::RequestFailed { .. }
+                    | TransportEvent::RequestAccepted { .. }
+                    | TransportEvent::Peers { .. }) => {
+                        self.on_request_event(ti, request, &mut events)
+                    }
                 }
             }
             self.reassemblers[ti].expire(now_ms);
@@ -1629,6 +1732,7 @@ impl Node {
             alive
         });
         self.report_reception(&mut events);
+        self.report_peers(&mut events);
         events
     }
 

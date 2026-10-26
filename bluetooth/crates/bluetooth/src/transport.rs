@@ -6,14 +6,14 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
-use bombechat_core::{Envelope, PublicIdentity, MAX_ENVELOPE};
+use bombechat_core::{Envelope, Identity, PublicIdentity, MAX_ENVELOPE};
 use bombechat_modem::{split, Event, Reassembler};
-use bombechat_node::{Transport, TransportEvent};
+use bombechat_node::{read_hello, Transport, TransportEvent, NOT_IN_RANGE, REQUEST_GAP_MS};
 use bombechat_session::{Session, SessionKeys, TOKEN_LEN};
 use bombechat_store::Channel;
 use rand_core::{OsRng, RngCore};
 
-use crate::handle::{BleEvent, BleHandle, Control, Peers};
+use crate::handle::{BleHandle, Control, Peers};
 use crate::link::{body_with_id, ExKey, Exchange, Link, Side};
 use crate::queue::{Key, Queue};
 use crate::radio::{Advert, LinkId, Mode, Radio, RadioEvent, TAG_LEN};
@@ -71,11 +71,18 @@ pub const SEEN_MS: u64 = 4 * 60_000;
 pub const HANDSHAKE_MS: u64 = 30_000;
 
 /// A request received is forgotten this long after its hello arrived,
-/// unless the person accepted it...
-pub const REQUEST_MS: u64 = 3 * 60_000;
-/// ...and at most this many are held, one per link; a new one replaces
-/// the link's earlier one, or the oldest.
-pub const REQUESTS_CAP: usize = 4;
+/// unless the person accepted it; an accepted one, this long after the
+/// accept if the proof hasn't finished; a request sent waits this long
+/// after it was delivered for an answer.
+pub const REQUEST_MS: u64 = 10 * 60_000;
+/// At most this many requests received are held, one per link; one more
+/// pushes out the oldest the person hasn't accepted. Accepted ones never
+/// go this way.
+pub const REQUESTS_CAP: usize = 20;
+/// At most this many requests received are part way (handshake not done,
+/// or no hello yet); one more drops the oldest of them, never one already
+/// reported.
+pub const REQUESTS_PART_WAY_CAP: usize = 4;
 /// A request this device sends is begun afresh, unanswered or broken
 /// off, until it has been tried this many times; then it has failed.
 pub const REQUEST_ATTEMPTS: u8 = 3;
@@ -85,11 +92,21 @@ pub const IDLE_MS: u64 = 120_000;
 /// At most this many links; one more is closed at once.
 pub const MAX_LINKS: usize = 32;
 
-/// A link counts towards the strangers in range for this long after it
-/// was last seen...
-pub const STRANGER_MS: u64 = 120_000;
+/// A stranger's advert counts towards the strangers seen for this long
+/// after a link to it was last up: fifteen minutes, a token's life, so a
+/// stranger whose idle link was closed (and isn't connected to again
+/// until its token changes) is still counted...
+pub const STRANGER_MS: u64 = TOKEN_MS;
 /// ...and at most this many are remembered.
 const SEEN_LINKS_CAP: usize = 64;
+/// At most this many links and identities are remembered for the gap
+/// between two requests.
+const REQUEST_MEMORY_CAP: usize = 256;
+
+/// Why a send is refused with the switch at Off.
+pub const BLUETOOTH_SEND_OFF: &str = "not sent: bluetooth is off";
+/// Why a request to connect cannot be sent unless the switch is at Open.
+pub const REQUESTS_NEED_OPEN: &str = "Requests go out only with Bluetooth set to Open.";
 
 /// At most this many exchanges on one link.
 const EXCHANGES_CAP: usize = 24;
@@ -139,7 +156,22 @@ pub struct BleTransport<R: Radio> {
     /// last said inside a session, and when: memory only.
     contact_tokens: BTreeMap<Key, (Vec<[u8; TOKEN_LEN]>, u64)>,
     links: BTreeMap<LinkId, Link>,
-    seen_links: BTreeMap<LinkId, (u64, bool)>,
+    /// Adverts this device opened links to, by what their round is
+    /// remembered by: when a link to it was last up, and whether it
+    /// carried a confirmed contact session.
+    seen_links: BTreeMap<[u8; TOKEN_LEN], (u64, bool)>,
+    /// When a request was last reported from each link, and from each
+    /// identity: at most one each in [`REQUEST_GAP_MS`].
+    request_links: BTreeMap<LinkId, u64>,
+    request_ids: BTreeMap<Key, u64>,
+    /// Links whose request received the node was told of and not yet told
+    /// is gone.
+    reported: BTreeSet<LinkId>,
+    /// Links the node asked to send a request on, not yet told how it
+    /// ended.
+    asked: BTreeSet<LinkId>,
+    /// What [`TransportEvent::Peers`] last said.
+    said: Option<Peers>,
     last_seen: BTreeMap<Key, u64>,
     last_tried: BTreeMap<Key, u64>,
     rounds: BTreeMap<[u8; TOKEN_LEN], u64>,
@@ -186,6 +218,11 @@ impl<R: Radio> BleTransport<R> {
             contact_tokens: BTreeMap::new(),
             links: BTreeMap::new(),
             seen_links: BTreeMap::new(),
+            request_links: BTreeMap::new(),
+            request_ids: BTreeMap::new(),
+            reported: BTreeSet::new(),
+            asked: BTreeSet::new(),
+            said: None,
             last_seen: BTreeMap::new(),
             last_tried: BTreeMap::new(),
             rounds: BTreeMap::new(),
@@ -300,6 +337,15 @@ impl<R: Radio> BleTransport<R> {
         self.links.keys().copied().collect()
     }
 
+    /// Requests received and reported to the node, still held.
+    pub fn requests_reported(&self) -> usize {
+        self.links
+            .values()
+            .flat_map(|l| l.exchanges.values())
+            .filter(|e| matches!(e, Exchange::Session(s) if s.kind == SessKind::RequestIn && s.heard_ms.is_some()))
+            .count()
+    }
+
     /// Requests received and held (answering, or heard and waiting).
     pub fn requests_held(&self) -> usize {
         self.links
@@ -327,10 +373,6 @@ impl<R: Radio> BleTransport<R> {
 
     fn me(&self) -> Option<Key> {
         self.keys.as_ref().map(|k| key_of(k.public()))
-    }
-
-    fn notify(&self, event: BleEvent) {
-        self.shared.lock().unwrap().notify(event);
     }
 
     fn random_token(&mut self) -> [u8; TOKEN_LEN] {
@@ -369,7 +411,7 @@ impl<R: Radio> BleTransport<R> {
             self.mode = mode;
         }
         if let Some(contacts) = contacts {
-            self.set_contacts(contacts);
+            self.use_contacts(contacts);
         }
         let want = self.mode.is_some() && self.keys.is_some();
         if self.running && (restart || !want) {
@@ -388,25 +430,51 @@ impl<R: Radio> BleTransport<R> {
         for (link, hello) in requests {
             self.begin_request(link, hello, 1);
         }
-        for (link, accept) in answers {
-            let Some(l) = self.links.get_mut(&link) else {
-                continue;
-            };
-            if accept {
-                for e in l.exchanges.values_mut() {
-                    if let Exchange::Session(s) = e {
-                        if s.kind == SessKind::RequestIn {
-                            s.accepted_by_person = true;
-                        }
-                    }
-                }
-            } else {
-                l.exchanges.retain(|_, e| !is_request_in(e));
-            }
+        for (link, answer) in answers {
+            self.answer(link, answer);
         }
     }
 
-    fn set_contacts(&mut self, contacts: Vec<PublicIdentity>) {
+    /// The person answered the request received on `link`. Accepted: our
+    /// hello goes back inside the request session, and once the requester
+    /// holds it, this device proves it sent it by a contact handshake
+    /// naming the requester's token ([`BleTransport::prove_accepted`]).
+    /// Declined: the request is forgotten, and nothing goes back.
+    fn answer(&mut self, link: LinkId, answer: Option<Vec<u8>>) {
+        let now = self.now_ms;
+        let Some(l) = self.links.get_mut(&link) else {
+            return;
+        };
+        let Some(hello) = answer.filter(|h| h.len() <= MAX_ENVELOPE) else {
+            // the link is kept as long as an ignored request keeps it, so
+            // the requester can't tell a decline from no answer by when
+            // the link closes
+            let heard = l.exchanges.values().find_map(|e| match e {
+                Exchange::Session(s) if s.kind == SessKind::RequestIn => s.heard_ms,
+                _ => None,
+            });
+            if let Some(at) = heard {
+                l.busy_ms = l.busy_ms.max(at + REQUEST_MS);
+            }
+            l.exchanges.retain(|_, e| !is_request_in(e));
+            return;
+        };
+        let mut writes = Vec::new();
+        for e in l.exchanges.values_mut() {
+            if let Exchange::Session(s) = e {
+                if s.kind == SessKind::RequestIn && s.heard_ms.is_some() && s.accepted_ms.is_none()
+                {
+                    s.accepted_ms = Some(now);
+                    writes.extend(s.send_envelope(&hello, None, now));
+                }
+            }
+        }
+        for w in writes {
+            l.put(&mut self.radio, link, &w);
+        }
+    }
+
+    fn use_contacts(&mut self, contacts: Vec<PublicIdentity>) {
         let me = self.me();
         let before = std::mem::take(&mut self.contact_keys);
         self.contacts = contacts
@@ -478,20 +546,12 @@ impl<R: Radio> BleTransport<R> {
         }
     }
 
+    /// Every request, either way, ends: the node is told at the end of
+    /// the poll ([`BleTransport::settle_requests`]).
     fn drop_requests(&mut self) {
-        let mut failed = Vec::new();
-        for (id, link) in &mut self.links {
-            link.exchanges.retain(|_, e| {
-                if is_request_out(e) {
-                    failed.push(*id);
-                    return false;
-                }
-                !is_request_in(e)
-            });
-        }
-        failed.dedup();
-        for link in failed {
-            self.notify(BleEvent::RequestFailed { link });
+        for link in self.links.values_mut() {
+            link.exchanges
+                .retain(|_, e| !is_request_in(e) && !is_request_out(e));
         }
     }
 
@@ -581,12 +641,8 @@ impl<R: Radio> BleTransport<R> {
     }
 
     fn link_gone(&mut self, id: LinkId) {
-        let Some(gone) = self.links.remove(&id) else {
-            return;
-        };
-        self.redial.retain(|_, r| r.link != id);
-        if gone.exchanges.values().any(is_request_out) {
-            self.notify(BleEvent::RequestFailed { link: id });
+        if self.links.remove(&id).is_some() {
+            self.redial.retain(|_, r| r.link != id);
         }
     }
 
@@ -675,7 +731,7 @@ impl<R: Radio> BleTransport<R> {
         let side = Side::of_received(m.flags);
         match m.kind {
             Kind::Contact if side == Side::Theirs => self.answer_contact(link, xid, rest),
-            Kind::Request if side == Side::Theirs => self.answer_request(link, xid, rest),
+            Kind::Request if side == Side::Theirs => self.request_message(link, xid, rest),
             Kind::Handshake => self.continue_handshake(link, (side, xid), rest),
             Kind::Sealed if rest.len() >= 8 => {
                 let mut n = [0u8; 8];
@@ -689,7 +745,9 @@ impl<R: Radio> BleTransport<R> {
     /// Message 1 of a contact handshake. Answered only if it reads, names
     /// our current token, one of the [`PAST_TOKENS`] before it or one of
     /// the [`FUTURE_TOKENS`] told to contacts, at a
-    /// time near ours, comes from a contact, and its ephemeral key is new.
+    /// time near ours, comes from a contact (or, on a link carrying a
+    /// request this device sent, from the one whose answer claimed to be
+    /// them: the proof of an accept), and its ephemeral key is new.
     /// Anything else gets no byte back.
     fn answer_contact(&mut self, id: LinkId, xid: u32, noise: &[u8]) {
         let now = self.now_ms;
@@ -715,7 +773,8 @@ impl<R: Radio> BleTransport<R> {
             return;
         };
         let rk = key_of(&remote);
-        if Some(rk) == me || !self.contact_keys.contains(&rk) {
+        let awaited = link.awaits(&remote);
+        if Some(rk) == me || !(self.contact_keys.contains(&rk) || awaited) {
             return;
         }
         self.prune_seen();
@@ -754,19 +813,29 @@ impl<R: Radio> BleTransport<R> {
         link.put(&mut self.radio, id, &wire);
     }
 
-    /// Message 1 of a request to connect: answered in Open mode only. One
-    /// per link (a new one replaces the last), and at most
-    /// [`REQUESTS_CAP`] in all.
-    fn answer_request(&mut self, id: LinkId, xid: u32, noise: &[u8]) {
+    /// Message 1 of a request to connect: answered in Open mode only, and
+    /// not on a link that brought a request in the last
+    /// [`REQUEST_GAP_MS`] or holds one reported: one per link, and a
+    /// stranger can't replace theirs to push others out. A request part
+    /// way on the link is replaced; past [`REQUESTS_PART_WAY_CAP`] part
+    /// way in all, the oldest of those goes, never one reported.
+    fn request_message(&mut self, id: LinkId, xid: u32, noise: &[u8]) {
         if self.mode != Some(Mode::Open) || self.keys.is_none() {
             return;
         }
         let now = self.now_ms;
-        if self
-            .links
+        let recent = self
+            .request_links
             .get(&id)
-            .is_none_or(|l| l.exchanges.contains_key(&(Side::Theirs, xid)))
-        {
+            .is_some_and(|at| now.saturating_sub(*at) < REQUEST_GAP_MS);
+        let Some(link) = self.links.get(&id) else {
+            return;
+        };
+        let reported = link
+            .exchanges
+            .values()
+            .any(|e| is_request_in(e) && !part_way(e));
+        if recent || reported || link.exchanges.contains_key(&(Side::Theirs, xid)) {
             return;
         }
         let mut hs = Session::request_responder();
@@ -779,7 +848,7 @@ impl<R: Radio> BleTransport<R> {
         if let Some(link) = self.links.get_mut(&id) {
             link.exchanges.retain(|_, e| !is_request_in(e));
         }
-        // the oldest anywhere goes if there are too many
+        // the oldest part way anywhere goes if there are too many
         loop {
             let held: Vec<(u64, LinkId, ExKey)> = self
                 .links
@@ -787,14 +856,12 @@ impl<R: Radio> BleTransport<R> {
                 .flat_map(|(lid, l)| {
                     l.exchanges.iter().filter_map(move |(k, e)| match e {
                         Exchange::Answering { since_ms, .. } => Some((*since_ms, *lid, *k)),
-                        Exchange::Session(s) if s.kind == SessKind::RequestIn => {
-                            Some((s.started_ms, *lid, *k))
-                        }
+                        Exchange::Session(s) if part_way(e) => Some((s.started_ms, *lid, *k)),
                         _ => None,
                     })
                 })
                 .collect();
-            if held.len() < REQUESTS_CAP {
+            if held.len() < REQUESTS_PART_WAY_CAP {
                 break;
             }
             if let Some((_, lid, k)) = held.into_iter().min() {
@@ -818,6 +885,7 @@ impl<R: Radio> BleTransport<R> {
         let now = self.now_ms;
         let me = self.me();
         let schedule = self.token_schedule();
+        let current = schedule.first().copied();
         let Some(link) = self.links.get_mut(&id) else {
             return;
         };
@@ -835,9 +903,15 @@ impl<R: Radio> BleTransport<R> {
                 let Ok(cipher) = hs.into_transport() else {
                     return;
                 };
-                // the contact answered: no more hellos on this link
-                link.exchanges
-                    .retain(|_, e| !matches!(e, Exchange::Trial { .. }));
+                // the contact answered: no more hellos on this link, and a
+                // request from them this device accepted is proved
+                link.exchanges.retain(|_, e| match e {
+                    Exchange::Trial { .. } => false,
+                    Exchange::Session(s) if s.kind == SessKind::RequestIn => {
+                        s.remote.as_ref() != Some(&contact)
+                    }
+                    _ => true,
+                });
                 let mut s =
                     LinkSession::new(SessKind::Contact, cipher, Side::Mine.flags(), k.1, now);
                 // the first transport message confirms us to the
@@ -878,10 +952,16 @@ impl<R: Radio> BleTransport<R> {
                     id,
                     &handshake_wire(Side::Mine, k.1, &third),
                 );
-                let first = s.send_envelope(&hello, None, now);
+                // the hello, then our current token alone: an accept is
+                // proved by a contact handshake naming it, on this link
+                let mut first: Vec<Vec<u8>> =
+                    s.send_envelope(&hello, None, now).into_iter().collect();
+                if let Some(t) = current {
+                    first.extend(s.send_token(&[t], now));
+                }
                 s.hello = Some((hello, attempt));
                 link.exchanges.insert(k, Exchange::Session(Box::new(s)));
-                if let Some(w) = first {
+                for w in first {
                     link.put(&mut self.radio, id, &w);
                 }
             }
@@ -925,14 +1005,38 @@ impl<R: Radio> BleTransport<R> {
         s.hold_ack(now + self.rng.next_u64() % (ACK_DELAY_MAX_MS + 1));
         let kind = s.kind;
         let remote = s.remote.clone();
-        let request_done = kind == SessKind::RequestOut && s.all_acked();
+        let delivered = kind == SessKind::RequestOut && s.all_acked() && s.delivered_ms.is_none();
+        if delivered {
+            s.delivered_ms = Some(now);
+        }
         let first_hello = kind == SessKind::RequestIn && s.heard_ms.is_none();
         if first_hello && !d.envelopes.is_empty() {
             s.heard_ms = Some(now);
         }
+        if kind == SessKind::RequestIn {
+            if let Some(t) = d.tokens.first() {
+                s.peer_token = Some(*t);
+            }
+        }
+        // the answer to a request this device sent: who it claims to be
+        let unix_min = (self.unix_base_ms.saturating_add(now) / 60_000) as u32;
+        if kind == SessKind::RequestOut && s.answer.is_none() {
+            if let Some(hello) = d.envelopes.first() {
+                let mine = self.keys.as_ref().map(|k| k.public().clone());
+                if let Some((who, _)) = read_hello(hello, unix_min) {
+                    if Some(&who) != mine.as_ref() {
+                        s.answer = Some((who, hello.clone()));
+                    }
+                }
+            }
+        }
+        let mut proved = None;
         if !was_confirmed && s.confirmed() && kind == SessKind::Contact {
             if let Some(r) = &remote {
                 self.last_seen.insert(key_of(r), now);
+                if !self.contact_keys.contains(&key_of(r)) {
+                    proved = link.answer_from(r);
+                }
             }
             // one confirmed session per contact per link: older ones go
             link.exchanges.retain(|other, e| match e {
@@ -940,6 +1044,20 @@ impl<R: Radio> BleTransport<R> {
                     o.remote != remote
                 }
                 _ => true,
+            });
+        }
+        if let (Some(hello), Some(r)) = (proved, &remote) {
+            // the one this device asked accepted, and proved it: a contact
+            // from now on, unless the node says otherwise
+            link.exchanges.retain(|_, e| !is_request_out(e));
+            self.asked.remove(&id);
+            if self.contact_keys.insert(key_of(r)) {
+                self.contacts.push(r.clone());
+            }
+            self.events.push(TransportEvent::RequestAccepted {
+                stranger: id.0,
+                from: r.clone(),
+                hello,
             });
         }
         match kind {
@@ -958,26 +1076,90 @@ impl<R: Radio> BleTransport<R> {
                 }
             }
             SessKind::RequestOut => {
-                if request_done {
-                    link.exchanges.remove(&k);
-                    self.notify(BleEvent::RequestSent { link: id });
+                if delivered && self.asked.contains(&id) {
+                    self.events
+                        .push(TransportEvent::RequestDelivered { stranger: id.0 });
                 }
             }
             SessKind::RequestIn => {
                 let hello = d.envelopes.into_iter().next().filter(|_| first_hello);
                 if let (Some(hello), Some(from)) = (hello, remote) {
-                    if hello.len() <= MAX_ENVELOPE && Envelope::decode(&hello).is_ok() {
-                        self.notify(BleEvent::Request {
-                            link: id,
-                            from,
-                            hello,
-                        });
-                    } else {
-                        link.exchanges.remove(&k);
-                    }
+                    self.take_request(id, k, from, hello);
                 }
             }
         }
+    }
+
+    /// A request's hello arrived: report it, unless the link or the
+    /// requester brought one in the last [`REQUEST_GAP_MS`] (then it is
+    /// dropped unreported), or it is no envelope. Past [`REQUESTS_CAP`]
+    /// reported, the oldest the person hasn't accepted goes.
+    fn take_request(&mut self, id: LinkId, k: ExKey, from: PublicIdentity, hello: Vec<u8>) {
+        let now = self.now_ms;
+        let fresh =
+            |at: Option<&u64>| at.is_none_or(|at| now.saturating_sub(*at) >= REQUEST_GAP_MS);
+        let fk = key_of(&from);
+        let ok = hello.len() <= MAX_ENVELOPE
+            && Envelope::decode(&hello).is_ok()
+            && fresh(self.request_links.get(&id))
+            && fresh(self.request_ids.get(&fk));
+        if !ok {
+            if let Some(link) = self.links.get_mut(&id) {
+                link.exchanges.remove(&k);
+            }
+            return;
+        }
+        self.request_links
+            .retain(|_, at| now.saturating_sub(*at) < REQUEST_GAP_MS);
+        self.request_ids
+            .retain(|_, at| now.saturating_sub(*at) < REQUEST_GAP_MS);
+        for _ in REQUEST_MEMORY_CAP..=self.request_links.len() {
+            let oldest = self
+                .request_links
+                .iter()
+                .min_by_key(|(_, at)| **at)
+                .map(|(l, _)| *l);
+            oldest.map(|l| self.request_links.remove(&l));
+        }
+        for _ in REQUEST_MEMORY_CAP..=self.request_ids.len() {
+            let oldest = self
+                .request_ids
+                .iter()
+                .min_by_key(|(_, at)| **at)
+                .map(|(i, _)| *i);
+            oldest.map(|i| self.request_ids.remove(&i));
+        }
+        self.request_links.insert(id, now);
+        self.request_ids.insert(fk, now);
+        // the oldest reported and not accepted goes if there are too many
+        let mut held: Vec<(u64, LinkId, ExKey)> = self
+            .links
+            .iter()
+            .flat_map(|(lid, l)| {
+                l.exchanges.iter().filter_map(move |(ek, e)| match e {
+                    Exchange::Session(s)
+                        if s.kind == SessKind::RequestIn && s.accepted_ms.is_none() =>
+                    {
+                        s.heard_ms.map(|at| (at, *lid, *ek))
+                    }
+                    _ => None,
+                })
+            })
+            .filter(|(_, lid, ek)| (*lid, *ek) != (id, k))
+            .collect();
+        held.sort();
+        while held.len() >= REQUESTS_CAP {
+            let (_, lid, ek) = held.remove(0);
+            if let Some(l) = self.links.get_mut(&lid) {
+                l.exchanges.remove(&ek);
+            }
+        }
+        self.reported.insert(id);
+        self.events.push(TransportEvent::Request {
+            request: id.0,
+            from,
+            hello,
+        });
     }
 
     /// An envelope from a contact, to the node as the frames it reads.
@@ -1031,13 +1213,13 @@ impl<R: Radio> BleTransport<R> {
             && self.mode == Some(Mode::Open)
             && hello.len() <= MAX_ENVELOPE
             && self.links.contains_key(&id);
+        // a request that can't begin has failed: the node is told at the
+        // end of the poll
         let Some(keys) = self.keys.as_ref().filter(|_| ok) else {
-            self.notify(BleEvent::RequestFailed { link: id });
             return;
         };
         let mut hs = Session::request_initiator(keys);
         let Ok(first) = hs.write_message() else {
-            self.notify(BleEvent::RequestFailed { link: id });
             return;
         };
         let Some(link) = self.links.get_mut(&id) else {
@@ -1065,8 +1247,47 @@ impl<R: Radio> BleTransport<R> {
     fn retry_request(&mut self, id: LinkId, hello: Vec<u8>, attempt: u8) {
         if attempt < REQUEST_ATTEMPTS {
             self.begin_request(id, hello, attempt + 1);
-        } else {
-            self.notify(BleEvent::RequestFailed { link: id });
+        }
+    }
+
+    /// Requests this device accepted whose hello the requester now holds:
+    /// prove who sent it by a contact handshake on the same link, naming
+    /// the token the requester gave. It is redialled, with backoff, until
+    /// it is answered or the request ends.
+    fn prove_accepted(&mut self) {
+        let now = self.now_ms;
+        let mut due = Vec::new();
+        for (id, link) in &mut self.links {
+            let mut token = None;
+            for e in link.exchanges.values_mut() {
+                let Exchange::Session(s) = e else { continue };
+                if s.kind != SessKind::RequestIn
+                    || s.accepted_ms.is_none()
+                    || s.proving
+                    || !s.all_acked()
+                {
+                    continue;
+                }
+                if let (Some(t), Some(r)) = (s.peer_token, s.remote.clone()) {
+                    s.proving = true;
+                    token = Some(t);
+                    due.push((*id, r));
+                }
+            }
+            if link.token.is_none() {
+                link.token = token;
+            }
+        }
+        for (link, contact) in due {
+            self.redial.insert(
+                key_of(&contact),
+                Redial {
+                    link,
+                    contact,
+                    next_ms: now,
+                    backoff_ms: REDIAL_FIRST_MS,
+                },
+            );
         }
     }
 
@@ -1144,8 +1365,6 @@ impl<R: Radio> BleTransport<R> {
                 link.token = told;
                 link.round = told;
             }
-            let Some(round) = link.round else { continue };
-            let named = link.token;
             if link.has_own_session() {
                 continue;
             }
@@ -1204,7 +1423,11 @@ impl<R: Radio> BleTransport<R> {
             for c in due {
                 self.dial(id, Some(c), 1, true);
             }
-            // the token's one round
+            // the token's one round, on a link this device opened
+            let Some((round, named)) = self.links.get(&id).and_then(|l| Some((l.round?, l.token)))
+            else {
+                continue;
+            };
             if self.rounds.contains_key(&round) {
                 continue;
             }
@@ -1288,17 +1511,18 @@ impl<R: Radio> BleTransport<R> {
                     if !s.confirmed() && age >= HANDSHAKE_MS {
                         return false;
                     }
-                    if s.kind == SessKind::RequestIn {
-                        match s.heard_ms {
-                            None if age >= HANDSHAKE_MS => return false,
-                            Some(at)
-                                if !s.accepted_by_person
-                                    && now.saturating_sub(at) >= REQUEST_MS =>
-                            {
-                                return false
-                            }
+                    let over =
+                        |at: Option<u64>| at.is_some_and(|at| now.saturating_sub(at) >= REQUEST_MS);
+                    match s.kind {
+                        SessKind::RequestIn => match (s.heard_ms, s.accepted_ms) {
+                            (None, _) if age >= HANDSHAKE_MS => return false,
+                            (heard, None) if over(heard) => return false,
+                            (_, accepted) if over(accepted) => return false,
                             _ => {}
-                        }
+                        },
+                        // delivered, and no answer in time
+                        SessKind::RequestOut if over(s.delivered_ms) => return false,
+                        _ => {}
                     }
                     let (w, gone) = s.upkeep(now);
                     writes.extend(w);
@@ -1310,7 +1534,7 @@ impl<R: Radio> BleTransport<R> {
                 Exchange::Trial { .. } => true,
             });
             if !link.exchanges.is_empty() {
-                link.busy_ms = now;
+                link.busy_ms = link.busy_ms.max(now);
             }
             for w in writes {
                 link.put(&mut self.radio, id, &w);
@@ -1504,12 +1728,18 @@ impl<R: Radio> BleTransport<R> {
             .find(|t| t[..TAG_LEN] == tag)
     }
 
+    /// Who is near: contacts on confirmed sessions; strangers a request
+    /// can go to (live links this device opened, without a confirmed
+    /// contact session, in Open mode); and how many strangers' adverts a
+    /// link was up to in the last [`STRANGER_MS`]. Told to the node when
+    /// it changes.
     fn update_peers(&mut self) {
         let now = self.now_ms;
-        for (id, link) in &self.links {
-            if link.opened {
-                self.seen_links
-                    .insert(*id, (now, link.has_confirmed_contact()));
+        for link in self.links.values() {
+            if let (true, Some(r)) = (link.opened, link.round) {
+                let contact = link.has_confirmed_contact();
+                let seen = self.seen_links.entry(r).or_insert((now, contact));
+                *seen = (now, seen.1 || contact);
             }
         }
         self.seen_links
@@ -1519,9 +1749,9 @@ impl<R: Radio> BleTransport<R> {
                 .seen_links
                 .iter()
                 .min_by_key(|(_, (at, _))| *at)
-                .map(|(id, _)| *id);
-            if let Some(id) = oldest {
-                self.seen_links.remove(&id);
+                .map(|(r, _)| *r);
+            if let Some(r) = oldest {
+                self.seen_links.remove(&r);
             }
         }
         let mut contacts: Vec<PublicIdentity> = Vec::new();
@@ -1538,16 +1768,63 @@ impl<R: Radio> BleTransport<R> {
                 }
             }
         }
+        let open = self.running && self.mode == Some(Mode::Open);
         let strangers: Vec<LinkId> = self
-            .seen_links
+            .links
             .iter()
-            .filter(|(_, (_, contact))| !contact)
+            .filter(|(_, l)| open && l.opened && !l.has_confirmed_contact())
             .map(|(id, _)| *id)
             .collect();
-        self.shared.lock().unwrap().peers = Peers {
+        let strangers_seen = self.seen_links.values().filter(|(_, c)| !c).count();
+        let peers = Peers {
             contacts,
             strangers,
+            strangers_seen,
         };
+        if self.said.as_ref() != Some(&peers) {
+            self.events.push(TransportEvent::Peers {
+                contacts: peers.contacts.clone(),
+                strangers: peers.strangers.iter().map(|l| l.0).collect(),
+                strangers_seen,
+            });
+            self.said = Some(peers.clone());
+        }
+        self.shared.lock().unwrap().peers = peers;
+    }
+
+    /// Tell the node which requests ended this poll, however they ended:
+    /// a request received it was told of and that is no longer held is
+    /// gone; a request sent that is no longer under way, and wasn't
+    /// accepted, failed.
+    fn settle_requests(&mut self) {
+        let holds = |l: &Link, pred: fn(&Exchange) -> bool| l.exchanges.values().any(pred);
+        let gone: Vec<LinkId> = self
+            .reported
+            .iter()
+            .copied()
+            .filter(|id| {
+                !self
+                    .links
+                    .get(id)
+                    .is_some_and(|l| holds(l, |e| is_request_in(e) && !part_way(e)))
+            })
+            .collect();
+        for id in gone {
+            self.reported.remove(&id);
+            self.events
+                .push(TransportEvent::RequestGone { request: id.0 });
+        }
+        let failed: Vec<LinkId> = self
+            .asked
+            .iter()
+            .copied()
+            .filter(|id| !self.links.get(id).is_some_and(|l| holds(l, is_request_out)))
+            .collect();
+        for id in failed {
+            self.asked.remove(&id);
+            self.events
+                .push(TransportEvent::RequestFailed { stranger: id.0 });
+        }
     }
 
     fn prune_seen(&mut self) {
@@ -1594,6 +1871,16 @@ fn is_request_in(e: &Exchange) -> bool {
     }
 }
 
+/// A request received that hasn't been reported: its handshake isn't done,
+/// or its hello hasn't arrived.
+fn part_way(e: &Exchange) -> bool {
+    match e {
+        Exchange::Answering { .. } => true,
+        Exchange::Session(s) => s.kind == SessKind::RequestIn && s.heard_ms.is_none(),
+        _ => false,
+    }
+}
+
 fn is_request_out(e: &Exchange) -> bool {
     match e {
         Exchange::Requesting { .. } => true,
@@ -1626,6 +1913,7 @@ impl<R: Radio> Transport for BleTransport<R> {
             self.prune_seen();
             self.contact_tokens
                 .retain(|_, (_, at)| now.saturating_sub(*at) < CONTACT_TOKEN_MS);
+            self.prove_accepted();
             self.trials();
         }
         self.collect();
@@ -1635,6 +1923,7 @@ impl<R: Radio> Transport for BleTransport<R> {
             self.close_links();
             self.share_tokens();
         }
+        self.settle_requests();
         self.update_peers();
         std::mem::take(&mut self.events)
     }
@@ -1653,5 +1942,54 @@ impl<R: Radio> Transport for BleTransport<R> {
 
     fn withdraw(&mut self, tag: u16) {
         self.queue.remove(tag);
+    }
+
+    fn set_identity(&mut self, me: Option<&Identity>) {
+        self.shared.lock().unwrap().keys = Some(me.map(SessionKeys::new));
+    }
+
+    fn set_contacts(&mut self, contacts: &[PublicIdentity]) {
+        self.shared.lock().unwrap().contacts = Some(contacts.to_vec());
+    }
+
+    /// [`BLUETOOTH_SEND_OFF`] with the switch at Off, or locked; the
+    /// switch as last set, even before the next poll applies it.
+    fn refusal(&self) -> Option<&'static str> {
+        let c = self.shared.lock().unwrap();
+        let mode = c.mode.unwrap_or(self.mode);
+        let keyed = c.keys.as_ref().map_or(self.keys.is_some(), Option::is_some);
+        (mode.is_none() || !keyed).then_some(BLUETOOTH_SEND_OFF)
+    }
+
+    /// Ask the stranger on link `stranger` (one listed in
+    /// [`TransportEvent::Peers`]) to connect, carrying `hello`. Refused
+    /// with [`REQUESTS_NEED_OPEN`] unless the switch is at Open, and with
+    /// [`NOT_IN_RANGE`] for a link no longer listed. Asking again on a
+    /// link already asked does nothing more.
+    fn request(&mut self, stranger: u64, hello: Vec<u8>) -> Result<(), &'static str> {
+        let link = LinkId(stranger);
+        let mut c = self.shared.lock().unwrap();
+        if c.mode.unwrap_or(self.mode) != Some(Mode::Open) {
+            return Err(REQUESTS_NEED_OPEN);
+        }
+        if !self
+            .said
+            .as_ref()
+            .is_some_and(|p| p.strangers.contains(&link))
+        {
+            return Err(NOT_IN_RANGE);
+        }
+        if self.asked.insert(link) {
+            c.requests.push((link, hello));
+        }
+        Ok(())
+    }
+
+    fn answer_request(&mut self, request: u64, hello: Option<Vec<u8>>) {
+        self.shared
+            .lock()
+            .unwrap()
+            .answers
+            .push((LinkId(request), hello));
     }
 }

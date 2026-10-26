@@ -19,8 +19,8 @@ use std::time::{Duration, Instant};
 use bombechat_core::{safety_number, PublicIdentity};
 use bombechat_modem::Band;
 use bombechat_node::{
-    max_private_text, NodeEvent, SelfTestState, MAX_BROADCAST, NOT_IN_THIS_PLAN, NOT_SENT,
-    NOT_STORED,
+    max_private_text, NodeEvent, RequestState, SelfTestState, MAX_BROADCAST, NOT_IN_THIS_PLAN,
+    NOT_SENT, NOT_STORED,
 };
 use bombechat_store::{Channel, Contact, ContactId, StoredBroadcast, StoredMessage};
 use serde::Serialize;
@@ -828,6 +828,36 @@ pub fn bridge_event(e: &NodeEvent) -> (&'static str, Value) {
         } => (
             "eyepiece",
             json!({ "width": width, "height": height, "pixels": pixels }),
+        ),
+        // Requests to connect: held in memory only, never stored.
+        NodeEvent::Request {
+            id,
+            name,
+            fingerprint,
+            safety,
+        } => (
+            "request",
+            json!({ "id": id, "name": name, "fingerprint": fingerprint.to_vec(), "safety": safety }),
+        ),
+        NodeEvent::RequestGone { id } => ("requestGone", json!({ "id": id })),
+        NodeEvent::Requested { label, state } => {
+            let (state, contact) = match state {
+                RequestState::Delivered => ("delivered", None),
+                RequestState::Failed => ("failed", None),
+                RequestState::Accepted(c) => ("accepted", Some(c.0)),
+            };
+            (
+                "requested",
+                json!({ "label": label, "state": state, "contact": contact }),
+            )
+        }
+        NodeEvent::Peers {
+            contacts_in_range,
+            strangers_in_range,
+        } => (
+            "peers",
+            json!({ "contacts": contacts_in_range.iter().map(|c| c.0).collect::<Vec<_>>(),
+                    "strangers": strangers_in_range }),
         ),
     }
 }

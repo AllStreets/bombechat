@@ -75,7 +75,9 @@ pub(crate) struct Link {
     /// inside a session whose tag the advert shows, if any; else one this
     /// device was given earlier for that advert, on a link it lost; else
     /// the one this link was given. `None` if none of those (the other
-    /// device withheld it), and for a link the other device opened.
+    /// device withheld it), and for a link the other device opened, until
+    /// a request it brought is accepted: then the token the requester gave
+    /// with it, to prove the accept.
     pub token: Option<[u8; TOKEN_LEN]>,
     /// What this link's one round of hellos is remembered by: its token,
     /// or for a link without one, something standing for the advert.
@@ -126,6 +128,25 @@ impl Link {
     pub fn has_own_session(&self) -> bool {
         self.exchanges.iter().any(|(k, e)| {
             k.0 == Side::Mine && matches!(e, Exchange::Session(s) if s.kind == SessKind::Contact)
+        })
+    }
+
+    /// Whether a request this device sent on this link was answered by
+    /// someone claiming to be `who`: their contact hello here is the proof.
+    pub fn awaits(&self, who: &PublicIdentity) -> bool {
+        self.answer_from(who).is_some()
+    }
+
+    /// The hello of the answer from `who` to a request this device sent on
+    /// this link, if there is one.
+    pub fn answer_from(&self, who: &PublicIdentity) -> Option<Vec<u8>> {
+        self.exchanges.values().find_map(|e| match e {
+            Exchange::Session(s) if s.kind == SessKind::RequestOut => s
+                .answer
+                .as_ref()
+                .filter(|(claimed, _)| claimed == who)
+                .map(|(_, hello)| hello.clone()),
+            _ => None,
         })
     }
 

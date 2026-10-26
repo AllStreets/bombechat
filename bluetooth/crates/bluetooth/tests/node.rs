@@ -1,8 +1,10 @@
 //! The Bluetooth transport inside a real node (Review Focus 4): the same
 //! contact in range by Bluetooth and by sound at once is one message and
-//! one receipt, whichever arrives first.
+//! one receipt, whichever arrives first; and a message sent while both are
+//! up goes out once per channel at most.
 
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use bombechat_bluetooth::{BleTransport, FakeRadio, Mode, Room, SeededRng};
 use bombechat_core::{seal_private, Envelope, Identity, Kind};
@@ -159,4 +161,168 @@ fn sound_then_bluetooth_is_one_message_and_one_receipt() {
 #[test]
 fn bluetooth_then_sound_is_one_message_and_one_receipt() {
     both_ways(false);
+}
+
+/// A transport passed through, counting what crosses it: the frames the
+/// node gave it, and the frames it handed the node.
+struct Counted<T: Transport> {
+    inner: T,
+    given: Arc<Mutex<Vec<Vec<u8>>>>,
+    handed: Arc<Mutex<Vec<Vec<u8>>>>,
+}
+
+impl<T: Transport> Transport for Counted<T> {
+    fn name(&self) -> Channel {
+        self.inner.name()
+    }
+    fn send(&mut self, frame: Vec<u8>) {
+        self.given.lock().unwrap().push(frame.clone());
+        self.inner.send(frame);
+    }
+    fn poll(&mut self, now_ms: u64) -> Vec<TransportEvent> {
+        let events = self.inner.poll(now_ms);
+        for e in &events {
+            if let TransportEvent::Frame(f) = e {
+                self.handed.lock().unwrap().push(f.clone());
+            }
+        }
+        events
+    }
+    fn delivered(&mut self, tag: u16) {
+        self.inner.delivered(tag);
+    }
+    fn withdraw(&mut self, tag: u16) {
+        self.inner.withdraw(tag);
+    }
+    fn set_identity(&mut self, me: Option<&Identity>) {
+        self.inner.set_identity(me);
+    }
+    fn set_contacts(&mut self, contacts: &[bombechat_core::PublicIdentity]) {
+        self.inner.set_contacts(contacts);
+    }
+    fn refusal(&self) -> Option<&'static str> {
+        self.inner.refusal()
+    }
+}
+
+struct Side {
+    node: Node,
+    sound: Wire,
+    given: Arc<Mutex<Vec<Vec<u8>>>>,
+    handed: Arc<Mutex<Vec<Vec<u8>>>>,
+    events: Vec<NodeEvent>,
+    _dir: tempfile::TempDir,
+}
+
+fn side(room: &Room, base: u64, seed: u64, me: &Identity, them: &Identity) -> Side {
+    let dir = tempfile::TempDir::new().unwrap();
+    let store = Store::create(&dir.path().join("s.db"), "pass", me, "me").unwrap();
+    store.add_contact("them", &them.public(), true).unwrap();
+    let ble = BleTransport::with_rng(room.radio(), base, Box::new(SeededRng::new(seed)));
+    ble.handle().set_mode(Some(Mode::Contacts));
+    let (given, handed) = (Arc::default(), Arc::default());
+    let counted = Counted {
+        inner: ble,
+        given: Arc::clone(&given),
+        handed: Arc::clone(&handed),
+    };
+    let sound = Wire::default();
+    let node = Node::new(
+        Some(store),
+        vec![Box::new(counted), Box::new(sound.clone())],
+    );
+    Side {
+        node,
+        sound,
+        given,
+        handed,
+        events: Vec::new(),
+        _dir: dir,
+    }
+}
+
+fn tick_both(a: &mut Side, b: &mut Side, from: u64, to: u64) -> u64 {
+    let mut now = from;
+    while now <= to {
+        a.events.extend(a.node.tick(now));
+        b.events.extend(b.node.tick(now));
+        now += 50;
+    }
+    to
+}
+
+/// Review Focus 4, the sending side: with Bluetooth and sound both up
+/// between two contacts (who share two links, so two sessions), a message
+/// sent by Bluetooth goes to the Bluetooth transport once and to sound not
+/// at all, reaches the other node once, and is answered by one receipt.
+/// The same envelope then also arriving by sound changes nothing.
+#[test]
+fn a_message_goes_out_once_per_channel_and_the_receiver_takes_it_once() {
+    let base = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let room = Room::new(90);
+    let (a_id, b_id) = (Identity::generate(), Identity::generate());
+    let mut a = side(&room, base, 1, &a_id, &b_id);
+    let mut b = side(&room, base, 2, &b_id, &a_id);
+    let t = tick_both(&mut a, &mut b, 0, 2_000);
+    let to_b = a.node.contacts()[0].id;
+
+    let id = a.node.send(&[to_b], "once", Channel::Bluetooth);
+    let t = tick_both(&mut a, &mut b, t, t + 5_000);
+
+    let given = envelopes(&a.given.lock().unwrap());
+    assert_eq!(
+        given.iter().filter(|e| e.id == id).count(),
+        1,
+        "given to Bluetooth once"
+    );
+    assert!(
+        envelopes(&a.sound.sent.lock().unwrap()).is_empty(),
+        "nothing by sound"
+    );
+    let handed = envelopes(&b.handed.lock().unwrap());
+    assert_eq!(
+        handed.iter().filter(|e| e.id == id).count(),
+        1,
+        "across the two sessions, b's transport took it once"
+    );
+    let messages = |s: &Side| {
+        s.events
+            .iter()
+            .filter(|e| matches!(e, NodeEvent::Message(m) if m.text == "once"))
+            .count()
+    };
+    assert_eq!(messages(&b), 1);
+    let heard = |s: &Side| {
+        s.events
+            .iter()
+            .filter(|e| matches!(e, NodeEvent::Heard { id: h, .. } if *h == id))
+            .count()
+    };
+    assert_eq!(heard(&a), 1, "one receipt");
+    let receipts = envelopes(&b.given.lock().unwrap())
+        .into_iter()
+        .chain(envelopes(&b.sound.sent.lock().unwrap()))
+        .filter(|e| e.kind == Kind::Control)
+        .count();
+    assert_eq!(receipts, 1, "sent once, by Bluetooth, where it came in");
+
+    // the same envelope by sound as well: still one message, no receipt more
+    let env = given.into_iter().find(|e| e.id == id).unwrap();
+    b.sound
+        .inbox
+        .lock()
+        .unwrap()
+        .extend(split(&env.encode(), 77));
+    tick_both(&mut a, &mut b, t, t + 3_000);
+    assert_eq!(messages(&b), 1);
+    assert_eq!(heard(&a), 1);
+    let receipts = envelopes(&b.given.lock().unwrap())
+        .into_iter()
+        .chain(envelopes(&b.sound.sent.lock().unwrap()))
+        .filter(|e| e.kind == Kind::Control)
+        .count();
+    assert_eq!(receipts, 1);
 }

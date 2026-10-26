@@ -94,14 +94,49 @@
 //!
 //! # Requests to connect (`Noise_XN`)
 //!
-//! Only in [`Mode::Open`], and only when asked ([`BleHandle::request`]):
-//! the requester's hello envelope goes as the first transport message. The
-//! recipient answers the handshake without any identity of its own, sends
-//! nothing but handshake and acknowledgement bytes, and reports
-//! [`BleEvent::Request`] once the hello decodes and fits. It holds one
-//! request per link, a new one replacing the last, and [`REQUESTS_CAP`] in
-//! all; each is forgotten [`REQUEST_MS`] after its hello unless the person
-//! accepts. In [`Mode::Contacts`] a request's message 1 gets no byte back.
+//! Only in [`Mode::Open`] ([`BluetoothSwitch::Open`]), and only when the
+//! node asks ([`bombechat_node::Node::request`], one stranger chosen by
+//! label): the requester's hello envelope goes as the first transport
+//! message, then its current token alone. The recipient answers the
+//! handshake without any identity of its own, sends nothing but handshake
+//! and acknowledgement bytes, and reports the request to the node once the
+//! hello decodes and fits. It is held [`REQUEST_MS`] after the hello
+//! arrived, one per link, at most [`REQUESTS_CAP`] (one more pushes out
+//! the oldest the person hasn't accepted; accepted ones never go this
+//! way), and at most [`REQUESTS_PART_WAY_CAP`] part way, whose eviction
+//! never touches one reported. At most one request is reported per link
+//! and per requester identity in [`bombechat_node::REQUEST_GAP_MS`]: a
+//! link that brought one gets no answer to another message 1 in that
+//! time, so one stranger can't push out other people's requests by
+//! asking again and again. In [`Mode::Contacts`] a request's message 1
+//! gets no byte back, requests held end, and no stranger is offered.
+//!
+//! Accepting sends this device's hello inside the request session. Once
+//! the requester acknowledges it, this device proves it sent it with a
+//! contact handshake on the same link, naming the token the requester
+//! gave, redialled with backoff until answered. The requester answers that
+//! handshake from the identity the hello claimed, and only on that link,
+//! though it is not yet a contact; when the session confirms, the
+//! requester reports the accept and takes them as a contact. A hello
+//! claiming someone else proves nothing: its proof comes from another key.
+//!
+//! Declining forgets the request and sends nothing. The link is held as
+//! long as the request would have been, so the requester can't tell a
+//! decline from no answer by when the link closes; either way its request
+//! ends unanswered [`REQUEST_MS`] after it was delivered.
+//!
+//! # Who is near
+//!
+//! Contacts count as present only on a confirmed session. Strangers are
+//! offered for a request while a link this device opened to their advert
+//! is up, in Open mode. They are counted as seen for [`STRANGER_MS`]
+//! (fifteen minutes) after such a link was last up, keyed by the advert's
+//! token: an idle link is closed after [`IDLE_MS`] and not made again until
+//! the token changes, so a count of live links alone would drop a stranger
+//! still sitting nearby for up to a token's life. The count is an upper
+//! bound: a stranger who rotates within the fifteen minutes is counted
+//! twice, because nothing links its two tokens (by design), and erring
+//! high is the safe side for a person deciding whether strangers are near.
 //!
 //! # Links
 //!
@@ -198,7 +233,7 @@ pub use adapter::{
     CENTRAL_MEMORY_MS, CLOSED_MS, CONNECT_MS, QUEUE_BYTES, REFUSED_MS, RETRY_MS,
 };
 pub use fake::{FakeRadio, Room, SeededRng, FAKE_MAX_WRITE};
-pub use handle::{BleEvent, BleHandle, Peers, EVENTS_CAP};
+pub use handle::{BleHandle, BluetoothSwitch, Peers};
 #[cfg(target_os = "macos")]
 pub use macos::CoreBluetoothRadio;
 pub use queue::{HOLD_MS, QUEUE_CAP};
@@ -207,10 +242,10 @@ pub use session::{
     bucket, ACK_DELAY_MAX_MS, AHEAD_BYTES, KEEPALIVE_MS, RESEND_MS, SILENCE_MS, WINDOW,
 };
 pub use transport::{
-    BleTransport, CONTACT_TOKEN_MS, FUTURE_TOKENS, HANDSHAKE_MS, IDLE_MS, MAX_LINKS, PAST_TOKENS,
-    REDIAL_FIRST_MS, REDIAL_MAX_MS, REQUESTS_CAP, REQUEST_ATTEMPTS, REQUEST_MS, ROUNDS_CAP,
-    ROUND_MEMORY_MS, SEEN_CAP, SEEN_MS, STRANGER_MS, TOKEN_MIN_MS, TOKEN_MS, TRIAL_ATTEMPTS,
-    TRIAL_CAP, TRIAL_RETRY_MS,
+    BleTransport, BLUETOOTH_SEND_OFF, CONTACT_TOKEN_MS, FUTURE_TOKENS, HANDSHAKE_MS, IDLE_MS,
+    MAX_LINKS, PAST_TOKENS, REDIAL_FIRST_MS, REDIAL_MAX_MS, REQUESTS_CAP, REQUESTS_NEED_OPEN,
+    REQUESTS_PART_WAY_CAP, REQUEST_ATTEMPTS, REQUEST_MS, ROUNDS_CAP, ROUND_MEMORY_MS, SEEN_CAP,
+    SEEN_MS, STRANGER_MS, TOKEN_MIN_MS, TOKEN_MS, TRIAL_ATTEMPTS, TRIAL_CAP, TRIAL_RETRY_MS,
 };
 
 /// Our GATT service, generated once for Bombechat (never Bitchat's).

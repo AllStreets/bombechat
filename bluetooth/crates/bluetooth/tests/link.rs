@@ -9,14 +9,14 @@ use bombechat_bluetooth::wire::{
     MAX_MESSAGE,
 };
 use bombechat_bluetooth::{
-    bucket, Advert, BleEvent, BleHandle, BleTransport, FakeRadio, LinkId, Mode, Radio, RadioEvent,
-    Room, SeededRng, ACK_DELAY_MAX_MS, FUTURE_TOKENS, HOLD_MS, IDLE_MS, KEEPALIVE_MS, MAX_LINKS,
-    PAST_TOKENS, QUEUE_CAP, REQUESTS_CAP, REQUEST_ATTEMPTS, REQUEST_MS, SEEN_CAP, SEEN_MS,
-    SILENCE_MS, STRANGER_MS, TOKEN_MS, TRIAL_CAP, TRIAL_RETRY_MS,
+    bucket, Advert, BleHandle, BleTransport, FakeRadio, LinkId, Mode, Radio, RadioEvent, Room,
+    SeededRng, ACK_DELAY_MAX_MS, FUTURE_TOKENS, HOLD_MS, IDLE_MS, KEEPALIVE_MS, MAX_LINKS,
+    PAST_TOKENS, QUEUE_CAP, REQUESTS_CAP, REQUESTS_NEED_OPEN, REQUEST_ATTEMPTS, REQUEST_MS,
+    SEEN_CAP, SEEN_MS, SILENCE_MS, STRANGER_MS, TOKEN_MS, TRIAL_CAP, TRIAL_RETRY_MS,
 };
 use bombechat_core::{seal_private, seal_public, Envelope, Identity, PublicIdentity};
 use bombechat_modem::{split, Event, Reassembler};
-use bombechat_node::{Transport, TransportEvent};
+use bombechat_node::{pairing_hello, Transport, TransportEvent, NOT_IN_RANGE};
 use bombechat_session::{Session, SessionKeys, TOKEN_LEN};
 use bombechat_store::Channel;
 
@@ -39,7 +39,6 @@ struct Device {
     id: Identity,
     radio: FakeRadio,
     events: Vec<TransportEvent>,
-    ble: Vec<BleEvent>,
 }
 
 impl Device {
@@ -59,7 +58,6 @@ impl Device {
             id,
             radio: watch,
             events: Vec::new(),
-            ble: Vec::new(),
         }
     }
 
@@ -79,7 +77,6 @@ impl Device {
 
     fn poll(&mut self, now: u64) {
         self.events.extend(self.t.poll(now));
-        self.ble.extend(self.h.take_events());
     }
 
     /// Envelopes handed to the node so far, rebuilt from its frames.
@@ -171,9 +168,16 @@ impl Raw {
     }
 
     fn with_token(room: &Room, token: [u8; TOKEN_LEN]) -> Raw {
+        let mut raw = Raw::silent(room);
+        raw.radio.advertise(token);
+        raw
+    }
+
+    /// A radio that connects to adverts but shows none: only one link to
+    /// each device, the one it opens.
+    fn silent(room: &Room) -> Raw {
         let mut radio = room.radio();
         radio.start(Mode::Open);
-        radio.advertise(token);
         Raw {
             radio,
             ups: Vec::new(),
@@ -1494,7 +1498,7 @@ fn no_more_than_the_link_cap_are_kept() {
 // ---- presence -----------------------------------------------------------
 
 #[test]
-fn strangers_are_counted_once_and_for_two_minutes_after_they_leave() {
+fn strangers_are_counted_once_for_fifteen_minutes_and_listed_while_a_link_is_up() {
     let room = Room::new(60);
     let (mut a, mut c) = (Device::new(&room, 1), Device::new(&room, 3));
     a.h.set_mode(Some(Mode::Open));
@@ -1502,18 +1506,40 @@ fn strangers_are_counted_once_and_for_two_minutes_after_they_leave() {
     let t = run(&mut [&mut a, &mut c], 0, 1_000);
     let peers = a.h.peers();
     assert_eq!(peers.strangers_in_range(), 1, "one stranger, counted once");
+    assert_eq!(peers.strangers.len(), 1, "and a request can go to them");
     assert!(peers.contacts.is_empty());
+    assert!(a.events.contains(&TransportEvent::Peers {
+        contacts: vec![],
+        strangers: vec![peers.strangers[0].0],
+        strangers_seen: 1,
+    }));
+    // idle, the link closes and isn't made again until c's token changes:
+    // nothing to ask on, but c is still counted
+    let closed = run_until(&mut [&mut a, &mut c], t, t + IDLE_MS + 5_000, |d| {
+        d[0].h.peers().strangers.is_empty()
+    })
+    .expect("the idle link closes");
+    assert_eq!(a.h.peers().strangers_in_range(), 1, "still counted");
     room.set_in_range(&a.radio, &c.radio, false);
-    let t = run(&mut [&mut a, &mut c], t, t + STRANGER_MS - 2_000);
+    let t = run_by(
+        &mut [&mut a, &mut c],
+        closed,
+        closed + STRANGER_MS - 2_000,
+        1_000,
+    );
     assert_eq!(a.h.peers().strangers_in_range(), 1);
-    run(&mut [&mut a, &mut c], t, t + 4_000);
-    assert_eq!(a.h.peers().strangers_in_range(), 0);
+    run_by(&mut [&mut a, &mut c], t, t + 4_000, 500);
+    assert_eq!(
+        a.h.peers().strangers_in_range(),
+        0,
+        "gone after fifteen minutes"
+    );
 }
 
 // ---- requests -----------------------------------------------------------
 
 fn hello_of(d: &Device) -> Envelope {
-    seal_public(&d.id, "bombechat pair hello v1\nAda", SENT_MIN, 60)
+    pairing_hello(&d.id, "Ada", SENT_MIN)
 }
 
 fn open_pair(room: &Room, sa: u64, sc: u64) -> (Device, Device, u64) {
@@ -1524,11 +1550,35 @@ fn open_pair(room: &Room, sa: u64, sc: u64) -> (Device, Device, u64) {
     (a, c, t)
 }
 
-fn requests(d: &Device) -> Vec<&BleEvent> {
-    d.ble
+/// The requests `d` reported: (request, from, hello).
+fn requests(d: &Device) -> Vec<(u64, PublicIdentity, Vec<u8>)> {
+    d.events
         .iter()
-        .filter(|e| matches!(e, BleEvent::Request { .. }))
+        .filter_map(|e| match e {
+            TransportEvent::Request {
+                request,
+                from,
+                hello,
+            } => Some((*request, from.clone(), hello.clone())),
+            _ => None,
+        })
         .collect()
+}
+
+fn gone(d: &Device) -> Vec<u64> {
+    d.events
+        .iter()
+        .filter_map(|e| match e {
+            TransportEvent::RequestGone { request } => Some(*request),
+            _ => None,
+        })
+        .collect()
+}
+
+fn accepted(d: &Device) -> bool {
+    d.events
+        .iter()
+        .any(|e| matches!(e, TransportEvent::RequestAccepted { .. }))
 }
 
 #[test]
@@ -1537,18 +1587,15 @@ fn a_request_reaches_a_stranger_in_open_mode_who_reveals_nothing() {
     let (mut a, mut c, t) = open_pair(&room, 1, 3);
     let link = a.h.peers().strangers[0];
     let hello = hello_of(&a).encode();
-    a.h.request(link, hello.clone());
+    a.t.request(link.0, hello.clone()).unwrap();
     c.radio.take_written();
     run(&mut [&mut a, &mut c], t, t + 2_000);
 
     let got = requests(&c);
     assert_eq!(got.len(), 1);
-    let BleEvent::Request { from, hello: h, .. } = got[0] else {
-        unreachable!()
-    };
-    assert_eq!(*from, a.me());
-    assert_eq!(*h, hello);
-    assert!(a.ble.contains(&BleEvent::RequestSent { link }));
+    assert_eq!(got[0].1, a.me());
+    assert_eq!(got[0].2, hello);
+    assert!(a.has(&TransportEvent::RequestDelivered { stranger: link.0 }));
     assert!(
         c.heard().is_empty(),
         "the request is not an envelope for c's node"
@@ -1567,7 +1614,134 @@ fn a_request_reaches_a_stranger_in_open_mode_who_reveals_nothing() {
 }
 
 #[test]
-fn a_hello_that_is_not_an_envelope_never_reaches_the_app() {
+fn a_request_goes_only_to_a_stranger_listed_now() {
+    let room = Room::new(69);
+    let (mut a, _c, _) = open_pair(&room, 1, 3);
+    assert_eq!(a.t.request(9_999, hello_of(&a).encode()), Err(NOT_IN_RANGE));
+    a.poll(1_100);
+    assert!(!a
+        .events
+        .iter()
+        .any(|e| matches!(e, TransportEvent::RequestFailed { .. })));
+}
+
+#[test]
+fn an_accept_goes_back_with_proof_and_both_are_contacts() {
+    let room = Room::new(75);
+    let (mut a, mut c, t) = open_pair(&room, 1, 3);
+    let link = a.h.peers().strangers[0];
+    a.t.request(link.0, hello_of(&a).encode()).unwrap();
+    let t = run(&mut [&mut a, &mut c], t, t + 2_000);
+    let (req, from, _) = requests(&c)[0].clone();
+    assert_eq!(from, a.me());
+    assert!(!accepted(&a), "nothing yet");
+    // as the node does on accept: a contact first, then the answer
+    c.knows(&[&a]);
+    let answer = pairing_hello(&c.id, "Cy", SENT_MIN).encode();
+    c.t.answer_request(req, Some(answer.clone()));
+    let done = run_until(&mut [&mut a, &mut c], t, t + 20_000, |d| accepted(d[0]))
+        .expect("the accept is proved");
+    assert!(a.has(&TransportEvent::RequestAccepted {
+        stranger: link.0,
+        from: c.me(),
+        hello: answer,
+    }));
+    a.knows(&[&c]);
+    let t = run(&mut [&mut a, &mut c], done, done + 2_000);
+    assert_eq!(a.h.peers().contacts, vec![c.me()]);
+    assert_eq!(c.h.peers().contacts, vec![a.me()]);
+    assert!(gone(&c).contains(&req), "the request is over");
+    assert!(!a
+        .events
+        .iter()
+        .any(|e| matches!(e, TransportEvent::RequestFailed { .. })));
+    let env = private(&a, &[&c], "hello Cy");
+    a.send(&env, 9);
+    run(&mut [&mut a, &mut c], t, t + 3_000);
+    assert_eq!(c.heard(), vec![env]);
+}
+
+#[test]
+fn a_decline_sends_nothing_and_the_request_runs_out_unanswered() {
+    let room = Room::new(76);
+    let (mut a, mut c, t) = open_pair(&room, 1, 3);
+    let link = a.h.peers().strangers[0];
+    a.t.request(link.0, hello_of(&a).encode()).unwrap();
+    let t = run(&mut [&mut a, &mut c], t, t + 2_000);
+    let req = requests(&c)[0].0;
+    c.radio.take_written();
+    c.t.answer_request(req, None);
+    let t = run_by(&mut [&mut a, &mut c], t, t + REQUEST_MS - 2_000, 1_000);
+    assert_eq!(c.t.requests_held(), 0, "nothing kept");
+    assert!(
+        written(&c.radio).iter().all(|(l, _)| l.0 != req),
+        "nothing sent back"
+    );
+    assert!(!a
+        .events
+        .iter()
+        .any(|e| matches!(e, TransportEvent::RequestFailed { .. })));
+    run_by(&mut [&mut a, &mut c], t, t + 4_000, 1_000);
+    assert!(a.has(&TransportEvent::RequestFailed { stranger: link.0 }));
+    assert!(!accepted(&a));
+}
+
+/// When the requester's link closes, after a decline or with no answer:
+/// the same moment, so a decline can't be told from being ignored.
+fn request_link_closes(decline: bool) -> u64 {
+    let room = Room::new(68);
+    let (mut a, mut c, t) = open_pair(&room, 1, 3);
+    let link = a.h.peers().strangers[0];
+    a.t.request(link.0, hello_of(&a).encode()).unwrap();
+    let t = run(&mut [&mut a, &mut c], t, t + 2_000);
+    if decline {
+        c.t.answer_request(requests(&c)[0].0, None);
+    }
+    let mut now = t;
+    while a.t.links().contains(&link) {
+        now += 1_000;
+        a.poll(now);
+        c.poll(now);
+        assert!(now < 2 * TOKEN_MS, "the link closes in time");
+    }
+    now
+}
+
+#[test]
+fn a_declined_request_keeps_its_link_as_long_as_an_ignored_one() {
+    let ignored = request_link_closes(false);
+    assert_eq!(request_link_closes(true), ignored);
+    assert!(ignored > REQUEST_MS, "held for the request's whole life");
+}
+
+#[test]
+fn an_answer_is_proved_only_by_its_own_key() {
+    let room = Room::new(77);
+    let (mut a, mut c, t) = open_pair(&room, 1, 3);
+    let link = a.h.peers().strangers[0];
+    a.t.request(link.0, hello_of(&a).encode()).unwrap();
+    let t = run(&mut [&mut a, &mut c], t, t + 2_000);
+    let req = requests(&c)[0].0;
+    // c answers with someone else's hello: its proof, as c, proves nothing
+    c.knows(&[&a]);
+    let dee = identity(9);
+    c.t.answer_request(req, Some(pairing_hello(&dee, "Dee", SENT_MIN).encode()));
+    run(&mut [&mut a, &mut c], t, t + 30_000);
+    assert!(!accepted(&a));
+    assert!(a.h.peers().contacts.is_empty());
+}
+
+/// A silent stranger beside `a`, and the one link it opened to it.
+fn stranger_beside(room: &Room, a: &mut Device, now: u64) -> (Raw, LinkId) {
+    let mut r = Raw::silent(room);
+    a.poll(now);
+    r.poll();
+    let link = r.opened().0;
+    (r, link)
+}
+
+#[test]
+fn a_hello_that_is_not_an_envelope_never_reaches_the_node() {
     let room = Room::new(71);
     let (mut a, mut raw, link) = raw_beside(&room);
     let keys = SessionKeys::new(&identity(60));
@@ -1649,77 +1823,99 @@ fn raw_request(
     true
 }
 
+/// Review Focus 2: one stranger asking six hundred times a minute, on one
+/// link under a new identity each time and under one identity on several
+/// links, gets one request reported each way, and pushes out no one
+/// else's.
 #[test]
-fn requests_are_one_per_link_four_in_all_and_forgotten_after_three_minutes() {
+fn a_flood_of_requests_from_one_stranger_pushes_out_no_one_elses() {
     let room = Room::new(72);
-    let (mut a, mut raw, link) = raw_beside(&room);
-    let keys = SessionKeys::new(&identity(60));
+    let mut a = Device::new(&room, 1);
+    a.h.set_mode(Some(Mode::Open));
     let hello = hello_of(&a).encode();
-    // the probe: one stranger asks thirty times on one link
     let mut now = STEP;
-    for i in 0..30 {
-        assert!(raw_request(&mut raw, &mut a, link, &keys, i, &hello, now));
+    // five people ask, each on their own link
+    for i in 0..5u64 {
+        let (mut r, l) = stranger_beside(&room, &mut a, now);
+        let k = SessionKeys::new(&identity(70 + i));
+        assert!(raw_request(&mut r, &mut a, l, &k, 1, &hello, now));
         now += 1_000;
     }
-    let asked = a
-        .ble
-        .iter()
-        .filter(|e| matches!(e, BleEvent::Request { .. }))
-        .count();
-    assert_eq!(asked, 30, "each reported, each replacing the last");
-    assert_eq!(a.t.requests_held(), 1, "one per link");
-    // five more strangers, each on its own link
-    let mut others: Vec<(Raw, LinkId)> = (0..5)
-        .map(|i| {
-            let mut r = Raw::with_token(&room, [0x10 + i; TOKEN_LEN]);
-            a.poll(now);
-            r.poll();
-            let l = room
-                .links()
-                .into_iter()
-                .find(|(_, c, p)| *c == r.radio.index() && *p == a.radio.index())
-                .unwrap()
-                .0;
-            (r, l)
-        })
-        .collect();
-    for (i, (r, l)) in others.iter_mut().enumerate() {
-        let k = SessionKeys::new(&identity(70 + i as u64));
-        assert!(raw_request(r, &mut a, *l, &k, 1, &hello, now));
+    assert_eq!(requests(&a).len(), 5);
+
+    // the flood: one link, six hundred a minute, a new identity each time
+    let (mut flood, link) = stranger_beside(&room, &mut a, now);
+    let mut answered = 0;
+    for i in 0..600u32 {
+        let k = SessionKeys::new(&identity(1_000 + u64::from(i)));
+        if raw_request(&mut flood, &mut a, link, &k, i, &hello, now) {
+            answered += 1;
+        }
+        now += 100;
+    }
+    assert_eq!(answered, 1, "only the first on the link is even answered");
+    assert_eq!(requests(&a).len(), 6, "one more request");
+
+    // one identity on several links: one request
+    let same = SessionKeys::new(&identity(500));
+    for _ in 0..5 {
+        let (mut r, l) = stranger_beside(&room, &mut a, now);
+        raw_request(&mut r, &mut a, l, &same, 1, &hello, now);
         now += 1_000;
     }
-    assert_eq!(a.t.requests_held(), REQUESTS_CAP);
-    // nothing acknowledged after three minutes
-    let mut t = now;
-    while t < now + REQUEST_MS + 2_000 {
-        t += 1_000;
-        a.poll(t);
-    }
-    assert_eq!(a.t.requests_held(), 0, "forgotten after three minutes");
-    assert_eq!(a.t.held_ahead(), 0);
+    assert_eq!(requests(&a).len(), 7, "one more request");
+    assert!(gone(&a).is_empty(), "no one else's request went");
+    assert_eq!(a.t.requests_reported(), 7);
 }
 
 #[test]
-fn an_accepted_request_is_kept_past_three_minutes() {
+fn at_most_twenty_are_held_the_oldest_goes_and_an_accepted_one_never_does() {
+    let room = Room::new(78);
+    let mut a = Device::new(&room, 1);
+    a.h.set_mode(Some(Mode::Open));
+    let hello = hello_of(&a).encode();
+    let mut now = STEP;
+    let ask = |a: &mut Device, i: u64, now: u64| {
+        let (mut r, l) = stranger_beside(&room, a, now);
+        let k = SessionKeys::new(&identity(100 + i));
+        assert!(raw_request(&mut r, a, l, &k, 1, &hello, now));
+        requests(a).last().unwrap().0
+    };
+    let first = ask(&mut a, 0, now);
+    a.t.answer_request(first, Some(hello_of(&a).encode()));
+    now += 200;
+    let second = ask(&mut a, 1, now);
+    for i in 2..=REQUESTS_CAP as u64 + 1 {
+        now += 200;
+        ask(&mut a, i, now);
+    }
+    assert_eq!(requests(&a).len(), REQUESTS_CAP + 2);
+    assert_eq!(gone(&a), vec![second], "the oldest not accepted went");
+    assert_eq!(
+        a.t.requests_reported(),
+        REQUESTS_CAP + 1,
+        "and the accepted one stays"
+    );
+}
+
+#[test]
+fn a_request_is_forgotten_ten_minutes_after_it_arrived() {
     let room = Room::new(73);
     let (mut a, mut raw, link) = raw_beside(&room);
     let keys = SessionKeys::new(&identity(60));
     let hello = hello_of(&a).encode();
     assert!(raw_request(&mut raw, &mut a, link, &keys, 1, &hello, STEP));
-    let BleEvent::Request { link: at, from, .. } = requests(&a)[0].clone() else {
-        unreachable!()
-    };
-    assert_eq!(from, identity(60).public());
-    a.h.accept_request(at);
+    let req = requests(&a)[0].0;
     let mut t = STEP;
-    while t < REQUEST_MS + 5_000 {
+    while t < REQUEST_MS - 1_000 {
         t += 1_000;
         a.poll(t);
     }
     assert_eq!(a.t.requests_held(), 1);
-    a.h.decline_request(at);
-    a.poll(t + 1_000);
+    a.poll(t + 2_000);
     assert_eq!(a.t.requests_held(), 0);
+    assert_eq!(gone(&a), vec![req]);
+    assert_eq!(a.t.held_ahead(), 0);
 }
 
 #[test]
@@ -1729,13 +1925,17 @@ fn requests_are_not_answered_or_sent_in_contacts_mode() {
     a.h.set_mode(Some(Mode::Open));
     c.h.set_mode(Some(Mode::Contacts));
     let t = run(&mut [&mut a, &mut c], 0, 1_000);
+    assert!(
+        c.h.peers().strangers.is_empty(),
+        "none to ask in Contacts mode"
+    );
     let link = a.h.peers().strangers[0];
-    a.h.request(link, hello_of(&a).encode());
+    a.t.request(link.0, hello_of(&a).encode()).unwrap();
     c.radio.take_written();
     a.radio.take_written();
     let t = run(&mut [&mut a, &mut c], t, t + 20_000);
-    assert!(c.ble.is_empty());
-    assert!(a.ble.contains(&BleEvent::RequestFailed { link }));
+    assert!(requests(&c).is_empty());
+    assert!(a.has(&TransportEvent::RequestFailed { stranger: link.0 }));
     let tries = written(&a.radio)
         .iter()
         .filter(|(l, m)| *l == link && m.kind == Kind::Request)
@@ -1750,10 +1950,26 @@ fn requests_are_not_answered_or_sent_in_contacts_mode() {
 
     // and a device in Contacts mode sends none
     a.h.set_mode(Some(Mode::Contacts));
-    a.ble.clear();
-    a.h.request(link, hello_of(&a).encode());
+    assert_eq!(
+        a.t.request(link.0, hello_of(&a).encode()),
+        Err(REQUESTS_NEED_OPEN)
+    );
     run(&mut [&mut a, &mut c], t, t + 500);
-    assert_eq!(a.ble, vec![BleEvent::RequestFailed { link }]);
+}
+
+#[test]
+fn turning_to_contacts_mode_ends_every_request_both_ways() {
+    let room = Room::new(79);
+    let (mut a, mut c, t) = open_pair(&room, 1, 3);
+    let link = a.h.peers().strangers[0];
+    a.t.request(link.0, hello_of(&a).encode()).unwrap();
+    let t = run(&mut [&mut a, &mut c], t, t + 2_000);
+    let req = requests(&c)[0].0;
+    c.h.set_mode(Some(Mode::Contacts));
+    a.h.set_mode(Some(Mode::Contacts));
+    run(&mut [&mut a, &mut c], t, t + 200);
+    assert_eq!(gone(&c), vec![req], "no request shown in Contacts mode");
+    assert!(a.has(&TransportEvent::RequestFailed { stranger: link.0 }));
 }
 
 // ---- the switch ---------------------------------------------------------
@@ -1766,13 +1982,13 @@ fn off_stops_the_radio_drops_what_waits_and_fails_requests_in_flight() {
     a.knows(&[&b]);
     a.send(&private(&a, &[&b], "waiting"), 6);
     let link = a.h.peers().strangers[0];
-    a.h.request(link, hello_of(&a).encode());
+    a.t.request(link.0, hello_of(&a).encode()).unwrap();
     a.poll(t + STEP);
     a.h.set_mode(None);
     a.poll(t + 2 * STEP);
     assert!(!a.radio.is_on() && !a.t.is_running());
     assert!(a.has(&TransportEvent::Dropped(6)));
-    assert!(a.ble.contains(&BleEvent::RequestFailed { link }));
+    assert!(a.has(&TransportEvent::RequestFailed { stranger: link.0 }));
     assert_eq!(a.radio.token(), None);
     assert_eq!(a.h.peers(), Default::default());
     c.poll(t + 3 * STEP);

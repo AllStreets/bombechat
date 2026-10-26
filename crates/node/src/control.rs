@@ -150,6 +150,22 @@ pub(crate) fn open(
     }
 }
 
+/// Who a pairing hello envelope is from and the name it gives, if it is
+/// one, its signature verifies and it has not expired by `now_min`. Only
+/// the signer is proved: a hello is public, so anyone may pass one on.
+pub(crate) fn read_hello(env: &Envelope, now_min: u32) -> Option<(PublicIdentity, String)> {
+    if env.kind != Kind::Control {
+        return None;
+    }
+    let [VERSION, TYPE_PAIR_HELLO, rest @ ..] = env.body.as_slice() else {
+        return None;
+    };
+    let inner = Envelope::decode(rest).ok()?;
+    let (identity, text, _) = open_public(&inner, now_min).ok()?;
+    let name = text.strip_prefix(HELLO_PREFIX)?;
+    Some((identity, truncate(name, MAX_NAME).to_string()))
+}
+
 fn truncate(s: &str, max: usize) -> &str {
     if s.len() <= max {
         return s;
@@ -226,6 +242,20 @@ mod tests {
         let cut = truncate(&name, MAX_NAME);
         assert_eq!(cut.len(), 64);
         assert!(cut.chars().all(|c| c == 'é'));
+    }
+
+    #[test]
+    fn a_hello_reads_back_and_nothing_else_does() {
+        let a = Identity::generate();
+        let env = pair_hello(&a, "Ana", [7; 16], 100, 60);
+        assert_eq!(read_hello(&env, 100), Some((a.public(), "Ana".into())));
+        assert_eq!(read_hello(&env, 100 + 60 + 1441), None, "expired");
+        let receipt = heard(&a, &a.public(), &[1; 16], [2; 16], 100, 60);
+        assert_eq!(read_hello(&receipt, 100), None);
+        let mut forged = env.clone();
+        let last = forged.body.len() - 1;
+        forged.body[last] ^= 1;
+        assert_eq!(read_hello(&forged, 100), None);
     }
 
     #[test]

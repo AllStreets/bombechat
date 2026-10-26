@@ -300,7 +300,6 @@ impl Mac {
             }
             self.events.push(e);
         }
-        self.h.take_events();
         if let Some(&t) = self.t.tokens().first() {
             if self.tokens.last().is_none_or(|(last, _)| *last != t) {
                 self.tokens.push((t, now));
