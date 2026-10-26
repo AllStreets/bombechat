@@ -53,7 +53,8 @@
 //! ([`SessionError::Stale`]). The target token is the advertising token of
 //! the device the initiator meant to reach; the responder refuses it unless
 //! it is one of its own recent tokens, as the caller lists them (the link
-//! layer passes its current one and the four before it)
+//! layer passes its current one, the four before it and the three it has
+//! told contacts it will use next)
 //! ([`SessionError::WrongTarget`]), so a message 1 relayed to another device
 //! fails there. Both live inside the encrypted, authenticated payload, so a
 //! relay or replay can't rewrite them.

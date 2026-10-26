@@ -15,7 +15,7 @@ use crate::adapter::{
     parse_tag, Access, Adapter, CbEvent, PeerId, Power, Role, Stack, TOKEN_MARK, WITHHELD_MARK,
 };
 use crate::radio::Mode;
-use crate::transport::{BleTransport, TOKEN_MS};
+use crate::transport::{BleTransport, FUTURE_TOKENS, TOKEN_MS};
 use crate::{BleHandle, SeededRng};
 
 struct Station {
@@ -452,8 +452,11 @@ fn a_stranger_with_a_copied_identifier_gains_nothing_after_a_rotation() {
     let (tokens, withheld) = counts(&air_now.notified(b.me, s.me, from));
     assert_eq!(tokens, 0, "no clear token");
     assert!(withheld > 0, "a link, without the token");
-    // nothing that reached it carries b's token, in the clear or not
+    // nothing that reached it carries b's token, or any b will rotate to,
+    // in the clear or not
     let current = b.token();
+    let schedule = b.t.token_schedule();
+    assert_eq!(schedule.len(), 1 + FUTURE_TOKENS);
     let reached: Vec<&Vec<u8>> = air_now
         .carried
         .iter()
@@ -461,11 +464,125 @@ fn a_stranger_with_a_copied_identifier_gains_nothing_after_a_rotation() {
         .map(|(_, _, bytes, _)| bytes)
         .collect();
     assert!(!reached.is_empty());
-    assert!(reached.iter().all(|bytes| !contains(bytes, &current)));
+    assert!(reached
+        .iter()
+        .all(|bytes| schedule.iter().all(|t| !contains(bytes, t))));
     drop(air_now);
     assert_eq!(s.t.contact_token(&b.id.public()), None);
     assert!(s.h.peers().contacts.is_empty(), "no session");
     assert!(b.h.peers().contacts.is_empty());
     assert_eq!(b.token(), current, "within one token");
     let _ = t;
+}
+
+/// Run until `done`, at most to `limit`; the time it first held.
+fn run_until(
+    air: &Arc<Mutex<Air>>,
+    macs: &mut [&mut Mac],
+    from: u64,
+    limit: u64,
+    done: impl Fn(&[&mut Mac]) -> bool,
+) -> Option<u64> {
+    let mut now = from;
+    while now <= limit {
+        air.lock().unwrap().now = now;
+        for m in macs.iter_mut() {
+            m.poll(now);
+        }
+        if done(macs) {
+            return Some(now);
+        }
+        now += 250;
+    }
+    None
+}
+
+/// Two stable-identifier contacts who have each rotated once together
+/// (so each withholds its token from the other), then go apart while
+/// each rotates `apart` more times. Returns them, the clock, and when
+/// they came back in range.
+fn apart_through(apart: usize) -> (Arc<Mutex<Air>>, Mac, Mac, u64) {
+    let air = Arc::new(Mutex::new(Air::default()));
+    let mut a = Mac::new(&air, 1);
+    let mut b = Mac::new(&air, 2);
+    a.h.set_contacts(vec![b.id.public()]);
+    b.h.set_contacts(vec![a.id.public()]);
+    a.h.set_mode(Some(Mode::Contacts));
+    b.h.set_mode(Some(Mode::Contacts));
+    let t = run_until(&air, &mut [&mut a, &mut b], 0, TOKEN_MS * 2, |m| {
+        m[0].tokens.len() >= 2 && m[1].tokens.len() >= 2
+    })
+    .expect("both rotate");
+    let t = run(&air, &mut [&mut a, &mut b], t, t + 30_000);
+    assert!(present(&a, &b));
+    let before = (a.tokens.len(), b.tokens.len());
+    air.lock().unwrap().apart = true;
+    air.lock().unwrap().cut_all();
+    let t = run_until(&air, &mut [&mut a, &mut b], t, t + 10 * TOKEN_MS, |m| {
+        m[0].tokens.len() >= before.0 + apart && m[1].tokens.len() >= before.1 + apart
+    })
+    .expect("they rotate apart");
+    // a moment longer, so neither is about to
+    let t = run(&air, &mut [&mut a, &mut b], t, t + 30_000);
+    assert!(!present(&a, &b));
+    assert_eq!(
+        (a.tokens.len() - before.0, b.tokens.len() - before.1),
+        (apart, apart),
+        "exactly {apart} rotations each in the dark"
+    );
+    air.lock().unwrap().apart = false;
+    (air, a, b, t)
+}
+
+/// Apart while both rotate twice: each still recognises the other's
+/// advert from the schedule told in their last session, names that token
+/// though it is withheld, and they meet again within 60 s, with no clear
+/// token between them.
+#[test]
+fn contacts_apart_through_two_rotations_each_meet_again_within_a_minute() {
+    let (air, mut a, mut b, back) = apart_through(2);
+    let met = run_until(&air, &mut [&mut a, &mut b], back, back + 60_000, |m| {
+        present(m[0], m[1])
+    })
+    .expect("together again within 60 s");
+    let t = run(&air, &mut [&mut a, &mut b], met, met + 1_000);
+    for (from, to) in [(a.me, b.me), (b.me, a.me)] {
+        let (tokens, _) = counts(&air.lock().unwrap().notified(from, to, back));
+        assert_eq!(tokens, 0, "met on the schedule, not a clear token");
+    }
+    assert_eq!(a.t.contact_token(&b.id.public()), Some(b.token()));
+    talk(&air, &mut a, &mut b, t, 30);
+}
+
+/// Apart through four rotations each, past the schedule: neither
+/// recognises the other's advert, so they meet only once one is taken
+/// for new and given the other's token in the clear, an hour after its
+/// last traffic on a link given the token (the documented cost).
+#[test]
+fn contacts_apart_through_four_rotations_fall_back_to_the_hour() {
+    let (air, mut a, mut b, back) = apart_through(FUTURE_TOKENS + 1);
+    let met = run_until(
+        &air,
+        &mut [&mut a, &mut b],
+        back,
+        back + crate::adapter::CENTRAL_MEMORY_MS + 60_000,
+        |m| present(m[0], m[1]),
+    )
+    .expect("together within the hour");
+    let air_now = air.lock().unwrap();
+    let clear = air_now
+        .carried
+        .iter()
+        .filter(|(f, to, n, at)| {
+            [(a.me, b.me), (b.me, a.me)].contains(&(*f, *to))
+                && *at >= back
+                && n.len() == 1 + TOKEN_LEN
+                && n[0] == TOKEN_MARK
+        })
+        .map(|(_, _, _, at)| *at)
+        .min()
+        .expect("a clear token was given");
+    assert!(clear <= met, "they met only after a clear token");
+    // here the hour ran out about 11 minutes after they came back
+    assert!(met > back + 60_000, "the schedule didn't reach that far");
 }

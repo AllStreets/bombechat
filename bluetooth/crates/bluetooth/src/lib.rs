@@ -68,16 +68,20 @@
 //! such a link, its contacts are redialled at once on the next link to
 //! the same advert, which gets no round of its own.
 //!
-//! Every confirmed contact session carries each side's current token, in
-//! a token message inside the encryption, padded like every other: once
-//! when it is confirmed, once at every rotation, and in place of every
-//! keepalive. Each side keeps, in memory, the latest token each contact
-//! gave ([`CONTACT_TOKEN_MS`]). A removed contact's sessions end at once,
-//! so it is told nothing more, and what it gave is forgotten.
+//! Each side draws its tokens [`FUTURE_TOKENS`] rotations ahead. Every
+//! confirmed contact session carries each side's token schedule (current,
+//! then the next ones in order), in a token message inside the
+//! encryption, padded like every other: once when it is confirmed, once
+//! whenever the schedule changes, and in place of every keepalive. Each
+//! side keeps, in memory, the latest schedule each contact gave
+//! ([`CONTACT_TOKEN_MS`]), so it recognises that contact's advert through
+//! up to three rotations made apart. A removed contact's sessions end at
+//! once, so it is told nothing more, what it gave is forgotten, and the
+//! tokens it was told ahead are drawn again.
 //!
 //! The answering side builds a contact responder for each message 1 with
-//! its clock, its current token and the [`PAST_TOKENS`] before it (about
-//! an hour). It answers only if the
+//! its clock, its current token, the [`PAST_TOKENS`] before it (about
+//! an hour) and the [`FUTURE_TOKENS`] told ahead. It answers only if the
 //! message reads, was sent within two minutes of its own clock, names one
 //! of those tokens, comes from a contact (not a stranger, not itself), and
 //! carries an ephemeral key it hasn't answered in the last four minutes.
@@ -204,10 +208,10 @@ pub use session::{
     bucket, ACK_DELAY_MAX_MS, AHEAD_BYTES, KEEPALIVE_MS, RESEND_MS, SILENCE_MS, WINDOW,
 };
 pub use transport::{
-    BleTransport, CONTACT_TOKEN_MS, HANDSHAKE_MS, IDLE_MS, MAX_LINKS, PAST_TOKENS, REDIAL_FIRST_MS,
-    REDIAL_MAX_MS, REQUESTS_CAP, REQUEST_ATTEMPTS, REQUEST_MS, ROUNDS_CAP, ROUND_MEMORY_MS,
-    SEEN_CAP, SEEN_MS, STRANGER_MS, TOKEN_MIN_MS, TOKEN_MS, TRIAL_ATTEMPTS, TRIAL_CAP,
-    TRIAL_RETRY_MS,
+    BleTransport, CONTACT_TOKEN_MS, FUTURE_TOKENS, HANDSHAKE_MS, IDLE_MS, MAX_LINKS, PAST_TOKENS,
+    REDIAL_FIRST_MS, REDIAL_MAX_MS, REQUESTS_CAP, REQUEST_ATTEMPTS, REQUEST_MS, ROUNDS_CAP,
+    ROUND_MEMORY_MS, SEEN_CAP, SEEN_MS, STRANGER_MS, TOKEN_MIN_MS, TOKEN_MS, TRIAL_ATTEMPTS,
+    TRIAL_CAP, TRIAL_RETRY_MS,
 };
 
 /// Our GATT service, generated once for Bombechat (never Bitchat's).

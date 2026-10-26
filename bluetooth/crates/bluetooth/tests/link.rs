@@ -10,9 +10,9 @@ use bombechat_bluetooth::wire::{
 };
 use bombechat_bluetooth::{
     bucket, Advert, BleEvent, BleHandle, BleTransport, FakeRadio, LinkId, Mode, Radio, RadioEvent,
-    Room, SeededRng, ACK_DELAY_MAX_MS, HOLD_MS, IDLE_MS, MAX_LINKS, PAST_TOKENS, QUEUE_CAP,
-    REQUESTS_CAP, REQUEST_ATTEMPTS, REQUEST_MS, SEEN_CAP, SEEN_MS, SILENCE_MS, STRANGER_MS,
-    TOKEN_MS, TRIAL_CAP, TRIAL_RETRY_MS,
+    Room, SeededRng, ACK_DELAY_MAX_MS, FUTURE_TOKENS, HOLD_MS, IDLE_MS, MAX_LINKS, PAST_TOKENS,
+    QUEUE_CAP, REQUESTS_CAP, REQUEST_ATTEMPTS, REQUEST_MS, SEEN_CAP, SEEN_MS, SILENCE_MS,
+    STRANGER_MS, TOKEN_MS, TRIAL_CAP, TRIAL_RETRY_MS,
 };
 use bombechat_core::{seal_private, seal_public, Envelope, Identity, PublicIdentity};
 use bombechat_modem::{split, Event, Reassembler};
@@ -396,14 +396,30 @@ fn a_removed_contact_is_told_no_further_tokens() {
     let t = run(&mut [&mut a, &mut b], 0, 3_000);
     let known = a.radio.token();
     assert_eq!(b.t.contact_token(&a.me()), known);
+    let told = b.t.contact_schedule(&a.me());
+    assert_eq!(told, a.t.token_schedule());
     a.h.set_contacts(vec![]);
     let t = run(&mut [&mut a, &mut b], t, t + STEP);
     assert_eq!(a.t.contact_token(&b.me()), None, "forgotten");
+    // the tokens it was told ahead are drawn again: none will be current
+    let accepted = a.t.tokens();
+    assert!(
+        told[1..].iter().all(|t| !accepted.contains(t)),
+        "the schedule b knows is void"
+    );
     // a rotates, more than once; b still counts a as a contact and keeps
     // dialling, but a answers nothing and tells it nothing
     let t = run_by(&mut [&mut a, &mut b], t, t + 2 * TOKEN_MS, 250);
     assert_ne!(a.radio.token(), known, "a rotated");
-    assert_eq!(b.t.contact_token(&a.me()), known, "nothing newer reached b");
+    assert_eq!(
+        b.t.contact_schedule(&a.me()),
+        told,
+        "nothing newer reached b"
+    );
+    assert!(
+        !told.contains(&a.radio.token().unwrap()),
+        "nor will it match"
+    );
     assert!(b.h.peers().contacts.is_empty());
     let _ = t;
 }
@@ -1115,7 +1131,7 @@ fn the_token_rotates_between_12_and_15_minutes_and_the_previous_still_answers() 
     }
     assert!(t <= TOKEN_MS + 1_000, "by 15 minutes");
     let second = a.radio.token().unwrap();
-    assert_eq!(a.t.tokens(), vec![second, first]);
+    assert_eq!(a.t.tokens()[..2], [second, first]);
     // the raw radio's links were closed on rotation; it links again
     raw.poll();
     a.poll(t);
@@ -1169,7 +1185,7 @@ fn a_device_withholding_its_token_gets_no_hello_worth_relaying() {
 
 /// A contact who learned a token inside a session may name it for about
 /// an hour: the current token and the four before it answer, the fifth
-/// back doesn't, and neither does another device's.
+/// back doesn't; the three told ahead answer; another device's don't.
 #[test]
 fn a_hello_may_name_the_last_four_tokens_but_not_the_fifth_or_anothers() {
     assert_eq!(PAST_TOKENS, 4);
@@ -1199,7 +1215,10 @@ fn a_hello_may_name_the_last_four_tokens_but_not_the_fifth_or_anothers() {
         }
     }
     mine.reverse(); // newest first: mine[k] is k tokens back
-    assert_eq!(a.t.tokens(), mine[..5].to_vec());
+    assert_eq!(a.t.tokens()[..5], mine[..5]);
+    let ahead = a.t.token_schedule()[1..].to_vec();
+    assert_eq!(ahead.len(), FUTURE_TOKENS);
+    assert_eq!(a.t.tokens()[5..], ahead[..], "and the three told ahead");
     raw.poll();
     a.poll(t);
     raw.poll();
@@ -1212,9 +1231,15 @@ fn a_hello_may_name_the_last_four_tokens_but_not_the_fifth_or_anothers() {
             assert!(answered.is_empty(), "{back} back: {answered:?}");
         }
     }
-    // a hello meant for another device, naming any of its recent tokens,
-    // relayed here: no answer
-    for token in &theirs {
+    // the tokens told ahead answer too, before they are current
+    for (ahead, token) in ahead.iter().enumerate() {
+        t += STEP;
+        let answered = dial(&mut raw, &mut a, &fk, BASE + t, Some(*token), t);
+        assert_eq!(answered, vec![Kind::Handshake], "{} ahead", ahead + 1);
+    }
+    // a hello meant for another device, naming any of its recent or
+    // coming tokens, relayed here: no answer
+    for token in theirs.iter().chain(&other.t.token_schedule()[1..]) {
         t += STEP;
         assert!(dial(&mut raw, &mut a, &fk, BASE + t, Some(*token), t).is_empty());
     }
@@ -1339,7 +1364,8 @@ fn a_stranger_cannot_follow_a_device_across_its_rotation() {
     let into_a = raw.opened().0;
     let from_a = raw.theirs();
     let mut t = 0;
-    while a.t.tokens().len() < 2 && t <= TOKEN_MS + 10_000 {
+    let first = a.radio.token();
+    while a.radio.token() == first && t <= TOKEN_MS + 10_000 {
         let mut hs = Session::request_initiator(&SessionKeys::new(&identity(60)));
         let mut body = (t as u32).to_be_bytes().to_vec();
         body.extend_from_slice(&hs.write_message().unwrap());
@@ -1354,7 +1380,7 @@ fn a_stranger_cannot_follow_a_device_across_its_rotation() {
         t += 10_000;
         a.poll(t);
     }
-    assert_eq!(a.t.tokens().len(), 2, "a rotated");
+    assert_ne!(a.radio.token(), first, "a rotated");
     raw.poll();
     assert!(
         raw.downs.contains(&into_a),

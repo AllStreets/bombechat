@@ -32,9 +32,16 @@ pub const TOKEN_MS: u64 = 15 * 60_000;
 /// this many before it (about an hour's worth), for a contact that
 /// learned it inside a session.
 pub const PAST_TOKENS: usize = 4;
-/// A contact's token learned inside a session is kept this long after it
-/// was last heard: as long as that contact would still answer to it.
-pub const CONTACT_TOKEN_MS: u64 = (PAST_TOKENS as u64 + 1) * TOKEN_MS;
+/// This device draws its tokens this many rotations ahead, and tells
+/// contacts them in order with the current one, so a contact recognises
+/// its advert through that many rotations made while the two were apart.
+/// A hello may name one of them too: a future token is told only to
+/// contacts, and becomes current only when this device rotates to it.
+pub const FUTURE_TOKENS: usize = 3;
+/// A contact's token schedule learned inside a session is kept this long
+/// after it was last heard: as long as that contact could still answer to
+/// one of its tokens.
+pub const CONTACT_TOKEN_MS: u64 = (PAST_TOKENS + FUTURE_TOKENS) as u64 * TOKEN_MS + TOKEN_MS;
 
 /// Every round of contact hellos to a token is exactly this many: real
 /// candidates first, decoys of the same size after.
@@ -102,6 +109,8 @@ struct Tokens {
     current: [u8; TOKEN_LEN],
     /// The tokens before it, newest first, at most [`PAST_TOKENS`].
     past: VecDeque<[u8; TOKEN_LEN]>,
+    /// The next [`FUTURE_TOKENS`], in the order they will be current.
+    future: VecDeque<[u8; TOKEN_LEN]>,
     next_ms: u64,
 }
 
@@ -126,9 +135,9 @@ pub struct BleTransport<R: Radio> {
     mode: Option<Mode>,
     running: bool,
     tokens: Option<Tokens>,
-    /// Each contact's advertising token, as it last said inside a
-    /// session, and when: memory only.
-    contact_tokens: BTreeMap<Key, ([u8; TOKEN_LEN], u64)>,
+    /// Each contact's token schedule (current, then the next ones), as it
+    /// last said inside a session, and when: memory only.
+    contact_tokens: BTreeMap<Key, (Vec<[u8; TOKEN_LEN]>, u64)>,
     links: BTreeMap<LinkId, Link>,
     seen_links: BTreeMap<LinkId, (u64, bool)>,
     last_seen: BTreeMap<Key, u64>,
@@ -217,20 +226,41 @@ impl<R: Radio> BleTransport<R> {
     }
 
     /// The tokens a contact message 1 may name: current, then the
-    /// [`PAST_TOKENS`] before it, newest first.
+    /// [`PAST_TOKENS`] before it, newest first, then the
+    /// [`FUTURE_TOKENS`] after it, in order.
     pub fn tokens(&self) -> Vec<[u8; TOKEN_LEN]> {
         match &self.tokens {
             Some(t) => std::iter::once(t.current)
                 .chain(t.past.iter().copied())
+                .chain(t.future.iter().copied())
                 .collect(),
             None => Vec::new(),
         }
     }
 
-    /// The token `contact` last gave this device inside a session, while
-    /// it is kept.
+    /// The schedule contacts are told: current, then the
+    /// [`FUTURE_TOKENS`] after it, in order.
+    pub fn token_schedule(&self) -> Vec<[u8; TOKEN_LEN]> {
+        match &self.tokens {
+            Some(t) => std::iter::once(t.current)
+                .chain(t.future.iter().copied())
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// The current token `contact` last gave this device inside a
+    /// session, while it is kept.
     pub fn contact_token(&self, contact: &PublicIdentity) -> Option<[u8; TOKEN_LEN]> {
-        self.contact_tokens.get(&key_of(contact)).map(|(t, _)| *t)
+        self.contact_schedule(contact).first().copied()
+    }
+
+    /// The whole schedule `contact` last gave, current first.
+    pub fn contact_schedule(&self, contact: &PublicIdentity) -> Vec<[u8; TOKEN_LEN]> {
+        self.contact_tokens
+            .get(&key_of(contact))
+            .map(|(t, _)| t.clone())
+            .unwrap_or_default()
     }
 
     /// Ephemeral keys in the seen cache.
@@ -363,6 +393,7 @@ impl<R: Radio> BleTransport<R> {
 
     fn set_contacts(&mut self, contacts: Vec<PublicIdentity>) {
         let me = self.me();
+        let before = std::mem::take(&mut self.contact_keys);
         self.contacts = contacts
             .into_iter()
             .filter(|c| Some(key_of(c)) != me)
@@ -375,6 +406,17 @@ impl<R: Radio> BleTransport<R> {
         // a removed contact is told nothing more: its sessions go below,
         // and what it told this device is forgotten
         self.contact_tokens.retain(|k, _| keys.contains(k));
+        // and the tokens it was told ahead are drawn again, so it can't
+        // recognise this device's later adverts; the contacts that remain
+        // are told the new schedule in their sessions
+        if before.iter().any(|k| !keys.contains(k)) && self.tokens.is_some() {
+            let fresh: VecDeque<[u8; TOKEN_LEN]> =
+                (0..FUTURE_TOKENS).map(|_| self.random_token()).collect();
+            if let Some(t) = self.tokens.as_mut() {
+                t.future = fresh;
+            }
+        }
+        let keys = &self.contact_keys;
         for link in self.links.values_mut() {
             link.exchanges.retain(|_, e| match e {
                 Exchange::Trial {
@@ -393,10 +435,12 @@ impl<R: Radio> BleTransport<R> {
         self.running = true;
         self.radio.start(mode);
         let current = self.random_token();
+        let future = (0..FUTURE_TOKENS).map(|_| self.random_token()).collect();
         let next_ms = self.next_rotation();
         self.tokens = Some(Tokens {
             current,
             past: VecDeque::new(),
+            future,
             next_ms,
         });
         self.radio.advertise(current);
@@ -445,14 +489,21 @@ impl<R: Radio> BleTransport<R> {
         if self.tokens.as_ref().is_none_or(|t| now < t.next_ms) {
             return;
         }
-        let token = self.random_token();
+        let drawn = self.random_token();
         let next_ms = self.next_rotation();
-        if let Some(t) = self.tokens.as_mut() {
-            t.past.push_front(t.current);
-            t.past.truncate(PAST_TOKENS);
-            t.current = token;
-            t.next_ms = next_ms;
+        let Some(t) = self.tokens.as_mut() else {
+            return;
+        };
+        // the next token in the schedule becomes current; a new one is
+        // drawn at the end
+        let token = t.future.pop_front().unwrap_or(drawn);
+        if t.future.len() < FUTURE_TOKENS {
+            t.future.push_back(drawn);
         }
+        t.past.push_front(t.current);
+        t.past.truncate(PAST_TOKENS);
+        t.current = token;
+        t.next_ms = next_ms;
         self.radio.advertise(token);
         let drop: Vec<LinkId> = self
             .links
@@ -609,7 +660,8 @@ impl<R: Radio> BleTransport<R> {
     }
 
     /// Message 1 of a contact handshake. Answered only if it reads, names
-    /// our current token or one of the [`PAST_TOKENS`] before it, at a
+    /// our current token, one of the [`PAST_TOKENS`] before it or one of
+    /// the [`FUTURE_TOKENS`] told to contacts, at a
     /// time near ours, comes from a contact, and its ephemeral key is new.
     /// Anything else gets no byte back.
     fn answer_contact(&mut self, id: LinkId, xid: u32, noise: &[u8]) {
@@ -738,7 +790,7 @@ impl<R: Radio> BleTransport<R> {
     fn continue_handshake(&mut self, id: LinkId, k: ExKey, noise: &[u8]) {
         let now = self.now_ms;
         let me = self.me();
-        let current = self.tokens.as_ref().map(|t| t.current);
+        let schedule = self.token_schedule();
         let Some(link) = self.links.get_mut(&id) else {
             return;
         };
@@ -763,9 +815,10 @@ impl<R: Radio> BleTransport<R> {
                     LinkSession::new(SessKind::Contact, cipher, Side::Mine.flags(), k.1, now);
                 // the first transport message confirms us to the
                 // responder, and tells it our token
-                let first = match current {
-                    Some(t) => s.send_token(t, now),
-                    None => s.keepalive(now),
+                let first = if schedule.is_empty() {
+                    s.keepalive(now)
+                } else {
+                    s.send_token(&schedule, now)
                 };
                 link.exchanges.insert(k, Exchange::Session(Box::new(s)));
                 if let Some(w) = first {
@@ -869,8 +922,8 @@ impl<R: Radio> BleTransport<R> {
                     for tag in d.acked {
                         self.queue.acked(tag, rk, fp);
                     }
-                    if let Some(t) = d.token.filter(|_| self.contact_keys.contains(&rk)) {
-                        self.contact_tokens.insert(rk, (t, now));
+                    if !d.tokens.is_empty() && self.contact_keys.contains(&rk) {
+                        self.contact_tokens.insert(rk, (d.tokens, now));
                     }
                 }
                 for e in d.envelopes {
@@ -1141,7 +1194,7 @@ impl<R: Radio> BleTransport<R> {
             // the device it is for)
             let (seen, tried, given) = (&self.last_seen, &self.last_tried, &self.contact_tokens);
             let gave = |c: &PublicIdentity| {
-                named.is_some() && given.get(&key_of(c)).map(|(t, _)| *t) == named
+                named.is_some_and(|n| given.get(&key_of(c)).is_some_and(|(ts, _)| ts.contains(&n)))
             };
             let mut order: Vec<(usize, &PublicIdentity)> = self
                 .contacts
@@ -1370,16 +1423,19 @@ impl<R: Radio> BleTransport<R> {
         self.events.extend(events);
     }
 
-    /// Tell every contact in a confirmed session this device's current
-    /// token, inside the session: once when the session is confirmed and
-    /// once at every rotation (and again with each keepalive). A contact
-    /// whose advert scan meets this device again names it in its hello,
-    /// even where the radio withheld the token from it.
+    /// Tell every contact in a confirmed session this device's token
+    /// schedule (current, then the next [`FUTURE_TOKENS`]), inside the
+    /// session: once when the session is confirmed and once whenever it
+    /// changes, at every rotation or when a contact is removed (and again
+    /// with each keepalive). A contact whose advert scan meets this device
+    /// again, even after it rotated up to three times out of range, names
+    /// that token in its hello, where the radio withheld it.
     fn share_tokens(&mut self) {
         let now = self.now_ms;
-        let Some(current) = self.tokens.as_ref().map(|t| t.current) else {
+        let schedule = self.token_schedule();
+        if schedule.is_empty() {
             return;
-        };
+        }
         for (id, link) in self.links.iter_mut() {
             let mut writes = Vec::new();
             for e in link.exchanges.values_mut() {
@@ -1391,9 +1447,9 @@ impl<R: Radio> BleTransport<R> {
                 if s.kind == SessKind::Contact
                     && s.confirmed()
                     && contact
-                    && s.shared != Some(current)
+                    && s.shared.as_ref() != Some(&schedule)
                 {
-                    writes.extend(s.send_token(current, now));
+                    writes.extend(s.send_token(&schedule, now));
                 }
             }
             for w in writes {
@@ -1402,8 +1458,9 @@ impl<R: Radio> BleTransport<R> {
         }
     }
 
-    /// The token a contact gave inside a session whose first bytes are
-    /// `tag`, while it is kept.
+    /// The token a contact gave inside a session (current or one of the
+    /// next ones in its schedule) whose first bytes are `tag`, while it is
+    /// kept.
     fn contact_token_by_tag(&self, tag: [u8; TAG_LEN]) -> Option<[u8; TOKEN_LEN]> {
         let now = self.now_ms;
         self.contact_tokens
@@ -1411,7 +1468,7 @@ impl<R: Radio> BleTransport<R> {
             .filter(|(k, (_, at))| {
                 self.contact_keys.contains(*k) && now.saturating_sub(*at) < CONTACT_TOKEN_MS
             })
-            .map(|(_, (t, _))| *t)
+            .flat_map(|(_, (ts, _))| ts.iter().copied())
             .find(|t| t[..TAG_LEN] == tag)
     }
 
