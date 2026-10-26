@@ -240,9 +240,21 @@ export function front(bridge, kit) {
   right.className = 'col tray'; left.className = 'col meter';
   row2.insertBefore(right, outboxEl); right.append(outboxEl);
   row2.insertBefore(left, vu); left.append(vu);
-  const fade = () => right.classList.toggle('more', right.scrollHeight - right.scrollTop - right.clientHeight > 2);
+  // a slip the tray's room doesn't show whole shows only its paper's edge, as a slip further down a pile does: never
+  // a line of type cut through. Scrolled into view, it reads again
+  const fade = () => {
+    right.classList.toggle('more', right.scrollHeight - right.scrollTop - right.clientHeight > 2);
+    const room = right.getBoundingClientRect(), pad = parseFloat(getComputedStyle(right).paddingBottom) || 0, foot = room.bottom - pad;
+    for (const s of right.querySelectorAll('.slip')) {
+      const r = s.getBoundingClientRect();
+      // (a few pixels' grace for the slips' tilt; never the slip being worked in)
+      s.classList.toggle('edge', right.scrollHeight > right.clientHeight + 1 && (r.bottom > foot + 3 || r.top < room.top - 3) && r.height < foot - room.top && !s.contains(document.activeElement));
+    }
+  };
   right.addEventListener('scroll', fade);
   new ResizeObserver(fade).observe(right);
+  new MutationObserver(fade).observe(right, { childList: true, subtree: true, characterData: true });
+  right.addEventListener('focusin', fade);
   const tray = document.createElement('div');
   tray.className = 'intray'; tray.id = 'intray';
   tray.setAttribute('role', 'region'); tray.setAttribute('aria-label', 'Requests to connect');
@@ -416,7 +428,7 @@ export function front(bridge, kit) {
     }
   }
   // what can be done next in the tray, or the switch
-  const next = () => tray.querySelector('.slip:not(.gone) input, .slip:not(.gone) button:not([hidden])') || nearTray.querySelector('button') || document.getElementById('k3');
+  const next = () => tray.querySelector('.slip:not(.gone):not(.edge) input, .slip:not(.gone):not(.edge) button:not([hidden])') || nearTray.querySelector('.slip:not(.edge) button') || document.getElementById('k3');
   function draw() { drawTile(); drawTray(); }
 
   function why(s, text) { s.querySelector('.why').textContent = text; }

@@ -31,6 +31,9 @@
 /* the tray: a request, then the strangers, then the outbox's own slips, in the outbox's column. While either waits, the
    outbox's "Nothing waiting to send" gives it the room */
 .col.tray{display:flex;flex-direction:column;gap:8px;min-width:0}
+/* a slip not shown whole: its paper's edge, no type */
+.col.tray .slip.edge{color:transparent;text-shadow:none}
+.col.tray .slip.edge *{visibility:hidden}
 .intray{display:flex;flex-direction:column;gap:8px;min-width:0}
 .intray:empty{display:none}
 .row2:has(.intray:not(:empty)) .outbox:has(>.slip.empty:only-child){display:none}
@@ -38,23 +41,28 @@
 .intray .slip.ask.held .stamps{position:absolute;top:6px;right:10px;margin:0}
 .intray .slip.ask.held .askname{max-width:calc(100% - 92px)}
 .intray .slip.ask.held .who{min-height:25px}
-.row2>.col.meter{display:flex;flex-direction:column;gap:8px;min-width:0}
+.row2>.col.meter{display:flex;flex-direction:column;gap:5px;min-width:0}
 /* the strangers, folded behind a request to one typed line */
-.intray .slip.near.folded{padding:4px 10px 5px}
-.intray .slip.near.folded small{margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.intray .slip.near.folded{padding:3px 10px 3px}
+.intray .slip.near.folded small{margin:0;line-height:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 /* where the panel stands beside the sheet and the card, the tray has the room between the switches and the stations
    and no more: it scrolls inside, fading at its foot as the sheet's log fades at its head, and nothing moves */
 @media (min-width:1240px){
-  .app .panel{grid-template-rows:auto minmax(0,1fr) auto}
-  .panel .row2{min-height:0;align-items:stretch}
+  /* the row takes the room left between the switches and the stations, and more only for what the machine itself has
+     to send (as on the airgapped build); while Bluetooth has slips in it, its columns take that room and no more */
+  .app .panel{grid-template-rows:auto minmax(auto,1fr) auto}
+  .panel .row2{align-items:stretch}
+  .row2>.col.meter{align-self:stretch}
   /* the meter's column holds the meter and, behind a request, the strangers' line; it too takes only the row's room */
-  .row2>.col.meter{align-self:stretch;contain:size}
-  .row2>.col.tray{contain:size;overflow-y:auto;overscroll-behavior:contain;padding:3px 8px 10px;margin:-3px -8px -10px;
+  .row2:has(.intray:not(:empty))>.col{contain:size}
+  .row2>.col.tray{overflow-y:auto;overscroll-behavior:contain;padding:3px 8px 10px;margin:-3px -8px -10px;
     scrollbar-width:thin;scrollbar-color:rgba(160,154,140,.45) transparent}
   .row2>.col.tray.more{-webkit-mask-image:linear-gradient(#000 calc(100% - 14px),rgba(0,0,0,.35));mask-image:linear-gradient(#000 calc(100% - 14px),rgba(0,0,0,.35))}
   /* the room the tray needs for a held request and the strangers' line: the panel's gaps a little closer (the
      switches keep their room for Light's tape), the switches and the stations where they were */
   .app .panel{gap:12px}
+  /* (the narrowest of these keeps 10, which Light's tape still clears, so the strangers' line fits under the meter) */
+  @media (max-width:1359px){.app .panel{gap:10px}}
   .intray .slip{padding:5px 10px 6px}
 }
 .intray .slip{position:relative;padding:8px 10px 9px}

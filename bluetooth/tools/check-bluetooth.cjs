@@ -468,6 +468,15 @@ const GROUP_NOTE = 'Anyone in Bluetooth range can read this Mac\'s name. Give it
       if (m.over > 0) fail(`${name} ${w}: the page scrolls sideways by ${m.over}px`);
       if (m.cut.length || m.uncut.length) fail(`${name} ${w}: a station's line is cut short: ${JSON.stringify(m)}`);
       if (name.startsWith('request')) { const whole = await slipWhole(p); if (whole) fail(`${name} ${w}: ${whole}`); }
+      const sliced = await p.evaluate(() => { const out = [];
+        for (const col of document.querySelectorAll('.row2 .col')) { const c = col.getBoundingClientRect(); if (!c.height) continue;
+          const w = document.createTreeWalker(col, NodeFilter.SHOW_TEXT);
+          while (w.nextNode()) { const n = w.currentNode, el = n.parentElement, cs = getComputedStyle(el);
+            if (!n.nodeValue.trim() || cs.visibility === 'hidden' || cs.color === 'rgba(0, 0, 0, 0)') continue;
+            const range = document.createRange(); range.selectNodeContents(n);
+            for (const r of range.getClientRects()) if ((r.top < c.top - .5 && r.bottom > c.top + .5) || (r.top < c.bottom - .5 && r.bottom > c.bottom + .5)) out.push(n.nodeValue.trim().slice(0, 24)); } }
+        return out; });
+      if (sliced.length) fail(`${name} ${w}: a line of type in the tray is cut through: ${JSON.stringify(sliced)}`);
       const over = await overlaps(p);
       if (over.length) fail(`${name} ${w}: ${over.join('; ')}`);
       if (name === 'off') atOff = m;
