@@ -11,7 +11,9 @@ use bombechat_modem::{split, Event, Reassembler};
 use bombechat_node::{Transport, TransportEvent};
 use bombechat_session::{SessionKeys, TOKEN_LEN};
 
-use crate::adapter::{parse_tag, Access, Adapter, CbEvent, PeerId, Power, Role, Stack, TOKEN_MARK};
+use crate::adapter::{
+    parse_tag, Access, Adapter, CbEvent, PeerId, Power, Role, Stack, TOKEN_MARK, WITHHELD_MARK,
+};
 use crate::radio::Mode;
 use crate::transport::{BleTransport, FUTURE_TOKENS, TOKEN_MS};
 use crate::{BleHandle, SeededRng};
@@ -39,8 +41,6 @@ struct Air {
     carried: Vec<(usize, usize, Vec<u8>, u64)>,
     /// The notifications among them.
     notes: Vec<(usize, usize, Vec<u8>, u64)>,
-    /// Random draws the stacks made, for fresh seeds.
-    drawn: u64,
 }
 
 fn id(i: usize) -> PeerId {
@@ -228,12 +228,6 @@ impl Stack for SimStack {
     fn max_notify(&self, _central: PeerId) -> usize {
         182
     }
-    fn random(&mut self, out: &mut [u8]) {
-        let mut air = self.air.lock().unwrap();
-        air.drawn = air.drawn.wrapping_add(1);
-        let mut rng = SeededRng::new(air.drawn ^ (self.me as u64) << 32);
-        rand_core::RngCore::fill_bytes(&mut rng, out);
-    }
 }
 
 type Radio = Adapter<SimStack>;
@@ -353,19 +347,19 @@ fn talk(air: &Arc<Mutex<Air>>, a: &mut Mac, b: &mut Mac, t: u64, tag: u16) -> u6
     t
 }
 
-/// First notifications shaped like a token: how many were one of the
-/// sender's real tokens, and how many decoys (its tag, but not a token).
+/// First notifications: how many were one of the sender's tokens, and
+/// how many the withheld mark.
 fn counts(notes: &[&[u8]], sender: &Mac) -> (usize, usize) {
-    let shaped: Vec<&[u8]> = notes
+    let served = notes
         .iter()
-        .filter(|n| n.len() == 1 + TOKEN_LEN && n[0] == TOKEN_MARK)
-        .map(|n| &n[1..])
-        .collect();
-    let real = |t: &[u8]| sender.tokens.iter().any(|(k, _)| k[..] == *t);
-    let tagged = |t: &[u8]| sender.tokens.iter().any(|(k, _)| k[..6] == t[..6]);
-    let served = shaped.iter().filter(|t| real(t)).count();
-    let decoys = shaped.iter().filter(|t| !real(t) && tagged(t)).count();
-    (served, decoys)
+        .filter(|n| {
+            n.len() == 1 + TOKEN_LEN
+                && n[0] == TOKEN_MARK
+                && sender.tokens.iter().any(|(k, _)| k[..] == n[1..])
+        })
+        .count();
+    let withheld = notes.iter().filter(|n| **n == [WITHHELD_MARK]).count();
+    (served, withheld)
 }
 
 fn contains(hay: &[u8], needle: &[u8]) -> bool {
@@ -403,12 +397,13 @@ fn contacts_with_stable_identifiers_keep_meeting_across_rotations_and_a_blackout
         "three rotations each"
     );
     // once both had rotated, no clear token passed between them, either
-    // way, and each was given decoys
+    // way, and each was linked without one
     let since = a.tokens[1].1.max(b.tokens[1].1);
     for (from, to) in [(&a, &b), (&b, &a)] {
-        let (tokens, decoys) = counts(&air.lock().unwrap().notified(from.me, to.me, since), from);
+        let notes = air.lock().unwrap();
+        let (tokens, withheld) = counts(&notes.notified(from.me, to.me, since), from);
         assert_eq!(tokens, 0, "{} gave {} its token", from.me, to.me);
-        assert!(decoys > 0, "{} never gave {} a decoy", from.me, to.me);
+        assert!(withheld > 0, "{} never withheld from {}", from.me, to.me);
     }
 
     // a blackout longer than every session's silence limit, across one
@@ -464,9 +459,9 @@ fn a_stranger_with_a_copied_identifier_gains_nothing_after_a_rotation() {
     let from = t;
     let t = run(&air, &mut [&mut b, &mut s], t, t + 60_000);
     let air_now = air.lock().unwrap();
-    let (tokens, decoys) = counts(&air_now.notified(b.me, s.me, from), &b);
+    let (tokens, withheld) = counts(&air_now.notified(b.me, s.me, from), &b);
     assert_eq!(tokens, 0, "no clear token");
-    assert!(decoys > 0, "a link, with a decoy");
+    assert!(withheld > 0, "a link, without the token");
     // nothing that reached it carries b's token, or any b will rotate to,
     // in the clear or not
     let current = b.token();
@@ -605,13 +600,14 @@ fn contacts_apart_through_four_rotations_fall_back_to_the_hour() {
     assert!(met > back + 60_000, "the schedule didn't reach that far");
 }
 
-/// I-new-5: a tracker that connects from one fixed address, served once,
-/// comes back after this device's rotation and gets a decoy; a stranger
-/// arriving fresh gets the real token. The two can't tell the difference:
-/// the same mark, length and tag, and the same outcome, nothing back for
-/// their hellos.
+/// Breaker ruling: a tracker that connected once from a fixed address
+/// and holds on (subscribing again after this device's rotation, as the
+/// same central) receives nothing containing the new advert's tag or any
+/// token: only the one-byte withheld mark. It does see that it is
+/// refused where a fresh stranger is served: the accepted "seen before"
+/// linker, stated in the spec.
 #[test]
-fn a_tracker_from_a_fixed_address_cannot_tell_it_was_recognised() {
+fn a_held_connection_learns_nothing_of_the_new_advert() {
     let air = Arc::new(Mutex::new(Air::default()));
     let mut b = Mac::new(&air, 2);
     b.h.set_mode(Some(Mode::Contacts));
@@ -631,22 +627,26 @@ fn a_tracker_from_a_fixed_address_cannot_tell_it_was_recognised() {
     run(&air, &mut [&mut b, &mut tracker, &mut fresh], t, t + 60_000);
     let air_now = air.lock().unwrap();
     let to_tracker = air_now.notified(b.me, tracker.me, since);
-    let to_fresh = air_now.notified(b.me, fresh.me, since);
-    assert_eq!(counts(&to_tracker, &b).0, 0, "the tracker gets no token");
-    assert!(counts(&to_tracker, &b).1 > 0, "but a decoy");
-    assert!(counts(&to_fresh, &b).0 > 0, "the stranger is served");
-    let shape = |n: &[u8]| (n.len(), n[0], n[1..1 + 6].to_vec());
-    let current = b.token();
-    for n in to_tracker.iter().chain(&to_fresh) {
-        assert_eq!(shape(n), (1 + TOKEN_LEN, TOKEN_MARK, current[..6].to_vec()));
+    assert!(!to_tracker.is_empty(), "the tracker came back");
+    assert!(
+        to_tracker.iter().all(|n| *n == [WITHHELD_MARK]),
+        "only the bare mark: {to_tracker:?}"
+    );
+    // nothing at all from b to it carries the new tag or any token
+    let new_tag = &b.token()[..6];
+    let schedule = b.t.token_schedule();
+    for (from, to, bytes, at) in &air_now.carried {
+        if (*from, *to, *at >= since) != (b.me, tracker.me, true) {
+            continue;
+        }
+        assert!(!contains(bytes, new_tag), "the new tag reached it");
+        for t in b.tokens.iter().map(|(t, _)| t).chain(&schedule) {
+            assert!(!contains(bytes, t), "a token reached it");
+        }
     }
-    // the same outcome: nothing else comes back to either on those links
-    for (who, notes) in [("tracker", &to_tracker), ("stranger", &to_fresh)] {
-        assert!(
-            notes.iter().all(|n| n.len() == 1 + TOKEN_LEN),
-            "{who} heard more than the token's shape"
-        );
-    }
+    // the accepted linker: a fresh stranger is served where it isn't
+    let (fresh_served, _) = counts(&air_now.notified(b.me, fresh.me, since), &b);
+    assert!(fresh_served > 0);
     drop(air_now);
     assert!(b.h.peers().contacts.is_empty());
     assert!(tracker.h.peers().contacts.is_empty() && fresh.h.peers().contacts.is_empty());
@@ -654,10 +654,11 @@ fn a_tracker_from_a_fixed_address_cannot_tell_it_was_recognised() {
 
 /// M-new-2: a contact this device can't recognise by schedule (it has
 /// none for it), whose link it lost, is redialled on the next link to the
-/// same advert even though that link is given a decoy: the token this
-/// device was given for the advert before is found by the tag.
+/// same advert even though that link comes up without the token: the
+/// token this device was given for the advert before is found by the
+/// tag the scan saw.
 #[test]
-fn a_lost_link_is_redialled_by_its_tag_through_a_decoy() {
+fn a_lost_link_is_redialled_by_its_tag_where_the_token_is_withheld() {
     let air = Arc::new(Mutex::new(Air::default()));
     let mut a = Mac::new(&air, 1);
     let mut b = Mac::new(&air, 2);
@@ -669,13 +670,13 @@ fn a_lost_link_is_redialled_by_its_tag_through_a_decoy() {
     assert!(present(&a, &b));
     assert!(a.t.own_sessions() > 0);
     // a forgets what b told it, then every connection drops at once; b
-    // gives a a decoy when it comes back (a was served already)
+    // withholds its token from a when it comes back (a was served already)
     a.t.forget_told();
     air.lock().unwrap().cut_all();
     let back = t;
     let t = run(&air, &mut [&mut a, &mut b], t, t + 10_000);
-    let (_, decoys) = counts(&air.lock().unwrap().notified(b.me, a.me, back), &b);
-    assert!(decoys > 0, "a was given a decoy");
+    let (_, withheld) = counts(&air.lock().unwrap().notified(b.me, a.me, back), &b);
+    assert!(withheld > 0, "a was linked without the token");
     assert!(a.t.own_sessions() > 0, "a redialled b on its own link");
     assert!(present(&a, &b));
     let _ = t;

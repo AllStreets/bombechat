@@ -72,12 +72,13 @@ pub(crate) struct Link {
     /// On a link this device opened, the advert's tag.
     pub tag: Option<[u8; TAG_LEN]>,
     /// The token contact hellos on this link name: one a contact gave
-    /// inside a session whose tag the advert shows, if any (the token the
-    /// link was given may be a decoy); else one this device was given
-    /// earlier for that advert, on a link it lost; else the one given.
-    /// `None` for a link the other device opened.
+    /// inside a session whose tag the advert shows, if any; else one this
+    /// device was given earlier for that advert, on a link it lost; else
+    /// the one this link was given. `None` if none of those (the other
+    /// device withheld it), and for a link the other device opened.
     pub token: Option<[u8; TOKEN_LEN]>,
-    /// What this link's one round of hellos is remembered by: its token.
+    /// What this link's one round of hellos is remembered by: its token,
+    /// or for a link without one, something standing for the advert.
     pub round: Option<[u8; TOKEN_LEN]>,
     pub up_ms: u64,
     /// The last time the link had a session or a handshake on it.
@@ -92,13 +93,14 @@ impl Link {
         opened: bool,
         tag: Option<[u8; TAG_LEN]>,
         token: Option<[u8; TOKEN_LEN]>,
+        round: Option<[u8; TOKEN_LEN]>,
         now_ms: u64,
     ) -> Link {
         Link {
             opened,
             tag,
             token,
-            round: token,
+            round,
             up_ms: now_ms,
             busy_ms: now_ms,
             reassembly: Reassembly::new(),

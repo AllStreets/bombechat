@@ -599,22 +599,37 @@ impl<R: Radio> BleTransport<R> {
                     self.radio.disconnect(link);
                     return;
                 }
-                let (opened, tag, token, lost) = match advert {
-                    Advert::Unseen => (false, None, None, None),
-                    Advert::Token(given) => {
+                // a contact's schedule names the advert by its tag first,
+                // then a token this device was given for it on a link it
+                // lost, then the token this link was given, if any
+                let (tag, given) = match advert {
+                    Advert::Unseen => (None, None),
+                    Advert::Token(t) => {
                         let mut tag = [0u8; TAG_LEN];
-                        tag.copy_from_slice(&given[..TAG_LEN]);
-                        // the token given may be a decoy: a contact's
-                        // schedule names this advert first, then a token
-                        // this device was given for it on a link it lost
-                        let told = self.contact_token_by_tag(tag);
-                        let lost = self.lost.keys().copied().find(|k| k[..TAG_LEN] == tag);
-                        let token = told.or(lost).unwrap_or(given);
-                        (true, Some(tag), Some(token), lost)
+                        tag.copy_from_slice(&t[..TAG_LEN]);
+                        (Some(tag), Some(t))
                     }
+                    Advert::Withheld(tag) => (tag, None),
+                };
+                let opened = advert != Advert::Unseen;
+                let told = tag.and_then(|tag| self.contact_token_by_tag(tag));
+                let lost =
+                    tag.and_then(|tag| self.lost.keys().copied().find(|k| k[..TAG_LEN] == tag));
+                let token = told.or(lost).or(given);
+                // a link with no token to name is remembered by its tag,
+                // or, with none, by itself
+                let round = match (token, tag) {
+                    (Some(t), _) => Some(t),
+                    (None, Some(tag)) => {
+                        let mut r = [0u8; TOKEN_LEN];
+                        r[..TAG_LEN].copy_from_slice(&tag);
+                        Some(r)
+                    }
+                    (None, None) if opened => Some(self.random_token()),
+                    (None, None) => None,
                 };
                 self.links
-                    .insert(link, Link::new(opened, tag, token, self.now_ms));
+                    .insert(link, Link::new(opened, tag, token, round, self.now_ms));
                 if let Some((who, _)) = lost.and_then(|t| self.lost.remove(&t)) {
                     for contact in who {
                         let k = key_of(&contact);
@@ -1441,7 +1456,7 @@ impl<R: Radio> BleTransport<R> {
     /// keepalive, so a removal sends nothing out of rhythm. A contact
     /// whose advert scan meets this device again, even after it rotated
     /// up to three times out of range, names that token in its hello,
-    /// whatever token or decoy the radio gave it.
+    /// even where the radio withheld it.
     fn share_tokens(&mut self) {
         let now = self.now_ms;
         let schedule = self.token_schedule();

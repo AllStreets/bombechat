@@ -50,18 +50,20 @@
 //! is the token. Each central (by its CoreBluetooth identifier, which
 //! follows its address and so its connection) is given the whole token
 //! at most once, and only if it was first heard in the current token's
-//! period. Every other subscription still gets a link, and its first
-//! notification is a decoy that looks exactly like a token: `TOKEN_MARK`,
-//! the advert's tag, then [`TOKEN_LEN`] less [`TAG_LEN`] random bytes
-//! drawn afresh for each link. A central heard before a rotation learns
-//! nothing new over its old connection, however it subscribes again, and
-//! can't tell that it was recognised: only the token's holder or a
-//! contact's IK answer could tell a decoy from the token, and a stranger's
-//! hello gets no answer either way. A link that already carries a contact's session is
+//! period. Every other subscription still gets a link, but its first
+//! notification is `WITHHELD_MARK`, one byte that carries nothing: no
+//! token and no tag. A central heard before a rotation learns nothing of
+//! the new advert over its old connection, however it subscribes again.
+//! What it does learn is that it was heard before: an active tracker that
+//! connected once from a fixed address can later recognise this device by
+//! being refused the token. That is an accepted linker (see the spec's
+//! threat model); a decoy can't hide it, because a newcomer from a fresh
+//! address is served the real token, and any decoy that carried the tag
+//! would hand the new advert to a held connection. A link that already carries a contact's session is
 //! untouched by a rotation and keeps working. `disconnect` on a
 //! peripheral-side link stops using it: its writes are ignored and nothing
 //! more is sent, until the central subscribes again (and is then given a
-//! link with a decoy).
+//! link without the token).
 //!
 //! Centrals are remembered while subscribed and for [`CENTRAL_MEMORY_MS`]
 //! after their last traffic on a link that was given the token (traffic on
@@ -100,9 +102,11 @@ pub(crate) type PeerId = [u8; 16];
 /// The part of the token the advert shows.
 pub(crate) type Tag = [u8; TAG_LEN];
 
-/// The first byte of the notification that carries the whole token, or
-/// a decoy of it.
+/// The first byte of the notification that carries the whole token.
 pub(crate) const TOKEN_MARK: u8 = 0x54;
+/// The whole first notification to a central that is not given the
+/// token: one byte, with no tag and nothing random.
+pub(crate) const WITHHELD_MARK: u8 = 0x4e;
 
 /// The sentence shown when Bluetooth is switched off on the Mac.
 pub const BLUETOOTH_OFF: &str = "Bluetooth is off in System Settings.";
@@ -237,8 +241,6 @@ pub(crate) trait Stack {
     fn max_write(&self, peer: PeerId) -> usize;
     /// The central's `maximumUpdateValueLength`.
     fn max_notify(&self, central: PeerId) -> usize;
-    /// Fill `out` with random bytes (the operating system's, on a Mac).
-    fn random(&mut self, out: &mut [u8]);
 }
 
 /// The advert's local name for `token`: its first [`TAG_LEN`] bytes in
@@ -624,21 +626,28 @@ impl<S: Stack> Adapter<S> {
             self.events.push(RadioEvent::Bytes(conn.link, bytes));
             return;
         }
-        // the first notification must be a token (or its decoy), and
-        // nothing else
-        if bytes.len() != 1 + TOKEN_LEN || bytes[0] != TOKEN_MARK {
+        // the first notification must be the token, or the mark that it
+        // is withheld, and nothing else
+        let advert = if bytes == [WITHHELD_MARK] {
+            // the tag is the one the scan saw, never from the link
+            Advert::Withheld(conn.tag)
+        } else if bytes.len() == 1 + TOKEN_LEN && bytes[0] == TOKEN_MARK {
+            let mut token = [0u8; TOKEN_LEN];
+            token.copy_from_slice(&bytes[1..]);
+            Advert::Token(token)
+        } else {
             self.fail(peer);
             return;
-        }
-        let mut token = [0u8; TOKEN_LEN];
-        token.copy_from_slice(&bytes[1..]);
+        };
         if let Some(conn) = self.conns.get_mut(&(Role::Central, peer)) {
             conn.state = State::Up;
-            // the link is to the advert with this tag now
-            conn.tag = Some(tag_of(&token));
+            if let Advert::Token(token) = advert {
+                // the link is to the advert with this token now
+                conn.tag = Some(tag_of(&token));
+            }
             self.events.push(RadioEvent::Up {
                 link: conn.link,
-                advert: Advert::Token(token),
+                advert,
             });
         }
     }
@@ -705,27 +714,26 @@ impl<S: Stack> Adapter<S> {
         {
             return;
         }
-        let mut first = Vec::with_capacity(1 + TOKEN_LEN);
-        first.push(TOKEN_MARK);
-        if given {
+        let first = if given {
             if let Some(h) = self.centrals.get_mut(&central) {
                 h.served = true;
             }
             // only a link given the token keeps its central remembered
             self.touch(central);
+            let mut first = Vec::with_capacity(1 + TOKEN_LEN);
+            first.push(TOKEN_MARK);
             first.extend_from_slice(&token);
+            first
         } else {
             #[cfg(test)]
             self.notes.push(format!(
-                "central {:02x}{:02x}{:02x}{:02x} given a decoy",
+                "central {:02x}{:02x}{:02x}{:02x} linked without the token",
                 central[0], central[1], central[2], central[3]
             ));
-            // the same shape as the token: its tag, then bytes drawn afresh
-            let mut tail = [0u8; TOKEN_LEN - TAG_LEN];
-            self.stack.random(&mut tail);
-            first.extend_from_slice(&token[..TAG_LEN]);
-            first.extend_from_slice(&tail);
-        }
+            // nothing of the token, nor of the advert: a held connection
+            // learns nothing of where this device went
+            vec![WITHHELD_MARK]
+        };
         let link = self.fresh_link();
         self.conns.insert(
             key,
@@ -743,7 +751,8 @@ impl<S: Stack> Adapter<S> {
             link,
             advert: Advert::Unseen,
         });
-        // the token, or its decoy, goes before anything else
+        // the token, or the mark that it is withheld, goes before
+        // anything else
         self.enqueue(key, first);
     }
 
@@ -799,7 +808,7 @@ impl<S: Stack> Adapter<S> {
                 }
             }
             // it was served already: a new subscription gets a link
-            // with a decoy
+            // without the token
             Role::Peripheral => {}
         }
     }
@@ -1043,7 +1052,6 @@ mod tests {
         writes: Vec<(PeerId, Vec<u8>)>,
         notes: Vec<(PeerId, Vec<u8>)>,
         log: Vec<String>,
-        drawn: u64,
     }
 
     impl Fake {
@@ -1064,7 +1072,6 @@ mod tests {
                 writes: Vec::new(),
                 notes: Vec::new(),
                 log: Vec::new(),
-                drawn: 1,
             }
         }
     }
@@ -1143,15 +1150,6 @@ mod tests {
         }
         fn max_notify(&self, _central: PeerId) -> usize {
             150
-        }
-        fn random(&mut self, out: &mut [u8]) {
-            for b in out {
-                self.drawn = self
-                    .drawn
-                    .wrapping_mul(6364136223846793005)
-                    .wrapping_add(1442695040888963407);
-                *b = (self.drawn >> 56) as u8;
-            }
         }
     }
 
@@ -1602,7 +1600,7 @@ mod tests {
         a.write(link, b"nothing goes");
         assert_eq!(a.stack().notes.len(), 1, "only the token, earlier");
         // letting go and subscribing again on the same connection: a new
-        // link, but a decoy, the token was given once already
+        // link, but no token, the token was given once already
         let ev = push(
             &mut a,
             [CbEvent::Unsubscribed(peer(2)), CbEvent::Subscribed(peer(2))],
@@ -1616,16 +1614,12 @@ mod tests {
         };
         assert_ne!(again, link);
         assert_eq!(a.stack().notes[0], (peer(2), token_note(TOKEN)));
-        assert!(is_decoy(&told(&mut a, 2)[1..], TOKEN));
+        assert!(is_withheld(&told(&mut a, 2)[1..]));
     }
 
-    /// Exactly one note, shaped like `token`'s (the mark, its tag) but
-    /// not it.
-    fn is_decoy(notes: &[Vec<u8>], token: [u8; TOKEN_LEN]) -> bool {
-        matches!(notes, [n] if n.len() == 1 + TOKEN_LEN
-            && n[0] == TOKEN_MARK
-            && n[1..1 + TAG_LEN] == token[..TAG_LEN]
-            && n[1..] != token[..])
+    /// Exactly one note, the withheld mark and nothing else.
+    fn is_withheld(notes: &[Vec<u8>]) -> bool {
+        notes == [vec![WITHHELD_MARK]]
     }
 
     /// The notifications `a` has sent `central`, since the last look.
@@ -1640,7 +1634,7 @@ mod tests {
 
     /// C1: a central holding its connection across this device's rotation
     /// gets no new token, however it subscribes again. It still gets a
-    /// link, with a decoy first.
+    /// link, with the withheld mark first.
     #[test]
     fn a_central_from_before_a_rotation_never_hears_the_new_token() {
         let mut a = running();
@@ -1663,13 +1657,13 @@ mod tests {
             ),
             "a link: {ev:?}"
         );
-        assert!(is_decoy(&told(&mut a, 2), token(9)), "no token");
+        assert!(is_withheld(&told(&mut a, 2)), "no token");
         // a central heard (only writing) before the rotation is no better
         let mut b = running();
         push(&mut b, [CbEvent::Written(peer(3), b"hello?".to_vec())]);
         b.advertise(token(9));
         push(&mut b, [CbEvent::Subscribed(peer(3))]);
-        assert!(is_decoy(&told(&mut b, 3), token(9)));
+        assert!(is_withheld(&told(&mut b, 3)));
         // forgetting takes being silent and unsubscribed for an hour, and
         // traffic on a link without the token isn't heard as such
         push(
@@ -1681,7 +1675,7 @@ mod tests {
         );
         b.stack_mut().now += CENTRAL_MEMORY_MS - 1;
         push(&mut b, [CbEvent::Subscribed(peer(3))]);
-        assert!(is_decoy(&told(&mut b, 3), token(9)));
+        assert!(is_withheld(&told(&mut b, 3)));
     }
 
     /// C1: a contact's link across a rotation keeps working both ways.
@@ -1798,56 +1792,81 @@ mod tests {
         );
     }
 
-    /// I-new-5: a tracker connecting from one fixed address can't tell
-    /// whether it was recognised. After this device's rotation it is
-    /// given a decoy: the same mark, the same length, the advert's real
-    /// tag, and a tail drawn afresh on every connection, exactly as a
-    /// newcomer's token looks.
+    /// Breaker ruling: a held connection that subscribes again after this
+    /// device's rotation learns nothing of the new advert: the one-byte
+    /// mark carries no tag and no token, every time. (It does learn it was
+    /// heard before: the accepted "seen before" linker.)
     #[test]
-    fn a_decoy_cannot_be_told_from_the_token() {
+    fn a_withheld_answer_carries_nothing_of_the_advert() {
         let mut a = running();
         link_from(&mut a, 2); // the tracker, served once
         push(&mut a, [CbEvent::Unsubscribed(peer(2))]);
         a.advertise(token(9));
         push(&mut a, [CbEvent::Advertising(true)]);
         told(&mut a, 2);
-        let mut decoys = Vec::new();
+        let new_tag = &token(9)[..TAG_LEN];
         for _ in 0..3 {
             push(&mut a, [CbEvent::Subscribed(peer(2))]);
             push(&mut a, [CbEvent::Unsubscribed(peer(2))]);
             let notes = told(&mut a, 2);
-            assert!(is_decoy(&notes, token(9)), "{notes:?}");
-            decoys.push(notes[0].clone());
+            assert!(is_withheld(&notes), "{notes:?}");
+            for n in &notes {
+                assert!(
+                    !n.windows(TAG_LEN).any(|w| w == new_tag),
+                    "the new tag leaked: {n:?}"
+                );
+                assert!(!n.windows(TAG_LEN).any(|w| w == &TOKEN[..TAG_LEN]));
+            }
         }
-        // a newcomer, served the real token, sees the same shape
+        // a newcomer is served the token
         link_from(&mut a, 4);
-        let served = told(&mut a, 4);
-        assert_eq!(served, vec![token_note(token(9))]);
-        for d in &decoys {
-            assert_eq!(d.len(), served[0].len());
-            assert_eq!(d[..1 + TAG_LEN], served[0][..1 + TAG_LEN]);
-        }
-        // and the tail is fresh each time
-        let tails: BTreeSet<&[u8]> = decoys.iter().map(|d| &d[1 + TAG_LEN..]).collect();
-        assert_eq!(tails.len(), decoys.len(), "no stable tail");
-        // the central side takes a decoy as it takes a token
-        let mut b = running();
+        assert_eq!(told(&mut a, 4), vec![token_note(token(9))]);
+    }
+
+    /// The central side: a peripheral that withholds its token still
+    /// gives a link, up at once, with the tag its advert showed when it
+    /// was scanned (never anything from the link).
+    #[test]
+    fn a_withheld_token_brings_the_link_up_with_the_scanned_tag() {
+        let mut a = running();
         push(
-            &mut b,
+            &mut a,
             [
-                CbEvent::Discovered(peer(1), tag(9)),
+                CbEvent::Discovered(peer(1), tag(1)),
                 CbEvent::Ready(peer(1)),
             ],
         );
-        let ev = push(&mut b, [CbEvent::Notified(peer(1), decoys[0].clone())]);
+        let ev = push(&mut a, [CbEvent::Notified(peer(1), vec![WITHHELD_MARK])]);
         let [RadioEvent::Up {
-            advert: Advert::Token(t),
-            ..
+            link,
+            advert: Advert::Withheld(t),
         }] = ev.as_slice()
         else {
             panic!("{ev:?}");
         };
-        assert_eq!(t[..], decoys[0][1..]);
+        assert_eq!(*t, tag(1));
+        let ev = push(&mut a, [CbEvent::Notified(peer(1), b"hello".to_vec())]);
+        assert_eq!(ev, vec![RadioEvent::Bytes(*link, b"hello".to_vec())]);
+        // closed on purpose, it is left alone until the tag changes
+        a.disconnect(*link);
+        push(&mut a, [CbEvent::Discovered(peer(1), tag(1))]);
+        assert!(a.stack().connections.is_empty());
+        push(&mut a, [CbEvent::Discovered(peer(1), tag(2))]);
+        assert!(a.stack().connections.contains(&peer(1)));
+        // an advert that showed no tag comes up withheld with none
+        let mut b = running();
+        push(
+            &mut b,
+            [CbEvent::Discovered(peer(1), None), CbEvent::Ready(peer(1))],
+        );
+        let ev = push(&mut b, [CbEvent::Notified(peer(1), vec![WITHHELD_MARK])]);
+        assert!(matches!(
+            ev.as_slice(),
+            [RadioEvent::Up {
+                advert: Advert::Withheld(None),
+                ..
+            }]
+        ));
     }
 
     /// I-new-1: the central side doesn't ask a refusing peripheral again
@@ -1901,7 +1920,7 @@ mod tests {
         push(&mut a, [CbEvent::Advertising(true)]);
         push(&mut a, [CbEvent::Subscribed(peer(200))]);
         assert!(
-            is_decoy(&told(&mut a, 200), token(9)),
+            is_withheld(&told(&mut a, 200)),
             "the newcomer gets no token"
         );
         let ev = push(&mut a, [CbEvent::Subscribed(many(0))]);
@@ -1913,10 +1932,7 @@ mod tests {
                 n
             })
             .collect();
-        assert!(
-            is_decoy(&notes, token(9)),
-            "the earlier one is still remembered"
-        );
+        assert!(is_withheld(&notes), "the earlier one is still remembered");
     }
 
     /// N1: a flood under this token pushes out only this token's
@@ -1940,7 +1956,7 @@ mod tests {
         told(&mut a, 2);
         push(&mut a, [CbEvent::Subscribed(peer(2))]);
         assert!(
-            is_decoy(&told(&mut a, 2), token(9)),
+            is_withheld(&told(&mut a, 2)),
             "the held central from before"
         );
         // and a newcomer under this token is served

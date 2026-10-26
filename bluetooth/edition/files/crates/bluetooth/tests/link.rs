@@ -1177,11 +1177,10 @@ fn the_token_rotates_between_12_and_15_minutes_and_the_previous_still_answers() 
     );
 }
 
-/// A device that withholds its token (giving a decoy) gets no hello it
-/// could relay to a contact: a contact's token learned in session is
-/// named only on a link to an advert showing that token's tag, so on any
-/// other link the hellos name the decoy, and replaying them to the
-/// contact gets no answer.
+/// A device that withholds its token gets no hello it could relay to a
+/// contact: a contact's token learned in session is named only on a link
+/// to an advert showing that token's tag, so on any other link the round
+/// is all decoys, and replaying it to the contact gets no answer.
 #[test]
 fn a_device_withholding_its_token_gets_no_hello_worth_relaying() {
     let room = Room::new(15);
@@ -1202,7 +1201,7 @@ fn a_device_withholding_its_token_gets_no_hello_worth_relaying() {
         .filter(|(l, m)| to_x.contains(l) && m.kind == Kind::Contact)
         .map(|(_, m)| m)
         .collect();
-    assert_eq!(hellos_to_x.len(), TRIAL_CAP, "a whole round");
+    assert_eq!(hellos_to_x.len(), TRIAL_CAP, "a whole round, all decoys");
     let into_b = room
         .links()
         .into_iter()

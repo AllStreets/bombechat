@@ -13,7 +13,7 @@
 //! stable. On macOS the advert can hold only the token's first six bytes
 //! (as the local name, its tag); the radio hands the whole token to each
 //! device that connects, before anything else on the link, unless it heard
-//! that device under an earlier token, when it gives a decoy instead (see
+//! that device under an earlier token, when it withholds it (see
 //! [`CoreBluetoothRadio`] and [`Advert`]). Links carry writes on one characteristic ([`CHARACTERISTIC_UUID`]),
 //! write without response one way and notify the other.
 //!
@@ -46,18 +46,17 @@
 //! # Contacts (`Noise_IK`)
 //!
 //! A hello names the token of the device it is for, so only a link this
-//! device opened can carry one. The radio is given a token for the
-//! advert, but it may be a decoy (the other device heard this one under
-//! an earlier token, and no one can tell a decoy from the token). So a
-//! token a contact gave inside a session ([`BleTransport::contact_schedule`])
-//! whose tag the advert shows comes first; then one this device was given
-//! for that advert on a link it lost; then the one given.
+//! device opened can carry one. A token a contact gave inside a session
+//! ([`BleTransport::contact_schedule`]) whose tag the advert showed comes
+//! first; then one this device was given for that advert on a link it
+//! lost; then the one this link was given. The other device withholds its
+//! token from a device it heard under an earlier one, so without the first
+//! two such a link has no token to name, and its round is all decoys.
 //!
 //! Each token gets one round of exactly
 //! [`TRIAL_CAP`] hellos: a contact who gave this token first, then
 //! contacts most recently seen (then least recently tried), and decoys of
-//! the same size, to keys no one holds, for the rest. A hello naming a
-//! decoy gets nothing back, as a hello to the wrong device doesn't. So the number of hellos says nothing about
+//! the same size, to keys no one holds, for the rest. So the number of hellos says nothing about
 //! the number of contacts. A round's hellos unanswered after
 //! [`TRIAL_RETRY_MS`] go once more, afresh, and that is all for that token:
 //! reconnecting gives a tracker nothing more.
