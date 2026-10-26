@@ -8,9 +8,11 @@ use std::thread;
 use std::time::Duration;
 
 use bombechat_app::commands::{self, bridge_event, Lock, Machine, Opened, Shared, Unlocking};
+use bombechat_app::edition;
 use bombechat_core::{safety_number, ChunkView, PublicIdentity};
 use bombechat_node::{
-    max_private_text, NodeEvent, OutboxState, MAX_BROADCAST, NOT_SENT, NOT_STORED,
+    max_private_text, NodeEvent, OutboxState, RequestState, WaitingRequest, MAX_BROADCAST,
+    MEET_FIRST, NOT_IN_RANGE, NOT_SENT, NOT_STORED, REQUEST_GONE,
 };
 use bombechat_store::{Channel, Contact, ContactId, Delivery, StoredBroadcast, StoredMessage};
 use serde_json::json;
@@ -43,6 +45,16 @@ struct Calls {
     passphrases: Arc<Mutex<Vec<String>>>,
     /// The name each unlock was given.
     names: Arc<Mutex<Vec<String>>>,
+    /// Requests to connect waiting; each accepted (with the name) or
+    /// declined, and each stranger asked.
+    waiting: Vec<WaitingRequest>,
+    accepted: Vec<(u64, String)>,
+    declined: Vec<u64>,
+    asked: Vec<String>,
+    /// New contacts need a key check: accepting and asking are refused.
+    in_person: bool,
+    /// What each channel's switch alone says.
+    steady: Vec<(Channel, String)>,
 }
 
 /// What each tick returns, in turn: events, or `None` to panic.
@@ -254,6 +266,51 @@ impl Machine for Fake {
     }
     fn rates(&self) -> Vec<(Channel, f32)> {
         self.rates.lock().unwrap().clone()
+    }
+    fn steady_states(&self) -> Vec<(Channel, String)> {
+        self.calls.lock().unwrap().steady.clone()
+    }
+    fn requests(&self) -> Vec<WaitingRequest> {
+        self.calls.lock().unwrap().waiting.clone()
+    }
+    fn accept_request(&mut self, id: u64, name: &str) -> Result<ContactId, String> {
+        let mut c = self.calls.lock().unwrap();
+        if c.in_person {
+            return Err(MEET_FIRST.to_string());
+        }
+        let at = c
+            .waiting
+            .iter()
+            .position(|w| w.id == id)
+            .ok_or(REQUEST_GONE)?;
+        c.waiting.remove(at);
+        c.accepted.push((id, name.to_string()));
+        Ok(ContactId(5))
+    }
+    fn decline_request(&mut self, id: u64) {
+        let mut c = self.calls.lock().unwrap();
+        c.waiting.retain(|w| w.id != id);
+        c.declined.push(id);
+    }
+    fn send_request(&mut self, label: &str) -> Result<(), String> {
+        let mut c = self.calls.lock().unwrap();
+        if c.in_person {
+            return Err(MEET_FIRST.to_string());
+        }
+        if label != "K7MX" {
+            return Err(NOT_IN_RANGE.to_string());
+        }
+        c.asked.push(label.to_string());
+        Ok(())
+    }
+    fn strangers(&self) -> Vec<String> {
+        vec!["K7MX".to_string()]
+    }
+    fn peers(&self) -> (Vec<ContactId>, usize) {
+        (vec![ContactId(1)], 2)
+    }
+    fn unconfirmed(&self) -> Vec<ContactId> {
+        vec![ContactId(5)]
     }
     fn tick(&mut self, _now_ms: u64) -> Vec<NodeEvent> {
         // Taken out first, so a scripted panic does not poison the script.
@@ -655,7 +712,11 @@ fn every_setting_has_a_default_within_its_values() {
 
 #[test]
 fn every_setting_is_one_the_settings_page_has_with_its_default() {
-    let page = include_str!("../../ui/settings.html");
+    // the page's own rows, and the ones this build adds (edition.js)
+    let page = concat!(
+        include_str!("../../ui/settings.html"),
+        include_str!("../../ui/edition.js")
+    );
     for (id, count, default) in commands::SETTINGS {
         let at = page
             .find(&format!("{{id:'{id}',"))
@@ -702,13 +763,35 @@ fn the_simulator_keeps_the_same_settings_with_the_same_defaults() {
         v.sort();
         v
     };
+    // the simulator takes the rows this build adds (edition.js) as the
+    // settings page has them, which the test above checks
+    let added = |f: fn(&(&str, usize, usize)) -> String| -> Vec<String> {
+        edition::SETTINGS.iter().map(f).collect()
+    };
+    let with = |mut v: Vec<String>, more: Vec<String>| {
+        v.extend(more);
+        v.sort();
+        v
+    };
     assert_eq!(
-        table("DEFAULTS"),
+        with(
+            table("DEFAULTS"),
+            added(|(id, _, default)| format!("{id}:{default}"))
+        ),
         want(|(id, _, default)| format!("{id}:{default}"))
     );
     assert_eq!(
-        table("COUNTS"),
+        with(
+            table("COUNTS"),
+            added(|(id, count, _)| format!("{id}:{count}"))
+        ),
         want(|(id, count, _)| format!("{id}:{count}"))
+    );
+    let rows = include_str!("../../ui/edition.js");
+    assert!(
+        rows.contains("export const SETTING_ROWS = [")
+            && sim.contains("for (const r of SETTING_ROWS)"),
+        "the simulator takes edition.js's rows"
     );
 }
 
@@ -1116,6 +1199,11 @@ fn every_event_name_is_one_bridge_js_listens_for() {
         "displayStopped",
         "eyepiece",
         "selfTest",
+        "request",
+        "requestGone",
+        "requested",
+        "peers",
+        "contactConfirmed",
     ];
     let list = bridge
         .lines()
@@ -1209,25 +1297,43 @@ fn a_value_an_older_build_kept_for_a_waiting_setting_is_not_reported_as_working(
     }
     let all = commands::settings(&m);
     assert_eq!((all["carry"], all["hops"]), (1, 3), "their defaults");
-    assert_eq!(all["inperson"], 1, "always on");
+    if edition::ONLY_IN_PERSON {
+        assert_eq!(all["inperson"], 1, "always on");
+    } else {
+        assert_eq!(all["inperson"], 0, "the person's own choice");
+    }
 }
 
+/// New contacts need a key check: held On where checking keys in person
+/// is the only way to add a contact; elsewhere the person's choice, On
+/// until they change it.
 #[test]
-fn new_contacts_always_need_a_key_check_on_this_build() {
+fn new_contacts_need_a_key_check_always_where_there_is_no_other_way() {
     let (m, calls) = fake(Lock::Unlocked);
-    assert_eq!(
-        commands::set_setting(&m, "inperson".into(), 0),
-        Err("On this build every new contact needs a key check".to_string())
-    );
-    assert_eq!(
-        commands::set_setting(&m, "inperson".into(), 1),
-        Err("On this build every new contact needs a key check".to_string())
-    );
-    assert!(calls.lock().unwrap().settings.is_empty());
-    assert_eq!(
-        serde_json::to_value(commands::setting_notes(&m)).unwrap()["inperson"],
-        json!({ "note": "always, on this build", "value": 1 })
-    );
+    assert_eq!(commands::settings(&m)["inperson"], 1, "On by default");
+    if edition::ONLY_IN_PERSON {
+        assert_eq!(
+            commands::set_setting(&m, "inperson".into(), 0),
+            Err("On this build every new contact needs a key check".to_string())
+        );
+        assert_eq!(
+            commands::set_setting(&m, "inperson".into(), 1),
+            Err("On this build every new contact needs a key check".to_string())
+        );
+        assert!(calls.lock().unwrap().settings.is_empty());
+        assert_eq!(
+            serde_json::to_value(commands::setting_notes(&m)).unwrap()["inperson"],
+            json!({ "note": "always, on this build", "value": 1 })
+        );
+    } else {
+        commands::set_setting(&m, "inperson".into(), 0).unwrap();
+        assert_eq!(
+            calls.lock().unwrap().settings,
+            vec![("inperson".to_string(), 0)]
+        );
+        assert!(!commands::setting_notes(&m).contains_key("inperson"));
+        assert_eq!(commands::settings(&m)["inperson"], 0);
+    }
 }
 
 #[test]
@@ -1292,6 +1398,9 @@ fn the_simulator_holds_the_same_settings_with_the_same_notes() {
             let e = e.trim_end_matches('}');
             format!("{e}}}")
         })
+        // the simulator lets go of the key check's note where the person
+        // may choose, as setting_notes does
+        .filter(|e| edition::ONLY_IN_PERSON || !e.starts_with("inperson:"))
         .collect();
     have.sort();
     let want: Vec<String> = want.iter().map(|w| w.replace(' ', "")).collect();
@@ -1389,4 +1498,164 @@ fn the_page_and_the_simulator_end_pairing_when_the_node_does() {
         sim.contains(&format!("const PAIRING_CAP_MS = {cap};")),
         "simulator.js's PAIRING_CAP_MS is not the node's ({cap})"
     );
+}
+
+#[test]
+fn requests_to_connect_reach_the_machine_and_come_back_as_the_page_reads_them() {
+    // nothing of requests or who is near until the store is open
+    let (m, calls) = fake(Lock::Locked);
+    let locked = Some("locked".to_string());
+    assert_eq!(commands::requests(&m).err(), locked);
+    assert_eq!(commands::unconfirmed(&m).err(), locked);
+    assert_eq!(commands::strangers(&m).err(), locked);
+    assert_eq!(commands::peers(&m).err(), locked);
+    assert_eq!(commands::accept_request(&m, 3, "Ines".into()).err(), locked);
+    assert_eq!(commands::decline_request(&m, 3).err(), locked);
+    assert_eq!(commands::send_request(&m, "K7MX".into()).err(), locked);
+    {
+        let c = calls.lock().unwrap();
+        assert!(c.accepted.is_empty() && c.declined.is_empty() && c.asked.is_empty());
+    }
+    let (m, calls) = fake(Lock::Unlocked);
+    calls.lock().unwrap().waiting.push(WaitingRequest {
+        id: 3,
+        name: "Ines".into(),
+        fingerprint: [0xc4, 0x1d, 0, 1, 2, 3, 4, 5],
+        safety: "12345 67890".into(),
+    });
+    assert_eq!(
+        serde_json::to_value(commands::requests(&m).unwrap()).unwrap(),
+        json!([{ "id": 3, "name": "Ines", "fingerprint": [0xc4, 0x1d, 0, 1, 2, 3, 4, 5],
+                 "safety": "12345 67890" }]),
+        "shaped as the request event"
+    );
+    // the name as the person corrected it, trimmed and cut as a pairing's
+    assert_eq!(
+        commands::accept_request(&m, 3, "   ".into()),
+        Err("Write their name first".to_string())
+    );
+    let long = format!("  Ines {}  ", "x".repeat(60));
+    assert_eq!(commands::accept_request(&m, 3, long), Ok(5));
+    let (id, name) = calls.lock().unwrap().accepted[0].clone();
+    assert_eq!((id, name.chars().count()), (3, 40));
+    assert!(name.starts_with("Ines x"));
+    assert_eq!(
+        commands::accept_request(&m, 3, "Ines".into()),
+        Err(REQUEST_GONE.to_string())
+    );
+    commands::decline_request(&m, 9).unwrap();
+    assert_eq!(calls.lock().unwrap().declined, vec![9]);
+
+    assert_eq!(commands::strangers(&m).unwrap(), vec!["K7MX".to_string()]);
+    assert_eq!(commands::send_request(&m, "K7MX".into()), Ok(()));
+    assert_eq!(
+        commands::send_request(&m, "AAAA".into()),
+        Err(NOT_IN_RANGE.to_string())
+    );
+    assert_eq!(calls.lock().unwrap().asked, vec!["K7MX".to_string()]);
+    assert_eq!(
+        serde_json::to_value(commands::peers(&m).unwrap()).unwrap(),
+        json!({ "contacts": [1], "strangers": 2 })
+    );
+    assert_eq!(commands::unconfirmed(&m), Ok(vec![5]));
+
+    // with key checks required, both ways refused in so many words
+    calls.lock().unwrap().in_person = true;
+    calls.lock().unwrap().waiting.push(WaitingRequest {
+        id: 4,
+        name: "Jo".into(),
+        fingerprint: [0; 8],
+        safety: String::new(),
+    });
+    assert_eq!(
+        commands::accept_request(&m, 4, "Jo".into()),
+        Err(MEET_FIRST.to_string())
+    );
+    assert_eq!(
+        commands::send_request(&m, "K7MX".into()),
+        Err(MEET_FIRST.to_string())
+    );
+    assert_eq!(commands::requests(&m).unwrap().len(), 1, "it stays");
+}
+
+#[test]
+fn a_channel_its_switch_alone_describes_is_in_channels_until_it_reports() {
+    let r = rig(Lock::Unlocked, None);
+    r.calls
+        .lock()
+        .unwrap()
+        .steady
+        .push((Channel::Bluetooth, "off".into()));
+    assert_eq!(
+        serde_json::to_value(commands::channels(&r.shared)).unwrap(),
+        json!([{ "channel": "bluetooth", "state": "off" }])
+    );
+    r.script
+        .lock()
+        .unwrap()
+        .push_back(Some(vec![NodeEvent::ChannelState {
+            channel: Channel::Bluetooth,
+            state: "unavailable: Bluetooth is off in System Settings.".into(),
+        }]));
+    commands::tick(&r.shared, 20);
+    assert_eq!(
+        commands::channels(&r.shared)[0].state,
+        "unavailable: Bluetooth is off in System Settings.",
+        "what it reported, over what its switch says"
+    );
+}
+
+#[test]
+fn request_events_become_the_bridge_events_bridge_js_reads() {
+    let cases = [
+        (
+            NodeEvent::Request {
+                id: 3,
+                name: "Ines".into(),
+                fingerprint: [1, 2, 3, 4, 5, 6, 7, 8],
+                safety: "12345".into(),
+            },
+            "request",
+            json!({ "id": 3, "name": "Ines", "fingerprint": [1, 2, 3, 4, 5, 6, 7, 8], "safety": "12345" }),
+        ),
+        (
+            NodeEvent::RequestGone { id: 3 },
+            "requestGone",
+            json!({ "id": 3 }),
+        ),
+        (
+            NodeEvent::Requested {
+                label: "K7MX".into(),
+                state: RequestState::Accepted(ContactId(6)),
+            },
+            "requested",
+            json!({ "label": "K7MX", "state": "accepted", "contact": 6 }),
+        ),
+        (
+            NodeEvent::Requested {
+                label: "K7MX".into(),
+                state: RequestState::Delivered,
+            },
+            "requested",
+            json!({ "label": "K7MX", "state": "delivered", "contact": null }),
+        ),
+        (
+            NodeEvent::Peers {
+                contacts_in_range: vec![ContactId(1)],
+                strangers_in_range: 2,
+            },
+            "peers",
+            json!({ "contacts": [1], "strangers": 2 }),
+        ),
+        (
+            NodeEvent::ContactConfirmed {
+                contact: ContactId(6),
+            },
+            "contactConfirmed",
+            json!({ "contact": 6 }),
+        ),
+    ];
+    for (event, name, payload) in cases {
+        assert_eq!(bridge_event(&event), (name, payload));
+    }
 }

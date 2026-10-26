@@ -11,6 +11,7 @@
 
 pub mod commands;
 pub mod device;
+pub mod edition;
 pub mod keychain;
 
 use std::thread;
@@ -134,6 +135,41 @@ fn channels(state: State<'_, Shared>) -> Vec<commands::ChannelView> {
     commands::channels(&state)
 }
 
+#[tauri::command]
+fn requests(state: State<'_, Shared>) -> Result<Vec<commands::RequestView>, String> {
+    commands::requests(&state)
+}
+
+#[tauri::command]
+fn accept_request(state: State<'_, Shared>, id: u64, name: String) -> Result<i64, String> {
+    commands::accept_request(&state, id, name)
+}
+
+#[tauri::command]
+fn decline_request(state: State<'_, Shared>, id: u64) -> Result<(), String> {
+    commands::decline_request(&state, id)
+}
+
+#[tauri::command]
+fn send_request(state: State<'_, Shared>, label: String) -> Result<(), String> {
+    commands::send_request(&state, label)
+}
+
+#[tauri::command]
+fn strangers(state: State<'_, Shared>) -> Result<Vec<String>, String> {
+    commands::strangers(&state)
+}
+
+#[tauri::command]
+fn peers(state: State<'_, Shared>) -> Result<commands::PeersView, String> {
+    commands::peers(&state)
+}
+
+#[tauri::command]
+fn unconfirmed(state: State<'_, Shared>) -> Result<Vec<i64>, String> {
+    commands::unconfirmed(&state)
+}
+
 /// Tick the node every [`TICK`] and emit what it reports.
 fn pump(app: AppHandle) {
     let start = Instant::now();
@@ -182,7 +218,14 @@ pub fn run() {
             broadcasts,
             machine,
             channels,
-            eyepiece
+            eyepiece,
+            requests,
+            accept_request,
+            decline_request,
+            send_request,
+            strangers,
+            peers,
+            unconfirmed
         ])
         .run(tauri::generate_context!())
         .expect("Bombechat could not start");

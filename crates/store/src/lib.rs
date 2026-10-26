@@ -71,7 +71,10 @@ CREATE TABLE broadcasts (
     age_at INTEGER,
     channel INTEGER NOT NULL DEFAULT 0
 );
-PRAGMA user_version = 5;
+CREATE TABLE unconfirmed (
+    contact_id INTEGER PRIMARY KEY REFERENCES contacts(id)
+);
+PRAGMA user_version = 6;
 ";
 
 /// The schema version [`SCHEMA`] makes, kept in `PRAGMA user_version`.
@@ -81,7 +84,7 @@ PRAGMA user_version = 5;
 /// back the pages erased rows leave ([`MIGRATE_TO_4`]); version 4 is
 /// before broadcasts kept the channel they went or came by
 /// ([`MIGRATE_TO_5`]).
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 /// Brings a version 0 store up to version 1: outgoing messages gain a
 /// delivery state and, while waiting, their sealed envelope. Rows from
@@ -149,6 +152,15 @@ PRAGMA user_version = 4;
 /// column is added whatever became of the v3-to-v4 `VACUUM` (a store left
 /// at v3 by a failed one has it too); the version moves to 5 only from 4.
 const MIGRATE_TO_5: &str = "ALTER TABLE broadcasts ADD COLUMN channel INTEGER NOT NULL DEFAULT 0;";
+
+/// Brings a store up to version 6: contacts added by accepting a request
+/// to connect are marked not confirmed ([`Store::set_confirmed`]) until a
+/// proven session with them. Contacts from before are all confirmed (they
+/// were all checked in person). As with v5, the table is made whatever
+/// became of the v3-to-v4 `VACUUM`; the version moves to 6 only from 5.
+const MIGRATE_TO_6: &str = "CREATE TABLE IF NOT EXISTS unconfirmed (
+    contact_id INTEGER PRIMARY KEY REFERENCES contacts(id)
+);";
 
 /// How many heard broadcasts (not this device's own) are kept: the newest
 /// this many. Anyone in range can broadcast, so without a cap strangers
@@ -882,6 +894,61 @@ impl Store {
             .collect()
     }
 
+    /// Add a contact by accepting a request to connect: unchecked, and
+    /// not confirmed ([`Store::set_confirmed`]), in one transaction, so a
+    /// contact is never kept without its not-confirmed mark. Returns its
+    /// newly assigned id.
+    pub fn add_unconfirmed_contact(
+        &self,
+        name: &str,
+        who: &PublicIdentity,
+    ) -> Result<ContactId, StoreError> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|_| StoreError::Corrupt)?;
+        tx.execute(
+            "INSERT INTO contacts (name, sign, dh, checked) VALUES (?1, ?2, ?3, 0)",
+            params![name, who.sign.as_slice(), who.dh.as_slice()],
+        )
+        .map_err(|_| StoreError::Corrupt)?;
+        let id = tx.last_insert_rowid();
+        tx.execute(
+            "INSERT OR IGNORE INTO unconfirmed (contact_id) VALUES (?1)",
+            params![id],
+        )
+        .map_err(|_| StoreError::Corrupt)?;
+        tx.commit().map_err(|_| StoreError::Corrupt)?;
+        Ok(ContactId(id))
+    }
+
+    /// Mark contact `c` confirmed or not. A contact added by accepting a
+    /// request to connect is not confirmed until a proven session with
+    /// them shows they hold it too; every other contact is.
+    pub fn set_confirmed(&self, c: ContactId, confirmed: bool) -> Result<(), StoreError> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let sql = if confirmed {
+            "DELETE FROM unconfirmed WHERE contact_id = ?1"
+        } else {
+            "INSERT OR IGNORE INTO unconfirmed (contact_id) VALUES (?1)"
+        };
+        conn.execute(sql, params![c.0])
+            .map_err(|_| StoreError::Corrupt)?;
+        Ok(())
+    }
+
+    /// The contacts not confirmed ([`Store::set_confirmed`]), by id.
+    pub fn unconfirmed(&self) -> Vec<ContactId> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let mut stmt = conn
+            .prepare("SELECT contact_id FROM unconfirmed ORDER BY contact_id")
+            .expect("preparing unconfirmed query");
+        stmt.query_map([], |row| row.get(0).map(ContactId))
+            .expect("querying unconfirmed")
+            .filter_map(Result::ok)
+            .collect()
+    }
+
     /// Set whether a contact's safety number has been checked. Unknown
     /// ids are ignored.
     pub fn set_checked(&self, c: ContactId, checked: bool) -> Result<(), StoreError> {
@@ -1049,6 +1116,17 @@ fn migrate(conn: &Connection) -> Result<(), StoreError> {
             .map_err(|_| StoreError::Corrupt)?;
         if now == 4 {
             conn.execute_batch("PRAGMA user_version = 5;")
+                .map_err(|_| StoreError::Corrupt)?;
+        }
+    }
+    if version < 6 {
+        conn.execute_batch(MIGRATE_TO_6)
+            .map_err(|_| StoreError::Corrupt)?;
+        let now: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .map_err(|_| StoreError::Corrupt)?;
+        if now == 5 {
+            conn.execute_batch("PRAGMA user_version = 6;")
                 .map_err(|_| StoreError::Corrupt)?;
         }
     }
@@ -1479,7 +1557,7 @@ mod tests {
                 &SCHEMA
                     .replace("PRAGMA auto_vacuum = INCREMENTAL;", "")
                     .replace(",\n    channel INTEGER NOT NULL DEFAULT 0", "")
-                    .replace("user_version = 5", "user_version = 3"),
+                    .replace("user_version = 6", "user_version = 3"),
             )
             .unwrap();
             store_identity(&conn, &Identity::generate(), "me").unwrap();
@@ -1490,7 +1568,7 @@ mod tests {
         }
         let store = Store::open(&path, "pw").unwrap();
         assert_eq!(pragma(&store, "auto_vacuum"), 2);
-        assert_eq!(pragma(&store, "user_version"), 5);
+        assert_eq!(pragma(&store, "user_version"), 6);
         assert_eq!(store.my_name(), "me");
     }
 
@@ -1508,7 +1586,7 @@ mod tests {
             conn.execute_batch(
                 &SCHEMA
                     .replace(",\n    channel INTEGER NOT NULL DEFAULT 0", "")
-                    .replace("user_version = 5", "user_version = 4"),
+                    .replace("user_version = 6", "user_version = 4"),
             )
             .unwrap();
             store_identity(&conn, &Identity::generate(), "me").unwrap();
@@ -1520,7 +1598,7 @@ mod tests {
             .unwrap();
         }
         let store = Store::open(&path, "pw").unwrap();
-        assert_eq!(pragma(&store, "user_version"), 5);
+        assert_eq!(pragma(&store, "user_version"), 6);
         let waiting = store.waiting_broadcasts();
         assert_eq!(waiting.len(), 1);
         assert_eq!(waiting[0].0.channel, Channel::Sound, "went by sound, then");
@@ -1570,7 +1648,7 @@ mod tests {
                 &SCHEMA
                     .replace("PRAGMA auto_vacuum = INCREMENTAL;", "")
                     .replace(",\n    channel INTEGER NOT NULL DEFAULT 0", "")
-                    .replace("user_version = 5", "user_version = 3"),
+                    .replace("user_version = 6", "user_version = 3"),
             )
             .unwrap();
             store_identity(&conn, &Identity::generate(), "me").unwrap();
@@ -1597,10 +1675,70 @@ mod tests {
         let store = Store::open(&path, "pw").unwrap();
         assert_eq!(
             pragma(&store, "user_version"),
-            5,
+            6,
             "retried and completed on the next open"
         );
         assert_eq!(pragma(&store, "auto_vacuum"), 2);
+    }
+
+    #[test]
+    fn a_store_from_before_unconfirmed_contacts_takes_every_contact_as_confirmed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v5.db");
+        {
+            let salt = random_salt();
+            write_salt_sidecar(&path, &salt).unwrap();
+            create_private_db_file(&path).unwrap();
+            let conn = open_existing(&path).unwrap();
+            key_connection(&conn, &derive_key("pw", &salt).unwrap()).unwrap();
+            // the version 5 schema: today's, without the unconfirmed table
+            conn.execute_batch(
+                &SCHEMA
+                    .replace(
+                        "CREATE TABLE unconfirmed (\n    contact_id INTEGER PRIMARY KEY REFERENCES contacts(id)\n);\n",
+                        "",
+                    )
+                    .replace("user_version = 6", "user_version = 5"),
+            )
+            .unwrap();
+            store_identity(&conn, &Identity::generate(), "me").unwrap();
+        }
+        let store = Store::open(&path, "pw").unwrap();
+        assert_eq!(pragma(&store, "user_version"), 6);
+        let c = store
+            .add_contact("Ann", &Identity::generate().public(), false)
+            .unwrap();
+        assert!(store.unconfirmed().is_empty(), "every contact confirmed");
+        store.set_confirmed(c, false).unwrap();
+        store.set_confirmed(c, false).unwrap();
+        drop(store);
+        let store = Store::open(&path, "pw").unwrap();
+        assert_eq!(store.unconfirmed(), vec![c], "kept across opens");
+        store.set_confirmed(c, true).unwrap();
+        assert!(store.unconfirmed().is_empty());
+    }
+
+    #[test]
+    fn a_contact_from_a_request_is_kept_only_with_its_not_confirmed_mark() {
+        let dir = tempfile::tempdir().unwrap();
+        let store =
+            Store::create(&dir.path().join("s.db"), "pw", &Identity::generate(), "me").unwrap();
+        let c = store
+            .add_unconfirmed_contact("Ann", &Identity::generate().public())
+            .unwrap();
+        assert_eq!(store.unconfirmed(), vec![c]);
+        assert!(!store.contacts()[0].checked, "unchecked");
+        // the mark cannot be written: no contact is kept either
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute_batch("DROP TABLE unconfirmed;")
+            .unwrap();
+        assert!(store
+            .add_unconfirmed_contact("Ben", &Identity::generate().public())
+            .is_err());
+        assert_eq!(store.contacts().len(), 1, "Ben was not kept");
     }
 
     #[test]

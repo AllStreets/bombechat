@@ -598,3 +598,29 @@ fn a_setting_that_cannot_be_saved_is_refused_and_left_as_it_was() {
     assert!(why.starts_with("The setting was not saved"), "{why}");
     assert_eq!(commands::settings(&s)["volume"], 2);
 }
+
+/// With no carrier that reaches people one by one, nobody asks and nobody
+/// is near; what the page may still ask is answered as the node does.
+#[test]
+fn a_machine_with_no_carrier_for_requests_answers_as_for_nobody_near() {
+    let dir = TempDir::new().unwrap();
+    let s = Shared::new(Box::new(device(&dir.path().join("m.db"))));
+    commands::unlock(&s, "correct horse".into(), Some("Ana".into())).unwrap();
+    commands::tick(&s, 0);
+    assert_eq!(commands::requests(&s), Ok(vec![]));
+    assert_eq!(
+        commands::accept_request(&s, 1, "Ines".into()),
+        Err(bombechat_node::REQUEST_GONE.to_string())
+    );
+    assert!(commands::strangers(&s).unwrap().is_empty());
+    // new contacts need a key check, On until the person says otherwise
+    assert_eq!(
+        commands::send_request(&s, "K7MX".into()),
+        Err(bombechat_node::MEET_FIRST.to_string())
+    );
+    assert_eq!(
+        serde_json::to_value(commands::peers(&s).unwrap()).unwrap(),
+        serde_json::json!({ "contacts": [], "strangers": 0 })
+    );
+    assert_eq!(commands::unconfirmed(&s), Ok(vec![]));
+}

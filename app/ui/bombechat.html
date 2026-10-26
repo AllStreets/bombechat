@@ -8,6 +8,7 @@
 <link rel="preload" href="fonts/cutive-mono.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="fonts/libre-caslon-text-400.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="fonts/fonts.css">
+<link rel="stylesheet" href="edition.css">
 <style>
 /* Fallback faces sized to the web fonts, so nothing moves when they arrive. */
 @font-face{font-family:'Cutive fallback';src:local('Courier New'),local('Courier');size-adjust:100%;ascent-override:88%;descent-override:26%}
@@ -135,8 +136,16 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
 .pl,.maker,.colno,.key,.blank b{-webkit-text-stroke:.25px currentColor}
 .maker{font-family:var(--engr);font-size:16px;letter-spacing:.12em;color:#ddd6c3;white-space:nowrap}
 .maker small{font-size:12px;letter-spacing:.07em;color:var(--lab);margin-left:10px}
+.maker small::after{content:var(--build)}
 .top .rt{margin-left:auto;display:flex;gap:10px;align-items:center}
 .top .said{font-family:var(--type);font-size:12.5px;color:#9d978a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:34vw;opacity:0;transition:opacity .4s}
+/* a narrow window has no room beside the plates for what the machine says: it hangs under the bar's right end, on a
+   strip of the bar's own enamel, and nothing in the bar moves or is cut */
+.app{grid-template-columns:minmax(0,1fr)}
+.top .rt{min-width:0}
+.top .said.under{position:absolute;right:18px;top:100%;max-width:calc(100vw - 36px);overflow:visible;padding:4px 10px 5px;border-radius:0 0 2px 2px;
+  background:linear-gradient(#1c1d1b,#161715);box-shadow:inset 0 1px 0 #000,0 3px 6px rgba(0,0,0,.45)}
+.top .said.under:empty{display:none}
 .top .sep{width:1px;height:22px;background:#0b0b0a;box-shadow:1px 0 0 rgba(255,255,255,.05);margin:0 4px}
 .jewel{display:inline-block;width:11px;height:11px;border-radius:50%;flex:none;background:radial-gradient(circle at 38% 32%,#fff3c9 0,#f0b64c 32%,#a8661b 70%,#5d360d);box-shadow:0 0 0 2px #2b2a26,0 0 0 3px #000;transition:background .25s}
 .jewel.off{background:radial-gradient(circle at 38% 32%,#8c7a5a 0,#4c3d25 40%,#241b0e)}
@@ -396,7 +405,7 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
 .stn{display:grid;grid-template-columns:auto minmax(0,1fr);gap:9px;align-items:center}
 .holder{position:relative;padding:4px 8px 3px;background:linear-gradient(#cfc9b9,#b3ad9d);border-radius:2px;box-shadow:inset 0 0 0 1px rgba(0,0,0,.4),0 1px 2px rgba(0,0,0,.6);min-width:0}
 .holder span{display:block;background:#efe8d4;font-family:var(--type);font-size:13px;color:#1f1c17;padding:2px 6px;box-shadow:inset 0 1px 2px rgba(0,0,0,.25);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.holder span small{display:block;font-size:12px;color:#625a49;margin-top:1px}
+.holder span small{display:block;font-size:12px;color:#625a49;margin-top:1px;overflow:hidden;text-overflow:ellipsis}
 .counter{display:flex;align-items:center;gap:10px}
 
 /* the flashing view: while the machine flashes by light, the message sheet's place holds a signal lamp. The code
@@ -481,14 +490,14 @@ body:has(.lamp:not([hidden])){perspective:none}
 <div id="back" aria-hidden="true"><span class="pl screw">Rear panel</span></div>
 <div class="app" id="app">
   <header class="top">
-    <span class="maker">Bombechat<small>airgapped build</small></span>
+    <span class="maker">Bombechat<small></small></span>
     <div class="rt">
       <span class="said" id="said" role="status" aria-live="polite"></span>
       <button class="bat" id="snd" aria-pressed="true" aria-label="Machine sound" title="The click of the drums as they turn and the plugs on the back panel. Click anywhere first to allow sound."><span class="lever"></span></button>
       <label class="pl sndlab" for="snd">Machine sound</label>
       <span class="sep"></span>
       <span class="jewel" id="topjewel" aria-hidden="true"></span><span class="pl" id="toplisten">Listening by sound</span>
-      <span class="pl" title="This build has no Bluetooth code in it, so there is no radio to switch on.">No radio fitted</span>
+      <span class="pl" id="radio" title="This build has no Bluetooth code in it, so there is no radio to switch on.">No radio fitted</span>
       <span class="pl build">Build 0.4</span>
       <span class="sep"></span>
       <a class="pl screw pb" id="settings" href="settings.html" title="Turn the machine round to its back panel">Settings</a>
@@ -588,6 +597,7 @@ body:has(.lamp:not([hidden])){perspective:none}
 
 <script type="module">
 import { bridge } from './bridge.js';
+import { front } from './edition.js';
 /* ---------- passphrase and contact ----------
    contacts() refuses until the store is open, saying whether one exists yet; then the
    page asks for the passphrase (the first time, chooses one) and asks again. */
@@ -602,7 +612,7 @@ function askPassphrase(first){return new Promise(done=>{
     <div class="f"><span class="ln"><input id="unlock-${name}" name="${name}" type="${type}" autocomplete="${auto}" spellcheck="false"${name==='who'?' maxlength="40"':''} required></span></div></div>`;
   const wheels=Array.from({length:5},()=>`<i><span>${'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map(c=>`<b>${c}</b>`).join('')}</span></i>`).join('');
   f.innerHTML=`<div class="stand">
-    <span class="maker" aria-hidden="true">Bombechat<small>airgapped build</small></span>
+    <span class="maker" aria-hidden="true">Bombechat<small></small></span>
     <div class="card" role="dialog" aria-modal="true" aria-labelledby="unlock-h">
       <div class="rh"><h2 id="unlock-h">${first?'Registration':'Unlock'}</h2><span>For this laptop</span></div>
       ${first?row('who','Your name','as people you pair with see it','text','name'):''}
@@ -659,7 +669,7 @@ function nameTheSheet(c){const at=s=>document.querySelector(s);
   replyLabels();
   at('.menu').setAttribute('aria-label',`Key check with ${c.short}`);
   at('.menu h2 span').textContent=bridge.simulated?`menu 7, ${c.short}`:c.short;
-  at('.bankfoot .rd:last-child').title=`Each frame is checked against ${c.short}'s key as it lands`;
+  at('#chk').parentElement.title=`Each frame is checked against ${c.short}'s key as it lands`;
   at('.row3 .stn .holder > span').firstChild.nodeValue=c.name}
 const Q=new URLSearchParams(location.search);
 const STILL=Q.has('still');
@@ -790,6 +800,7 @@ const hopsWord=n=>['no hops','one hop','two hops','three hops','four hops','five
 function onMessage(m){
   if(onSheet.has(m.id))return;
   if(!m.outgoing&&!m.via&&arrival&&arrival.ent&&m.channel===arrival.how)return;// it finishes a provisional entry: see below
+  if(!m.outgoing&&!m.via)HEARD.set(m.contact,m);
   if(m.contact!==CONTACT.id)return;// another person's sheet
   onSheet.add(m.id);
   const how=m.via?'relay':m.channel;const ent=entry(m.at_min*60000,how);const what=ent.querySelector('.what');
@@ -887,14 +898,19 @@ function drawKnob(id){const el=document.getElementById(id),k=KNOBS[id];let fl=''
   <g class="cap" style="transform:rotate(${ANG[k.pos]}deg)">${fl}<circle r="17" fill="#1d1c1a" stroke="rgba(0,0,0,.75)"/><circle r="17" fill="none" stroke="rgba(255,255,255,.07)" transform="translate(0,-.7)"/><rect x="-1.5" y="-24" width="3" height="12.5" rx="1.1" fill="#e9e3d2"/></g></svg>`;
   el.setAttribute('aria-valuenow',k.pos);el.setAttribute('aria-valuetext',k.labels[k.pos].toLowerCase());el.title=k.held?`${k.name}: ${k.held}. Taped at ${k.labels[k.pos].toLowerCase()} until then.`:k.read?`${k.name}: ${k.say[k.pos]}. Click or use the arrow keys to turn.`:`${k.name}: not read from the machine, shown at off. Click or use the arrow keys to turn.`}
 // the switches and the back panel's Sound and Light rows are the same two settings, kept by the machine
-for(const k of Object.values(KNOBS)){const v=KEPT[k.setting];if(v>=0&&v<=2)k.pos=v;k.read=KEPT_READ}
-for(const [id,k] of Object.entries(KNOBS)){const n=NOTES[k.setting];if(!n)continue;k.held=n.note;k.pos=Number.isInteger(n.value)?n.value:0;k.read=true;
+// (seated the same way for any switch a build fits, edition.js's through the front's kit below)
+function seatKnob(id){const k=KNOBS[id],v=KEPT[k.setting];if(v>=0&&v<=2)k.pos=v;k.read=KEPT_READ}
+function tapeKnob(id){const k=KNOBS[id],n=NOTES[k.setting];if(!n)return;k.held=n.note;k.pos=Number.isInteger(n.value)?n.value:0;k.read=true;
   const el=document.getElementById(id),mod=el.closest('.mod');mod.classList.add('taped');el.setAttribute('aria-disabled','true');
   const t=document.createElement('span');t.className='tapedown';t.id=id+'-tape';t.appendChild(document.createElement('b')).textContent=n.note;mod.appendChild(t);el.setAttribute('aria-describedby',t.id)}
+Object.keys(KNOBS).forEach(seatKnob);Object.keys(KNOBS).forEach(tapeKnob);
 // the machine won't take a turn (the setting could not be saved): the knob goes back and the top bar says why, as the
 // settings page does
 const saidEl=document.getElementById('said');let saidT;
-function say(text,full=text){saidEl.textContent=text;saidEl.title=full;saidEl.style.opacity=1;clearTimeout(saidT);saidT=setTimeout(()=>saidEl.style.opacity=0,text.length>40?5200:2600)}
+function say(text,full=text){saidEl.classList.remove('under');saidEl.textContent=text;saidEl.title=full;
+  // no room for it beside the plates: under the bar instead
+  if(saidEl.scrollWidth>saidEl.clientWidth+1)saidEl.classList.add('under');
+  saidEl.style.opacity=1;clearTimeout(saidT);saidT=setTimeout(()=>saidEl.style.opacity=0,text.length>40?5200:2600)}
 // resolves true once the machine has taken the turn, or to why it would not
 function turnKnob(id,pos,again){const k=KNOBS[id];if(k.held)return Promise.resolve(`${k.name}: ${k.held}`);pos=Math.max(0,Math.min(2,pos));if(pos===k.pos&&k.read&&!again)return Promise.resolve(true);const was={pos:k.pos,read:k.read};k.pos=pos;k.read=true;
   // a switch turned: the test's refusal has had its answer
@@ -912,10 +928,14 @@ function turnKnob(id,pos,again){const k=KNOBS[id];if(k.held)return Promise.resol
     return Promise.resolve(bridge.settings()).then(m=>{if(!m||m.light!==pos)return back(t);if(k.pos!==pos)return t;
       lightLeftFlash();say(`Light at ${k.labels[pos]}, not saved.`,`Light is at ${k.labels[pos]} for now. ${sentence(t)} So it goes back to ${k.labels[was.pos]} next time.`);return {unsaved:t}},()=>back(t))});
   applyChannels();return taken}
-['k1','k2'].forEach(id=>{drawKnob(id);const el=document.getElementById(id);
+function wireKnob(id){drawKnob(id);const el=document.getElementById(id);
   el.addEventListener('click',()=>turnKnob(id,(KNOBS[id].pos+1)%3));
-  el.addEventListener('keydown',e=>{const d={ArrowRight:1,ArrowUp:1,ArrowLeft:-1,ArrowDown:-1}[e.key];if(e.key==='Home')turnKnob(id,0);else if(e.key==='End')turnKnob(id,2);else if(d)turnKnob(id,KNOBS[id].pos+d);else return;e.preventDefault()})});
+  el.addEventListener('keydown',e=>{const d={ArrowRight:1,ArrowUp:1,ArrowLeft:-1,ArrowDown:-1}[e.key];if(e.key==='Home')turnKnob(id,0);else if(e.key==='End')turnKnob(id,2);else if(d)turnKnob(id,KNOBS[id].pos+d);else return;e.preventDefault()})}
+['k1','k2'].forEach(wireKnob);
 const sendBtn=document.getElementById('sendsound'),flashBtn=document.getElementById('flash');
+// channels a build fits beyond sound and light (the front's kit): how -> { btn, refusal(public) (why it won't send now,
+// or nothing), waiting(it) and slip(it) (what a message waiting for it says), sending (while it goes) }
+const FITTED=new Map();
 function applyChannels(){const s=KNOBS.k1.pos,l=KNOBS.k2.pos;
   document.getElementById('j1').classList.toggle('off',s===0);document.getElementById('j2').classList.toggle('off',l===0);
   document.getElementById('topjewel').classList.toggle('off',s===0&&l===0);
@@ -924,6 +944,8 @@ function applyChannels(){const s=KNOBS.k1.pos,l=KNOBS.k2.pos;
   sendBtn.title=s<2?`Sound is set to ${KNOBS.k1.labels[s].toLowerCase()}. Turn it to Listen and send to play replies.`:'Plays the message through the speaker. Enter does the same.';
   flashBtn.setAttribute('aria-disabled',l<2);
   flashBtn.title=l<2?'Light is not set to Read and flash. Turn the Light switch to Read and flash to send this way.':PUBLIC?'Flashes the notice on screen, for any camera held up to it.':`Flashes the message on screen. Hold it up to ${CONTACT.short}'s camera.`;
+  // a fitted channel's key is disabled while it would refuse, as these two are
+  for(const f of FITTED.values())f.btn.setAttribute('aria-disabled',!!f.refusal(PUBLIC));
   showEyepiece();outbox.forEach(status);drawOutbox()}
 
 /* ---------- room meter and the quiet rule ---------- */
@@ -956,12 +978,12 @@ const esc=s=>s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&qu
 function outItem(id){let it=outbox.get(id);if(!it){it={id,text:'',public:false,state:null,ent:null,how:'sound',leaving:false};outbox.set(id,it)}return it}
 function drawOutbox(){const q=[...outbox.values()].filter(m=>m.text&&(m.state==='waiting'||m.leaving));
   if(!q.length){outboxEl.innerHTML='<div class="slip empty">Nothing waiting to send.</div>';return}
-  outboxEl.innerHTML=q.slice(0,2).map(m=>`<div class="slip${m.leaving?' gone':''}" data-id="${m.id}">${esc(m.text)}<small>${m.public?'public, ':''}${m.how==='light'?(KNOBS.k2.pos<2?'flashes at Read and flash':'flashes next'):`sends once under ${sendUnder()} dB`}</small></div>`).join('')+(q.length>2?`<div class="slip empty">and ${q.length-2} more</div>`:'')}
+  outboxEl.innerHTML=q.slice(0,2).map(m=>`<div class="slip${m.leaving?' gone':''}" data-id="${m.id}">${esc(m.text)}<small>${m.public?'public, ':''}${FITTED.has(m.how)?esc(FITTED.get(m.how).slip(m)):m.how==='light'?(KNOBS.k2.pos<2?'flashes at Read and flash':'flashes next'):`sends once under ${sendUnder()} dB`}</small></div>`).join('')+(q.length>2?`<div class="slip empty">and ${q.length-2} more</div>`:'')}
 function status(it){const st=it.ent&&it.ent.querySelector('.state');if(!st)return;
   st.classList.toggle('live',it.state==='playing');
   if(it.ent)it.ent.classList.toggle('failed',it.state==='failed');
-  const said=it.state==='waiting'?(it.how==='light'?(KNOBS.k2.pos<2?'waiting for Read and flash':'flashing next'):room==null?'waiting for quiet':room<sendUnder()?'playing next':`waiting for quiet, the room is at ${Math.round(room)} dB`)
-    :it.state==='playing'?(it.how==='light'?'flashing on screen':'playing by sound'):it.state==='sent'?(it.public?'sent to anyone in range':'sent, not heard yet'):it.state==='failed'?sentence(it.why||'not sent'):'';
+  const said=it.state==='waiting'?(FITTED.has(it.how)?FITTED.get(it.how).waiting(it):it.how==='light'?(KNOBS.k2.pos<2?'waiting for Read and flash':'flashing next'):room==null?'waiting for quiet':room<sendUnder()?'playing next':`waiting for quiet, the room is at ${Math.round(room)} dB`)
+    :it.state==='playing'?(FITTED.has(it.how)?FITTED.get(it.how).sending:it.how==='light'?'flashing on screen':'playing by sound'):it.state==='sent'?(it.public?'sent to anyone in range':'sent, not heard yet'):it.state==='failed'?sentence(it.why||'not sent'):'';
   // a public notice carries the key it is signed with, as the public entries heard on the sheet do
   st.textContent=it.public&&it.state!=='failed'?[signedBy(),said].filter(Boolean).join(', '):said}
 const signedBy=()=>MY_FP?`signed ${MY_FP}`:'signed';
@@ -990,7 +1012,9 @@ flashBtn.addEventListener('click',()=>send('light'));
 function nudge(btn){btn.animate([{transform:'translateX(0)'},{transform:'translateX(-3px)'},{transform:'translateX(3px)'},{transform:'translateX(0)'}],{duration:220});}
 function send(how){const text=reply.value.trim();
   if(PUBLIC){broadcast(text,how);return}
-  const btn=how==='sound'?sendBtn:flashBtn;
+  const fitted=FITTED.get(how),btn=fitted?fitted.btn:how==='sound'?sendBtn:flashBtn;
+  // a fitted channel says why it won't send, under the line, as Flash's refusal is said, and keeps what was written
+  if(fitted){const no=fitted.refusal(false);if(no){refuse(no,btn);btn.focus();return}}
   // the Light switch won't flash it: say why under the line, as a notice's refusal is said, and keep what was written
   if(how==='light'&&btn.getAttribute('aria-disabled')==='true'){refuse(`${lightRefusal()}. Turn it to Read and flash to send by light`,flashBtn);flashBtn.focus();return}
   if(btn.getAttribute('aria-disabled')==='true'){nudge(btn);btn.focus();return}
@@ -1022,6 +1046,7 @@ let broadcasting=false;
 // why the Light switch won't flash: it is off, at Read, or was not read from the machine
 const lightRefusal=()=>!KNOBS.k2.read?'The Light switch was not read from the machine':KNOBS.k2.pos===0?'Light is off':'Light is set to read only';
 function broadcast(text,how='sound'){if(broadcasting)return;
+  if(FITTED.has(how)){const f=FITTED.get(how);refuse(f.refusal(true)||'A public notice goes by sound or light',f.btn);return}
   const s=KNOBS.k1.pos,btn=how==='light'?flashBtn:sendBtn;
   if(how==='light'&&flashBtn.getAttribute('aria-disabled')==='true'){refuse(`${lightRefusal()}. Turn it to Read and flash to broadcast by light`,flashBtn);return}
   if(how==='sound'&&sendBtn.getAttribute('aria-disabled')==='true'){refuse(`${!KNOBS.k1.read?'The Sound switch was not read from the machine':s===0?'Sound is off':'Sound is set to listen only'}. Turn it to Listen and send to broadcast`);return}
@@ -1182,12 +1207,29 @@ async function realSheet(){
   document.documentElement.classList.add('real')}
 // stations: the contacts, with when each was last heard
 let TALK=new Map();
+// the last message heard from each contact on this page, for one the store gave no history of
+const HEARD=new Map();
+// told each time the stations are drawn (the front's kit, below)
+const stationsDrawn=[];
+// the last message heard from a contact: the newer of what the store gave and what this page heard
+function lastHeard(id){const a=[...(TALK.get(id)||[])].reverse().find(m=>!m.outgoing),b=HEARD.get(id);return !a?b:!b?a:b.at_min>=a.at_min?b:a}
+function station(p){const last=p&&lastHeard(p.id);
+  const stn=el('div','stn');if(p)stn.dataset.contact=p.id;stn.innerHTML='<span class="jewel off" aria-hidden="true"></span><span class="holder"><span></span></span>';
+  const line=!p?'pair by sound or light to add one':last?`${last.channel}, ${hhmm(last.at_min*60000)}`:'not heard yet';
+  stn.querySelector('.holder span').append(p?p.name:'No contacts yet',el('small',null,line));
+  if(p)stn.querySelector('.holder').title=`${p.name}, ${line}`;
+  return stn}
+// three stations: the sheet's contact, then whoever was added or heard last; more than three, the third counts the rest
 function drawStations(){const row=document.querySelector('.row3'),counter=row.querySelector('.counter');row.querySelectorAll('.stn').forEach(s=>s.remove());
-  for(const p of PEOPLE.length?PEOPLE.slice(0,3):[null]){
-    const last=p&&[...(TALK.get(p.id)||[])].reverse().find(m=>!m.outgoing);
-    const stn=el('div','stn');stn.innerHTML='<span class="jewel off" aria-hidden="true"></span><span class="holder"><span></span></span>';
-    stn.querySelector('.holder span').append(p?p.name:'No contacts yet',el('small',null,!p?'pair by sound or light to add one':last?`${last.channel}, ${hhmm(last.at_min*60000)}`:'not heard yet'));
-    row.insertBefore(stn,counter)}}
+  const at=p=>(lastHeard(p.id)||{}).at_min||0;
+  const rest=PEOPLE.filter(p=>p.id!==CONTACT.id).sort((a,b)=>(b.added||0)-(a.added||0)||at(b)-at(a));
+  const list=PEOPLE.length?[...PEOPLE.filter(p=>p.id===CONTACT.id),...rest]:[null];
+  for(const p of list.length>3?list.slice(0,2):list)row.insertBefore(station(p),counter);
+  if(list.length>3){const more=list.slice(2),stn=el('div','stn');
+    stn.innerHTML='<span class="jewel off" aria-hidden="true"></span><span class="holder"><span></span></span>';
+    stn.querySelector('.holder span').append(`and ${more.length} more`,el('small',null,more.map(p=>p.short||p.name).join(', ')));
+    stn.querySelector('.holder').title=more.map(p=>p.name).join(', ');row.insertBefore(stn,counter)}
+  stationsDrawn.forEach(f=>f(row))}
 // the bytes-a-second readout: the rate the node measures for sound, or nothing when it has none
 function showRate(list){const s=list.find(c=>c.channel==='sound'),rd=document.getElementById('raterd');
   soundBand=s&&s.band||null;
@@ -1242,7 +1284,7 @@ function buttons(state){pairBtn.hidden=state==='offer'||state==='reading';lightP
   pairBtn.textContent=state==='listening'?'Stop listening':'Pair by sound';lightPairBtn.textContent=state==='reading'?'Stop reading':'Pair by light';yesBtn.disabled=noBtn.disabled=false}
 function setState(state,gridded){menu.dataset.pair=state;if(state!=='reading'){clearTimeout(pairCapT);pairCapT=null}menu.classList.toggle('gridded',!!gridded);buttons(state);
   menuStamp.hidden=true;menuStamp.classList.remove('new');menu.querySelector('.fp').hidden=true}
-function cardRest(fresh){setState('',true);offer=null;
+function cardRest(fresh){setState('',true);offer=null;menu.setAttribute('aria-label',`Key check with ${CONTACT.short}`);
   const who=checkedWith||(!bridge.simulated&&CONTACT.id&&CONTACT.checked&&CONTACT.safety?{name:CONTACT.name,safety:CONTACT.safety}:null);
   if(who){pencil(checkSheet(esc(who.name),who.safety,stampHtml(who.at?day(who.at):'',fresh)));menuWho.textContent=who.name;noteSays(who.at?`Checked in person, by ${who.by||'sound'}.`:'Checked in person.')}
   else if(bridge.simulated){// the mockups' story
@@ -1250,6 +1292,11 @@ function cardRest(fresh){setState('',true);offer=null;
     menuWho.textContent=`menu 7, ${CONTACT.short}`;noteSays('Checked in person, by light.');
     menuStamp.hidden=false;const d=menuStamp.querySelector('div');d.textContent='Matched';d.appendChild(el('small',null,'2 Oct'))}
   else{menu.classList.remove('gridded');pencil('<p class="ph">not yet paired</p>');menuWho.textContent='';noteSays('Press Pair by sound or Pair by light, here and on their machine.')}}
+// a contact added some other way than in person (a request to connect, on a build with a carrier for them): the card
+// lays out the number to compare when they meet, unstamped, since nothing has been checked. Not over a pairing in progress
+function cardUnchecked(name,safety,who,note){if(menu.dataset.pair&&menu.dataset.pair!=='refused')return false;
+  setState('',true);offer=null;pencil(checkSheet(esc(name),safety,''));menuWho.textContent=who;noteSays(note);
+  menu.setAttribute('aria-label',`Key check with ${name}, not yet checked`);return true}
 async function pairBySound(){
   if(menu.dataset.pair==='listening'){bridge.stopPairing().catch(()=>{});cardRest();return}
   pairBtn.disabled=true;
@@ -1555,6 +1602,28 @@ function lightSays(state){const tilt=state===TILT_OR_DIM;lightNote.textContent=t
 
 /* ---------- open: replay what came before, then listen ---------- */
 drawOutbox();applyChannels();cardRest();
+// what this build fits beyond sound and light keeps its own part of the front (edition.js), listening from the start.
+// The kit is what the page lends it: a switch fitted as Sound and Light are, the top bar, the stations and the card
+front(bridge,{
+  knob(id,spec){KNOBS[id]=spec;seatKnob(id);tapeKnob(id);wireKnob(id);return spec},
+  say,
+  contactAdded(p){p={...p,added:Date.now()};const i=PEOPLE.findIndex(x=>x.id===p.id);if(i<0)PEOPLE.push(p);else PEOPLE[i]=p;
+    if(!CONTACT.id){CONTACT=p;nameTheSheet(CONTACT)}
+    // in a plain browser the stations are the mockups' story: the new contact takes the place after the sheet's own,
+    // and the story's last station makes room
+    if(bridge.simulated){const row=document.querySelector('.row3'),all=[...row.querySelectorAll('.stn')],was=row.querySelector(`.stn[data-contact="${p.id}"]`);
+      if(was)was.replaceWith(station(p));else{if(all.length>=3)all[all.length-1].remove();const first=row.querySelector('.stn');row.insertBefore(station(p),first?first.nextSibling:row.querySelector('.counter'))}
+      stationsDrawn.forEach(f=>f(row))}
+    else drawStations()},
+  contact:()=>CONTACT,
+  // whether the reply line is writing a public notice
+  isPublic:()=>PUBLIC,
+  // a send key for a channel this build fits, beside Flash and Send by sound
+  sendKey(how,spec){const b=el('button','key pb');b.type='button';b.id='send'+how;b.innerHTML=`<span class="jewel off" aria-hidden="true"></span>${esc(spec.label)}`;
+    document.querySelector('.compose .keys').appendChild(b);FITTED.set(how,{...spec,btn:b});b.addEventListener('click',()=>send(how));return b},
+  onStations(f){stationsDrawn.push(f)},
+  showUnchecked:cardUnchecked,
+});
 function vuTitle(){document.querySelector('.vu').title=`Loudness of the room. Messages wait to play until it drops under ${sendUnder()} dB.`}
 vuTitle();
 if(!bridge.simulated)await realSheet();

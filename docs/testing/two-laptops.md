@@ -1,8 +1,8 @@
 # Two laptops in a room
 
-The acceptance test for Plan 1, the sound path, and Plan 2, the light path. Two Macs running the airgapped build talk to each other by sound, then by light (one screen flashing a code at the other's camera): no Wi-Fi needed, no Bluetooth in the build. A third Mac joins for the last sound step.
+The acceptance test for Plan 1, the sound path, Plan 2, the light path, and Plan 3, Bluetooth. Two Macs running the airgapped build talk to each other by sound, then by light (one screen flashing a code at the other's camera): no Wi-Fi needed, no Bluetooth in the build. A third Mac joins for the last sound step. Then the same two Macs run the Bluetooth edition and talk by Bluetooth.
 
-Part 1 is the modem measured on real hardware. Part 2 is the sound walkthrough, step by step, with what to look for and a line for the result. Part 3 does the same for light, with its own measuring tool, a table to fill in, and a troubleshooting list. At the very end is what to send back.
+Part 1 is the modem measured on real hardware. Part 2 is the sound walkthrough, step by step, with what to look for and a line for the result. Part 3 does the same for light, with its own measuring tool, a table to fill in, and a troubleshooting list. Part 4 is Bluetooth, and it needs the Bluetooth edition (the standard build in `bluetooth/`), built as Part 4 describes: the airgapped build has no Bluetooth in it at all. At the very end is what to send back.
 
 ## Building and running the app
 
@@ -492,13 +492,331 @@ The hint stays for a moment after the last unreadable code and clears by itself.
 
 Tested by: ____________ Date: ____________ Macs (model and year): ____________
 
+## Part 4: Bluetooth
+
+Part 4 needs the Bluetooth edition, the standard build in `bluetooth/`. The airgapped build used in Parts 1 to 3 has no Bluetooth code in it, so none of this can be tried there.
+
+On the standard build Bluetooth is the everyday channel. It reaches your contacts whenever they are in range, without a quiet room or a screen held up to a camera. At Open it also lets a stranger nearby ask to connect, and lets you ask them. Nothing is sent to a stranger until the person accepts them.
+
+You need the same two Macs, **A** (Ana) and **B** (Ben), both with Bluetooth on, a phone with a stopwatch, and somewhere to carry B out of range (another floor, or 30 m or more away with walls between). Write down whether the two Macs are signed in to the same Apple ID: it matters for measurements 5 and 6.
+
+### Building the Bluetooth edition
+
+On each Mac, from the repository root:
+
+```sh
+cd bluetooth/app/src-tauri
+cargo tauri build
+```
+
+The app lands at `bluetooth/target/release/bundle/macos/Bombechat.app` (relative to the repository root). It is called Bombechat like the airgapped app, so open it where it is: copying it into `/Applications` would replace the airgapped one. You can tell the two apart on the machine. The maker's plate reads "standard build" instead of "airgapped build", and where the airgapped app has a blanking plate marked "Not fitted" there is a third switch, Bluetooth.
+
+The standard app keeps its own store, in `~/Library/Application Support/app.bombechat.standard/`, and its own Keychain item. Nothing from Parts 1 to 3 is in it, and nothing in it reaches the airgapped app. So the first run asks for a name and a passphrase again, and macOS asks again for the microphone (and the camera the first time Light is turned on): to macOS it is a different app. To start a Mac over, quit the standard app and delete its store:
+
+```sh
+rm ~/Library/Application\ Support/app.bombechat.standard/bombechat.db ~/Library/Application\ Support/app.bombechat.standard/bombechat.db.salt
+```
+
+### Name the Mac plainly
+
+Anyone in Bluetooth range can read this Mac's name. Give it a plain name that doesn't say who you are, in System Settings, General, About.
+
+Do this on both Macs before anything else. "Connor's MacBook Pro" says who you are; "MacBook" or "Mac 2" doesn't. The name is the Mac's, not Bombechat's: any device in range can read it whatever app is running, Bombechat or not. The same sentence is on the back of the machine, under Bluetooth on the wiring schedule. Measurement 3 below checks what another Mac can actually read.
+
+### 4.1 The radio itself
+
+Two tests drive the radio directly, without the app, and print what CoreBluetooth reports. The first checks one Mac turns its radio on and lets it go again. The second makes two Macs exchange 4 KB both ways, then measures six things about addresses and names that only real hardware can show. The threat model in the design spec lists these as not yet known, so please run both tests even if the app works.
+
+**Permission.** The tests run inside Terminal, so macOS asks whether Terminal may use Bluetooth. Allow it. If you refused before, open System Settings, Privacy and Security, Bluetooth and turn on Terminal (or whichever terminal app you use). If macOS stops the test straight away with no result line (it can do that to a terminal app that doesn't say why it wants Bluetooth), copy everything it printed into your notes and go on to 4.2: the app asks for itself.
+
+Keep both Macs plugged in with their lids open. Each command below runs the test under `caffeinate -i`, which keeps the Mac awake while it runs, and ends with `tee`, which saves what it prints to a file you can send back.
+
+**One Mac.** On each Mac, from the repository root:
+
+```sh
+cd bluetooth
+caffeinate -i cargo test -p bombechat-bluetooth --lib macos -- --ignored --nocapture one_mac 2>&1 | tee one-mac.txt
+```
+
+The first run compiles for a few minutes. Success looks something like this, ending with `test result: ok. 1 passed`:
+
+```text
+powered on and advertising
+after 12 ms: central manager freed true, peripheral manager freed true, delegate freed true
+```
+
+Failure looks like `not done within 30s; saw [Unavailable("…")]` with one of the sentences from Troubleshooting below in it (Bluetooth is off, or Terminal may not use it), or an assertion such as `the central manager is freed`. The second is a real fault: stop meant to let the radio go and didn't. Send the whole output back.
+
+| Mac | Passed | Milliseconds until freed | Notes |
+|---|---|---|---|
+| A | | | |
+| B | | | |
+
+**Two Macs.** The two-Mac test is run twice: a short run of about two minutes, then a long one of about half an hour. Start the command on both Macs within a minute of each other, with the Macs a metre or two apart.
+
+Run 1, the short one. On A:
+
+```sh
+cd bluetooth
+BOMBECHAT_STOP_FIRST=1 caffeinate -i cargo test -p bombechat-bluetooth --lib macos -- --ignored --nocapture two_macs 2>&1 | tee run1-A.txt
+```
+
+On B:
+
+```sh
+cd bluetooth
+caffeinate -i cargo test -p bombechat-bluetooth --lib macos -- --ignored --nocapture two_macs 2>&1 | tee run1-B.txt
+```
+
+Each Mac finds the other, connects, sends 4 KB over the link it opened and collects the other's 4 KB. Then each takes a new advertising token and watches for 30 seconds. Then A stops its radio first while B watches for 30 seconds more, and both check their radio was let go. Success has the lines `connected; largest write N bytes` and `received 4096 bytes N s after sending ours`, and ends with `test result: ok. 1 passed` on both.
+
+Run 2, the long one, from the same `bluetooth` folder. On A:
+
+```sh
+BOMBECHAT_STOP_FIRST=1 BOMBECHAT_WATCH_MIN=25 BOMBECHAT_RESTART_EVERY_MIN=5 caffeinate -i cargo test -p bombechat-bluetooth --lib macos -- --ignored --nocapture two_macs 2>&1 | tee run2-A.txt
+```
+
+On B:
+
+```sh
+BOMBECHAT_WATCH_MIN=25 caffeinate -i cargo test -p bombechat-bluetooth --lib macos -- --ignored --nocapture two_macs 2>&1 | tee run2-B.txt
+```
+
+The same as run 1, then both watch for 25 minutes. `BOMBECHAT_WATCH_MIN` is how long they watch. `BOMBECHAT_RESTART_EVERY_MIN=5` makes A stop and start its radio every 5 minutes during the watch, with a new token each time; B keeps one token for the whole watch. Leave both Macs where they are until both have printed `test result`.
+
+**Reading the measurements.** Each Mac prints the other Mac's identifier as 8 hex digits. It follows the other Mac's Bluetooth address, so when the identifier changes, the address changed. The lines to look for:
+
+- `discovered 1a2b3c4d tag [..]`: the other Mac's advert, with the tag (the first six bytes of its token) it carries
+- `ready 1a2b3c4d name Some("…")`: connected, and the name this Mac could read from the other
+- `central 1a2b3c4d subscribed`: the other Mac connected to this one
+- `failed 1a2b3c4d` and `disconnected 1a2b3c4d error …`: a link ending
+- `Central manager On`, `Peripheral manager On`: the radio's two halves powering on
+- `new token`, `restarted`, `stopping first`, `watching the other Mac stop`: where the test is
+
+1. **Does the address change when the advert restarts?** (Run 1, either Mac.) After the line `new token`, look at the `discovered` lines for the other Mac. If its identifier changed along with its tag, macOS gave the restarted advert a new address, which is what we want. If the identifier stayed and only the tag changed, the address links the old token to the new one.
+2. **Does the tag link addresses across macOS's own rotation?** (Run 2, A's output, since B keeps one token through the watch.) A `discovered` line for B with a new identifier but the same tag as before is macOS rotating B's address in the middle of a token, and our tag linking the two addresses.
+3. **Can the other Mac read this Mac's name?** (Run 1, both Macs.) The `ready` line prints the name read from the other Mac. `name None` means it read none. A name means anyone who connects can read it: check it is the plain name you gave.
+4. **Does stopping end a connection the other Mac opened?** (Run 1, B's output, after A prints `stopping first`.) A line `disconnected <A's identifier> error Some(7)` soon after means A's stop ended B's connection. A line `failed <A's identifier>` followed by `disconnected <A's identifier> error None` means the connection lived on until B let it go itself.
+5. **Does the other Mac's identifier change when it connects to this one?** (Run 2, A's output.) After each `restarted`, B connects to A again and A prints `central <B's identifier> subscribed`. If the identifier is the same before and after a restart, a stop and start doesn't make B new to A. If it changes once B's address rotates, A's memory of B ends then. If it stays the same for the whole watch (which may happen between two Macs on the same Apple ID), A's memory of B lasts until B has been silent for an hour. A line `central … linked without the token` followed by `Up` is A withholding its token from B, which is expected here. The `Central manager` and `Peripheral manager` lines after each restart must reach `On` without `Off` or `Resetting` in between.
+6. **Is the other Mac's identifier the same in both roles?** (Run 2, both Macs.) Near the end each Mac prints `measurement 6`, then two lists: the other Mac's identifiers as a peripheral (its adverts) and as a central (its connections), each with the second it was first seen. One identifier in both lists means an advert's address names the Mac in its other role too. Different identifiers mean the roles are kept apart. A new identifier part way through a list means the address changed then; the other Mac's own output says when it restarted, so a change at no restart is macOS's own rotation. One identifier per list for the whole 25 minutes means CoreBluetooth sees through the other Mac's address changes.
+
+| Measurement | What A printed | What B printed | What it means |
+|---|---|---|---|
+| 1. Address on restart | | | |
+| 2. Tag across macOS's rotation | | | |
+| 3. Name readable | | | |
+| 4. Stop ends the other's connection | | | |
+| 5. Identifier as a central | | | |
+| 6. Identifier in both roles | | | |
+
+If you're unsure what a line means, leave the last column empty. The saved files are what count.
+
+### 4.2 The walkthrough by Bluetooth
+
+Start both Macs fresh in the standard app (delete the store as above if you opened it already). Open it on A as `Ana` and on B as `Ben`, as in step 1. On both, turn Sound and Light to Off, so nothing can go any other way. Give the stopwatch a line in your notes for every step that says "how long".
+
+### 18. Find the Bluetooth switch
+
+Look at the front of each machine before touching anything.
+
+Look for: a third switch to the right of Light, with the plate Bluetooth under it and the engraved positions Off, Contacts and Open. It points at Off, its jewel is dark, and the plate in the top bar reads "Bluetooth off". macOS has asked only for the microphone so far, not for Bluetooth. On the back of the machine (Settings plate), the Bluetooth group on the wiring schedule has a Bluetooth switch row (Off, Contacts, Open) and the sentence about the Mac's name.
+
+Result: ______________________________________________
+
+### 19. The first turn asks for Bluetooth
+
+On A, click the Bluetooth knob once, to Contacts.
+
+Look for: macOS asks, once, whether Bombechat may use Bluetooth, with the line "Bombechat uses Bluetooth to reach people near you. Nothing is sent to a stranger until you accept them." Allow it. The jewel lights and the top plate reads "Bluetooth to contacts". Turning the knob to Off and back doesn't ask again.
+
+On B, do the same but refuse the first time. Look for: the jewel stays dark, the top plate reads "Bluetooth unavailable", and the tape under the switch reads "Bombechat may not use Bluetooth. Allow it in System Settings, Privacy and Security, Bluetooth." Do what it says, then turn B's knob to Off and back to Contacts: the tape goes and the top plate reads "Bluetooth to contacts". If the tape is still there, quit Bombechat on B and open it again.
+
+Result (A): ______________________________________________
+
+Result (B): ______________________________________________
+
+### 20. Pair in person, then see each other at Contacts
+
+Pair A and B as in steps 2 and 3, by sound (turn Sound to "Listen and send" on both, pair, then back to Off), or by light as in step 12. Leave Bluetooth at Contacts on both.
+
+Look for on both: on the bank's foot, the readout "Near" shows `01` contacts, and the other's station on the right has its jewel lit (hover it: "In Bluetooth range"). Start the stopwatch when the second machine's "Matched, add" is pressed and stop it when both stations are lit. The strangers wheel beside it counts strangers seen in the last 15 minutes, so it can show `01` for a while: before you paired, each was a stranger to the other.
+
+How long: ____________
+
+Result: ______________________________________________
+
+### 21. Send by Bluetooth
+
+On A, type `Water is at the church on Fifth.` and press **Send by Bluetooth**, the third bakelite key under the reply line, beside Flash and Send by sound.
+
+Look for on A: the line types onto the sheet with "sending by Bluetooth" under it, then the stamp "heard by Ben, HH.MM" once B's receipt comes back by Bluetooth.
+
+Look for on B: the message lands on the sheet with "bluetooth" in the margin, set in type once its signature checks.
+
+Time it from the key press to the "heard by" stamp on A. Then send `And back the other way.` from B to A.
+
+How long, A to B: ____________ B to A: ____________
+
+Result: ______________________________________________
+
+### 22. Out of range and back
+
+Carry B away until A's station for Ben goes dark and A's Near readout shows `00` contacts. Note roughly how far you went and how long it took after you set off. It can take a minute or two.
+
+On A, write `Are you still there?` and press Send by Bluetooth. Look for: nothing goes, and under the line in red: "Ben is not in Bluetooth range." What you wrote stays. The key's jewel is dark.
+
+Bring B back. Look for: Ben's station lights again and Near shows `01`. Press Send by Bluetooth again: it goes, and "heard by Ben" comes back.
+
+How far: ____________ How long to go dark: ____________ How long to light again: ____________
+
+Result: ______________________________________________
+
+### 23. Turn Bluetooth to Off and the radio stops
+
+On A, turn the Bluetooth knob to Off.
+
+Look for on A: the jewel goes dark, the top plate reads "Bluetooth off", and the Near readout disappears from the bank's foot. Press Send by Bluetooth with something written: under the line, "Bluetooth is off. Turn it to Contacts or Open to send this way."
+
+Look for on B: Ana's station goes dark and B's Near readout shows `00` contacts. Time it from A's click.
+
+Then open the Bluetooth menu on A, in the menu bar or in Control Centre, once as it is and once with the Option key held down. At Off, Bombechat must not appear anywhere in it. Recent macOS versions may not list apps there at all, at Off or at Contacts; if so, write "no apps listed either way". If you have a phone with a Bluetooth scanner app (nRF Connect or LightBlue, for instance), it gives a firmer answer: filter for the service `8AAC3E33-A919-4002-96A8-14E1A873404F`. At Contacts it shows one device for each Mac; within a few seconds of Off, A's is gone.
+
+Turn A back to Contacts: macOS doesn't ask again, and B sees Ana again as in step 20. Like steps 9 and 16, this is a check only your eyes can make.
+
+How long until B lost A: ____________
+
+Result: ______________________________________________
+
+### 24. Locked: the radio waits for the passphrase
+
+With both at Contacts, quit Bombechat on A and open it again. Don't type the passphrase yet. Wait one minute.
+
+Look for: if you can see the machine past the passphrase card, the Bluetooth jewel is dark, the top plate reads "Bluetooth locked" and the tape under the switch reads "Waits for the passphrase." The radio has no keys until the store opens, so it stays idle: on B, Ana's station stays dark and Near shows `00` contacts. Then unlock A. The top plate reads "Bluetooth to contacts", and B sees Ana again.
+
+Result: ______________________________________________
+
+### 25. Bluetooth off on the Mac, and back
+
+With A at Contacts, turn the Mac's own Bluetooth off in Control Centre.
+
+Look for on A: the jewel goes dark, the top plate reads "Bluetooth unavailable", the tape under the switch reads "Bluetooth is off in System Settings." and the Near readout disappears. The knob stays at Contacts.
+
+Turn the Mac's Bluetooth on again, without touching the knob. Look for: the tape goes, the top bar says "Bluetooth works again: contacts only.", the jewel lights, and B sees Ana again.
+
+Result: ______________________________________________
+
+### 26. Start again as strangers, both at Open
+
+Requests to connect are for people who aren't contacts yet, and A and B are contacts now. On both, quit Bombechat, delete the store as above, and open it again as `Ana` and `Ben` without pairing. Leave Sound and Light at Off. Turn the Bluetooth knob to Open (two clicks) on both. macOS doesn't ask for Bluetooth again: it remembers.
+
+Look for on both: the top plate reads "Bluetooth open", and within a minute the Near readout shows `01` strangers. In the outbox's column a slip headed "Strangers in range" lists a label of four letters and digits (something like K7MX). The label is random and is all the other machine shows of you: no name, no key. There is no Ask to connect stamp beside it. Instead the slip types "Meet them and compare keys first: this machine only adds people checked in person.", because New contacts need a key check is On until you change it.
+
+Result: ______________________________________________
+
+### 27. Ask to connect, and decline
+
+On A only, turn the machine round (Settings plate), and in the Privacy group set New contacts need a key check to Off. Turn back to the front. Leave it On on B for now.
+
+Look for on A: the strangers slip now has an **Ask to connect** stamp beside B's label. Press it. Beside the label: "asking", then "asked, delivered", and the top bar says "Asked K7MX to connect." (with B's label).
+
+Look for on B: the top bar says "Ana asks to connect.", and a slip heads the outbox's column. It has the name "Ana" on a dotted line you can write in, "as they gave it, key" and four characters of her key, "asks to connect" with the time, a red **Decline** stamp, and the sentence "Meet them and compare keys first: this machine only adds people checked in person." in place of Accept. Nothing has been added on B: no station for Ana.
+
+On B, press Decline. Look for: the slip leaves, and the top bar says "Declined. Nothing of the request was kept." On A, nothing changes: the label still reads "asked, delivered", and once the request's ten minutes run out (or the two go out of range) it reads "delivered, no answer". From A's side a declined request looks exactly like one nobody answered, on purpose.
+
+Result: ______________________________________________
+
+### 28. Ask again, and accept
+
+B takes one request from the same person per ten minutes, and holds a second one inside that time quietly without showing it. So wait ten minutes before this step. B's label on A may have changed by then, since every advert changes every 12 to 15 minutes; that is expected.
+
+On B, set New contacts need a key check to Off, as on A. On A, press Ask to connect beside B's label again.
+
+Look for on B: the request slip comes back, now with a violet **Accept** stamp beside Decline. Correct the name before accepting: change "Ana" to `Ana from the market`. Press Accept.
+
+Look for on B: the slip leaves and the top bar says "Ana from the market added, not checked in person." Ana's station appears, its second line reading "not confirmed" in red, and the key check card is headed "Ana, by Bluetooth" over the 60-digit number, unstamped, with the note "Ana from the market is added, not yet checked. Compare these with theirs when you meet, then pair by sound or light." Within a few seconds the "not confirmed" line goes back to its usual line: Ana's machine has shown that it took Ben too.
+
+Look for on A: beside the label, "accepted, added", and the top bar says "K7MX accepted: Ben is added." (with B's label). Ben's station appears.
+
+Both Near readouts then show `01` contacts. Send one message each way by Bluetooth, as in step 21.
+
+How long from Accept until "not confirmed" cleared: ____________
+
+Result: ______________________________________________
+
+### 29. The new contact, checked in person
+
+The two contacts added in step 28 are unchecked. Turn Sound to "Listen and send" on both and pair by sound as in steps 2 and 3.
+
+Look for: the same 60-digit number as the one on B's card from step 28. After "Matched, add" on both, the card is stamped "Matched" and the note reads "Checked in person, by sound."
+
+Result: ______________________________________________
+
+### Troubleshooting
+
+**What the tape under the Bluetooth switch can say:**
+
+- "Bluetooth is off in System Settings." The Mac's own Bluetooth is off. Turn it on in Control Centre; Bombechat picks up again by itself and says "Bluetooth works again".
+- "Bombechat may not use Bluetooth. Allow it in System Settings, Privacy and Security, Bluetooth." Do that, then turn the Bluetooth knob to Off and back. If it stays, quit Bombechat and open it again.
+- "Bluetooth would not start. Turn it off and on again in System Settings." macOS refused Bombechat's advert or service. Turn the Mac's Bluetooth off and on in Control Centre.
+- "This Mac has no Bluetooth that Bombechat can use." Write down the Mac model and year and send it back.
+- "Waits for the passphrase." The store is locked. Type the passphrase.
+
+**Refusals when you press Send by Bluetooth:**
+
+- "Bluetooth is off. Turn it to Contacts or Open to send this way."
+- "Ben is not in Bluetooth range." Come closer, or wait for his station to light.
+- "Bluetooth waits for the passphrase."
+- "Pair with someone first, then send to them by Bluetooth."
+- "A public notice goes by sound or light, not by Bluetooth." The switch beside the reply line is at Public. Bluetooth carries messages to contacts only.
+
+**Requests to connect:**
+
+- "Meet them and compare keys first: this machine only adds people checked in person." New contacts need a key check is On. It has to be Off on both machines: on the one that asks, to ask, and on the one that accepts, to accept.
+- No strangers slip at all. Both machines must be at Open: at Contacts nobody is offered and no request is taken.
+- "not delivered" beside a label. The request didn't reach them. They may have gone out of range, or their advert changed. Ask again.
+- "delivered, no answer" beside a label. The request reached them, and they didn't accept within ten minutes, or the link went first. They may have declined; a decline is never told. Ask again once ten minutes have passed.
+- "They are no longer in range." The stranger left the list between showing and asking.
+- "That request is no longer waiting." or a request slip that leaves by itself. A request waits ten minutes at most, and ends sooner if either machine's advert changes, every 12 to 15 minutes. The asker can ask again, but the same person is shown only one request per ten minutes.
+- "Write their name first." The name line on the request slip is empty.
+- A station that keeps saying "not confirmed". The accept didn't finish: the link went, an advert changed, ten minutes passed, or the asker turned New contacts need a key check On in between. Pair in person by sound or light (step 29) and it clears.
+
+**Contacts who don't see each other.** Both need Bluetooth at Contacts or Open, the Mac's own Bluetooth on, and the store unlocked. Give it a minute. Two contacts who were apart for an hour or more can take up to an hour to find each other again; the design spec's threat model explains why, under "Tokens between contacts". Write down how long it took: that is a result too.
+
+**The strangers count is higher than the people in the room.** It counts strangers seen in the last 15 minutes, by advert. A stranger whose advert changed in that time counts twice.
+
+### Bluetooth sign-off
+
+| Step | Pass | Notes |
+|---|---|---|
+| Mac names made plain, A and B | | |
+| 4.1 One Mac, A | | |
+| 4.1 One Mac, B | | |
+| 4.1 Two Macs, run 1 | | |
+| 4.1 Two Macs, run 2 | | |
+| 18. The Bluetooth switch at Off | | |
+| 19. Permission asked once, refusal said | | |
+| 20. Contacts see each other | | |
+| 21. Send by Bluetooth, heard by back | | |
+| 22. Out of range and back | | |
+| 23. Bluetooth Off, the radio stops | | |
+| 24. Locked, the radio waits | | |
+| 25. The Mac's Bluetooth off and back | | |
+| 26. Strangers at Open | | |
+| 27. Ask, and decline | | |
+| 28. Ask again, and accept | | |
+| 29. Checked in person | | |
+
+Tested by: ____________ Date: ____________ Macs (model, year, macOS version): ____________ Same Apple ID: ____________
+
 ## What to send back
 
 Send these in one message. Photos of filled-in paper pages are fine.
 
-1. The result lines and sign-off tables from Parts 2 and 3, filled in.
+1. The result lines and sign-off tables from Parts 2, 3 and 4, filled in.
 2. The full output of the camera test (3.1) from each Mac.
 3. The output of `measure --selftest`, and the result line of every `measure --read` you ran, with the distance, the light and the speed beside each.
 4. The Mac models and years, and which Mac showed and which read.
 5. Anything the tape under the Light switch said that isn't in Troubleshooting, word for word.
-6. For any step that failed: what you did just before, what the screen said, and a photo of the screen if you can. Please don't send screen recordings.
+6. From Part 4: the files `one-mac.txt` from each Mac, and `run1-A.txt`, `run1-B.txt`, `run2-A.txt` and `run2-B.txt`, whole. The measurements table, as far as you filled it in. The macOS version on each Mac, and whether the two are signed in to the same Apple ID.
+7. Anything the tape under the Bluetooth switch said that isn't in Part 4's Troubleshooting, word for word.
+8. For any step that failed: what you did just before, what the screen said, and a photo of the screen if you can. Please don't send screen recordings.

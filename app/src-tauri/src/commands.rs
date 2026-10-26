@@ -19,12 +19,14 @@ use std::time::{Duration, Instant};
 use bombechat_core::{safety_number, PublicIdentity};
 use bombechat_modem::Band;
 use bombechat_node::{
-    max_private_text, NodeEvent, SelfTestState, MAX_BROADCAST, NOT_IN_THIS_PLAN, NOT_SENT,
-    NOT_STORED,
+    max_private_text, NodeEvent, RequestState, SelfTestState, WaitingRequest, MAX_BROADCAST,
+    NOT_IN_RANGE, NOT_IN_THIS_PLAN, NOT_SENT, NOT_STORED, REQUEST_GONE,
 };
 use bombechat_store::{Channel, Contact, ContactId, StoredBroadcast, StoredMessage};
 use serde::Serialize;
 use serde_json::{json, Value};
+
+use crate::edition;
 
 /// The machine's plate: the sheet's number and the name it shows for
 /// itself. People are known by their own names (the first run asks), and
@@ -38,7 +40,7 @@ const PANIC_REPORT_GAP: Duration = Duration::from_secs(5);
 const MAX_NAME_CHARS: usize = 40;
 
 /// The command names, exactly as `bridge.js` invokes them.
-pub const NAMES: [&str; 18] = [
+pub const NAMES: [&str; 25] = [
     "send",
     "broadcast",
     "pair",
@@ -57,13 +59,45 @@ pub const NAMES: [&str; 18] = [
     "broadcasts",
     "machine",
     "eyepiece",
+    "requests",
+    "accept_request",
+    "decline_request",
+    "send_request",
+    "strangers",
+    "peers",
+    "unconfirmed",
 ];
+
+/// A setting: its id, how many values it has, and the value it has until
+/// the person changes it.
+pub type Setting = (&'static str, usize, usize);
 
 /// Each setting the settings page can change, with how many values it
 /// has and the value it has until the person changes it
-/// (`app/ui/settings.html`). `set_setting` accepts only these, and
+/// (`app/ui/settings.html`, and the rows `app/ui/edition.js` adds):
+/// every build's own, then the ones this build adds
+/// ([`edition::SETTINGS`]). `set_setting` accepts only these, and
 /// `settings` reports each of them.
-pub const SETTINGS: [(&str, usize, usize); 15] = [
+pub const SETTINGS: [Setting; SHARED_SETTINGS.len() + edition::SETTINGS.len()] =
+    joined(&SHARED_SETTINGS, edition::SETTINGS);
+
+/// `a` then `b`, as one table.
+const fn joined<const N: usize>(a: &[Setting], b: &[Setting]) -> [Setting; N] {
+    let mut out = [("", 0, 0); N];
+    let mut i = 0;
+    while i < a.len() {
+        out[i] = a[i];
+        i += 1;
+    }
+    while i < N {
+        out[i] = b[i - a.len()];
+        i += 1;
+    }
+    out
+}
+
+/// The settings every build has.
+const SHARED_SETTINGS: [Setting; 15] = [
     ("sound", 3, 2),
     ("volume", 5, 2),
     ("band", 2, 0),
@@ -90,9 +124,9 @@ pub const COMING: [(&str, &str, &str); 3] = [
     ("hold", "Hold for", "comes with relay"),
 ];
 
-/// New contacts need a key check: on this build every contact is added
-/// by checking keys in person (there is no other way to add one), so the
-/// setting is always On.
+/// New contacts need a key check, on a build where every contact is added
+/// by checking keys in person (there is no other way to add one,
+/// [`edition::ONLY_IN_PERSON`]): the setting is always On.
 pub const KEY_CHECK_ALWAYS: &str = "always, on this build";
 
 /// Lock with passphrase, off a Mac: Off keeps the store key in the macOS
@@ -132,14 +166,16 @@ fn held_settings() -> BTreeMap<&'static str, SettingNote> {
             )
         })
         .collect();
-    held.insert(
-        "inperson",
-        SettingNote {
-            note: KEY_CHECK_ALWAYS,
-            value: Some(1),
-            notice: false,
-        },
-    );
+    if edition::ONLY_IN_PERSON {
+        held.insert(
+            "inperson",
+            SettingNote {
+                note: KEY_CHECK_ALWAYS,
+                value: Some(1),
+                notice: false,
+            },
+        );
+    }
     if !HAS_KEYCHAIN {
         held.insert(
             "lock",
@@ -160,7 +196,9 @@ fn refusal(id: &str) -> Option<String> {
         return Some(format!("{name} {note}"));
     }
     match id {
-        "inperson" => Some("On this build every new contact needs a key check".to_string()),
+        "inperson" if edition::ONLY_IN_PERSON => {
+            Some("On this build every new contact needs a key check".to_string())
+        }
         "lock" if !HAS_KEYCHAIN => {
             Some("The Keychain is only on macOS, so the lock stays on".to_string())
         }
@@ -265,6 +303,40 @@ pub trait Machine: Send {
     fn lock_note(&self) -> Option<&'static str> {
         None
     }
+    /// The state of each channel whose switch alone says it, before the
+    /// channel has reported anything: for [`channels`].
+    fn steady_states(&self) -> Vec<(Channel, String)> {
+        Vec::new()
+    }
+    /// The requests to connect waiting for the person, oldest first. None
+    /// on a machine with no carrier that brings them.
+    fn requests(&self) -> Vec<WaitingRequest> {
+        Vec::new()
+    }
+    /// Accept request `id`, keeping them as `name`, or say why not.
+    fn accept_request(&mut self, _id: u64, _name: &str) -> Result<ContactId, String> {
+        Err(REQUEST_GONE.to_string())
+    }
+    /// Decline request `id`: nothing goes back.
+    fn decline_request(&mut self, _id: u64) {}
+    /// Ask the stranger under `label` to connect, or say why not.
+    fn send_request(&mut self, _label: &str) -> Result<(), String> {
+        Err(NOT_IN_RANGE.to_string())
+    }
+    /// The strangers nearby a request can go to, by label.
+    fn strangers(&self) -> Vec<String> {
+        Vec::new()
+    }
+    /// Who is near: contacts in range, and how many strangers were seen
+    /// lately.
+    fn peers(&self) -> (Vec<ContactId>, usize) {
+        (Vec::new(), 0)
+    }
+    /// Contacts an accept added that have not yet shown they hold this
+    /// machine too.
+    fn unconfirmed(&self) -> Vec<ContactId> {
+        Vec::new()
+    }
     fn tick(&mut self, now_ms: u64) -> Vec<NodeEvent>;
 }
 
@@ -337,6 +409,25 @@ pub struct MachineView {
     /// The longest reply (a private message to one person), in UTF-8
     /// bytes of text.
     pub reply_max: usize,
+}
+
+/// A request to connect waiting for the person, as the page sees it: the
+/// `request` event's payload. `name` is what their hello said, only a
+/// suggestion; `fingerprint` the first bytes of their signing key;
+/// `safety` the safety number to compare if they meet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RequestView {
+    pub id: u64,
+    pub name: String,
+    pub fingerprint: Vec<u8>,
+    pub safety: String,
+}
+
+/// Who is near, as the page sees it: the `peers` event's payload.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PeersView {
+    pub contacts: Vec<i64>,
+    pub strangers: usize,
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -650,8 +741,14 @@ pub fn machine(s: &Shared) -> Result<MachineView, String> {
 pub fn channels(s: &Shared) -> Vec<ChannelView> {
     let rates = s.machine().rates();
     let band = s.machine().band().map(band_name);
+    let steady = s.machine().steady_states();
     let mut seen: Vec<(Channel, String)> =
         s.channels.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    for (c, state) in steady {
+        if !seen.iter().any(|(k, _)| *k == c) {
+            seen.push((c, state));
+        }
+    }
     for (c, _) in &rates {
         if !seen.iter().any(|(k, _)| k == c) {
             seen.push((*c, "listening".to_string()));
@@ -665,6 +762,91 @@ pub fn channels(s: &Shared) -> Vec<ChannelView> {
             band: band.filter(|_| c == Channel::Sound),
         })
         .collect()
+}
+
+/// `requests`: the requests to connect waiting for the person, oldest
+/// first, each shaped as the `request` event, for a page that opens after
+/// them. Held in memory only, never stored. Fails with "locked" until the
+/// store is open.
+pub fn requests(s: &Shared) -> Result<Vec<RequestView>, String> {
+    let machine = s.machine();
+    unlocked(machine.as_ref())?;
+    Ok(machine
+        .requests()
+        .into_iter()
+        .map(|w| RequestView {
+            id: w.id,
+            name: w.name,
+            fingerprint: w.fingerprint.to_vec(),
+            safety: w.safety,
+        })
+        .collect())
+}
+
+/// `accept_request { id, name }`: keep the one who asked as a contact
+/// named `name` (as the person corrected it; trimmed and cut to 40
+/// characters), unchecked until keys are compared in person, and send our
+/// hello back. The new contact's id. Refused with a sentence to show: the
+/// name is empty, the request has gone, or new contacts need a key check.
+pub fn accept_request(s: &Shared, id: u64, name: String) -> Result<i64, String> {
+    let name: String = name.trim().chars().take(MAX_NAME_CHARS).collect();
+    if name.is_empty() {
+        return Err("Write their name first".to_string());
+    }
+    let mut machine = s.machine();
+    unlocked(machine.as_ref())?;
+    machine.accept_request(id, &name).map(|c| c.0)
+}
+
+/// `decline_request { id }`: the request is forgotten, and nothing at all
+/// goes back. Refused only with "locked" until the store is open.
+pub fn decline_request(s: &Shared, id: u64) -> Result<(), String> {
+    let mut machine = s.machine();
+    unlocked(machine.as_ref())?;
+    machine.decline_request(id);
+    Ok(())
+}
+
+/// `send_request { label }`: ask the stranger under `label` (from
+/// `strangers`) to connect, sending them our hello alone. How it goes
+/// arrives as the `requested` event. Refused with a sentence to show:
+/// locked, new contacts need a key check, they are no longer in range, or
+/// the carrier will not send requests now.
+pub fn send_request(s: &Shared, label: String) -> Result<(), String> {
+    let mut machine = s.machine();
+    unlocked(machine.as_ref())?;
+    machine.send_request(&label)
+}
+
+/// `strangers`: the strangers nearby a request can go to, each by a short
+/// random label (never anything of theirs), in a steady order. Fails
+/// with "locked" until the store is open.
+pub fn strangers(s: &Shared) -> Result<Vec<String>, String> {
+    let machine = s.machine();
+    unlocked(machine.as_ref())?;
+    Ok(machine.strangers())
+}
+
+/// `peers`: who is near, as the last `peers` event said: the contacts in
+/// range, by id, and how many strangers were seen lately (an upper
+/// bound). Fails with "locked" until the store is open.
+pub fn peers(s: &Shared) -> Result<PeersView, String> {
+    let machine = s.machine();
+    unlocked(machine.as_ref())?;
+    let (contacts, strangers) = machine.peers();
+    Ok(PeersView {
+        contacts: contacts.into_iter().map(|c| c.0).collect(),
+        strangers,
+    })
+}
+
+/// `unconfirmed`: the contacts an accept added that have not yet shown
+/// they hold this machine too, by id; each leaves the list with a
+/// `contactConfirmed` event. Fails with "locked" until the store is open.
+pub fn unconfirmed(s: &Shared) -> Result<Vec<i64>, String> {
+    let machine = s.machine();
+    unlocked(machine.as_ref())?;
+    Ok(machine.unconfirmed().into_iter().map(|c| c.0).collect())
 }
 
 /// One tick of the machine, for the pump. Records each channel's state
@@ -829,5 +1011,39 @@ pub fn bridge_event(e: &NodeEvent) -> (&'static str, Value) {
             "eyepiece",
             json!({ "width": width, "height": height, "pixels": pixels }),
         ),
+        // Requests to connect: held in memory only, never stored.
+        NodeEvent::Request {
+            id,
+            name,
+            fingerprint,
+            safety,
+        } => (
+            "request",
+            json!({ "id": id, "name": name, "fingerprint": fingerprint.to_vec(), "safety": safety }),
+        ),
+        NodeEvent::RequestGone { id } => ("requestGone", json!({ "id": id })),
+        NodeEvent::Requested { label, state } => {
+            let (state, contact) = match state {
+                RequestState::Delivered => ("delivered", None),
+                RequestState::Unanswered => ("unanswered", None),
+                RequestState::Failed => ("failed", None),
+                RequestState::Accepted(c) => ("accepted", Some(c.0)),
+            };
+            (
+                "requested",
+                json!({ "label": label, "state": state, "contact": contact }),
+            )
+        }
+        NodeEvent::Peers {
+            contacts_in_range,
+            strangers_in_range,
+        } => (
+            "peers",
+            json!({ "contacts": contacts_in_range.iter().map(|c| c.0).collect::<Vec<_>>(),
+                    "strangers": strangers_in_range }),
+        ),
+        NodeEvent::ContactConfirmed { contact } => {
+            ("contactConfirmed", json!({ "contact": contact.0 }))
+        }
     }
 }

@@ -532,7 +532,10 @@ fn a_rate_too_low_for_the_band_is_refused_not_panicked() {
         symbol_ms: 1.0,
         ..Default::default()
     };
-    assert!(matches!(short.validate(), Err(ConfigError::SymbolTooShort(_))));
+    assert!(matches!(
+        short.validate(),
+        Err(ConfigError::SymbolTooShort(_))
+    ));
 }
 
 #[test]

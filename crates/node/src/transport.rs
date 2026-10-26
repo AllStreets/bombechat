@@ -5,9 +5,12 @@
 //! knows nothing of envelopes, keys or contacts. The node reassembles and
 //! opens what the frames carry.
 
+use bombechat_core::{Identity, PublicIdentity};
 use bombechat_light::CodeSpec;
 use bombechat_modem::Band;
 use bombechat_store::Channel;
+
+use crate::NOT_IN_RANGE;
 
 /// What a transport reports from one [`Transport::poll`].
 #[derive(Debug, Clone, PartialEq)]
@@ -74,6 +77,47 @@ pub enum TransportEvent {
         width: u32,
         height: u32,
         pixels: Vec<u8>,
+    },
+    /// A stranger asks to connect. `from` is the identity the carrier
+    /// proved they hold; `hello` is the envelope they sent, which should be
+    /// their pairing hello. `request` numbers it on this transport until
+    /// [`TransportEvent::RequestGone`]; answer it with
+    /// [`Transport::answer_request`].
+    Request {
+        request: u64,
+        from: PublicIdentity,
+        hello: Vec<u8>,
+    },
+    /// The request under `request` can no longer be answered: it ran out,
+    /// its connection went, or it was answered.
+    RequestGone { request: u64 },
+    /// The request this transport sent to `stranger`
+    /// ([`Transport::request`]) reached them. Whether they accept is up to
+    /// them; a decline is never told.
+    RequestDelivered { stranger: u64 },
+    /// The request to `stranger` never reached them: it could not be
+    /// sent, or the connection went before it was delivered.
+    RequestFailed { stranger: u64 },
+    /// The request to `stranger` was delivered, then ended with no
+    /// answer: its time ran out, or the connection went. A decline looks
+    /// the same, as it is never told.
+    RequestUnanswered { stranger: u64 },
+    /// The stranger a request went to accepted it, and proved they hold
+    /// `from`; `hello` is the hello they sent back.
+    RequestAccepted {
+        stranger: u64,
+        from: PublicIdentity,
+        hello: Vec<u8>,
+    },
+    /// Who is near by this carrier, reported when it changes: contacts
+    /// with a proven connection now; the strangers a request can go to
+    /// now, by this transport's number for each (never an identity: a
+    /// stranger's is not known); and how many strangers were seen lately,
+    /// as an upper bound.
+    Peers {
+        contacts: Vec<PublicIdentity>,
+        strangers: Vec<u64>,
+        strangers_seen: usize,
     },
 }
 
@@ -158,4 +202,38 @@ pub trait Transport: Send {
     fn band(&self) -> Option<Band> {
         None
     }
+
+    /// This device's identity, or `None` while locked. A carrier that
+    /// proves who is at the other end (a session per contact) needs it;
+    /// others ignore this.
+    fn set_identity(&mut self, _me: Option<&Identity>) {}
+
+    /// The people this device's contacts are, whenever that changes. A
+    /// carrier that reaches people one by one needs it; others ignore it.
+    fn set_contacts(&mut self, _contacts: &[PublicIdentity]) {}
+
+    /// Why this carrier would refuse a send right now, if it would: the
+    /// channel state to report. Asked only of channels the node has no
+    /// switch of its own for; `None` by default.
+    fn refusal(&self) -> Option<&'static str> {
+        None
+    }
+
+    /// Send `hello` (this device's pairing hello) to `stranger`, one of
+    /// the strangers in [`TransportEvent::Peers`], as a request to
+    /// connect. Only from an explicit press. How it goes is reported as
+    /// [`TransportEvent::RequestDelivered`], then
+    /// [`TransportEvent::RequestUnanswered`] or
+    /// [`TransportEvent::RequestAccepted`]; or
+    /// [`TransportEvent::RequestFailed`] if it never reached them. Refused at once, with a
+    /// sentence, by a carrier that cannot send it now; by default no
+    /// carrier can.
+    fn request(&mut self, _stranger: u64, _hello: Vec<u8>) -> Result<(), &'static str> {
+        Err(NOT_IN_RANGE)
+    }
+
+    /// Answer the request under `request`: `Some(hello)` accepts it, and
+    /// this device's `hello` goes to the requester with proof of who sent
+    /// it; `None` declines it, and nothing at all goes back.
+    fn answer_request(&mut self, _request: u64, _hello: Option<Vec<u8>>) {}
 }

@@ -123,6 +123,10 @@ export function createMachine(container, { still = false, background = '#0d0d0c'
     m.position.set(x, y, .004); m.receiveShadow = true; scene.add(m);
     return m;
   }
+  // which build this is, as edition.css names it for every plate ('airgapped build')
+  const build = () => getComputedStyle(document.documentElement).getPropertyValue('--build').trim().replace(/^['"]|['"]$/g, '').toUpperCase();
+  // and the radio it has, as edition.css says it ('no radio fitted')
+  const radio = () => getComputedStyle(document.documentElement).getPropertyValue('--radio').trim().replace(/^['"]|['"]$/g, '').toUpperCase();
   // the maker's plate, etched brass. Machine number one.
   function makersPlate(x, y, w = 3.6) {
     const c = document.createElement('canvas'); c.width = 1400; c.height = 260; const k = c.getContext('2d');
@@ -130,7 +134,7 @@ export function createMachine(container, { still = false, background = '#0d0d0c'
     for (let i = 0; i < 2200; i++) { k.fillStyle = `rgba(${Math.random() < .5 ? '255,240,210' : '60,40,10'},.05)`; k.fillRect(Math.random() * c.width, Math.random() * c.height, Math.random() * 60, 1); }
     k.strokeStyle = '#3b2c14'; k.lineWidth = 5; k.strokeRect(28, 28, c.width - 56, c.height - 56);
     k.fillStyle = '#2a1f0e'; k.textAlign = 'center'; setEngraving(k, 92); engraveText(k, 'BOMBECHAT', c.width / 2, 128, 92, .04);
-    setEngraving(k, 40); engraveText(k, 'AIRGAPPED BUILD      MACHINE NO. 1      NO RADIO FITTED', c.width / 2, 198, 40);
+    setEngraving(k, 40); engraveText(k, `${build()}      MACHINE NO. 1      ${radio()}`, c.width / 2, 198, 40);
     const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8;
     const h = w * c.height / c.width;
     const mp = new THREE.Mesh(new THREE.BoxGeometry(w, h, .03), [M.brassDull, M.brassDull, M.brassDull, M.brassDull, new THREE.MeshStandardMaterial({ map: t, metalness: .85, roughness: .38 }), M.brassDull]);

@@ -1,0 +1,16 @@
+{
+  "name": "bombechat",
+  "private": true,
+  "description": "Messaging by sound, light and Bluetooth, with no internet.",
+  "scripts": {
+    "check": "node tools/check.cjs && node tools/check-settings.cjs && node tools/check-bluetooth.cjs",
+    "check:front": "node tools/check.cjs",
+    "check:settings": "node tools/check-settings.cjs",
+    "check:mockups": "node tools/check.cjs mockups/bombechat.html && node tools/check-settings.cjs mockups/settings.html",
+    "check:airgapped": "bash tools/check-airgapped.sh",
+    "serve": "node tools/serve.cjs"
+  },
+  "devDependencies": {
+    "playwright": "1.63.0"
+  }
+}

@@ -5,6 +5,19 @@ on:
   pull_request:
 
 jobs:
+  # bluetooth/ (the Bluetooth edition) must be exactly what the sync script
+  # writes from the root and bluetooth/edition/, and the script is tested.
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sync script tests
+        run: bash tools/test-sync-bluetooth.sh
+
+      - name: bluetooth/ is in sync with the root
+        run: bash tools/sync-bluetooth.sh --check
+
   rust:
     runs-on: ubuntu-latest
     steps:
@@ -44,6 +57,12 @@ jobs:
             exit 1
           fi
 
+      # The Bluetooth edition's link crate builds off macOS too: its
+      # CoreBluetooth radio is macOS only, and elsewhere the radio says
+      # Bluetooth isn't supported yet.
+      - name: cargo check, Bluetooth crate on Linux (Bluetooth edition)
+        run: cd bluetooth && cargo check -p bombechat-bluetooth --all-targets --locked
+
   # The same on a Mac, where the lock can come off and the store key is kept
   # in the Keychain: the Keychain paths in app/src-tauri/tests/device.rs only
   # run here. CoreAudio and the system frameworks come with the runner.
@@ -78,6 +97,19 @@ jobs:
             exit 1
           fi
 
+      # The Bluetooth edition is its own workspace, built into bluetooth/target.
+      - name: Cache cargo (Bluetooth edition)
+        uses: actions/cache@v4
+        with:
+          path: bluetooth/target
+          key: ${{ runner.os }}-cargo-bluetooth-${{ hashFiles('bluetooth/**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-bluetooth-
+
+      # bluetooth/Cargo.lock is the edition's own (the sync never writes it);
+      # --locked fails if it no longer matches the edition's manifests.
+      - name: cargo test --workspace --locked (Bluetooth edition)
+        run: cd bluetooth && cargo test --workspace --locked
+
   # Note: `npm run check:front` and `npm run check:settings` need a GPU-backed
   # Chrome to render the WebGL/Metal interface and are not run here; see the
-  # README "Checks" section. They stay a local gate.
+  # README "Checks" section. They stay a local gate, in bluetooth/ too.

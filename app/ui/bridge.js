@@ -69,6 +69,28 @@
 //                                the band it is really on (a sound card too slow for near silent stays audible, whatever
 //                                Tone band says)
 //
+// Requests to connect, from strangers near enough for a carrier that reaches people one by one (none on the airgapped
+// build, where these answer as for nobody near). Held in memory only, never stored:
+//   requests()                   [requests]                         resolves to the requests waiting for the person, oldest
+//                                first, each shaped as the request event; rejects with 'locked' until the store is open
+//   acceptRequest(id, name)      [accept_request { id, name }]      resolves to the new contact id: kept under name (as the
+//                                person corrected it), unchecked until keys are compared in person, and not confirmed
+//                                until they show they hold this machine too (contactConfirmed). Rejects with a sentence
+//                                to show: 'locked', 'Write their name first', 'That request is no longer waiting.', or 'Meet them
+//                                and compare keys first: this machine only adds people checked in person.'
+//   declineRequest(id)           [decline_request { id }]           forgets the request; nothing at all goes back. Rejects
+//                                with 'locked' until the store is open, as every command here does
+//   sendRequest(label)           [send_request { label }]           asks the stranger under label (from strangers()) to
+//                                connect, with this machine's hello alone; how it goes arrives as requested. Rejects with
+//                                a sentence to show: 'locked', the key check one above, 'They are no longer in range.',
+//                                or the carrier's own (Bluetooth not at Open)
+//   strangers()                  [strangers]                        resolves to the strangers a request can go to now, each
+//                                by a short random label, never anything of theirs; rejects with 'locked' until unlocked
+//   peers()                      [peers]                            resolves to who is near, as the last peers event said;
+//                                rejects with 'locked' until unlocked
+//   unconfirmed()                [unconfirmed]                      resolves to the ids of contacts an accept added that have
+//                                not yet shown they hold this machine too
+//
 // Events (on(name, fn)), as the node's NodeEvent after normalising:
 //   chunk      { tag, index, of, view: { plain, heard, key }, text, channel }
 //                channel: the one it arrived on, 'sound' or 'light' (light envelopes land whole, so their
@@ -117,6 +139,18 @@
 //   eyepiece   { width, height, pixels }  light: what the camera sees, small and grey (64 pixels wide, one byte a
 //                                       pixel, row-major), about four a second while Light reads and eyepiece(true)
 //                                       was asked. Shown, never kept. Not held before ready()
+//   request    { id, name, fingerprint, safety }  a stranger asks to connect: name as their hello gives it (only a suggestion),
+//                                       fingerprint the first 8 bytes of their signing key as hex, safety the safety number
+//                                       to compare if they meet
+//   requestGone { id }                 that request can no longer be answered (it ran out, they left, or it was answered)
+//   requested  { label, state, contact }  how a request this machine sent is going: 'delivered'; then 'unanswered' (it
+//                                       was delivered and ran out, or the connection went, with no answer: a decline is
+//                                       never told, so it ends this way too) or 'accepted' with the new contact's id;
+//                                       'failed' only for a request that never reached them
+//   peers      { contacts, strangers }  who is near: contact ids in range, and how many strangers were seen lately (an
+//                                       upper bound). Also sent when the strangers that can be asked change, the counts
+//                                       as they were: strangers() is read afresh on every one
+//   contactConfirmed { contact }       a contact an accept added has shown it holds this machine too
 // Ids arrive as byte arrays or hex and leave as lowercase hex. Channels arrive as "Sound" or "sound" and leave lower case.
 //
 // A chunk is only known to come from a holder of the content key until the
@@ -163,7 +197,7 @@ function provisional(tag, index, of, plain) {
   return decoder.decode(new Uint8Array(a.so.slice(SENDER_LEN, end))).replace(/\uFFFD+$/, '');
 }
 
-const EVENTS = ['chunk', 'message', 'heard', 'broadcast', 'pairOffer', 'roomDb', 'channel', 'outbox', 'display', 'displayStopped', 'eyepiece', 'selfTest'];
+const EVENTS = ['chunk', 'message', 'heard', 'broadcast', 'pairOffer', 'roomDb', 'channel', 'outbox', 'display', 'displayStopped', 'eyepiece', 'selfTest', 'request', 'requestGone', 'requested', 'peers', 'contactConfirmed'];
 // shown as they come, or not at all: never held for a page still setting up
 const LIVE = new Set(['display', 'displayStopped', 'eyepiece']);
 const normalise = {
@@ -184,6 +218,11 @@ const normalise = {
   displayStopped: d => ({ tag: d && typeof d === 'object' ? +d.tag : +d }),
   eyepiece: e => ({ width: +e.width, height: +e.height, pixels: bytesOf(e.pixels) }),
   selfTest: t => ({ ...t, tag: +t.tag, channel: lower(t.channel) || 'sound', state: lower(t.state) }),
+  request: r => ({ id: +r.id, name: String(r.name), fingerprint: hex(r.fingerprint), safety: r.safety || '' }),
+  requestGone: r => ({ id: +r.id }),
+  requested: r => ({ label: String(r.label), state: lower(r.state), contact: r.contact == null ? null : contactId(r.contact) }),
+  peers: p => ({ contacts: Array.from(p.contacts || [], contactId), strangers: +p.strangers || 0 }),
+  contactConfirmed: c => ({ contact: contactId(c.contact) }),
 };
 
 const handlers = Object.fromEntries(EVENTS.map(e => [e, new Set()]));
@@ -226,6 +265,13 @@ function tauriBackend() {
     broadcasts: () => invoke('broadcasts').then(list => list.map(normalise.broadcast)),
     machine: () => invoke('machine'),
     channels: () => invoke('channels').then(list => list.map(normalise.channel)),
+    requests: () => invoke('requests').then(list => list.map(normalise.request)),
+    acceptRequest: (id, name) => invoke('accept_request', { id, name }).then(contactId),
+    declineRequest: id => invoke('decline_request', { id }),
+    sendRequest: label => invoke('send_request', { label }),
+    strangers: () => invoke('strangers').then(list => list.map(String)),
+    peers: () => invoke('peers').then(normalise.peers),
+    unconfirmed: () => invoke('unconfirmed').then(list => list.map(contactId)),
     start() {},
     now: () => Date.now(),
   };
@@ -253,6 +299,13 @@ function simulatedBackend() {
     broadcasts: () => sim.broadcasts().then(list => list.map(normalise.broadcast)),
     machine: () => sim.machine(),
     channels: () => sim.channels().then(list => list.map(normalise.channel)),
+    requests: () => sim.requests().then(list => list.map(normalise.request)),
+    acceptRequest: (id, name) => sim.acceptRequest(id, name).then(contactId),
+    declineRequest: id => sim.declineRequest(id),
+    sendRequest: label => sim.sendRequest(label),
+    strangers: () => sim.strangers().then(list => list.map(String)),
+    peers: () => sim.peers().then(normalise.peers),
+    unconfirmed: () => sim.unconfirmed().then(list => list.map(contactId)),
     start: () => sim.start(),
     now: () => sim.now(),
   };
@@ -280,6 +333,13 @@ export const bridge = {
   broadcasts: () => backend.broadcasts(),
   machine: () => backend.machine(),
   channels: () => backend.channels(),
+  requests: () => backend.requests(),
+  acceptRequest: (id, name) => backend.acceptRequest(+id, String(name)),
+  declineRequest: id => backend.declineRequest(+id),
+  sendRequest: label => backend.sendRequest(String(label)),
+  strangers: () => backend.strangers(),
+  peers: () => backend.peers(),
+  unconfirmed: () => backend.unconfirmed(),
   on(event, fn) {
     if (!handlers[event]) throw new Error('unknown bridge event: ' + event);
     handlers[event].add(fn);

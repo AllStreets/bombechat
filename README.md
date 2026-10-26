@@ -19,11 +19,13 @@
 <p align="center">
   <a href="#how-a-message-travels">How it travels</a>&nbsp;&nbsp;&nbsp;
   <a href="#by-light">By light</a>&nbsp;&nbsp;&nbsp;
+  <a href="#by-bluetooth">By Bluetooth</a>&nbsp;&nbsp;&nbsp;
   <a href="#the-machine">The machine</a>&nbsp;&nbsp;&nbsp;
   <a href="#pairing-and-safety-numbers">Pairing</a>&nbsp;&nbsp;&nbsp;
   <a href="#privacy-and-the-airgap">Privacy</a>&nbsp;&nbsp;&nbsp;
   <a href="#settings">Settings</a>&nbsp;&nbsp;&nbsp;
   <a href="#build-and-run-it">Build it</a>&nbsp;&nbsp;&nbsp;
+  <a href="#two-editions">Two editions</a>&nbsp;&nbsp;&nbsp;
   <a href="#checks">Checks</a>&nbsp;&nbsp;&nbsp;
   <a href="#roadmap">Roadmap</a>
 </p>
@@ -50,7 +52,7 @@ You type a reply on the message sheet and press Send by sound. The message is se
 
 On the other laptop, the receiver finds the chirp, corrects for the two sound cards running at slightly different speeds, and reads the tones. Every chunk is authenticated the moment it arrives. What has been heard so far is typed onto the sheet as provisional tape, *arriving by sound, not yet checked*, and once the whole message has landed and its signature checks out, it is set in type.
 
-Light works the same way, between a screen and a camera, and is described below. Bluetooth is held back for the standard build.
+Light works the same way, between a screen and a camera, and is described below. Bluetooth comes only in the standard build, described after it.
 
 ## By light
 
@@ -82,6 +84,20 @@ While Light reads, a small brass eyepiece on its switch shows what the camera se
 
 [Part 3 of the two-laptop walkthrough](docs/testing/two-laptops.md#part-3-light) tests all of this on real Macs, with distances, speeds, and daylight against a dim room.
 
+## By Bluetooth
+
+On the standard build, the third switch on the front of the machine is Bluetooth, where the airgapped build has a blanking plate. It has three positions. Off is where it starts, and at Off the radio is idle: nothing is advertised or scanned for, and every connection this Mac opened is closed. macOS is asked for Bluetooth permission the first time you turn it on, and not before. At Contacts it reaches the people you've added whenever they're in range, and a Send by Bluetooth key sits beside Flash and Send by sound. At Open, strangers nearby can also ask to connect, and you can ask them.
+
+Requests work the way they do on LinkedIn. A stranger in range shows up as a random four-character label, never a name or a key. Asking sends your name and key to that one person, and nothing of theirs comes back until they accept. On their machine the request arrives as a slip with Accept and Decline. Accept adds you as a contact who hasn't been checked in person yet, and lays out the safety number to compare when you do meet. Decline keeps nothing and sends nothing back, so from your side it looks exactly like a request nobody answered. While New contacts need a key check is on, which it is until you change it, requests are shown but can't be sent or accepted.
+
+Live sessions use the Noise protocol, through the `snow` library, with the same proven primitives as the rest of Bombechat: X25519, ChaCha20-Poly1305, SHA-256 and HKDF, with each identity signed by its Ed25519 key. Contacts open sessions with Noise IK and requests use Noise XN, so a machine never tells a stranger who it is unless its owner accepts. Bombechat uses its own Bluetooth service, separate from Bitchat's.
+
+The advert carries no name and no key, only part of a random token that changes every 12 to 15 minutes. Contacts tell each other their next few tokens inside their sessions, so they can find each other again after a change.
+
+Someone in range can still link some things. Every Bombechat Mac advertises the same service, so anyone can tell one is nearby. The moment one advert stops and the next starts can tie the two tokens together, and so can a contact's connection that carries on across the change. A tracker that has connected to a Mac once from a fixed address can recognise it later by whether it's given the token. And the Mac's own name can be read by anyone in Bluetooth range, which is why the app asks you to give it a plain one. Whether macOS changes the Bluetooth address when the advert restarts is one of six things still to be measured on two real Macs. The [threat model in the design spec](docs/superpowers/specs/2026-10-24-bombechat-design.md#threat-model-bluetooth-sessions) goes through all of it.
+
+[Part 4 of the two-laptop walkthrough](docs/testing/two-laptops.md#part-4-bluetooth) tests Bluetooth on two Macs, including those measurements.
+
 ## The machine
 
 The window is a Bombe and its paperwork. Three rows of drums show what the sender wrote, what the microphone caught, and the key you share. When a frame lands, the drums turn to it and the top row settles on the words. The drums are real 3D objects, built in three.js from the same enamel, brass and bakelite as the rest of the machine, and they make a ratchet click for every letter that passes the index and a clunk when they settle. That sound is synthesised in the browser and filtered hard above 7 kHz, so it never leaks into the band Bombechat listens on, and it goes quiet while a message is arriving.
@@ -99,7 +115,7 @@ Flip the switch beside the reply line from Reply to Public and the same line wri
 
 There is no directory to look people up in. Both of you press Pair by sound and each laptop plays a hello carrying its public keys. The key check card then shows a 60-digit safety number, worked out from both keys, in twelve groups of five. Read them to each other out loud. If they match, press Matched, add and the card is stamped. If they don't, Doesn't match keeps nothing.
 
-On the airgapped build this is the only way to add a contact, so every contact has been checked in person.
+On the airgapped build this is the only way to add a contact, so every contact has been checked in person. The standard build adds requests to connect by Bluetooth, which add a contact unchecked until you meet.
 
 ## Privacy and the airgap
 
@@ -132,7 +148,7 @@ cd bombechat/app/src-tauri
 cargo tauri build
 ```
 
-The app lands in `target/release/bundle/macos/Bombechat.app` at the top of the repository. The first time it opens, macOS asks for the microphone; without it nothing can be heard. It asks for the camera the first time Light is turned on. Its store and settings live in `~/Library/Application Support/app.bombechat.airgapped/`. `docs/testing/two-laptops.md` walks through trying it on two Macs.
+The app lands in `target/release/bundle/macos/Bombechat.app` at the top of the repository. The first time it opens, macOS asks for the microphone; without it nothing can be heard. It asks for the camera the first time Light is turned on. Its store and settings live in `~/Library/Application Support/app.bombechat.airgapped/`. That is the airgapped build; the standard build, with Bluetooth, is built from `bluetooth/` (see [Two editions](#two-editions)). `docs/testing/two-laptops.md` walks through trying it on two Macs.
 
 ### Or look at it in a browser
 
@@ -144,6 +160,32 @@ npm run serve
 ```
 
 Then open http://localhost:4810/app/ui/bombechat.html.
+
+## Two editions
+
+Bombechat comes as two builds from one repository.
+
+The airgapped build, at the root, talks by sound and light only. It has no Bluetooth or networking code in it at all. It exists for people who can't risk a radio giving them away: a build with Bluetooth in it advertises the Mac to anything in range whenever the switch is on, and a bug or a forgotten setting could leave it on. When the code isn't there, there's nothing to leave on, and `tools/check-airgapped.sh` proves on every change that it isn't.
+
+The standard build, in `bluetooth/`, is the same project plus Bluetooth, for everyday use with the people you talk to most and for requests to connect. Its app is `app.bombechat.standard`, so its store and Keychain item never mix with the airgapped app's, and its maker's plate says "standard build".
+
+To build the airgapped app:
+
+```sh
+cd app/src-tauri
+cargo tauri build
+```
+
+It lands in `target/release/bundle/macos/Bombechat.app`. To build the standard app:
+
+```sh
+cd bluetooth/app/src-tauri
+cargo tauri build
+```
+
+It lands in `bluetooth/target/release/bundle/macos/Bombechat.app`. Both apps are called Bombechat, so copying both into `/Applications` would leave only the second. The standard build's checks run from inside `bluetooth/`: `cargo test --workspace` and `npm run check`.
+
+`bluetooth/` is generated. `tools/sync-bluetooth.sh` copies everything the root tracks (apart from `docs/`, `mockups/`, `.github/`, this README and the script and its test) into it, applies the small patches in `bluetooth/edition/patches/` and lays `bluetooth/edition/files/` over the top. Fix things at the root and run the script; CI fails if `bluetooth/` doesn't match what it writes, so the two editions differ only where `bluetooth/edition/` says they do. The one exception is `bluetooth/Cargo.lock`, which the edition keeps for itself since its dependencies will differ. The root never gains Bluetooth code, and the airgapped check still runs on it alone.
 
 ## Checks
 
@@ -160,7 +202,7 @@ CI runs the Rust tests and the airgapped check on Linux and on macOS, where the 
 ## Roadmap
 
 - **Relay.** Laptops carry messages for others, so a message can hop across a building or a block to reach someone out of earshot.
-- **Bluetooth**, in a separate standard build. A stranger in range can send a request to connect, and nothing is exchanged unless you accept it. The airgapped build stays without it.
+- **Bluetooth on real Macs.** The standard build's Bluetooth is built and tested in code. Next is the two-Mac test, then pictures of it for this page.
 - **Phones.** The same machine on iOS and Android.
 - **A bridge to Bitchat**, so messages can cross into its Bluetooth mesh.
 
