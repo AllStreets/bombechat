@@ -43,8 +43,14 @@
 // The eyepiece: while asked for and Light reads, a made-up grey room (a window, a desk, someone moving) four times a
 // second, 64 by 48, as the camera's would come.
 //
+// What this build fits beyond sound and light (edition.js) simulates its own parts: its settings, its channels, and
+// requests to connect from people nearby. The airgapped build fits nothing, so here no one asks, no stranger is near,
+// and the commands for them answer as the device does with no carrier that brings them.
+//
 // Query parameters: ?f=N starts the incoming message at chunk N (0 based), ?next=ms holds its next chunk that long,
 // ?still holds everything where it lands (no room meter, no further chunks).
+import { SETTING_ROWS, ONLY_IN_PERSON, simulate } from './edition.js';
+
 const SHOWN = 'Water is at the church on Fifth. Bring the radio, we leave at dusk.';
 const CHUNK = 48;
 const MARISOL = 1;
@@ -55,12 +61,19 @@ const TEODOR = 2;
 const DEFAULTS = { sound: 2, volume: 2, band: 0, light: 0, flash: 1, machine: 1, machvol: 2, carry: 1, hops: 3, hold: 2, quiet: 2, repeats: 2, lock: 1, expire: 0, inperson: 1 };
 // how many values each has; like the device, a value outside these is refused, and dropped if found kept
 const COUNTS = { sound: 3, volume: 5, band: 2, light: 3, flash: 3, machine: 2, machvol: 5, carry: 2, hops: 7, hold: 5, quiet: 5, repeats: 4, lock: 2, expire: 4, inperson: 2 };
+// and the rows this build adds (edition.js), at the defaults its settings page shows
+for (const r of SETTING_ROWS) { DEFAULTS[r.id] = r.v; COUNTS[r.id] = r.values.length; }
 const isSetting = (id, v) => id in COUNTS && Number.isInteger(v) && v >= 0 && v < COUNTS[id];
 // the settings this machine can't change, as the device's setting_notes: relay waits for its feature, and on the
 // airgapped build every contact is checked in person. The simulated machine is a Mac, so its lock can come off
 const NOTES = { carry: { note: 'comes with relay' }, hops: { note: 'comes with relay' }, hold: { note: 'comes with relay' }, inperson: { note: 'always, on this build', value: 1 } };
 // what set_setting says for each, as the device says it
 const REFUSED = { carry: 'Carry for others comes with relay', hops: 'Hop limit comes with relay', hold: 'Hold for comes with relay', inperson: 'On this build every new contact needs a key check' };
+// a build with another way to add a contact lets the person choose, as the device's edition::ONLY_IN_PERSON says
+if (!ONLY_IN_PERSON) { delete NOTES.inperson; delete REFUSED.inperson; }
+// what the node says when a request has gone, or a stranger has (REQUEST_GONE, NOT_IN_RANGE)
+const REQUEST_GONE = 'That request is no longer waiting.';
+const NOT_IN_RANGE = 'They are no longer in range.';
 const MACHINE_SETTINGS = 'bombechat.simulated-machine';
 function keptSettings() {
   let kept = {};
@@ -356,6 +369,7 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
     if (settings.sound > 0) { sound('receiving'); for (let i = 0; i <= c; i++) land(i); }
     setClock(9, 15);
     emit('roomDb', room);
+    fit.start && fit.start();
     if (still) return;
     nextDip = performance.now() + 9000;
     setInterval(roomTick, 170);
@@ -397,6 +411,8 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
     // how many times a setting was set, for the check that a page's load sets none
     settingsSet: 0,
   };
+  // what this build fits: its own part of the room, through the same events
+  const fit = simulate({ emit, settings, people, test, later, bytes, seeded, signer, outbox, now: () => clock }) || {};
 
   return {
     start,
@@ -404,7 +420,8 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
     send(contactIds, text, channel) {
       const m = { id: bytes(16), text };
       clock += 60000;
-      if (channel === 'light') { if (settings.light < 2) refuseLight(m); else flash(m, true); }
+      if (fit.carries && fit.carries(channel)) fit.send(m, contactIds, channel);
+      else if (channel === 'light') { if (settings.light < 2) refuseLight(m); else flash(m, true); }
       else { queue.push(m); later(() => outbox(m, 'waiting')); }
       return Promise.resolve(m.id);
     },
@@ -495,6 +512,7 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
       // pairing by light ends when Light leaves Read and flash, as the node ends it; a self-test ends likewise
       if (id === 'light' && valueIndex < 2) endHello();
       if (selfTest && valueIndex < 2 && id === selfTest.channel) endTest('stopped');
+      fit.setting && fit.setting(id, valueIndex, was);
       return Promise.resolve();
     },
     // read from the record each time, as the device answers from its own: another page may have changed it
@@ -509,7 +527,16 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
     // you are Teodor here: his key signs your broadcasts
     machine: () => Promise.resolve({ name: 'Machine No. 1', key: SELF_KEY, you: 'Teodor Vance', held: 6, version: '0.4', broadcast_max: MAX_BROADCAST, reply_max: REPLY_MAX }),
     channels: () => Promise.resolve([{ channel: 'Sound', state: soundState || 'listening', rate: RATE, band: settings.band ? 'audible' : 'near silent' },
-      { channel: 'Light', state: lightState || lightAt(), rate: LIGHT_RATES[settings.flash] }]),
+      { channel: 'Light', state: lightState || lightAt(), rate: LIGHT_RATES[settings.flash] }, ...(fit.channels ? fit.channels() : [])]),
+    // requests to connect, as the device answers with no carrier that brings them, unless this build fits one
+    requests: () => Promise.resolve([]),
+    acceptRequest: () => Promise.reject(REQUEST_GONE),
+    declineRequest: () => Promise.resolve(),
+    sendRequest: () => Promise.reject(NOT_IN_RANGE),
+    strangers: () => Promise.resolve([]),
+    peers: () => Promise.resolve({ contacts: [], strangers: 0 }),
+    unconfirmed: () => Promise.resolve([]),
+    ...fit.commands,
     test,
   };
 }

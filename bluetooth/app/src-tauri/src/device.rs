@@ -11,13 +11,14 @@ use bombechat_light::{CameraIo, CodeSpec};
 use bombechat_modem::{AudioIo, Band, CpalAudio, ModemConfig, QuietGate};
 use bombechat_node::{
     LightSwitch, LightTransport, Node, NodeEvent, ReaderWatch, SoundSwitch, SoundTransport,
-    Transport,
+    Transport, WaitingRequest,
 };
 use bombechat_store::{
     Channel, Contact, ContactId, Store, StoreError, StoreKey, StoredBroadcast, StoredMessage,
 };
 
 use crate::commands::{is_setting, Lock, Machine, Opened, Unlocking, SETTINGS};
+use crate::edition::{Fittings, ONLY_IN_PERSON};
 use crate::keychain::{Keeper, Nowhere};
 
 /// The quiet gate's defaults, as the settings page shows them: send under
@@ -248,6 +249,8 @@ pub struct Device {
     lock_note: Option<&'static str>,
     /// The light channel's reader, if there is one.
     light_watch: Option<ReaderWatch>,
+    /// What this build fits beyond sound and light ([`crate::edition`]).
+    fittings: Fittings,
 }
 
 impl Device {
@@ -258,6 +261,9 @@ impl Device {
     /// tick. The camera itself is only opened once the Light switch is
     /// at Read, and its permission prompt, missing camera or interruption
     /// is reported then, as the light channel's state.
+    ///
+    /// With them, whatever this build fits beyond sound and light
+    /// ([`Fittings::hardware`]).
     pub fn with_hardware(store_path: PathBuf) -> Device {
         let (mut transports, mut pending) = (Vec::new(), Vec::new());
         match CpalAudio::new() {
@@ -282,7 +288,10 @@ impl Device {
                 state: NO_CAMERA_HERE.to_string(),
             }),
         }
-        let mut device = Device::new(store_path, transports, pending);
+        let (fittings, fitted, said) = Fittings::hardware();
+        transports.extend(fitted);
+        pending.extend(said);
+        let mut device = Device::fitted(store_path, transports, pending, fittings);
         device.light_watch = watch;
         device
     }
@@ -332,6 +341,17 @@ impl Device {
         transports: Vec<Box<dyn Transport>>,
         pending: Vec<NodeEvent>,
     ) -> Device {
+        Device::fitted(store_path, transports, pending, Fittings::none())
+    }
+
+    /// As [`Device::new`], with `fittings` holding what this build fits
+    /// beyond sound and light (its carriers are among `transports`).
+    pub fn fitted(
+        store_path: PathBuf,
+        transports: Vec<Box<dyn Transport>>,
+        pending: Vec<NodeEvent>,
+        fittings: Fittings,
+    ) -> Device {
         tidy_unfinished(&store_path);
         let settings = load_settings(&settings_path(&store_path));
         let age_ms = load_age(&age_path(&store_path));
@@ -351,6 +371,7 @@ impl Device {
             now_ms: None,
             lock_note: None,
             light_watch: None,
+            fittings,
         };
         for (id, _, default) in SETTINGS {
             let value = device.setting(id).unwrap_or(default);
@@ -536,7 +557,11 @@ impl Device {
             "repeats" => self
                 .node
                 .set_repeats(value_index.min(u8::MAX as usize) as u8),
-            _ => {}
+            // held On where there is no other way to add a contact
+            "inperson" => self
+                .node
+                .set_in_person_only(ONLY_IN_PERSON || value_index == 1),
+            _ => self.fittings.apply(id, value_index),
         }
     }
 }
@@ -766,12 +791,45 @@ impl Machine for Device {
         self.lock_note
     }
 
+    fn steady_states(&self) -> Vec<(Channel, String)> {
+        self.fittings.states()
+    }
+
+    fn requests(&self) -> Vec<WaitingRequest> {
+        self.node.requests()
+    }
+
+    fn accept_request(&mut self, id: u64, name: &str) -> Result<ContactId, String> {
+        self.node.accept_request(id, name).map_err(str::to_string)
+    }
+
+    fn decline_request(&mut self, id: u64) {
+        self.node.decline_request(id);
+    }
+
+    fn send_request(&mut self, label: &str) -> Result<(), String> {
+        self.node.request(label).map_err(str::to_string)
+    }
+
+    fn strangers(&self) -> Vec<String> {
+        self.node.strangers()
+    }
+
+    fn peers(&self) -> (Vec<ContactId>, usize) {
+        self.node.peers()
+    }
+
+    fn unconfirmed(&self) -> Vec<ContactId> {
+        self.node.unconfirmed()
+    }
+
     /// Ticks the node, and while the store is open deletes old messages
     /// once an hour.
     fn tick(&mut self, now_ms: u64) -> Vec<NodeEvent> {
         let mut events = std::mem::take(&mut self.pending);
         self.grow(now_ms);
         events.extend(self.node.tick(now_ms));
+        self.fittings.tick(&mut events);
         if self.unlocked {
             match self.next_purge_ms {
                 Some(at) if now_ms < at => {}

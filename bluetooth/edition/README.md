@@ -21,11 +21,21 @@ What lives here:
 - `PATCHED`: the shared files this edition changes, each with a patch.
 - `patches/`: those changes, kept small. The identifier
   (`app.bombechat.standard`, so the store and Keychain item are its own),
-  the Bluetooth usage line in `Info.plist`, and the workspace's extra members
+  the Bluetooth usage line in `Info.plist`, the workspace's extra members
   `crates/session` and `crates/bluetooth` in `Cargo.toml` (with the curve
-  and hash code optimised in dev builds, so the session tests stay quick).
+  and hash code optimised in dev builds, so the session tests stay quick),
+  the app's dependency on `crates/bluetooth`, and `tools/check-bluetooth.cjs`
+  in `npm run check`.
 - `files/`: files the edition adds or replaces. `app/ui/edition.css` names
-  this build "standard build" on the machine's plates. `crates/session` is
+  this build "standard build" on the machine's plates.
+  `app/src-tauri/src/edition.rs` and `app/ui/edition.js` replace the root's
+  empty ones: the app's Bluetooth (the transport over the CoreBluetooth
+  radio, the Bluetooth switch setting, its channel's words, and New
+  contacts need a key check as a real choice), the settings card's
+  Bluetooth row, the simulator's Bluetooth (a contact and a stranger in
+  range, requests to connect), and the front's hook on the Bluetooth tile.
+  `app/src-tauri/tests/device_bluetooth.rs` and `tools/check-bluetooth.cjs`
+  test them. `crates/session` is
   the live session crate: Noise handshakes (IK for contacts, XN for
   requests to connect, XX kept for a future Bitchat bridge) that prove each
   identity that is sent, then transport encryption. `crates/bluetooth` is the

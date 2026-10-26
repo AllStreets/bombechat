@@ -894,8 +894,34 @@ impl Store {
             .collect()
     }
 
-    /// Set whether a contact's safety number has been checked. Unknown
-    /// ids are ignored.
+    /// Add a contact by accepting a request to connect: unchecked, and
+    /// not confirmed ([`Store::set_confirmed`]), in one transaction, so a
+    /// contact is never kept without its not-confirmed mark. Returns its
+    /// newly assigned id.
+    pub fn add_unconfirmed_contact(
+        &self,
+        name: &str,
+        who: &PublicIdentity,
+    ) -> Result<ContactId, StoreError> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|_| StoreError::Corrupt)?;
+        tx.execute(
+            "INSERT INTO contacts (name, sign, dh, checked) VALUES (?1, ?2, ?3, 0)",
+            params![name, who.sign.as_slice(), who.dh.as_slice()],
+        )
+        .map_err(|_| StoreError::Corrupt)?;
+        let id = tx.last_insert_rowid();
+        tx.execute(
+            "INSERT OR IGNORE INTO unconfirmed (contact_id) VALUES (?1)",
+            params![id],
+        )
+        .map_err(|_| StoreError::Corrupt)?;
+        tx.commit().map_err(|_| StoreError::Corrupt)?;
+        Ok(ContactId(id))
+    }
+
     /// Mark contact `c` confirmed or not. A contact added by accepting a
     /// request to connect is not confirmed until a proven session with
     /// them shows they hold it too; every other contact is.
@@ -923,6 +949,8 @@ impl Store {
             .collect()
     }
 
+    /// Set whether a contact's safety number has been checked. Unknown
+    /// ids are ignored.
     pub fn set_checked(&self, c: ContactId, checked: bool) -> Result<(), StoreError> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         conn.execute(
@@ -1688,6 +1716,29 @@ mod tests {
         assert_eq!(store.unconfirmed(), vec![c], "kept across opens");
         store.set_confirmed(c, true).unwrap();
         assert!(store.unconfirmed().is_empty());
+    }
+
+    #[test]
+    fn a_contact_from_a_request_is_kept_only_with_its_not_confirmed_mark() {
+        let dir = tempfile::tempdir().unwrap();
+        let store =
+            Store::create(&dir.path().join("s.db"), "pw", &Identity::generate(), "me").unwrap();
+        let c = store
+            .add_unconfirmed_contact("Ann", &Identity::generate().public())
+            .unwrap();
+        assert_eq!(store.unconfirmed(), vec![c]);
+        assert!(!store.contacts()[0].checked, "unchecked");
+        // the mark cannot be written: no contact is kept either
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute_batch("DROP TABLE unconfirmed;")
+            .unwrap();
+        assert!(store
+            .add_unconfirmed_contact("Ben", &Identity::generate().public())
+            .is_err());
+        assert_eq!(store.contacts().len(), 1, "Ben was not kept");
     }
 
     #[test]

@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use bombechat_core::{Envelope, Identity, PublicIdentity, MAX_ENVELOPE};
 use bombechat_modem::{split, Event, Reassembler};
 use bombechat_node::{read_hello, Transport, TransportEvent, NOT_IN_RANGE, REQUEST_GAP_MS};
-use bombechat_session::{Session, SessionKeys, TOKEN_LEN};
+use bombechat_session::{Handshake, Session, SessionKeys, TOKEN_LEN};
 use bombechat_store::Channel;
 use rand_core::{OsRng, RngCore};
 
@@ -182,6 +182,9 @@ pub struct BleTransport<R: Radio> {
     lost: BTreeMap<[u8; TOKEN_LEN], (Vec<PublicIdentity>, u64)>,
     seen_ephemerals: HashMap<[u8; 32], u64>,
     seen_order: VecDeque<([u8; 32], u64)>,
+    /// Proofs of an accept, answered only once the node has taken the one
+    /// who accepted as a contact ([`BleTransport::release_proofs`]).
+    proofs: Vec<HeldProof>,
     outbound_frames: Vec<Vec<u8>>,
     outbound: Reassembler,
     queue: Queue,
@@ -190,6 +193,16 @@ pub struct BleTransport<R: Radio> {
     listening: bool,
     sending: bool,
     now_ms: u64,
+}
+
+/// A contact handshake's message 1 from the one who accepted a request
+/// this device sent, read and not yet answered: the node decides first.
+struct HeldProof {
+    link: LinkId,
+    xid: u32,
+    hs: Handshake,
+    remote: PublicIdentity,
+    since_ms: u64,
 }
 
 impl<R: Radio> BleTransport<R> {
@@ -230,6 +243,7 @@ impl<R: Radio> BleTransport<R> {
             lost: BTreeMap::new(),
             seen_ephemerals: HashMap::new(),
             seen_order: VecDeque::new(),
+            proofs: Vec::new(),
             outbound_frames: Vec::new(),
             outbound: Reassembler::new(),
             queue: Queue::default(),
@@ -413,6 +427,7 @@ impl<R: Radio> BleTransport<R> {
         }
         if let Some(contacts) = contacts {
             self.use_contacts(contacts);
+            self.release_proofs();
         }
         let want = self.mode.is_some() && self.keys.is_some();
         if self.running && (restart || !want) {
@@ -543,6 +558,7 @@ impl<R: Radio> BleTransport<R> {
         self.rounds.clear();
         self.redial.clear();
         self.lost.clear();
+        self.proofs.clear();
         for tag in self.queue.drain_unreported() {
             self.events.push(TransportEvent::Dropped(tag));
         }
@@ -721,6 +737,7 @@ impl<R: Radio> BleTransport<R> {
                 }
             }
             RadioEvent::Unavailable(why) => self.events.push(TransportEvent::Unavailable(why)),
+            RadioEvent::Available => self.events.push(TransportEvent::Recovered),
         }
     }
 
@@ -784,6 +801,51 @@ impl<R: Radio> BleTransport<R> {
             return;
         }
         self.remember_ephemeral(eph);
+        if !self.contact_keys.contains(&rk) {
+            // the proof of an accept, from the one this device asked: the
+            // node is told and decides whether to take them as a contact;
+            // only if it does does the answer go, so the answer itself
+            // shows the one who accepted that they were added
+            let hello = self
+                .links
+                .get(&id)
+                .and_then(|l| l.answer_from(&remote))
+                .unwrap_or_default();
+            if let Some(link) = self.links.get_mut(&id) {
+                link.exchanges.retain(|_, e| !is_request_out(e));
+            }
+            self.asked.remove(&id);
+            self.proofs.push(HeldProof {
+                link: id,
+                xid,
+                hs,
+                remote: remote.clone(),
+                since_ms: now,
+            });
+            self.events.push(TransportEvent::RequestAccepted {
+                stranger: id.0,
+                from: remote,
+                hello,
+            });
+            return;
+        }
+        self.answer_contact_with(id, xid, hs);
+    }
+
+    /// The node has said who its contacts are: each proof held for one of
+    /// them is answered, and the rest are let go unanswered.
+    fn release_proofs(&mut self) {
+        for p in std::mem::take(&mut self.proofs) {
+            if self.contact_keys.contains(&key_of(&p.remote)) {
+                self.answer_contact_with(p.link, p.xid, p.hs);
+            }
+        }
+    }
+
+    /// Answer a contact handshake's message 1, read from a contact into
+    /// `hs`: the session is theirs from now on.
+    fn answer_contact_with(&mut self, id: LinkId, xid: u32, mut hs: Handshake) {
+        let now = self.now_ms;
         let Ok(reply) = hs.write_message() else {
             return;
         };
@@ -793,6 +855,9 @@ impl<R: Radio> BleTransport<R> {
         let Some(link) = self.links.get_mut(&id) else {
             return;
         };
+        if link.exchanges.contains_key(&(Side::Theirs, xid)) {
+            return;
+        }
         let mut unconfirmed: Vec<(u64, ExKey)> = link
             .exchanges
             .iter()
@@ -1030,13 +1095,9 @@ impl<R: Radio> BleTransport<R> {
                 }
             }
         }
-        let mut proved = None;
         if !was_confirmed && s.confirmed() && kind == SessKind::Contact {
             if let Some(r) = &remote {
                 self.last_seen.insert(key_of(r), now);
-                if !self.contact_keys.contains(&key_of(r)) {
-                    proved = link.answer_from(r);
-                }
             }
             // one confirmed session per contact per link: older ones go
             link.exchanges.retain(|other, e| match e {
@@ -1044,20 +1105,6 @@ impl<R: Radio> BleTransport<R> {
                     o.remote != remote
                 }
                 _ => true,
-            });
-        }
-        if let (Some(hello), Some(r)) = (proved, &remote) {
-            // the one this device asked accepted, and proved it: a contact
-            // from now on, unless the node says otherwise
-            link.exchanges.retain(|_, e| !is_request_out(e));
-            self.asked.remove(&id);
-            if self.contact_keys.insert(key_of(r)) {
-                self.contacts.push(r.clone());
-            }
-            self.events.push(TransportEvent::RequestAccepted {
-                stranger: id.0,
-                from: r.clone(),
-                hello,
             });
         }
         match kind {
@@ -1913,6 +1960,8 @@ impl<R: Radio> Transport for BleTransport<R> {
                 link.reassembly.expire(now);
             }
             self.prune_seen();
+            self.proofs
+                .retain(|p| now.saturating_sub(p.since_ms) < HANDSHAKE_MS);
             self.contact_tokens
                 .retain(|_, (_, at)| now.saturating_sub(*at) < CONTACT_TOKEN_MS);
             self.prove_accepted();

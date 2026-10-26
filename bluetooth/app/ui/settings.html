@@ -150,6 +150,7 @@ a.pl svg{display:block}
 <script type="module">
 import { createMachine, engravingFace } from './machine-kit.js';
 import { bridge } from './bridge.js';
+import { SETTING_ROWS } from './edition.js';
 
 const Q=new URLSearchParams(location.search);
 const REDUCED=matchMedia('(prefers-reduced-motion: reduce)').matches||Q.has('still');
@@ -172,7 +173,11 @@ const SETTINGS=[
  {id:'lock',g:'Privacy',name:'Lock with passphrase',values:['Off','On'],v:1,desc:'Ask for your passphrase when Bombechat opens. Contacts and messages are encrypted either way.'},
  {id:'expire',g:'Privacy',name:'Delete messages after',values:['Never','1 day','7 days','30 days'],v:0,desc:'Older messages are erased from this laptop. Counts only time this machine has been running, so they may go later, never sooner.'},
  {id:'inperson',g:'Privacy',name:'New contacts need a key check',values:['Off','On'],v:1,desc:'Only add someone once you have compared keys face to face.'},
+ // and the rows this build fits beyond sound and light (edition.js)
+ ...SETTING_ROWS,
 ];
+// a group this build has no rows for is a blanking plate: not fitted to this build
+const fitted=g=>SETTINGS.some(s=>s.g===g);
 const byId=Object.fromEntries(SETTINGS.map(s=>[s.id,s]));
 // the machine keeps every setting and is the only record of them: render from it, and send one back only when
 // the person changes it. v above is each one's default. A machine that cannot answer leaves every row saying it was
@@ -196,8 +201,8 @@ const rows={};
 for(const g of GROUPS){
   const items=SETTINGS.filter(s=>s.g===g);
   const waits=items.length&&items.every(s=>s.parked);
-  const h=document.createElement('div');h.className='grp';h.innerHTML=`<span>${g}</span><small>${g==='Bluetooth'?'not fitted':waits?'plugs parked':items.length+(items.length===1?' plug':' plugs')}</small>`;sched.appendChild(h);
-  if(g==='Bluetooth'){const n=document.createElement('div');n.className='notfitted';n.textContent='This build carries no Bluetooth code, so there is nothing here to switch on. The standard build adds discovery and requests to connect from people you have not met.';sched.appendChild(n);continue}
+  const h=document.createElement('div');h.className='grp';h.innerHTML=`<span>${g}</span><small>${!fitted(g)?'not fitted':waits?'plugs parked':items.length+(items.length===1?' plug':' plugs')}</small>`;sched.appendChild(h);
+  if(!fitted(g)){const n=document.createElement('div');n.className='notfitted';n.textContent='This build carries no Bluetooth code, so there is nothing here to switch on. The standard build adds discovery and requests to connect from people you have not met.';sched.appendChild(n);continue}
   for(const s of items){
     const r=document.createElement('div');r.className='row'+(s.held?' held':'')+(s.parked?' parked':'');r.dataset.id=s.id;
     const off=s.held?' disabled aria-disabled="true"':'';
@@ -363,8 +368,8 @@ async function build(){
   const plugs={};const jackMeshes=[];
   const valueWidth=t=>{const m=engrave(t,0,0,.1);m.geometry.computeBoundingBox();const b=m.geometry.boundingBox;scene.remove(m);m.geometry.dispose();m.material.map.dispose();m.material.dispose();return b.max.x-b.min.x};
       for(const side of Object.values(LAYOUT)){let y=TOP;
-    for(const g of side.groups){plate(g.toUpperCase(),side.x,y,{h:.24,red:g==='Bluetooth',align:'left'});y-=.42;
-      if(g==='Bluetooth'){const cov=new THREE.Mesh(new THREE.BoxGeometry(5.6,.9,.05),new THREE.MeshStandardMaterial({color:'#262724',roughness:.45,metalness:.6,bumpMap:wrinkle,bumpScale:.4}));cov.position.set(side.x+2.8,y-.3,.025);cov.castShadow=true;cov.receiveShadow=true;scene.add(cov);
+    for(const g of side.groups){plate(g.toUpperCase(),side.x,y,{h:.24,red:!fitted(g),align:'left'});y-=.42;
+      if(!fitted(g)){const cov=new THREE.Mesh(new THREE.BoxGeometry(5.6,.9,.05),new THREE.MeshStandardMaterial({color:'#262724',roughness:.45,metalness:.6,bumpMap:wrinkle,bumpScale:.4}));cov.position.set(side.x+2.8,y-.3,.025);cov.castShadow=true;cov.receiveShadow=true;scene.add(cov);
         [[-2.65,.33],[2.65,.33],[-2.65,-.33],[2.65,-.33]].forEach(([dx,dy])=>bolt(side.x+2.8+dx,y-.3+dy));const e=engrave('NOT FITTED TO THIS BUILD',side.x+2.8,y-.3,.15,'#6f6a5e');e.position.z=.055;y-=1.12;continue}
       for(const s of SETTINGS.filter(q=>q.g===g)){
         {const e=engrave(s.name.toUpperCase(),0,y-.01,.12,'#ddd5c0');e.geometry.computeBoundingBox();const w=e.geometry.boundingBox.max.x-e.geometry.boundingBox.min.x;e.position.x=side.x+w/2+.02}

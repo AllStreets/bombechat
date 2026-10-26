@@ -64,12 +64,27 @@ pub enum RequestState {
     Accepted(ContactId),
 }
 
+/// A request waiting for the person, as [`Node::requests`] lists it and
+/// [`NodeEvent::Request`] first reported it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WaitingRequest {
+    pub id: u64,
+    /// The name their hello gave: only a suggestion.
+    pub name: String,
+    /// The first bytes of their signing key.
+    pub fingerprint: [u8; 8],
+    /// The safety number shared with them, to compare in person.
+    pub safety: String,
+}
+
 /// A request waiting for the person.
 struct Waiting {
     id: u64,
     ti: usize,
     request: u64,
     from: PublicIdentity,
+    name: String,
+    safety: String,
 }
 
 /// A stranger a request can go to.
@@ -233,20 +248,40 @@ impl Node {
         let existing = store.contacts().into_iter().find(|c| c.who == w.from);
         let contact = match existing {
             Some(c) => c.id,
-            None => {
-                let id = store
-                    .add_contact(name, &w.from, false)
-                    .map_err(|_| "not stored")?;
-                // until a proven session shows they hold us too
-                let _ = store.set_confirmed(id, false);
-                id
-            }
+            // not confirmed until they prove they hold us too; kept only
+            // with that mark, or not at all
+            None => store
+                .add_unconfirmed_contact(name, &w.from)
+                .map_err(|_| "not stored")?,
         };
         let hello = control::pair_hello(me, &store.my_name(), random_id(), now_min(), TTL_MIN);
         let w = self.requests.waiting.remove(at).expect("found above");
         self.share_contacts();
         self.transports[w.ti].answer_request(w.request, Some(hello.encode()));
         Ok(contact)
+    }
+
+    /// The requests waiting for the person, oldest first: what the
+    /// [`NodeEvent::Request`]s not yet followed by a
+    /// [`NodeEvent::RequestGone`] said, for a page that opens after them.
+    pub fn requests(&self) -> Vec<WaitingRequest> {
+        self.requests
+            .waiting
+            .iter()
+            .map(|w| WaitingRequest {
+                id: w.id,
+                name: w.name.clone(),
+                fingerprint: w.from.fingerprint(),
+                safety: w.safety.clone(),
+            })
+            .collect()
+    }
+
+    /// Who is near, as the last [`NodeEvent::Peers`] said: the contacts
+    /// in range, and how many strangers were seen lately. None in range
+    /// until a carrier has said.
+    pub fn peers(&self) -> (Vec<ContactId>, usize) {
+        self.requests.said.clone().unwrap_or_default()
     }
 
     /// Contacts added by accepting a request whose requester hasn't yet
@@ -257,6 +292,17 @@ impl Node {
     /// in the store across restarts.
     pub fn unconfirmed(&self) -> Vec<ContactId> {
         self.requests.unconfirmed.clone()
+    }
+
+    /// Contact `c` was paired in person: each holds the other, so if an
+    /// accept left it unconfirmed it is confirmed now, and the page told.
+    pub(crate) fn paired(&mut self, c: ContactId) {
+        let Some(store) = &self.store else { return };
+        if self.requests.unconfirmed.contains(&c) && store.set_confirmed(c, true).is_ok() {
+            self.requests.unconfirmed.retain(|u| *u != c);
+            self.pending
+                .push(NodeEvent::ContactConfirmed { contact: c });
+        }
     }
 
     /// Decline the request `id`: it is forgotten, and nothing at all goes
@@ -392,15 +438,17 @@ impl Node {
         let id = self.requests.next_id;
         events.push(NodeEvent::Request {
             id,
-            name,
+            name: name.clone(),
             fingerprint: from.fingerprint(),
-            safety,
+            safety: safety.clone(),
         });
         self.requests.waiting.push_back(Waiting {
             id,
             ti,
             request,
             from,
+            name,
+            safety,
         });
     }
 
@@ -714,6 +762,78 @@ mod tests {
             .tick(30)
             .iter()
             .any(|e| matches!(e, NodeEvent::ContactConfirmed { .. })));
+    }
+
+    #[test]
+    fn pairing_in_person_confirms_a_contact_an_accept_left_unconfirmed() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (me, ben) = (Identity::generate(), Identity::generate());
+        let (mut node, reach) = node(&dir, &me);
+        reach.ask(7, &ben, "Ben");
+        let id = asked(&node.tick(0))[0].0;
+        let contact = node.accept_request(id, "Ben").unwrap();
+        assert_eq!(node.unconfirmed(), vec![contact]);
+        assert_eq!(node.confirm_pairing(&ben.public(), "Ben"), contact);
+        assert!(node.unconfirmed().is_empty(), "each holds the other now");
+        assert!(
+            node.store.as_ref().unwrap().unconfirmed().is_empty(),
+            "and kept so"
+        );
+        let events = node.tick(10);
+        assert_eq!(
+            events
+                .iter()
+                .filter(
+                    |e| matches!(e, NodeEvent::ContactConfirmed { contact: c } if *c == contact)
+                )
+                .count(),
+            1,
+            "the page is told"
+        );
+        // pairing again changes nothing more
+        node.confirm_pairing(&ben.public(), "Ben");
+        assert!(!node
+            .tick(20)
+            .iter()
+            .any(|e| matches!(e, NodeEvent::ContactConfirmed { .. })));
+    }
+
+    #[test]
+    fn waiting_requests_and_who_is_near_are_there_for_a_page_that_opens_late() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (me, ben, cat) = (
+            Identity::generate(),
+            Identity::generate(),
+            Identity::generate(),
+        );
+        let (mut node, reach) = node(&dir, &me);
+        assert!(node.requests().is_empty());
+        assert_eq!(node.peers(), (vec![], 0), "none near until a carrier says");
+        reach.ask(7, &ben, "Ben");
+        reach.ask(8, &cat, "Cat");
+        let shown = asked(&node.tick(0));
+        let listed = node.requests();
+        assert_eq!(
+            listed
+                .iter()
+                .map(|w| (w.id, w.name.clone()))
+                .collect::<Vec<_>>(),
+            shown,
+            "as the events said, oldest first"
+        );
+        assert_eq!(listed[0].fingerprint, ben.public().fingerprint());
+        assert_eq!(listed[0].safety, safety_number(&me.public(), &ben.public()));
+        node.decline_request(listed[0].id);
+        assert_eq!(node.requests().len(), 1);
+        let dan = node.confirm_pairing(&Identity::generate().public(), "Dan");
+        let dan_key = node.contacts()[0].who.clone();
+        reach.tell(TransportEvent::Peers {
+            contacts: vec![dan_key],
+            strangers: vec![3],
+            strangers_seen: 2,
+        });
+        node.tick(10);
+        assert_eq!(node.peers(), (vec![dan], 2));
     }
 
     #[test]

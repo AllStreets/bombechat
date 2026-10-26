@@ -499,7 +499,9 @@ impl<S: Stack> Adapter<S> {
         } else if states.contains(&Power::Unsupported) {
             self.report(BLUETOOTH_UNSUPPORTED);
         } else if self.is_powered_on() {
-            self.reported = None;
+            if self.reported.take().is_some() {
+                self.events.push(RadioEvent::Available);
+            }
             self.arm();
         }
     }
@@ -1378,7 +1380,7 @@ mod tests {
                 CbEvent::Advertising(true),
             ],
         );
-        assert!(ev.is_empty(), "{ev:?}");
+        assert_eq!(ev, vec![RadioEvent::Available], "said to be back, once");
         assert_eq!(
             a.stack().log,
             vec![

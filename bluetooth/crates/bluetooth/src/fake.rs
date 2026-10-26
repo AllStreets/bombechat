@@ -325,6 +325,20 @@ impl FakeRadio {
         (s.stations[self.me].starts, s.stations[self.me].stops)
     }
 
+    /// The radio says it can't work, as CoreBluetooth would with
+    /// Bluetooth turned off in System Settings, or (`None`) that it works
+    /// again: reported at its next poll while it is on.
+    pub fn say_unavailable(&self, why: Option<&str>) {
+        let mut s = self.room.lock().unwrap();
+        let st = &mut s.stations[self.me];
+        if st.on {
+            st.inbox.push(match why {
+                Some(why) => RadioEvent::Unavailable(why.to_string()),
+                None => RadioEvent::Available,
+            });
+        }
+    }
+
     /// Every write it made, in order, and forget them.
     pub fn take_written(&self) -> Vec<(LinkId, Vec<u8>)> {
         std::mem::take(&mut self.room.lock().unwrap().stations[self.me].written)

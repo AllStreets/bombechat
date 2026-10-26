@@ -590,6 +590,7 @@ body:has(.lamp:not([hidden])){perspective:none}
 
 <script type="module">
 import { bridge } from './bridge.js';
+import { front } from './edition.js';
 /* ---------- passphrase and contact ----------
    contacts() refuses until the store is open, saying whether one exists yet; then the
    page asks for the passphrase (the first time, chooses one) and asks again. */
@@ -1562,6 +1563,8 @@ vuTitle();
 if(!bridge.simulated)await realSheet();
 // the broadcasts kept, this machine's own and the ones heard, in their places among the messages
 for(const b of await bridge.broadcasts().catch(()=>[]))drawNotice(b);
+// what this build fits beyond sound and light keeps its own part of the front (edition.js), listening from the start
+front(bridge);
 bridge.start();
 // a page opened (or reloaded) after the channel last changed still learns its state
 bridge.channels().then(list=>{list.forEach(onChannel);showRate(list)});

@@ -13,8 +13,12 @@ const out = path.join(ROOTDIR, 'checks', path.relative(ROOTDIR, path.dirname(pag
 fs.rmSync(out, { recursive: true, force: true });
 fs.mkdirSync(out, { recursive: true });
 const { start } = require('./serve.cjs');
-// what the device's setting_notes answers on this build (a Mac): relay waits, the key check is always on
-const NOTES = { carry: { note: 'comes with relay' }, hops: { note: 'comes with relay' }, hold: { note: 'comes with relay' }, inperson: { note: 'always, on this build', value: 1 } };
+// whether this build adds contacts only in person (app/ui/edition.js says, as the device's edition.rs does): then the
+// key check is held On; where requests to connect add them too, it is the person's choice
+const ONLY_IN_PERSON = /^export const ONLY_IN_PERSON = true;$/m.test(fs.readFileSync(path.join(ROOTDIR, 'app/ui/edition.js'), 'utf8'));
+// what the device's setting_notes answers on this build (a Mac): relay waits, and the key check is always on where
+// there is no other way to add a contact
+const NOTES = { carry: { note: 'comes with relay' }, hops: { note: 'comes with relay' }, hold: { note: 'comes with relay' }, ...(ONLY_IN_PERSON ? { inperson: { note: 'always, on this build', value: 1 } } : {}) };
 const url = q => 'http://127.0.0.1:4811/' + path.relative(ROOTDIR, page) + (q ? '?' + q : '');
 (async () => {
   const server = await start(4811);
@@ -82,7 +86,7 @@ const url = q => 'http://127.0.0.1:4811/' + path.relative(ROOTDIR, page) + (q ? 
   // and its plug stays where it is (parked, for one waiting for relay). The Light switch and Flash speed are live
   const ids = await p.evaluate(() => window.__bc.settings);
   const held = APP ? await p.evaluate(() => window.__bc.held()) : {};
-  const WAITS = { carry: 'comes with relay', hops: 'comes with relay', hold: 'comes with relay', inperson: 'always, on this build' };
+  const WAITS = { carry: 'comes with relay', hops: 'comes with relay', hold: 'comes with relay', ...(ONLY_IN_PERSON ? { inperson: 'always, on this build' } : {}) };
   for (const id of ['light', 'flash']) if (held[id] || !ids.includes(id)) problems.push(`${id} is not a live row: ${JSON.stringify(held[id])}`);
   const untaped = await p.evaluate(() => ['light', 'flash'].map(id => { const r = document.querySelector(`.row[data-id="${id}"]`); return r.classList.contains('held') || r.classList.contains('parked') || [...r.querySelectorAll('.jk')].some(b => b.disabled) ? id : null; }).filter(Boolean));
   if (untaped.length) problems.push(`still taped on the card: ${untaped.join(', ')}`);

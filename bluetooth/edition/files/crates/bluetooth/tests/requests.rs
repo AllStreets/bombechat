@@ -203,6 +203,57 @@ fn one_stranger_is_asked_by_label_and_an_accept_makes_both_contacts() {
 }
 
 #[test]
+fn an_accept_is_confirmed_only_once_the_one_who_asked_has_taken_them() {
+    let room = Room::new(12);
+    let (mut a, mut b, t) = open_pair(&room);
+    let label = a.node.strangers()[0].clone();
+    a.node.request(&label).unwrap();
+    let t = run(&mut [&mut a, &mut b], t, t + 2_000);
+    let id = b.requests()[0].0;
+    // Ann turns key checks on after asking: her machine will take no one
+    // from a request, so Ben's accept must never count as confirmed
+    a.node.set_in_person_only(true);
+    let ann = b.node.accept_request(id, "Ann").unwrap();
+    let t = run(&mut [&mut a, &mut b], t, t + 20_000);
+    assert!(a.node.contacts().is_empty(), "Ann took no one");
+    assert_eq!(
+        a.requested(),
+        vec![RequestState::Delivered, RequestState::Failed]
+    );
+    assert_eq!(b.node.unconfirmed(), vec![ann], "still not confirmed");
+    assert!(!b
+        .events
+        .iter()
+        .any(|e| matches!(e, NodeEvent::ContactConfirmed { .. })));
+    assert!(
+        b.last_peers().is_none_or(|(near, _)| near.is_empty()),
+        "never counted present: {:?}",
+        b.last_peers()
+    );
+    run(&mut [&mut a, &mut b], t, t + 60_000);
+    assert_eq!(b.node.unconfirmed(), vec![ann]);
+
+    // the same, taken: confirmed once Ann's own answer comes
+    let room = Room::new(13);
+    let (mut a, mut b, t) = open_pair(&room);
+    let label = a.node.strangers()[0].clone();
+    a.node.request(&label).unwrap();
+    let t = run(&mut [&mut a, &mut b], t, t + 2_000);
+    let id = b.requests()[0].0;
+    let ann = b.node.accept_request(id, "Ann").unwrap();
+    run(&mut [&mut a, &mut b], t, t + 10_000);
+    assert_eq!(a.node.contacts().len(), 1);
+    assert!(b.node.unconfirmed().is_empty());
+    assert_eq!(
+        b.events
+            .iter()
+            .filter(|e| matches!(e, NodeEvent::ContactConfirmed { contact } if *contact == ann))
+            .count(),
+        1
+    );
+}
+
+#[test]
 fn with_key_checks_required_a_request_is_shown_but_not_accepted() {
     let room = Room::new(11);
     let (mut a, mut b, t) = open_pair(&room);

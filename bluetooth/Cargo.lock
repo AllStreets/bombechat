@@ -285,6 +285,7 @@ dependencies = [
 name = "bombechat-app"
 version = "0.1.0"
 dependencies = [
+ "bombechat-bluetooth",
  "bombechat-core",
  "bombechat-light",
  "bombechat-modem",

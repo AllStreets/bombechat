@@ -1,0 +1,11 @@
+--- a/app/src-tauri/Cargo.toml
++++ b/app/src-tauri/Cargo.toml
+@@ -22,6 +22,8 @@
+ bombechat-modem = { path = "../../crates/modem" }
+ bombechat-node = { path = "../../crates/node" }
+ bombechat-store = { path = "../../crates/store" }
++# Bluetooth: the link protocol, and the CoreBluetooth radio on macOS.
++bombechat-bluetooth = { path = "../../crates/bluetooth" }
+ # No plugins: no updater, no shell, no http. The page reaches the node only
+ # through the commands in src/commands.rs.
+ tauri = { version = "2", features = [] }

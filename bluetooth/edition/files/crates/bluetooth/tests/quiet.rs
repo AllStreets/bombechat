@@ -431,3 +431,40 @@ fn a_second_request_on_one_link_looks_ignored() {
     sane(&base);
     assert_eq!(run(true), base);
 }
+
+/// Twenty people ask after Ann: hers, the oldest, is pushed out by the
+/// cap of twenty waiting. Compared with a scene where the last of them
+/// sends bytes that are no envelope, so it is dropped before it counts
+/// and Ann's stays shown and ignored.
+#[test]
+fn a_request_pushed_out_by_the_cap_looks_ignored() {
+    let run = |pushed: bool| {
+        let mut s = Scene::new(false, &[]);
+        let mut raw = s.raw();
+        let mut others: Vec<Raw> = (0..20).map(|_| s.raw()).collect();
+        let (keys, hello) = asker();
+        let (asked, events) = ask(&mut s, &mut raw, &keys, 1, &hello);
+        let ann = request_id(&events).expect("shown");
+        let at = s.now;
+        let mut gone = Vec::new();
+        for (i, other) in others.iter_mut().enumerate() {
+            let who = identity(60 + i as u64);
+            let last = i == 19;
+            let mut their_hello = pairing_hello(&who, "Someone", SENT_MIN).encode();
+            if last && !pushed {
+                their_hello.fill(0xFF);
+            }
+            let (_, events) = ask(&mut s, other, &SessionKeys::new(&who), 2, &their_hello);
+            assert_eq!(request_id(&events).is_some(), !last || pushed, "asker {i}");
+            gone.extend(events.iter().filter_map(|e| match e {
+                NodeEvent::RequestGone { id } => Some(*id),
+                _ => None,
+            }));
+        }
+        assert_eq!(gone.contains(&ann), pushed, "Ann's pushed out: {gone:?}");
+        observe(&mut s, &mut raw, asked, at)
+    };
+    let base = run(false);
+    sane(&base);
+    assert_eq!(run(true), base);
+}

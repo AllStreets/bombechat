@@ -52,6 +52,10 @@ pub enum RadioEvent {
     Bytes(LinkId, Vec<u8>),
     /// The radio can't work, in a sentence the person can act on.
     Unavailable(String),
+    /// The radio works again after [`RadioEvent::Unavailable`], without
+    /// being stopped and started (Bluetooth turned on again in System
+    /// Settings).
+    Available,
 }
 
 /// A Bluetooth LE radio: advertise this device's token, find others

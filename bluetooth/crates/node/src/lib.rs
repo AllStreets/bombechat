@@ -133,7 +133,8 @@ use rand_core::{OsRng, RngCore};
 
 pub use light::{LightTransport, ReaderWatch, PICTURES_HELD, SEND_WINDOW, STILL_MS};
 pub use requests::{
-    RequestState, MEET_FIRST, NOT_IN_RANGE, REQUESTS_WAITING, REQUEST_GAP_MS, REQUEST_GONE,
+    RequestState, WaitingRequest, MEET_FIRST, NOT_IN_RANGE, REQUESTS_WAITING, REQUEST_GAP_MS,
+    REQUEST_GONE,
 };
 pub use sound::{SoundTransport, MAX_QUEUED_ENVELOPES, QUEUE_FULL};
 pub use transport::{Transport, TransportEvent};
@@ -1420,10 +1421,11 @@ impl Node {
             return NOT_STORED;
         }
         if let Some(c) = store.contacts().into_iter().find(|c| &c.who == peer) {
-            return match store.set_checked(c.id, true) {
-                Ok(()) => c.id,
-                Err(_) => NOT_STORED,
-            };
+            if store.set_checked(c.id, true).is_err() {
+                return NOT_STORED;
+            }
+            self.paired(c.id);
+            return c.id;
         }
         let id = store.add_contact(name, peer, true).unwrap_or(NOT_STORED);
         self.share_contacts();

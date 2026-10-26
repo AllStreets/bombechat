@@ -200,7 +200,7 @@ impl Raw {
                         self.got.push((link, m));
                     }
                 }
-                RadioEvent::Unavailable(_) => {}
+                RadioEvent::Unavailable(_) | RadioEvent::Available => {}
             }
         }
     }
