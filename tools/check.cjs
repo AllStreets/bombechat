@@ -266,6 +266,11 @@ function measureText() {
   await live.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
   report.gl = await live.evaluate(() => __bank.gl);
   if (!report.gl) problems.push('drum bank fell back to flat drums (no WebGL)');
+  // three rows of drums with nothing between them: an axle behind each row, no rail between rows, no bar in the grid
+  if (APP) {
+    report.rails = await live.evaluate(() => ({ ...__bank.rails(), bars: document.querySelectorAll('#drums .bar').length, drums: document.querySelectorAll('#drums .drum').length }));
+    if (report.rails.between !== 0 || report.rails.axles !== 3 || report.rails.bars !== 0 || report.rails.drums !== 36) problems.push(`the drum bank is not three rows with nothing between them: ${JSON.stringify(report.rails)}`);
+  }
   report.fps = await live.evaluate(() => new Promise(r => { let n = 0; const t0 = performance.now(); const f = () => { n++; performance.now() - t0 < 2000 ? requestAnimationFrame(f) : r(Math.round(n / 2)); }; requestAnimationFrame(f); }));
   if (report.fps < 50) problems.push('front frame rate ' + report.fps);
   await live.waitForTimeout(1750);
@@ -1718,6 +1723,23 @@ function measureText() {
   report.audio = audio;
 
   await browser.close();
+
+  // 8. without WebGL the bank stays the flat drums: three rows of twelve, nothing between the rows, the plain row
+  // settling on the frame text, no page errors
+  if (APP) {
+    const flat = await chromium.launch({ channel: 'chrome', args: ['--disable-webgl', '--disable-3d-apis'] });
+    const fp = await flat.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 });
+    watch(fp, 'flat');
+    await fp.goto(url());
+    await fp.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
+    const fpText = () => window.__bank.frame ? __bank.frame().plain : null;
+    await fp.waitForFunction(`__bank.frame() && __bank.rows().plain === (${fpText})()`, null, { timeout: 8000 }).catch(() => {});
+    report.flat = await fp.evaluate(`({ gl: __bank.gl, bars: document.querySelectorAll('#drums .bar').length, drums: document.querySelectorAll('#drums .drum').length, plain: __bank.rows().plain, expected: (${fpText})() })`);
+    if (report.flat.gl || report.flat.bars || report.flat.drums !== 36) problems.push(`flat drum bank: ${JSON.stringify(report.flat)}`);
+    if (report.flat.plain !== report.flat.expected) problems.push(`flat drum bank: the plain row reads ${report.flat.plain}, the frame is ${report.flat.expected}`);
+    await fp.locator('.bank').screenshot({ path: path.join(out, 'bank-flat.png') });
+    await flat.close();
+  }
   console.log(JSON.stringify({ out, frames, ...report, problems }, null, 2));
   server.close();
   process.exit(problems.length ? 1 : 0);

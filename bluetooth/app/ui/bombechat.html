@@ -165,10 +165,9 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
 
 /* drum bank */
 .bank{--dr:clamp(66px,min((100vw - 160px) / 12 - 8px,(100vh - 616px) / 3.24),128px);position:relative;z-index:1;margin:12px 16px 0;border-radius:3px;background:linear-gradient(#171816,#111210);box-shadow:inset 0 0 0 1px #000,inset 0 1px 0 rgba(255,255,255,.04),inset 0 10px 30px rgba(0,0,0,.4);padding:8px 18px 0 14px}
-.grid{display:grid;grid-template-columns:96px repeat(12,minmax(0,1fr));align-items:center;min-height:calc(var(--dr) * 3.24 + 37px)}
-.colno{font-family:var(--engr);font-size:12px;color:#9a9483;letter-spacing:.06em;text-align:center;padding-bottom:1px}
+.grid{display:grid;grid-template-columns:96px repeat(12,minmax(0,1fr));align-items:center;row-gap:10px;min-height:calc(var(--dr) * 3.24 + 37px)}
+.colno{font-family:var(--engr);font-size:12px;color:#9a9483;letter-spacing:.06em;text-align:center;padding-bottom:1px;margin-bottom:-10px}
 .rowlab{align-self:center;padding-top:6px}
-.bar{grid-column:2/-1;height:6px;margin:2px -8px;border-radius:3px;background:linear-gradient(#5f5d57,#2b2a27 45%,#1a1a18);box-shadow:0 1px 0 rgba(255,255,255,.05),0 2px 4px rgba(0,0,0,.6)}
 .drum{position:relative;width:var(--dr);height:calc(var(--dr) * 1.08);justify-self:center}
 .drum svg{position:absolute;left:0;top:calc(var(--dr) * .08);width:var(--dr);height:var(--dr);overflow:visible}
 .drum .idx{position:absolute;left:50%;top:0;width:0;height:0;border-left:4.5px solid transparent;border-right:4.5px solid transparent;border-top:7px solid #d8d3c6;transform:translateX(-50%);filter:drop-shadow(0 1px 0 #000)}
@@ -728,7 +727,6 @@ G.insertAdjacentHTML('beforeend','<span></span>'+[...Array(12)].map((_,i)=>`<spa
   G.insertAdjacentHTML('beforeend',`<div class="rowlab"><span class="pl screw" title="${[`What ${CONTACT.short} wrote`,'What the microphone caught',`The key you and ${CONTACT.short} share`][r]}">${lab}</span></div>`);
   for(let c=0;c<12;c++){const d=document.createElement('div');d.className='drum';d.innerHTML='<span class="idx"></span>';const s=drum(RIMS[(c*5+r*3)%12]);d.appendChild(s);G.appendChild(d);
     cells.push({rot:[...s.querySelectorAll('.rotor')],wl:s.querySelector('.wl'),el:d,angle:0,from:0,t0:0,snap:true,t:null,pitch:0.86+((c*7+r*3)%9)*0.035})}
-  if(r<2)G.insertAdjacentHTML('beforeend','<div class="bar"></div>');
 });
 
 function setLetter(cell,ch,turns){const i=A.indexOf(ch);let base=cell.angle-(cell.angle%360);const a=base-(i*360/26)-360*(turns||0);const prev=cell.angle;cell.angle=a;cell.from=prev;cell.t0=performance.now();cell.snap=!turns||RM.matches;
@@ -1178,7 +1176,7 @@ if(Q.has('audiotest'))(async()=>{
 /* ---------- tests ---------- */
 const mirror={plain:document.getElementById('mirror-plain'),heard:document.getElementById('mirror-heard'),key:document.getElementById('mirror-key')};
 const rowText=r=>cells.slice(r*12,r*12+12).map(c=>c.wl.textContent).join('');
-window.__bank={rows:()=>({plain:rowText(0),heard:rowText(1),key:rowText(2)}),frame:()=>current&&{plain:current.plain,heard:current.heard,key:current.key,no:current.no},cells,ready:false,gl:false};
+window.__bank={rails:()=>({between:document.querySelectorAll('#drums .bar').length,axles:0}),rows:()=>({plain:rowText(0),heard:rowText(1),key:rowText(2)}),frame:()=>current&&{plain:current.plain,heard:current.heard,key:current.key,no:current.no},cells,ready:false,gl:false};
 window.__drum={spin:(n,p)=>Drum.spin(n,p),get on(){return Drum.on},get gain(){return Drum.gain},get receiving(){return Drum.receiving},get running(){return Drum.running},get calls(){return Drum.calls},get sounds(){return Drum.sounds}};
 function syncMirror(){const r=window.__bank.rows();if(mirror.plain.textContent!==r.plain)mirror.plain.textContent=r.plain.replace(/X/g,' ');mirror.heard.textContent=r.heard;mirror.key.textContent=r.key}
 
@@ -1709,7 +1707,10 @@ async function build(){
     k.strokeStyle='rgba(0,0,0,.35)';k.lineWidth=4;k.strokeRect(2,2,124,124);d.wt.needsUpdate=true;return true}
 
   /* ---- rails, plates, numbers ---- */
-  const rails=[];for(let i=0;i<5;i++){const m=new THREE.Mesh(new THREE.CylinderGeometry(i<3?.05:.035,i<3?.05:.035,1,24),railMat);m.rotation.z=Math.PI/2;m.castShadow=true;m.receiveShadow=true;scene.add(m);rails.push(m)}
+  // the drums' axles, one steel shaft behind each row; nothing runs between the rows
+  const rails=[];for(let i=0;i<3;i++){const m=new THREE.Mesh(new THREE.CylinderGeometry(.05,.05,1,24),railMat);m.rotation.z=Math.PI/2;m.castShadow=true;m.receiveShadow=true;scene.add(m);rails.push(m)}
+  // for checks: the axles, and any rail between rows (a steel rod in the scene that is not an axle)
+  window.__bank.rails=()=>({between:scene.children.filter(m=>m.material===railMat&&!rails.includes(m)).length,axles:rails.length});
   const plates=['Plain','Heard','Key'].map(t=>K.plate(t.toUpperCase(),0,0,{h:.2,size:56,pad:.7}));
   // slotted steel screws, as on every other plate (the CSS plates and the back panel's bolts)
   const screwGeo=new THREE.CylinderGeometry(.035,.035,.025,20);screwGeo.rotateX(Math.PI/2);const screwSlot=new THREE.BoxGeometry(.052,.009,.008);
@@ -1727,9 +1728,8 @@ async function build(){
     panel.scale.set(BW/U+.4,BH/U+.4,1);
     drums.forEach(d=>{const r=d.cell.el.getBoundingClientRect();const p=toWorld(r.left-br.left+r.width/2,r.top-br.top+r.width*.08+r.width/2);d.g.position.copy(p)});
     const rowY=[0,1,2].map(r=>drums[r*12].g.position.y);const x0=drums[0].g.position.x,x1=drums[11].g.position.x;
-    // shafts run behind each row, rails between rows
+    // a shaft runs behind each row
     [0,1,2].forEach(r=>{const m=rails[r];m.position.set((x0+x1)/2,rowY[r],-.16);m.scale.set(1,(x1-x0)+1.2,1)});
-    [0,1].forEach(i=>{const m=rails[3+i];const y=(rowY[i]+rowY[i+1])/2;m.position.set((x0+x1)/2,y-.02,-.05);m.scale.set(1,(x1-x0)+1.2,1)});
     const lab=[...document.querySelectorAll('.rowlab')];
     const ps=(21/U)/.2;plates.forEach((p,r)=>{p.scale.set(ps,ps,1);const lr=lab[r].getBoundingClientRect();const w=p.geometry.parameters.width*ps;const pos=toWorld(lr.left-br.left+4,0);p.position.set(pos.x+w/2,rowY[r],-.18);
       // the screws sit in the plate's ends, 8 px in, as the printed plates have them
