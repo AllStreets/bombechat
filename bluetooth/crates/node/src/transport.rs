@@ -95,8 +95,13 @@ pub enum TransportEvent {
     /// ([`Transport::request`]) reached them. Whether they accept is up to
     /// them; a decline is never told.
     RequestDelivered { stranger: u64 },
-    /// The request to `stranger` could not be sent, or ran out unanswered.
+    /// The request to `stranger` never reached them: it could not be
+    /// sent, or the connection went before it was delivered.
     RequestFailed { stranger: u64 },
+    /// The request to `stranger` was delivered, then ended with no
+    /// answer: its time ran out, or the connection went. A decline looks
+    /// the same, as it is never told.
+    RequestUnanswered { stranger: u64 },
     /// The stranger a request went to accepted it, and proved they hold
     /// `from`; `hello` is the hello they sent back.
     RequestAccepted {
@@ -217,9 +222,10 @@ pub trait Transport: Send {
     /// Send `hello` (this device's pairing hello) to `stranger`, one of
     /// the strangers in [`TransportEvent::Peers`], as a request to
     /// connect. Only from an explicit press. How it goes is reported as
-    /// [`TransportEvent::RequestDelivered`],
-    /// [`TransportEvent::RequestFailed`] or
-    /// [`TransportEvent::RequestAccepted`]. Refused at once, with a
+    /// [`TransportEvent::RequestDelivered`], then
+    /// [`TransportEvent::RequestUnanswered`] or
+    /// [`TransportEvent::RequestAccepted`]; or
+    /// [`TransportEvent::RequestFailed`] if it never reached them. Refused at once, with a
     /// sentence, by a carrier that cannot send it now; by default no
     /// carrier can.
     fn request(&mut self, _stranger: u64, _hello: Vec<u8>) -> Result<(), &'static str> {

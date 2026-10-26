@@ -16,7 +16,8 @@
 // corrected name with their station marked not confirmed until confirmed and the card laying out the number to
 // compare, unstamped; declining doesn't keep nothing and bring the next; the key check On doesn't type the node's
 // sentence in place of Accept (and once on the strangers' slip when no request says it); asking a stranger isn't
-// refused at Contacts, or doesn't show asking, delivered, not delivered and accepted; Off doesn't end requests,
+// refused at Contacts, or doesn't show asking, delivered, not delivered, delivered with no answer (never as not
+// delivered) and accepted; Off doesn't end requests,
 // strangers and who is in range; the locked machine doesn't say it waits for the passphrase; the radio's reason for
 // not working isn't on the tape under the switch, within the switch's width (after a resize too), or working again
 // isn't said; Send by Bluetooth isn't beside Flash and Send by sound with the line uncrowded, isn't refused under the line
@@ -359,8 +360,9 @@ const GROUP_NOTE = 'Anyone in Bluetooth range can read this Mac\'s name. Give it
     await ctx.close();
   }
 
-  // 7. asking strangers: refused at Contacts in so many words; at Open by label, asking, delivered, not delivered, then
-  //    accepted (she is added, and leaves the list once she is no longer offered); Off ends it all
+  // 7. asking strangers: refused at Contacts in so many words; at Open by label, asking, delivered, not delivered,
+  //    delivered with no answer, then accepted (she is added, and leaves the list once she is no longer offered); Off
+  //    ends it all
   {
     const ctx = await machine({ bluetooth: 1, inperson: 0 });
     const p = await front(ctx, 'ask');
@@ -368,17 +370,22 @@ const GROUP_NOTE = 'Anyone in Bluetooth range can read this Mac\'s name. Give it
     if ((await call(p, 'sendRequest', 'K7MX')).err !== NEED_OPEN) fail('ask: asking at Contacts was not refused with the switch sentence');
     await setting(p, 'bluetooth', 2);
     await wait(p, 'Open', () => !!document.querySelector('#neartray li'));
-    await p.evaluate(() => window.__sim.bluetoothStrangers(['P2QD', 'W9HT'], ['W9HT']));
+    await p.evaluate(() => window.__sim.bluetoothStrangers(['P2QD', 'W9HT'], ['W9HT'], ['P2QD']));
     await wait(p, 'three strangers', () => document.querySelectorAll('#neartray li').length === 3);
     let f = await face(p);
     if (JSON.stringify(f.strangers.map(s => s.label)) !== '["K7MX","P2QD","W9HT"]' || f.strangers.some(s => !s.ask)) fail(`ask: strangers ${JSON.stringify(f.strangers)}`);
     if (JSON.stringify(f.near) !== JSON.stringify(['01', '03'])) fail(`ask: who is in range reads ${JSON.stringify(f.near)}`);
     await p.click('li[data-label="W9HT"] .rs');
+    await p.click('li[data-label="P2QD"] .rs');
     await p.focus('li[data-label="K7MX"] .rs'); await p.keyboard.press('Enter');
     if ((await face(p)).strangers.find(s => s.label === 'K7MX').said !== 'asking') fail('ask: asking is not shown at once');
     await wait(p, 'delivered and not', () => { const t = l => (document.querySelector(`li[data-label="${l}"] small`) || {}).textContent; return t('K7MX') === 'asked, delivered' && t('W9HT') === 'not delivered'; });
     await wait(p, 'said she accepted', () => document.getElementById('said').textContent === 'K7MX accepted: Ines Duarte is added.');
     if (JSON.stringify((await seen(p, 'requested')).filter(r => r.label === 'K7MX')) !== JSON.stringify([{ label: 'K7MX', state: 'delivered', contact: null }, { label: 'K7MX', state: 'accepted', contact: 3 }])) fail('ask: requested events');
+    // delivered, then run out with no answer: said as such, never as not delivered, and not in refusal red
+    await wait(p, 'no answer', () => (document.querySelector('li[data-label="P2QD"] small') || {}).textContent === 'delivered, no answer');
+    if (await p.evaluate(() => document.querySelector('li[data-label="P2QD"] small').classList.contains('bad'))) fail('ask: no answer is drawn as a refusal');
+    if (JSON.stringify((await seen(p, 'requested')).filter(r => r.label === 'P2QD').map(r => r.state)) !== '["delivered","unanswered"]') fail('ask: requested events for the unanswered one');
     await wait(p, 'on the stations', () => !!document.querySelector('.stn[data-contact="3"]'));
     await wait(p, 'off the list', () => !document.querySelector('li[data-label="K7MX"]'));
     // Off ends it all: requests, strangers, who is in range

@@ -1727,10 +1727,10 @@ fn an_accept_goes_back_with_proof_and_both_are_contacts() {
     assert_eq!(a.h.peers().contacts, vec![c.me()]);
     assert_eq!(c.h.peers().contacts, vec![a.me()]);
     assert!(gone(&c).contains(&req), "the request is over");
-    assert!(!a
-        .events
-        .iter()
-        .any(|e| matches!(e, TransportEvent::RequestFailed { .. })));
+    assert!(!a.events.iter().any(|e| matches!(
+        e,
+        TransportEvent::RequestFailed { .. } | TransportEvent::RequestUnanswered { .. }
+    )));
     let env = private(&a, &[&c], "hello Cy");
     a.send(&env, 9);
     run(&mut [&mut a, &mut c], t, t + 3_000);
@@ -1754,13 +1754,35 @@ fn a_decline_sends_nothing_and_the_request_runs_out_unanswered() {
         written(&c.radio).iter().all(|(l, _)| l.0 != req),
         "nothing sent back"
     );
+    assert!(!a.events.iter().any(|e| matches!(
+        e,
+        TransportEvent::RequestFailed { .. } | TransportEvent::RequestUnanswered { .. }
+    )));
+    run_by(&mut [&mut a, &mut c], t, t + 4_000, 1_000);
+    // delivered, so it ended unanswered: never "not delivered"
+    assert!(a.has(&TransportEvent::RequestUnanswered { stranger: link.0 }));
     assert!(!a
         .events
         .iter()
         .any(|e| matches!(e, TransportEvent::RequestFailed { .. })));
-    run_by(&mut [&mut a, &mut c], t, t + 4_000, 1_000);
-    assert!(a.has(&TransportEvent::RequestFailed { stranger: link.0 }));
     assert!(!accepted(&a));
+}
+
+#[test]
+fn a_delivered_request_whose_link_drops_ends_unanswered() {
+    let room = Room::new(77);
+    let (mut a, mut c, t) = open_pair(&room, 1, 3);
+    let link = a.h.peers().strangers[0];
+    a.t.request(link.0, hello_of(&a).encode()).unwrap();
+    let t = run(&mut [&mut a, &mut c], t, t + 2_000);
+    assert!(a.has(&TransportEvent::RequestDelivered { stranger: link.0 }));
+    room.set_in_range(&a.radio, &c.radio, false);
+    run(&mut [&mut a, &mut c], t, t + 2_000);
+    assert!(a.has(&TransportEvent::RequestUnanswered { stranger: link.0 }));
+    assert!(!a
+        .events
+        .iter()
+        .any(|e| matches!(e, TransportEvent::RequestFailed { .. })));
 }
 
 /// When the requester's link closes, after a decline or with no answer:
@@ -2134,7 +2156,7 @@ fn turning_to_contacts_mode_ends_every_request_both_ways() {
     a.h.set_mode(Some(Mode::Contacts));
     run(&mut [&mut a, &mut c], t, t + 200);
     assert_eq!(gone(&c), vec![req], "no request shown in Contacts mode");
-    assert!(a.has(&TransportEvent::RequestFailed { stranger: link.0 }));
+    assert!(a.has(&TransportEvent::RequestUnanswered { stranger: link.0 }));
 }
 
 // ---- the switch ---------------------------------------------------------

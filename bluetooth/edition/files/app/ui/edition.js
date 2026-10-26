@@ -48,8 +48,8 @@ const ASK_MS = 6000, PROOF_MS = 1200, ANSWER_MS = 2400, DELIVER_MS = 600;
 // Open, accept, decline and the key check's refusal, sends by Bluetooth, and who is near, all through the events the
 // node sends. window.__sim gains bluetoothAway(id) and bluetoothBack(id) (a contact leaves range and comes back; what
 // waits for them goes when they are back), bluetoothAsk(name) (Ines asks now, or someone else under that name),
-// bluetoothStrangers(labels, failing) (more strangers in range at Open, who never answer; a request to one in failing
-// is not delivered), bluetoothUnavailable(why), bluetoothAvailable(), bluetoothLocked() and bluetoothUnlocked().
+// bluetoothStrangers(labels, failing, unanswering) (more strangers in range at Open, who never answer; a request to
+// one in failing is not delivered, and one to one in unanswering is delivered, then runs out with no answer), bluetoothUnavailable(why), bluetoothAvailable(), bluetoothLocked() and bluetoothUnlocked().
 export function simulate({ emit, settings, people, test, later, seeded, outbox }) {
   const query = typeof location === 'undefined' ? new URLSearchParams() : new URLSearchParams(location.search);
   const still = query.has('still');
@@ -64,7 +64,7 @@ export function simulate({ emit, settings, people, test, later, seeded, outbox }
   const waiting = [];// requests waiting for the person, each with the contact id it becomes
   const unconfirmed = [];
   const inRange = new Set([MARISOL]);// contacts in range while the radio works
-  let extra = [], failing = [];// more strangers at Open, who never answer
+  let extra = [], failing = [], unanswering = [];// more strangers at Open, who never answer
   const away = new Set();// contacts out of range for now
   const queued = [];// [m, contact id] sends waiting for someone out of range
   const at = () => settings.bluetooth || 0;
@@ -105,7 +105,7 @@ export function simulate({ emit, settings, people, test, later, seeded, outbox }
     },
     bluetoothAway(id) { away.add(id); near(); },
     bluetoothBack(id) { away.delete(id); const here = near().contacts; for (const [m, c] of queued.splice(0)) deliver(m, c, here); },
-    bluetoothStrangers(labels, fail = []) { extra = labels.slice(); failing = fail.slice(); near(); },
+    bluetoothStrangers(labels, fail = [], runOut = []) { extra = labels.slice(); failing = fail.slice(); unanswering = runOut.slice(); near(); },
     bluetoothUnavailable(why) { unavailable = 'unavailable: ' + why; if (at() > 0) settle(); },
     bluetoothAvailable() { if (!unavailable) return; unavailable = null; if (at() > 0) { settle(); scheduleAsk(); } },
     bluetoothLocked() { locked = true; if (at() > 0) settle(); },
@@ -161,11 +161,14 @@ export function simulate({ emit, settings, people, test, later, seeded, outbox }
         if (label !== INES_LABEL) {
           const fails = failing.includes(label);
           later(() => emit('requested', { label, state: fails ? 'failed' : 'delivered', contact: null }), DELIVER_MS);
+          // its time runs out (ten minutes on the machine)
+          if (!fails && unanswering.includes(label)) later(() => emit('requested', { label, state: 'unanswered', contact: null }), ANSWER_MS);
           return Promise.resolve();
         }
         later(() => emit('requested', { label, state: 'delivered', contact: null }), DELIVER_MS);
         later(() => {
-          if (!on()) { emit('requested', { label, state: 'failed', contact: null }); return; }
+          // delivered, so it ends unanswered, never not delivered
+          if (!on()) { emit('requested', { label, state: 'unanswered', contact: null }); return; }
           add(INES, INES_NAME); inRange.add(INES);
           for (const w of waiting.filter(q => q.becomes === INES)) { waiting.splice(waiting.indexOf(w), 1); emit('requestGone', { id: w.id }); }
           emit('requested', { label, state: 'accepted', contact: INES });
@@ -268,7 +271,7 @@ export function front(bridge, kit) {
   // New contacts need a key check, as the machine keeps it: On until it says otherwise
   let inPerson = 1;
   const waiting = new Map();// request id -> { id, name, fingerprint, safety, at }
-  const asked = new Map();// label -> { state: 'asking', 'delivered', 'failed', 'accepted' or 'refused', why }
+  const asked = new Map();// label -> { state: 'asking', 'delivered', 'unanswered', 'failed', 'accepted' or 'refused', why }
   const unconfirmed = new Set();
   const lit = () => state === SAYS[1] || state === SAYS[2] || state === 'receiving';
   const atOpen = () => state === SAYS[2] || (state === 'receiving' && knob.pos === 2);
@@ -387,7 +390,7 @@ export function front(bridge, kit) {
       if (a) {
         const t = li.appendChild(document.createElement('small'));
         t.className = 'said' + (a.state === 'failed' || a.state === 'refused' ? ' bad' : '');
-        t.textContent = { asking: 'asking', delivered: 'asked, delivered', failed: 'not delivered', accepted: 'accepted, added' }[a.state] || sentence(a.why || 'not asked');
+        t.textContent = { asking: 'asking', delivered: 'asked, delivered', unanswered: 'delivered, no answer', failed: 'not delivered', accepted: 'accepted, added' }[a.state] || sentence(a.why || 'not asked');
       } else if (!inPerson) {
         const b = li.appendChild(document.createElement('button'));
         b.type = 'button'; b.className = 'rs ask'; b.textContent = 'Ask to connect';
@@ -511,6 +514,7 @@ export function front(bridge, kit) {
     asked.set(q.label, { state: q.state });
     if (q.state === 'accepted' && q.contact != null) bridge.contacts().then(list => { const p = list.find(c => c.id === q.contact); if (p) kit.contactAdded(p); kit.say(`${q.label} accepted: ${p ? p.name : 'a new contact'} is added.`); refreshStrangers(); }, () => {});
     else if (q.state === 'failed') kit.say(`${q.label} was not asked: not delivered.`);
+    else if (q.state === 'unanswered') kit.say(`${q.label} did not answer: the request has ended.`);
     draw();
   });
   bridge.on('contactConfirmed', c => { unconfirmed.delete(c.contact); stations(); });

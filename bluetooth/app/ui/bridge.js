@@ -143,8 +143,10 @@
 //                                       fingerprint the first 8 bytes of their signing key as hex, safety the safety number
 //                                       to compare if they meet
 //   requestGone { id }                 that request can no longer be answered (it ran out, they left, or it was answered)
-//   requested  { label, state, contact }  how a request this machine sent is going: 'delivered', 'failed', or 'accepted'
-//                                       with the new contact's id (a decline is never told: it stays delivered)
+//   requested  { label, state, contact }  how a request this machine sent is going: 'delivered'; then 'unanswered' (it
+//                                       was delivered and ran out, or the connection went, with no answer: a decline is
+//                                       never told, so it ends this way too) or 'accepted' with the new contact's id;
+//                                       'failed' only for a request that never reached them
 //   peers      { contacts, strangers }  who is near: contact ids in range, and how many strangers were seen lately (an
 //                                       upper bound)
 //   contactConfirmed { contact }       a contact an accept added has shown it holds this machine too

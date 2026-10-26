@@ -17,7 +17,7 @@ use bombechat_app::edition::{
 use bombechat_app::Device;
 use bombechat_bluetooth::{
     BleTransport, FakeRadio, Mode, Room, SeededRng, TestClock, BLUETOOTH_OFF as SYSTEM_OFF,
-    BLUETOOTH_SEND_OFF, REQUESTS_NEED_OPEN,
+    BLUETOOTH_SEND_OFF, REQUESTS_NEED_OPEN, REQUEST_MS,
 };
 use bombechat_core::Identity;
 use bombechat_node::{MEET_FIRST, NOT_IN_RANGE};
@@ -468,6 +468,15 @@ fn a_decline_keeps_nothing_and_says_the_request_is_gone() {
     // the requester is never told: still delivered
     assert_eq!(a.events("requested").len(), 1);
     assert_eq!(a.events("requested")[0]["state"], "delivered");
+    // and when its time runs out, it ended with no answer: never "failed",
+    // which is for a request that didn't get there
+    run(&mut [&mut a, &mut b], REQUEST_MS);
+    let states: Vec<Value> = a
+        .events("requested")
+        .iter()
+        .map(|r| r["state"].clone())
+        .collect();
+    assert_eq!(states, vec![json!("delivered"), json!("unanswered")]);
 }
 
 #[test]

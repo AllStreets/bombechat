@@ -56,9 +56,13 @@ const RECENT_CAP: usize = 256;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RequestState {
     /// It reached them. Whether they accept is theirs to decide; a
-    /// decline is never told, so it stays at this.
+    /// decline is never told, so it stays at this until it ends.
     Delivered,
-    /// It could not be sent, or ran out unanswered while they were near.
+    /// It reached them, then ended with no answer: its time ran out or
+    /// the connection went. They may have declined; that is never told.
+    Unanswered,
+    /// It never reached them: it could not be sent, or the connection
+    /// went before it was delivered.
     Failed,
     /// They accepted and proved who they are: now a contact, unchecked.
     Accepted(ContactId),
@@ -368,6 +372,14 @@ impl Node {
                     events.push(NodeEvent::Requested {
                         label,
                         state: RequestState::Failed,
+                    });
+                }
+            }
+            TransportEvent::RequestUnanswered { stranger } => {
+                if let Some(label) = self.asked(ti, stranger, true) {
+                    events.push(NodeEvent::Requested {
+                        label,
+                        state: RequestState::Unanswered,
                     });
                 }
             }
@@ -1072,6 +1084,42 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn a_delivered_request_that_ends_unanswered_is_told_apart_from_one_never_delivered() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (mut node, reach) = node(&dir, &Identity::generate());
+        reach.tell(TransportEvent::Peers {
+            contacts: vec![],
+            strangers: vec![1, 2],
+            strangers_seen: 2,
+        });
+        node.tick(0);
+        let labels = node.strangers();
+        node.request(&labels[0]).unwrap();
+        node.request(&labels[1]).unwrap();
+        reach.tell(TransportEvent::RequestDelivered { stranger: 1 });
+        reach.tell(TransportEvent::RequestUnanswered { stranger: 1 });
+        reach.tell(TransportEvent::RequestFailed { stranger: 2 });
+        // told once: a late word about an ended request says nothing
+        reach.tell(TransportEvent::RequestFailed { stranger: 1 });
+        let states: Vec<(String, RequestState)> = node
+            .tick(10)
+            .into_iter()
+            .filter_map(|e| match e {
+                NodeEvent::Requested { label, state } => Some((label, state)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            states,
+            vec![
+                (labels[0].clone(), RequestState::Delivered),
+                (labels[0].clone(), RequestState::Unanswered),
+                (labels[1].clone(), RequestState::Failed),
+            ]
+        );
     }
 
     #[test]

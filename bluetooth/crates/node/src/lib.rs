@@ -1701,6 +1701,7 @@ impl Node {
                     | TransportEvent::RequestGone { .. }
                     | TransportEvent::RequestDelivered { .. }
                     | TransportEvent::RequestFailed { .. }
+                    | TransportEvent::RequestUnanswered { .. }
                     | TransportEvent::RequestAccepted { .. }
                     | TransportEvent::Peers { .. }) => {
                         self.on_request_event(ti, request, &mut events)

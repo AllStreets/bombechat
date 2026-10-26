@@ -721,7 +721,7 @@ Look for on A: the strangers slip now has an **Ask to connect** stamp beside B's
 
 Look for on B: the top bar says "Ana asks to connect.", and a slip heads the outbox's column. It has the name "Ana" on a dotted line you can write in, "as they gave it, key" and four characters of her key, "asks to connect" with the time, a red **Decline** stamp, and the sentence "Meet them and compare keys first: this machine only adds people checked in person." in place of Accept. Nothing has been added on B: no station for Ana.
 
-On B, press Decline. Look for: the slip leaves, and the top bar says "Declined. Nothing of the request was kept." On A, nothing changes: the label still reads "asked, delivered". From A's side a declined request looks exactly like one nobody answered, on purpose.
+On B, press Decline. Look for: the slip leaves, and the top bar says "Declined. Nothing of the request was kept." On A, nothing changes: the label still reads "asked, delivered", and once the request's ten minutes run out (or the two go out of range) it reads "delivered, no answer". From A's side a declined request looks exactly like one nobody answered, on purpose.
 
 Result: ______________________________________________
 
@@ -774,6 +774,7 @@ Result: ______________________________________________
 - "Meet them and compare keys first: this machine only adds people checked in person." New contacts need a key check is On. It has to be Off on both machines: on the one that asks, to ask, and on the one that accepts, to accept.
 - No strangers slip at all. Both machines must be at Open: at Contacts nobody is offered and no request is taken.
 - "not delivered" beside a label. The request didn't reach them. They may have gone out of range, or their advert changed. Ask again.
+- "delivered, no answer" beside a label. The request reached them, and they didn't accept within ten minutes, or the link went first. They may have declined; a decline is never told. Ask again once ten minutes have passed.
 - "They are no longer in range." The stranger left the list between showing and asking.
 - "That request is no longer waiting." or a request slip that leaves by itself. A request waits ten minutes at most, and ends sooner if either machine's advert changes, every 12 to 15 minutes. The asker can ask again, but the same person is shown only one request per ten minutes.
 - "Write their name first." The name line on the request slip is empty.

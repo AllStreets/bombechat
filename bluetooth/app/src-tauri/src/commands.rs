@@ -1025,6 +1025,7 @@ pub fn bridge_event(e: &NodeEvent) -> (&'static str, Value) {
         NodeEvent::Requested { label, state } => {
             let (state, contact) = match state {
                 RequestState::Delivered => ("delivered", None),
+                RequestState::Unanswered => ("unanswered", None),
                 RequestState::Failed => ("failed", None),
                 RequestState::Accepted(c) => ("accepted", Some(c.0)),
             };

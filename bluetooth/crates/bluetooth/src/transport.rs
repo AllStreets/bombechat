@@ -170,8 +170,10 @@ pub struct BleTransport<R: Radio> {
     /// is gone.
     reported: BTreeSet<LinkId>,
     /// Links the node asked to send a request on, not yet told how it
-    /// ended.
-    asked: BTreeSet<LinkId>,
+    /// ended, and whether the request was delivered: one that was ends
+    /// [`TransportEvent::RequestUnanswered`], one that never was
+    /// [`TransportEvent::RequestFailed`].
+    asked: BTreeMap<LinkId, bool>,
     /// What [`TransportEvent::Peers`] last said.
     said: Option<Peers>,
     last_seen: BTreeMap<Key, u64>,
@@ -240,7 +242,7 @@ impl<R: Radio> BleTransport<R> {
             request_links: BTreeMap::new(),
             request_ids: BTreeMap::new(),
             reported: BTreeSet::new(),
-            asked: BTreeSet::new(),
+            asked: BTreeMap::new(),
             said: None,
             last_seen: BTreeMap::new(),
             last_tried: BTreeMap::new(),
@@ -1131,7 +1133,9 @@ impl<R: Radio> BleTransport<R> {
                 }
             }
             SessKind::RequestOut => {
-                if delivered && self.asked.contains(&id) {
+                // told once, the first time it is delivered
+                if delivered && self.asked.get(&id) == Some(&false) {
+                    self.asked.insert(id, true);
                     self.events
                         .push(TransportEvent::RequestDelivered { stranger: id.0 });
                 }
@@ -1865,16 +1869,20 @@ impl<R: Radio> BleTransport<R> {
             self.events
                 .push(TransportEvent::RequestGone { request: id.0 });
         }
-        let failed: Vec<LinkId> = self
+        let ended: Vec<(LinkId, bool)> = self
             .asked
             .iter()
-            .copied()
-            .filter(|id| !self.links.get(id).is_some_and(|l| holds(l, is_request_out)))
+            .map(|(id, delivered)| (*id, *delivered))
+            .filter(|(id, _)| !self.links.get(id).is_some_and(|l| holds(l, is_request_out)))
             .collect();
-        for id in failed {
+        for (id, delivered) in ended {
             self.asked.remove(&id);
-            self.events
-                .push(TransportEvent::RequestFailed { stranger: id.0 });
+            let stranger = id.0;
+            self.events.push(if delivered {
+                TransportEvent::RequestUnanswered { stranger }
+            } else {
+                TransportEvent::RequestFailed { stranger }
+            });
         }
     }
 
@@ -2038,7 +2046,8 @@ impl<R: Radio> Transport for BleTransport<R> {
         {
             return Err(NOT_IN_RANGE);
         }
-        if self.asked.insert(link) {
+        if let std::collections::btree_map::Entry::Vacant(e) = self.asked.entry(link) {
+            e.insert(false);
             c.requests.push((link, hello));
         }
         Ok(())
