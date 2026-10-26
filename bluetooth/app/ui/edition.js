@@ -235,20 +235,18 @@ export function front(bridge, kit) {
 
   // the tray: a request to connect, then the strangers to ask, then the outbox's own slips, in the outbox's column. It
   // has the room the panel has and no more: what doesn't fit scrolls inside it, so nothing under it moves
-  const row2 = document.querySelector('.row2'), outboxEl = row2.querySelector('.outbox');
-  const right = document.createElement('div');
-  right.className = 'col tray';
+  const row2 = document.querySelector('.row2'), outboxEl = row2.querySelector('.outbox'), vu = row2.querySelector('.vu');
+  const right = document.createElement('div'), left = document.createElement('div');
+  right.className = 'col tray'; left.className = 'col meter';
   row2.insertBefore(right, outboxEl); right.append(outboxEl);
+  row2.insertBefore(left, vu); left.append(vu);
   const fade = () => right.classList.toggle('more', right.scrollHeight - right.scrollTop - right.clientHeight > 2);
   right.addEventListener('scroll', fade);
   new ResizeObserver(fade).observe(right);
-  // the request is the row's own child: beside the sheet and the card, it lies across the whole row, over the room
-  // meter, so the key check's sentence is never under the tray's fold; the tray starts under it
   const tray = document.createElement('div');
   tray.className = 'intray'; tray.id = 'intray';
   tray.setAttribute('role', 'region'); tray.setAttribute('aria-label', 'Requests to connect');
-  row2.insertBefore(tray, right);
-  new ResizeObserver(() => row2.style.setProperty('--req', tray.offsetHeight ? tray.offsetHeight + 8 + 'px' : '0px')).observe(tray);
+  right.prepend(tray);
   const nearTray = document.createElement('div');
   nearTray.className = 'intray'; nearTray.id = 'neartray';
   nearTray.setAttribute('role', 'region'); nearTray.setAttribute('aria-label', 'Strangers in range');
@@ -322,7 +320,7 @@ export function front(bridge, kit) {
     if (!s) {
       s = document.createElement('div');
       s.className = 'slip ask'; s.dataset.id = r.id; s.setAttribute('role', 'group');
-      s.innerHTML = `<label class="who"><input class="askname" maxlength="40" spellcheck="false" autocomplete="off"><span class="asks">asks to connect</span></label><small></small>`
+      s.innerHTML = `<label class="who"><input class="askname" maxlength="40" spellcheck="false" autocomplete="off"></label><small></small>`
         + '<p class="rule"></p><p class="why" role="status"></p><div class="stamps"><button type="button" class="rs ok">Accept</button><button type="button" class="rs no">Decline</button></div>';
       const name = s.querySelector('.askname');
       name.value = r.name; fit(name);
@@ -335,7 +333,8 @@ export function front(bridge, kit) {
       });
       s.querySelector('.rs.ok').addEventListener('click', () => accept(r, s));
       s.querySelector('.rs.no').addEventListener('click', () => decline(r, s));
-      s.querySelector('small').textContent = `name as they gave it, key ${r.fingerprint.slice(0, 4).toUpperCase()}${r.at != null ? ', ' + hhmm(r.at) : ''}`;
+      // under the name, what it is (as they gave it, their key's first four digits), then what they ask and when
+      s.querySelector('small').innerHTML = `as they gave it, key ${r.fingerprint.slice(0, 4).toUpperCase()}<span class="asks">asks to connect${r.at != null ? ', ' + hhmm(r.at) : ''}</span>`;
       s.querySelector('.rs.ok').title = 'Adds them as a contact, not checked in person, and sends your hello to them alone.';
       s.querySelector('.rs.no').title = 'Nothing goes back to them, and nothing of this request is kept.';
       slips.set(r.id, s);
@@ -351,6 +350,20 @@ export function front(bridge, kit) {
     const s = document.createElement('div');
     s.className = 'slip near'; s.setAttribute('role', 'group'); s.setAttribute('aria-label', 'Strangers in range');
     const labels = listed();
+    // while a request is on show, the strangers wait behind it, folded to one typed line, so the tray holds both
+    // beside the room meter; answered, they open again
+    if (waiting.size) {
+      s.classList.add('folded');
+      const t = document.createElement('small');
+      // held by the key check, the line says so itself, as the request beside it does
+      const few = `${labels.slice(0, 3).join(', ')}${labels.length > 3 ? ', …' : ''}`;
+      t.textContent = inPerson ? `${few} near, not asked` : `Strangers: ${few}`;
+      const all = `${plural(labels.length, 'stranger', 'strangers')} in range: ${labels.join(', ')}`;
+      s.title = inPerson ? `${all}. Not asked while new contacts need a key check.` : `${all}. Answer the request to ask them.`;
+      s.setAttribute('aria-label', s.title);
+      s.appendChild(t);
+      return s;
+    }
     const shown = labels.slice(0, 3);
     s.innerHTML = '<small class="hd">Strangers in range</small><ul></ul>';
     const ul = s.querySelector('ul');
@@ -373,8 +386,8 @@ export function front(bridge, kit) {
       ul.appendChild(li);
     }
     if (labels.length > shown.length) { const m = document.createElement('small'); m.textContent = `and ${labels.length - shown.length} more in range`; s.appendChild(m); }
-    // the key check's rule, as the request's slip has it; short here, under the one above when there is one
-    if (inPerson && shown.some(l => !asked.has(l))) { const p = document.createElement('p'); p.className = 'rule'; p.textContent = waiting.size ? 'Not asked while new contacts need a key check.' : MEET_FIRST; s.appendChild(p); }
+    // the key check's rule, as the request's slip has it
+    if (inPerson && shown.some(l => !asked.has(l))) { const p = document.createElement('p'); p.className = 'rule'; p.textContent = MEET_FIRST; s.appendChild(p); }
     return s;
   }
   let nearSlip = null;
@@ -389,6 +402,9 @@ export function front(bridge, kit) {
     // only while there is someone to show: a stranger who accepted and left the list takes the slip with them
     nearSlip = atOpen() && listed().length ? strangersSlip() : null;
     nearTray.replaceChildren(...(nearSlip ? [nearSlip] : []));
+    // folded behind a request, the strangers' line waits under the room meter; open, it heads the tray's column
+    if (nearSlip && nearSlip.classList.contains('folded')) { if (nearTray.parentElement !== left) left.append(nearTray); }
+    else if (nearTray.parentElement !== right) right.insertBefore(nearTray, outboxEl);
     nodes.forEach((n, i) => { if (tray.children[i] !== n) tray.insertBefore(n, tray.children[i] || null); });
     while (tray.children.length > nodes.length) tray.lastChild.remove();
     for (const [id, s] of slips) if (!waiting.has(id) && !leaving.includes(s)) slips.delete(id);

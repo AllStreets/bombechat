@@ -93,16 +93,22 @@ const GROUP_NOTE = 'Anyone in Bluetooth range can read this Mac\'s name. Give it
         let px = parseFloat(getComputedStyle(el).fontSize); if (el instanceof SVGElement) { const m = el.getScreenCTM(); px = parseFloat(el.getAttribute('font-size')) * Math.hypot(m.a, m.b); }
         if (px < 11.75) out.push(`${n.nodeValue.trim()} ${px.toFixed(1)}px`); } }
     return out; });
-  // the request slip shown whole: inside the row it lies on, none of its text cut, "asks to connect" on the name's line
-  // where it lies across the row; returns what is wrong, or nothing
+  // the request slip shown whole: inside the tray's visible room (never under its fold), none of its text cut;
+  // returns what is wrong, or nothing
   const slipWhole = p => p.evaluate(() => { const s = document.querySelector('#intray .slip.ask'); if (!s) return 'no request slip';
-    const r = s.getBoundingClientRect(), row = document.querySelector('.row2').getBoundingClientRect(), wide = innerWidth >= 1240;
-    if (r.top < row.top - 4 || r.bottom > row.bottom + 4 || r.left < row.left - 4 || r.right > row.right + 4) return `the slip runs out of its row: ${JSON.stringify([r.top, r.bottom, row.top, row.bottom])}`;
+    const r = s.getBoundingClientRect(), col = document.querySelector('.col.tray').getBoundingClientRect();
+    if (r.top < col.top - 4 || r.bottom > col.bottom + 2 || r.left < col.left - 4 || r.right > col.right + 4) return `the slip runs under the tray's fold: ${JSON.stringify([r.top, r.bottom, col.top, col.bottom])}`;
     const cut = [...s.querySelectorAll('.who, small, .rule, .why, .rs')].filter(e => e.offsetParent && e.scrollWidth > e.clientWidth + 1).map(e => e.textContent);
     if (cut.length) return `text cut on the slip: ${JSON.stringify(cut)}`;
-    const name = s.querySelector('.askname').getBoundingClientRect(), asks = s.querySelector('.asks').getBoundingClientRect();
-    if (wide && (asks.height > 24 || Math.abs(asks.top - name.top) > 6)) return `"asks to connect" is not on the name's line: ${JSON.stringify([asks.height, asks.top, name.top])}`;
     return ''; });
+  // no slip lies over the room meter or a switch's tile, and the meter is whole in the panel
+  const overlaps = p => p.evaluate(() => { const box = e => e.getBoundingClientRect(), hit = (a, b) => a.left < b.right - 1 && b.left < a.right - 1 && a.top < b.bottom - 1 && b.top < a.bottom - 1;
+    const solid = [document.querySelector('.vu'), ...document.querySelectorAll('.mods .mod')].map(e => [e.className, box(e)]);
+    const out = [];
+    for (const s of document.querySelectorAll('.row2 .slip')) { const r = box(s); if (!r.width) continue; for (const [n, b] of solid) if (hit(r, b)) out.push(`${s.textContent.slice(0, 20)} over ${n}`); }
+    const vu = box(document.querySelector('.vu')), row = box(document.querySelector('.row2'));
+    if (vu.bottom > row.bottom + 1) out.push('the meter runs out of its row');
+    return out; });
   const setting = (p, id, v) => p.evaluate(([id, v]) => window.__bt.setSetting(id, v), [id, v]);
   // waits on a condition in the page; one that never comes is a failure, named
   const wait = (p, what, f, arg) => p.waitForFunction(f, arg, { timeout: 15000 }).then(() => true, () => { fail(`${what}: never came`); return false; });
@@ -261,11 +267,12 @@ const GROUP_NOTE = 'Anyone in Bluetooth range can read this Mac\'s name. Give it
     const [q] = await seen(p, 'request');
     let f = await face(p);
     const fp = q && q.fingerprint.slice(0, 4).toUpperCase();
-    if (!f.request || f.request.name !== 'Ines Duarte' || !f.request.small.startsWith(`name as they gave it, key ${fp}, `) || !/, \d\d\.\d\d$/.test(f.request.small) || !f.request.accept || !f.request.decline || f.request.rule || f.request.label !== 'Ines Duarte asks to connect')
+    if (!f.request || f.request.name !== 'Ines Duarte' || !f.request.small.startsWith(`as they gave it, key ${fp}asks to connect, `) || !/, \d\d\.\d\d$/.test(f.request.small) || !f.request.accept || !f.request.decline || f.request.rule || f.request.label !== 'Ines Duarte asks to connect')
       fail(`accept: the request slip shows ${JSON.stringify(f.request)}`);
     if (f.said !== 'Ines Duarte asks to connect.') fail(`accept: the top bar said ${JSON.stringify(f.said)}`);
     if (!/1 request waits\.$/.test(f.title)) fail(`accept: the tile's title is ${JSON.stringify(f.title)}`);
-    if (JSON.stringify(f.strangers) !== JSON.stringify([{ label: 'K7MX', ask: true, said: '' }])) fail(`accept: strangers ${JSON.stringify(f.strangers)}`);
+    const fold = await p.evaluate(() => (document.querySelector('#neartray .slip.near.folded') || {}).textContent);
+    if (fold !== 'Strangers: K7MX') fail(`accept: the strangers wait behind the request as ${JSON.stringify(fold)}`);
     // keyboard: the name, then Accept, then Decline
     await p.focus('#intray .askname');
     await p.keyboard.press('End'); await p.keyboard.type('s');
@@ -329,7 +336,8 @@ const GROUP_NOTE = 'Anyone in Bluetooth range can read this Mac\'s name. Give it
     await wait(p, 'the slip', () => !!document.querySelector('#intray .slip.ask'));
     let f = await face(p);
     if (!f.request || f.request.accept || !f.request.decline || f.request.rule !== MEET_FIRST) fail(`held: the slip shows ${JSON.stringify(f.request)}`);
-    if (JSON.stringify(f.strangers) !== JSON.stringify([{ label: 'K7MX', ask: false, said: '' }]) || f.strangersRule !== 'Not asked while new contacts need a key check.') fail(`held: strangers ${JSON.stringify([f.strangers, f.strangersRule])}`);
+    const folded = await p.evaluate(() => { const s = document.querySelector('#neartray .slip.near.folded'); return s && { text: s.textContent, title: s.title, under: !!s.closest('.col.meter') }; });
+    if (!folded || folded.text !== 'K7MX near, not asked' || !/Not asked while new contacts need a key check\.$/.test(folded.title) || !folded.under) fail(`held: the strangers' line ${JSON.stringify(folded)}`);
     const whole = await slipWhole(p);
     if (whole) fail(`held: ${whole}`);
     await p.press('#intray .askname', 'Enter');
@@ -460,6 +468,8 @@ const GROUP_NOTE = 'Anyone in Bluetooth range can read this Mac\'s name. Give it
       if (m.over > 0) fail(`${name} ${w}: the page scrolls sideways by ${m.over}px`);
       if (m.cut.length || m.uncut.length) fail(`${name} ${w}: a station's line is cut short: ${JSON.stringify(m)}`);
       if (name.startsWith('request')) { const whole = await slipWhole(p); if (whole) fail(`${name} ${w}: ${whole}`); }
+      const over = await overlaps(p);
+      if (over.length) fail(`${name} ${w}: ${over.join('; ')}`);
       if (name === 'off') atOff = m;
       else if (w >= 1280 && (m.deck !== atOff.deck || m.row3 !== atOff.row3)) fail(`${name} ${w}: the deck or the stations moved: ${JSON.stringify({ off: atOff, now: m })}`);
       const small = await smallText(p);
