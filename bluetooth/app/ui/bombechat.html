@@ -139,6 +139,13 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
 .maker small::after{content:var(--build)}
 .top .rt{margin-left:auto;display:flex;gap:10px;align-items:center}
 .top .said{font-family:var(--type);font-size:12.5px;color:#9d978a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:34vw;opacity:0;transition:opacity .4s}
+/* a narrow window has no room beside the plates for what the machine says: it hangs under the bar's right end, on a
+   strip of the bar's own enamel, and nothing in the bar moves or is cut */
+.app{grid-template-columns:minmax(0,1fr)}
+.top .rt{min-width:0}
+.top .said.under{position:absolute;right:18px;top:100%;max-width:calc(100vw - 36px);overflow:visible;padding:4px 10px 5px;border-radius:0 0 2px 2px;
+  background:linear-gradient(#1c1d1b,#161715);box-shadow:inset 0 1px 0 #000,0 3px 6px rgba(0,0,0,.45)}
+.top .said.under:empty{display:none}
 .top .sep{width:1px;height:22px;background:#0b0b0a;box-shadow:1px 0 0 rgba(255,255,255,.05);margin:0 4px}
 .jewel{display:inline-block;width:11px;height:11px;border-radius:50%;flex:none;background:radial-gradient(circle at 38% 32%,#fff3c9 0,#f0b64c 32%,#a8661b 70%,#5d360d);box-shadow:0 0 0 2px #2b2a26,0 0 0 3px #000;transition:background .25s}
 .jewel.off{background:radial-gradient(circle at 38% 32%,#8c7a5a 0,#4c3d25 40%,#241b0e)}
@@ -398,7 +405,7 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
 .stn{display:grid;grid-template-columns:auto minmax(0,1fr);gap:9px;align-items:center}
 .holder{position:relative;padding:4px 8px 3px;background:linear-gradient(#cfc9b9,#b3ad9d);border-radius:2px;box-shadow:inset 0 0 0 1px rgba(0,0,0,.4),0 1px 2px rgba(0,0,0,.6);min-width:0}
 .holder span{display:block;background:#efe8d4;font-family:var(--type);font-size:13px;color:#1f1c17;padding:2px 6px;box-shadow:inset 0 1px 2px rgba(0,0,0,.25);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.holder span small{display:block;font-size:12px;color:#625a49;margin-top:1px}
+.holder span small{display:block;font-size:12px;color:#625a49;margin-top:1px;overflow:hidden;text-overflow:ellipsis}
 .counter{display:flex;align-items:center;gap:10px}
 
 /* the flashing view: while the machine flashes by light, the message sheet's place holds a signal lamp. The code
@@ -900,7 +907,10 @@ Object.keys(KNOBS).forEach(seatKnob);Object.keys(KNOBS).forEach(tapeKnob);
 // the machine won't take a turn (the setting could not be saved): the knob goes back and the top bar says why, as the
 // settings page does
 const saidEl=document.getElementById('said');let saidT;
-function say(text,full=text){saidEl.textContent=text;saidEl.title=full;saidEl.style.opacity=1;clearTimeout(saidT);saidT=setTimeout(()=>saidEl.style.opacity=0,text.length>40?5200:2600)}
+function say(text,full=text){saidEl.classList.remove('under');saidEl.textContent=text;saidEl.title=full;
+  // no room for it beside the plates: under the bar instead
+  if(saidEl.scrollWidth>saidEl.clientWidth+1)saidEl.classList.add('under');
+  saidEl.style.opacity=1;clearTimeout(saidT);saidT=setTimeout(()=>saidEl.style.opacity=0,text.length>40?5200:2600)}
 // resolves true once the machine has taken the turn, or to why it would not
 function turnKnob(id,pos,again){const k=KNOBS[id];if(k.held)return Promise.resolve(`${k.name}: ${k.held}`);pos=Math.max(0,Math.min(2,pos));if(pos===k.pos&&k.read&&!again)return Promise.resolve(true);const was={pos:k.pos,read:k.read};k.pos=pos;k.read=true;
   // a switch turned: the test's refusal has had its answer
@@ -923,6 +933,9 @@ function wireKnob(id){drawKnob(id);const el=document.getElementById(id);
   el.addEventListener('keydown',e=>{const d={ArrowRight:1,ArrowUp:1,ArrowLeft:-1,ArrowDown:-1}[e.key];if(e.key==='Home')turnKnob(id,0);else if(e.key==='End')turnKnob(id,2);else if(d)turnKnob(id,KNOBS[id].pos+d);else return;e.preventDefault()})}
 ['k1','k2'].forEach(wireKnob);
 const sendBtn=document.getElementById('sendsound'),flashBtn=document.getElementById('flash');
+// channels a build fits beyond sound and light (the front's kit): how -> { btn, refusal(public) (why it won't send now,
+// or nothing), waiting(it) and slip(it) (what a message waiting for it says), sending (while it goes) }
+const FITTED=new Map();
 function applyChannels(){const s=KNOBS.k1.pos,l=KNOBS.k2.pos;
   document.getElementById('j1').classList.toggle('off',s===0);document.getElementById('j2').classList.toggle('off',l===0);
   document.getElementById('topjewel').classList.toggle('off',s===0&&l===0);
@@ -963,12 +976,12 @@ const esc=s=>s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&qu
 function outItem(id){let it=outbox.get(id);if(!it){it={id,text:'',public:false,state:null,ent:null,how:'sound',leaving:false};outbox.set(id,it)}return it}
 function drawOutbox(){const q=[...outbox.values()].filter(m=>m.text&&(m.state==='waiting'||m.leaving));
   if(!q.length){outboxEl.innerHTML='<div class="slip empty">Nothing waiting to send.</div>';return}
-  outboxEl.innerHTML=q.slice(0,2).map(m=>`<div class="slip${m.leaving?' gone':''}" data-id="${m.id}">${esc(m.text)}<small>${m.public?'public, ':''}${m.how==='light'?(KNOBS.k2.pos<2?'flashes at Read and flash':'flashes next'):`sends once under ${sendUnder()} dB`}</small></div>`).join('')+(q.length>2?`<div class="slip empty">and ${q.length-2} more</div>`:'')}
+  outboxEl.innerHTML=q.slice(0,2).map(m=>`<div class="slip${m.leaving?' gone':''}" data-id="${m.id}">${esc(m.text)}<small>${m.public?'public, ':''}${FITTED.has(m.how)?esc(FITTED.get(m.how).slip(m)):m.how==='light'?(KNOBS.k2.pos<2?'flashes at Read and flash':'flashes next'):`sends once under ${sendUnder()} dB`}</small></div>`).join('')+(q.length>2?`<div class="slip empty">and ${q.length-2} more</div>`:'')}
 function status(it){const st=it.ent&&it.ent.querySelector('.state');if(!st)return;
   st.classList.toggle('live',it.state==='playing');
   if(it.ent)it.ent.classList.toggle('failed',it.state==='failed');
-  const said=it.state==='waiting'?(it.how==='light'?(KNOBS.k2.pos<2?'waiting for Read and flash':'flashing next'):room==null?'waiting for quiet':room<sendUnder()?'playing next':`waiting for quiet, the room is at ${Math.round(room)} dB`)
-    :it.state==='playing'?(it.how==='light'?'flashing on screen':'playing by sound'):it.state==='sent'?(it.public?'sent to anyone in range':'sent, not heard yet'):it.state==='failed'?sentence(it.why||'not sent'):'';
+  const said=it.state==='waiting'?(FITTED.has(it.how)?FITTED.get(it.how).waiting(it):it.how==='light'?(KNOBS.k2.pos<2?'waiting for Read and flash':'flashing next'):room==null?'waiting for quiet':room<sendUnder()?'playing next':`waiting for quiet, the room is at ${Math.round(room)} dB`)
+    :it.state==='playing'?(FITTED.has(it.how)?FITTED.get(it.how).sending:it.how==='light'?'flashing on screen':'playing by sound'):it.state==='sent'?(it.public?'sent to anyone in range':'sent, not heard yet'):it.state==='failed'?sentence(it.why||'not sent'):'';
   // a public notice carries the key it is signed with, as the public entries heard on the sheet do
   st.textContent=it.public&&it.state!=='failed'?[signedBy(),said].filter(Boolean).join(', '):said}
 const signedBy=()=>MY_FP?`signed ${MY_FP}`:'signed';
@@ -997,7 +1010,9 @@ flashBtn.addEventListener('click',()=>send('light'));
 function nudge(btn){btn.animate([{transform:'translateX(0)'},{transform:'translateX(-3px)'},{transform:'translateX(3px)'},{transform:'translateX(0)'}],{duration:220});}
 function send(how){const text=reply.value.trim();
   if(PUBLIC){broadcast(text,how);return}
-  const btn=how==='sound'?sendBtn:flashBtn;
+  const fitted=FITTED.get(how),btn=fitted?fitted.btn:how==='sound'?sendBtn:flashBtn;
+  // a fitted channel says why it won't send, under the line, as Flash's refusal is said, and keeps what was written
+  if(fitted){const no=fitted.refusal(false);if(no){refuse(no,btn);btn.focus();return}}
   // the Light switch won't flash it: say why under the line, as a notice's refusal is said, and keep what was written
   if(how==='light'&&btn.getAttribute('aria-disabled')==='true'){refuse(`${lightRefusal()}. Turn it to Read and flash to send by light`,flashBtn);flashBtn.focus();return}
   if(btn.getAttribute('aria-disabled')==='true'){nudge(btn);btn.focus();return}
@@ -1029,6 +1044,7 @@ let broadcasting=false;
 // why the Light switch won't flash: it is off, at Read, or was not read from the machine
 const lightRefusal=()=>!KNOBS.k2.read?'The Light switch was not read from the machine':KNOBS.k2.pos===0?'Light is off':'Light is set to read only';
 function broadcast(text,how='sound'){if(broadcasting)return;
+  if(FITTED.has(how)){const f=FITTED.get(how);refuse(f.refusal(true)||'A public notice goes by sound or light',f.btn);return}
   const s=KNOBS.k1.pos,btn=how==='light'?flashBtn:sendBtn;
   if(how==='light'&&flashBtn.getAttribute('aria-disabled')==='true'){refuse(`${lightRefusal()}. Turn it to Read and flash to broadcast by light`,flashBtn);return}
   if(how==='sound'&&sendBtn.getAttribute('aria-disabled')==='true'){refuse(`${!KNOBS.k1.read?'The Sound switch was not read from the machine':s===0?'Sound is off':'Sound is set to listen only'}. Turn it to Listen and send to broadcast`);return}
@@ -1193,12 +1209,24 @@ let TALK=new Map();
 const HEARD=new Map();
 // told each time the stations are drawn (the front's kit, below)
 const stationsDrawn=[];
+// the last message heard from a contact: the newer of what the store gave and what this page heard
+function lastHeard(id){const a=[...(TALK.get(id)||[])].reverse().find(m=>!m.outgoing),b=HEARD.get(id);return !a?b:!b?a:b.at_min>=a.at_min?b:a}
+function station(p){const last=p&&lastHeard(p.id);
+  const stn=el('div','stn');if(p)stn.dataset.contact=p.id;stn.innerHTML='<span class="jewel off" aria-hidden="true"></span><span class="holder"><span></span></span>';
+  const line=!p?'pair by sound or light to add one':last?`${last.channel}, ${hhmm(last.at_min*60000)}`:'not heard yet';
+  stn.querySelector('.holder span').append(p?p.name:'No contacts yet',el('small',null,line));
+  if(p)stn.querySelector('.holder').title=`${p.name}, ${line}`;
+  return stn}
+// three stations: the sheet's contact, then whoever was added or heard last; more than three, the third counts the rest
 function drawStations(){const row=document.querySelector('.row3'),counter=row.querySelector('.counter');row.querySelectorAll('.stn').forEach(s=>s.remove());
-  for(const p of PEOPLE.length?PEOPLE.slice(0,3):[null]){
-    const last=p&&([...(TALK.get(p.id)||[])].reverse().find(m=>!m.outgoing)||HEARD.get(p.id));
-    const stn=el('div','stn');if(p)stn.dataset.contact=p.id;stn.innerHTML='<span class="jewel off" aria-hidden="true"></span><span class="holder"><span></span></span>';
-    stn.querySelector('.holder span').append(p?p.name:'No contacts yet',el('small',null,!p?'pair by sound or light to add one':last?`${last.channel}, ${hhmm(last.at_min*60000)}`:'not heard yet'));
-    row.insertBefore(stn,counter)}
+  const at=p=>(lastHeard(p.id)||{}).at_min||0;
+  const rest=PEOPLE.filter(p=>p.id!==CONTACT.id).sort((a,b)=>(b.added||0)-(a.added||0)||at(b)-at(a));
+  const list=PEOPLE.length?[...PEOPLE.filter(p=>p.id===CONTACT.id),...rest]:[null];
+  for(const p of list.length>3?list.slice(0,2):list)row.insertBefore(station(p),counter);
+  if(list.length>3){const more=list.slice(2),stn=el('div','stn');
+    stn.innerHTML='<span class="jewel off" aria-hidden="true"></span><span class="holder"><span></span></span>';
+    stn.querySelector('.holder span').append(`and ${more.length} more`,el('small',null,more.map(p=>p.short||p.name).join(', ')));
+    stn.querySelector('.holder').title=more.map(p=>p.name).join(', ');row.insertBefore(stn,counter)}
   stationsDrawn.forEach(f=>f(row))}
 // the bytes-a-second readout: the rate the node measures for sound, or nothing when it has none
 function showRate(list){const s=list.find(c=>c.channel==='sound'),rd=document.getElementById('raterd');
@@ -1254,7 +1282,7 @@ function buttons(state){pairBtn.hidden=state==='offer'||state==='reading';lightP
   pairBtn.textContent=state==='listening'?'Stop listening':'Pair by sound';lightPairBtn.textContent=state==='reading'?'Stop reading':'Pair by light';yesBtn.disabled=noBtn.disabled=false}
 function setState(state,gridded){menu.dataset.pair=state;if(state!=='reading'){clearTimeout(pairCapT);pairCapT=null}menu.classList.toggle('gridded',!!gridded);buttons(state);
   menuStamp.hidden=true;menuStamp.classList.remove('new');menu.querySelector('.fp').hidden=true}
-function cardRest(fresh){setState('',true);offer=null;
+function cardRest(fresh){setState('',true);offer=null;menu.setAttribute('aria-label',`Key check with ${CONTACT.short}`);
   const who=checkedWith||(!bridge.simulated&&CONTACT.id&&CONTACT.checked&&CONTACT.safety?{name:CONTACT.name,safety:CONTACT.safety}:null);
   if(who){pencil(checkSheet(esc(who.name),who.safety,stampHtml(who.at?day(who.at):'',fresh)));menuWho.textContent=who.name;noteSays(who.at?`Checked in person, by ${who.by||'sound'}.`:'Checked in person.')}
   else if(bridge.simulated){// the mockups' story
@@ -1265,7 +1293,8 @@ function cardRest(fresh){setState('',true);offer=null;
 // a contact added some other way than in person (a request to connect, on a build with a carrier for them): the card
 // lays out the number to compare when they meet, unstamped, since nothing has been checked. Not over a pairing in progress
 function cardUnchecked(name,safety,who,note){if(menu.dataset.pair&&menu.dataset.pair!=='refused')return false;
-  setState('',true);offer=null;pencil(checkSheet(esc(name),safety,''));menuWho.textContent=who;noteSays(note);return true}
+  setState('',true);offer=null;pencil(checkSheet(esc(name),safety,''));menuWho.textContent=who;noteSays(note);
+  menu.setAttribute('aria-label',`Key check with ${name}, not yet checked`);return true}
 async function pairBySound(){
   if(menu.dataset.pair==='listening'){bridge.stopPairing().catch(()=>{});cardRest();return}
   pairBtn.disabled=true;
@@ -1576,8 +1605,18 @@ drawOutbox();applyChannels();cardRest();
 front(bridge,{
   knob(id,spec){KNOBS[id]=spec;seatKnob(id);tapeKnob(id);wireKnob(id);return spec},
   say,
-  contactAdded(p){const i=PEOPLE.findIndex(x=>x.id===p.id);if(i<0)PEOPLE.push(p);else PEOPLE[i]=p;
-    if(!CONTACT.id){CONTACT=p;nameTheSheet(CONTACT)}drawStations()},
+  contactAdded(p){p={...p,added:Date.now()};const i=PEOPLE.findIndex(x=>x.id===p.id);if(i<0)PEOPLE.push(p);else PEOPLE[i]=p;
+    if(!CONTACT.id){CONTACT=p;nameTheSheet(CONTACT)}
+    // in a plain browser the stations are the mockups' story: the new contact takes the place after the sheet's own,
+    // and the story's last station makes room
+    if(bridge.simulated){const row=document.querySelector('.row3'),all=[...row.querySelectorAll('.stn')],was=row.querySelector(`.stn[data-contact="${p.id}"]`);
+      if(was)was.replaceWith(station(p));else{if(all.length>=3)all[all.length-1].remove();const first=row.querySelector('.stn');row.insertBefore(station(p),first?first.nextSibling:row.querySelector('.counter'))}
+      stationsDrawn.forEach(f=>f(row))}
+    else drawStations()},
+  contact:()=>CONTACT,
+  // a send key for a channel this build fits, beside Flash and Send by sound
+  sendKey(how,spec){const b=el('button','key pb');b.type='button';b.id='send'+how;b.innerHTML=`<span class="jewel off" aria-hidden="true"></span>${esc(spec.label)}`;
+    document.querySelector('.compose .keys').appendChild(b);FITTED.set(how,{...spec,btn:b});b.addEventListener('click',()=>send(how));return b},
   onStations(f){stationsDrawn.push(f)},
   showUnchecked:cardUnchecked,
 });

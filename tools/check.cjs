@@ -543,13 +543,44 @@ function measureText() {
       const got = await kr.evaluate(() => ({ sound: document.getElementById('k1').getAttribute('aria-valuenow'), cap: document.querySelector('#k1 .cap').style.transform,
         top: document.getElementById('toplisten').textContent, sendOff: document.getElementById('sendsound').getAttribute('aria-disabled'),
         said: document.getElementById('said').textContent, shown: +getComputedStyle(document.getElementById('said')).opacity, size: parseFloat(getComputedStyle(document.getElementById('said')).fontSize),
-        sets: __calls.filter(c => c[0] === 'set_setting').map(c => c[1]) }));
+        sets: __calls.filter(c => c[0] === 'set_setting').map(c => c[1]),
+        // the bar keeps every plate whole and inside the window, and the sentence is never cut
+        fit: (() => { const t = document.querySelector('.top'), s = document.getElementById('said'), set = document.getElementById('settings').getBoundingClientRect(), r = s.getBoundingClientRect();
+          return { bar: t.scrollWidth - t.clientWidth, settings: Math.round(set.right) <= innerWidth, saidCut: s.scrollWidth - s.clientWidth, saidIn: r.left >= 0 && Math.round(r.right) <= innerWidth }; })() }));
+      if (got.fit.bar > 0 || !got.fit.settings || got.fit.saidCut > 1 || !got.fit.saidIn) problems.push(`knob refused ${w}: the top bar overflows or cuts what it says: ${JSON.stringify(got.fit)}`);
       if (got.sound !== '2' || !/rotate\(120deg\)/.test(got.cap) || got.top !== 'Listening by sound' || got.sendOff === 'true') problems.push(`knob refused ${w}: the Sound switch did not go back to Listen and send: ${JSON.stringify(got)}`);
       if (got.said !== 'The setting was not saved: disk full' || got.shown < .9 || got.size < 12) problems.push(`knob refused ${w}: the reason is not shown: ${JSON.stringify(got)}`);
       if (JSON.stringify(got.sets) !== JSON.stringify([{ id: 'sound', valueIndex: 0 }])) problems.push(`knob refused ${w}: sent ${JSON.stringify(got.sets)}`);
       await kr.locator('.top').screenshot({ path: path.join(out, `knob-refused-top-${w}.png`) });
       report.knobRefused[w] = got;
       await kr.close();
+    }
+    // the stations, drawn again when a pairing adds someone: the sheet's contact first, with the newer of the store's
+    // last message and one heard on this page since; the new contact after; every line whole or cut with an ellipsis
+    {
+      const sp = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+      watch(sp, 'stations');
+      const OLD = Math.floor(Date.now() / 60000) - 90;
+      await sp.addInitScript(tauriStub, { hello: 'Teodor Vance', safety: '11111 22222 33333 44444 55555 66666 77777 88888 99999 00000 12121 34343', pairOfferMs: 300,
+        people: [{ id: 1, name: 'Marisol Ortega', checked: true, safety: '' }], talk: { 1: [{ id: Array(16).fill(1), contact: 1, outgoing: false, text: 'Old news.', channel: 'Sound', at_min: OLD, heard: false }] } });
+      await sp.goto(url('still'));
+      await sp.waitForSelector('.unlock input[name=pass]');
+      await sp.fill('.unlock input[name=pass]', 'correct horse'); await sp.click('.unlock button');
+      await sp.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
+      const line = () => sp.evaluate(() => [...document.querySelectorAll('.row3 .stn')].map(s => ({ id: s.dataset.contact, text: s.querySelector('.holder span').innerText.replace(/\s+/g, ' ').trim(),
+        cut: [...s.querySelectorAll('.holder span, .holder small')].some(e => e.scrollWidth > e.clientWidth + 1 && getComputedStyle(e).textOverflow !== 'ellipsis') })));
+      const before = await line();
+      const hhmm = ms => { const d = new Date(ms); return String(d.getHours()).padStart(2, '0') + '.' + String(d.getMinutes()).padStart(2, '0'); };
+      if (JSON.stringify(before) !== JSON.stringify([{ id: '1', text: `Marisol Ortega sound, ${hhmm(OLD * 60000)}`, cut: false }])) problems.push(`stations: at open ${JSON.stringify(before)}`);
+      const NOW = Math.floor(Date.now() / 60000);
+      await sp.evaluate(at => __emit('message', { id: Array(16).fill(2), contact: 1, outgoing: false, text: 'New news.', channel: 'Light', at_min: at, heard: false }), NOW);
+      await sp.click('#pairbtn');
+      await sp.waitForFunction(() => document.querySelector('.menu').dataset.pair === 'offer', null, { timeout: 8000 });
+      await sp.click('#pairyes');
+      await sp.waitForFunction(() => document.querySelectorAll('.row3 .stn').length === 2, null, { timeout: 8000 }).catch(() => {});
+      const after = await line();
+      if (JSON.stringify(after) !== JSON.stringify([{ id: '1', text: `Marisol Ortega light, ${hhmm(NOW * 60000)}`, cut: false }, { id: '7', text: 'Teodor Vance not heard yet', cut: false }])) problems.push(`stations: after pairing ${JSON.stringify(after)}`);
+      await sp.close();
     }
     // Machine sound and Machine volume are the machine's settings: the title bar's lever shows what it keeps and the
     // drums play at its volume; moving the lever sends that one change. The Light switch is live: no tape, it boots at

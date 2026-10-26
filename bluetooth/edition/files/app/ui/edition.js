@@ -46,7 +46,8 @@ const ASK_MS = 6000, PROOF_MS = 1200, ANSWER_MS = 2400, DELIVER_MS = 600;
 
 // The simulator's Bluetooth: Marisol in range, Ines a stranger in range who asks to connect once the switch is at
 // Open, accept, decline and the key check's refusal, sends by Bluetooth, and who is near, all through the events the
-// node sends. window.__sim gains bluetoothAsk(name) (Ines asks now, or someone else under that name),
+// node sends. window.__sim gains bluetoothAway(id) and bluetoothBack(id) (a contact leaves range and comes back; what
+// waits for them goes when they are back), bluetoothAsk(name) (Ines asks now, or someone else under that name),
 // bluetoothStrangers(labels, failing) (more strangers in range at Open, who never answer; a request to one in failing
 // is not delivered), bluetoothUnavailable(why), bluetoothAvailable(), bluetoothLocked() and bluetoothUnlocked().
 export function simulate({ emit, settings, people, test, later, seeded, outbox }) {
@@ -64,6 +65,8 @@ export function simulate({ emit, settings, people, test, later, seeded, outbox }
   const unconfirmed = [];
   const inRange = new Set([MARISOL]);// contacts in range while the radio works
   let extra = [], failing = [];// more strangers at Open, who never answer
+  const away = new Set();// contacts out of range for now
+  const queued = [];// [m, contact id] sends waiting for someone out of range
   const at = () => settings.bluetooth || 0;
   const on = () => at() > 0 && !unavailable && !locked;
   const state = () => at() === 0 ? SAYS[0] : locked ? WAITING : unavailable || SAYS[at()];
@@ -72,7 +75,7 @@ export function simulate({ emit, settings, people, test, later, seeded, outbox }
   const strangers = () => at() === 2 && on() ? [...(inesKnown() ? [] : [INES_LABEL]), ...extra] : [];
   // who is near, told when it changes, as the node tells it
   function near() {
-    const now = { contacts: on() ? people.filter(p => inRange.has(p.id) && !unconfirmed.includes(p.id)).map(p => p.id) : [],
+    const now = { contacts: on() ? people.filter(p => inRange.has(p.id) && !away.has(p.id) && !unconfirmed.includes(p.id)).map(p => p.id) : [],
       strangers: on() ? (inesKnown() ? 0 : 1) + (at() === 2 ? extra.length : 0) : 0 };
     const key = JSON.stringify(now);
     if (key !== said) { said = key; emit('peers', now); }
@@ -89,12 +92,19 @@ export function simulate({ emit, settings, people, test, later, seeded, outbox }
   function scheduleAsk() { if (!still && !asked && !askT && at() === 2) askT = later(ask, askIn); }
   function add(id, name) { if (!people.some(p => p.id === id)) people.push({ id, name, checked: false }); }
   function settle() { say(state()); if (!on()) endRequests(); near(); }
+  // a message goes to whoever it is for once they are in range, and they say they have it
+  function deliver(m, c, here) {
+    if (!here.includes(c)) { queued.push([m, c]); return; }
+    later(() => { outbox(m, 'sent'); emit('heard', { id: m.id, by: c }); }, DELIVER_MS);
+  }
 
   Object.assign(test, {
     bluetoothAsk(name) {
       if (!name || name === INES_NAME) { asked = false; ask(); return; }
       if (at() === 2 && on()) request({ id: ++nextId, name, fingerprint: print(), safety: number(), becomes: nextOther++ });
     },
+    bluetoothAway(id) { away.add(id); near(); },
+    bluetoothBack(id) { away.delete(id); const here = near().contacts; for (const [m, c] of queued.splice(0)) deliver(m, c, here); },
     bluetoothStrangers(labels, fail = []) { extra = labels.slice(); failing = fail.slice(); near(); },
     bluetoothUnavailable(why) { unavailable = 'unavailable: ' + why; if (at() > 0) settle(); },
     bluetoothAvailable() { if (!unavailable) return; unavailable = null; if (at() > 0) { settle(); scheduleAsk(); } },
@@ -120,9 +130,8 @@ export function simulate({ emit, settings, people, test, later, seeded, outbox }
     send(m, contactIds) {
       if (at() === 0) { later(() => { say(SEND_OFF); outbox(m, 'failed'); say(state()); }); return; }
       later(() => outbox(m, 'waiting'));
-      const here = near().contacts.filter(c => contactIds.includes(c));
-      if (!here.length) return;
-      later(() => { outbox(m, 'sent'); for (const by of here) emit('heard', { id: m.id, by }); }, DELIVER_MS);
+      // who is in range is known when it goes, a moment after it is written
+      later(() => { const here = near().contacts; for (const c of contactIds) deliver(m, c, here); }, DELIVER_MS / 2);
     },
     commands: {
       requests: () => Promise.resolve(waiting.map(w => ({ id: w.id, name: w.name, fingerprint: w.fingerprint, safety: w.safety }))),
@@ -200,18 +209,38 @@ export function front(bridge, kit) {
   const knob = kit.knob('k3', { setting: 'bluetooth', labels: ['Off', 'Contacts', 'Open'], pos: 0, name: 'Bluetooth', say: SAYS.slice() });
   const top = document.getElementById('radio');
 
+  // Send by Bluetooth, beside Flash and Send by sound: lit while it would go now, to the sheet's contact in range
+  const contact = () => kit.contact();
+  const inRange = () => lit() && peers.contacts.includes(contact().id);
+  const sendRefusal = pub => pub ? 'A public notice goes by sound or light, not by Bluetooth'
+    : !contact().id ? 'Pair with someone first, then send to them by Bluetooth'
+    : /^unavailable: /.test(state) ? state.slice(13).replace(/\.$/, '')
+    : state === 'off' ? 'Bluetooth is off. Turn it to Contacts or Open to send this way'
+    : state === WAITING ? 'Bluetooth waits for the passphrase'
+    : !inRange() ? `${contact().short} is not in Bluetooth range` : null;
+  const key = kit.sendKey('bluetooth', { label: 'Send by Bluetooth', refusal: sendRefusal, sending: 'sending by Bluetooth',
+    waiting: () => `waiting for ${contact().short} in Bluetooth range`, slip: () => `sends when ${contact().short} is in Bluetooth range` });
+  function drawKey() {
+    const ok = !sendRefusal(false);
+    key.querySelector('.jewel').classList.toggle('off', !ok);
+    key.title = ok ? `Sends the message to ${contact().short}, in Bluetooth range now.` : sentence(sendRefusal(false));
+  }
+
   // who is in range, on the bank's foot with the other readouts: contacts now, and strangers seen lately
   const near = document.createElement('span');
-  near.className = 'rd'; near.id = 'btnear'; near.hidden = true;
-  near.innerHTML = '<span class="pl">In range</span><span class="odo" id="btcontacts"></span><span class="of">contacts</span><span class="odo" id="btstrangers"></span><span class="of">strangers</span>';
+  near.className = 'rd'; near.id = 'btnear'; near.style.visibility = 'hidden';
+  near.innerHTML = '<span class="pl">Near</span><span class="odo" id="btcontacts"></span><span class="of">contacts</span><span class="odo" id="btstrangers"></span><span class="of">strangers</span>';
   document.querySelector('.bankfoot').appendChild(near);
 
-  // the tray: requests to connect as slips above the outbox's, and strangers to ask on a slip under the room meter, so
-  // the two columns fill as slips come rather than one growing alone
-  const row2 = document.querySelector('.row2'), vu = row2.querySelector('.vu'), outboxEl = row2.querySelector('.outbox');
-  const left = document.createElement('div'), right = document.createElement('div');
-  left.className = right.className = 'col';
-  row2.prepend(left, right); left.append(vu); right.append(outboxEl);
+  // the tray: a request to connect, then the strangers to ask, then the outbox's own slips, in the outbox's column. It
+  // has the room the panel has and no more: what doesn't fit scrolls inside it, so nothing under it moves
+  const row2 = document.querySelector('.row2'), outboxEl = row2.querySelector('.outbox');
+  const right = document.createElement('div');
+  right.className = 'col tray';
+  row2.insertBefore(right, outboxEl); right.append(outboxEl);
+  const fade = () => right.classList.toggle('more', right.scrollHeight - right.scrollTop - right.clientHeight > 2);
+  right.addEventListener('scroll', fade);
+  new ResizeObserver(fade).observe(right);
   const tray = document.createElement('div');
   tray.className = 'intray'; tray.id = 'intray';
   tray.setAttribute('role', 'region'); tray.setAttribute('aria-label', 'Requests to connect');
@@ -219,7 +248,7 @@ export function front(bridge, kit) {
   const nearTray = document.createElement('div');
   nearTray.className = 'intray'; nearTray.id = 'neartray';
   nearTray.setAttribute('role', 'region'); nearTray.setAttribute('aria-label', 'Strangers in range');
-  left.append(nearTray);
+  right.insertBefore(nearTray, outboxEl);
 
   let state = 'off', peers = { contacts: [], strangers: 0 }, strangers = [];
   // New contacts need a key check, as the machine keeps it: On until it says otherwise
@@ -239,10 +268,6 @@ export function front(bridge, kit) {
     if (note.textContent !== why) {
       note.textContent = why;
       note.parentElement.setAttribute('aria-label', why ? `Bluetooth: ${why}` : '');
-      // a reason that runs to two lines keeps the switches clear of what is under them
-      const mods = tile.parentElement;
-      note.style.maxWidth = mods.clientWidth + 'px';
-      mods.style.marginBottom = why && note.offsetHeight > 26 ? note.offsetHeight - 4 + 'px' : '';
     }
     const parts = [/^unavailable: /.test(state) ? why.replace(/\.$/, '') : `Bluetooth: ${state}`];
     if (on) parts.push(`${plural(peers.contacts.length, 'contact', 'contacts')} in range, ${plural(peers.strangers, 'stranger', 'strangers')} seen lately`);
@@ -252,12 +277,15 @@ export function front(bridge, kit) {
       top.textContent = /^unavailable: /.test(state) ? 'Bluetooth unavailable' : state === WAITING ? 'Bluetooth locked' : { off: 'Bluetooth off', 'contacts only': 'Bluetooth to contacts', 'open to requests': 'Bluetooth open', receiving: 'Bluetooth receiving' }[state] || 'Bluetooth';
       top.title = parts[0] + '.';
     }
-    near.hidden = !on;
+    // kept in its place while the radio isn't working, as the rate's is before it is measured, so the bank's foot
+    // never wraps or unwraps as the switch turns
+    near.style.visibility = on ? '' : 'hidden';
+    near.setAttribute('aria-hidden', String(!on));
     const wheels = (el, n) => { el.innerHTML = String(Math.min(99, n)).padStart(2, '0').split('').map(d => `<i>${d}</i>`).join(''); };
     wheels(near.querySelector('#btcontacts'), peers.contacts.length);
     wheels(near.querySelector('#btstrangers'), peers.strangers);
     near.title = `In Bluetooth range: ${plural(peers.contacts.length, 'contact', 'contacts')} now, and ${plural(peers.strangers, 'stranger', 'strangers')} seen in the last 15 minutes. A stranger whose advert changed in that time counts twice.`;
-    stations();
+    stations(); drawKey();
   }
 
   // the stations: a contact's jewel lit while it is in Bluetooth range, and one an accept added marked until it
@@ -268,13 +296,13 @@ export function front(bridge, kit) {
       s.querySelector('.jewel').classList.toggle('off', !here);
       if (here) s.title = 'In Bluetooth range'; else s.removeAttribute('title');
       const small = s.querySelector('.holder small');
-      let mark = small && small.querySelector('.nc');
-      if (small && unconfirmed.has(id)) {
-        // first on the line, so a narrow holder never cuts it off
-        if (!mark) { mark = document.createElement('b'); mark.className = 'nc'; small.prepend(mark); }
-        mark.textContent = 'not confirmed, ';
-        mark.title = 'Added from their request. Not confirmed until their machine shows it has added this one too.';
-      } else if (mark) mark.remove();
+      if (!small) continue;
+      // while unconfirmed the line says only that, in the refusal red; then it says what it said before
+      if (unconfirmed.has(id)) {
+        if (!small.classList.contains('nc')) { small.dataset.was = small.textContent; small.classList.add('nc'); }
+        small.textContent = 'not confirmed';
+        small.title = 'Added from their request. Not confirmed until their machine shows it has added this one too.';
+      } else if (small.classList.contains('nc')) { small.classList.remove('nc'); small.textContent = small.dataset.was; small.removeAttribute('title'); }
     }
   }
   kit.onStations(stations);
@@ -318,7 +346,7 @@ export function front(bridge, kit) {
   function strangersSlip() {
     const s = document.createElement('div');
     s.className = 'slip near'; s.setAttribute('role', 'group'); s.setAttribute('aria-label', 'Strangers in range');
-    const labels = [...new Set([...asked.keys(), ...strangers])];
+    const labels = [...new Set([...[...asked.keys()].filter(l => asked.get(l).state !== 'gone'), ...strangers])];
     const shown = labels.slice(0, 3);
     s.innerHTML = '<small class="hd">Strangers in range</small><ul></ul>';
     const ul = s.querySelector('ul');
@@ -341,8 +369,8 @@ export function front(bridge, kit) {
       ul.appendChild(li);
     }
     if (labels.length > shown.length) { const m = document.createElement('small'); m.textContent = `and ${labels.length - shown.length} more in range`; s.appendChild(m); }
-    // the key check's rule, typed once: here unless a request above already says it
-    if (inPerson && !waiting.size && shown.some(l => !asked.has(l))) { const p = document.createElement('p'); p.className = 'rule'; p.textContent = MEET_FIRST; s.appendChild(p); }
+    // the key check's rule, as the request's slip has it; short here, under the one above when there is one
+    if (inPerson && shown.some(l => !asked.has(l))) { const p = document.createElement('p'); p.className = 'rule'; p.textContent = waiting.size ? 'Not asked while new contacts need a key check.' : MEET_FIRST; s.appendChild(p); }
     return s;
   }
   let nearSlip = null;
@@ -358,6 +386,7 @@ export function front(bridge, kit) {
     nodes.forEach((n, i) => { if (tray.children[i] !== n) tray.insertBefore(n, tray.children[i] || null); });
     while (tray.children.length > nodes.length) tray.lastChild.remove();
     for (const [id, s] of slips) if (!waiting.has(id) && !leaving.includes(s)) slips.delete(id);
+    fade();
     // focus that was in a part of the tray now gone goes to what can be done next there, or back to the switch
     if (focusIn && !tray.contains(document.activeElement) && !nearTray.contains(document.activeElement)) {
       const again = focusKey && nearSlip && nearSlip.querySelector(`li[data-label="${CSS.escape(focusKey)}"] button`);
@@ -391,7 +420,7 @@ export function front(bridge, kit) {
       const id = await bridge.acceptRequest(r.id, name);
       unconfirmed.add(id);
       kit.contactAdded({ id, name, short: name.split(' ')[0], checked: false, safety: r.safety });
-      kit.showUnchecked(name, r.safety, 'by Bluetooth', 'Added, not yet checked. Compare these with theirs when you meet, then pair by sound or light.');
+      kit.showUnchecked(name, r.safety, `${name.split(' ')[0]}, by Bluetooth`, `${name} is added, not yet checked. Compare these with theirs when you meet, then pair by sound or light.`);
       kit.say(`${name} added, not checked in person.`);
       gone(r.id);
     } catch (e) {
@@ -418,7 +447,12 @@ export function front(bridge, kit) {
   }
   function refreshStrangers() {
     if (!atOpen()) { strangers = []; return; }
-    bridge.strangers().then(list => { strangers = list; drawTray(); }, () => {});
+    bridge.strangers().then(list => {
+      strangers = list;
+      // one who accepted is a contact now: they leave the list once they are no longer offered
+      for (const [l, a] of asked) if (a.state === 'accepted' && !list.includes(l)) asked.set(l, { state: 'gone' });
+      drawTray();
+    }, () => {});
   }
   function refreshKeyCheck() { bridge.settings().then(s => { if (s && Number.isInteger(s.inperson)) { inPerson = s.inperson; drawTray(); } }, () => {}); }
 
@@ -441,7 +475,7 @@ export function front(bridge, kit) {
   bridge.on('requestGone', q => gone(q.id));
   bridge.on('requested', q => {
     asked.set(q.label, { state: q.state });
-    if (q.state === 'accepted' && q.contact != null) bridge.contacts().then(list => { const p = list.find(c => c.id === q.contact); if (p) kit.contactAdded(p); kit.say(`${q.label} accepted: ${p ? p.name : 'a new contact'} is added.`); }, () => {});
+    if (q.state === 'accepted' && q.contact != null) bridge.contacts().then(list => { const p = list.find(c => c.id === q.contact); if (p) kit.contactAdded(p); kit.say(`${q.label} accepted: ${p ? p.name : 'a new contact'} is added.`); refreshStrangers(); }, () => {});
     else if (q.state === 'failed') kit.say(`${q.label} was not asked: not delivered.`);
     draw();
   });

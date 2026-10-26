@@ -16,19 +16,35 @@
   /* the sheet gives the panel its room from its foot's two fields, so the test stamps stay on the sheet */
   .sheet .sh-foot{grid-template-columns:128px 128px 1fr}}
 .panel .mods{grid-template-columns:repeat(3,minmax(0,1fr))}
-/* what the radio can't do, typed on tape under its switch as the camera's is under Light's; set from the switch's
-   right edge, where the panel ends, and run to two lines when the reason is long */
-.mod.bt .btnote{left:auto;right:0;transform:rotate(-.8deg)}
-.mod.bt .btnote b{white-space:normal;width:max-content;text-align:left}
+/* what the radio can't do, typed on tape under its switch as the camera's is under Light's: no wider than the switch,
+   running to more lines when the reason is long, over the tray's top as Light's runs over the meter's */
+.mod.bt .btnote{left:0;right:0;transform:rotate(-.8deg);display:flex;justify-content:center}
+.mod.bt .btnote b{white-space:normal;width:auto;max-width:100%;text-align:left}
+.mod.bt .btnote:has(b:empty){display:none}
 
-/* the tray: a request on top of the outbox's own slips, and strangers on a slip under the room meter. While a request
-   waits, the outbox's "Nothing waiting to send" gives it the room */
-.row2>.col{display:flex;flex-direction:column;gap:8px;min-width:0}
+/* Send by Bluetooth beside Flash and Send by sound: the three keys get a row of their own under the reply line, so
+   the line keeps its length at every width */
+.sheet .compose{grid-template-columns:78px minmax(0,1fr);grid-template-areas:"when line" "when keys" ". note"}
+.sheet .compose .line{margin-right:0}
+.sheet .compose .keys{justify-content:flex-end;padding:7px 0 0}
+
+/* the tray: a request, then the strangers, then the outbox's own slips, in the outbox's column. While either waits, the
+   outbox's "Nothing waiting to send" gives it the room */
+.col.tray{display:flex;flex-direction:column;gap:8px;min-width:0}
 .intray{display:flex;flex-direction:column;gap:8px;min-width:0}
 .intray:empty{display:none}
-.col:has(#intray:not(:empty)) .outbox>.slip.empty:only-child{display:none}
-.col:has(#intray:not(:empty)) .outbox:has(>.slip.empty:only-child){display:none}
-.intray .slip{padding:8px 10px 9px}
+.col.tray:has(.intray:not(:empty)) .outbox:has(>.slip.empty:only-child){display:none}
+/* where the panel stands beside the sheet and the card, the tray has the room between the switches and the stations
+   and no more: it scrolls inside, fading at its foot as the sheet's log fades at its head, and nothing moves */
+@media (min-width:1240px){
+  .app .panel{grid-template-rows:auto minmax(0,1fr) auto}
+  .panel .row2{min-height:0;align-items:stretch}
+  .row2>.vu{align-self:start}
+  .row2>.col.tray{contain:size;overflow-y:auto;overscroll-behavior:contain;padding:3px 8px 10px;margin:-3px -8px -10px;
+    scrollbar-width:thin;scrollbar-color:rgba(160,154,140,.45) transparent}
+  .row2>.col.tray.more{-webkit-mask-image:linear-gradient(#000 calc(100% - 22px),transparent);mask-image:linear-gradient(#000 calc(100% - 22px),transparent)}
+}
+.intray .slip{position:relative;padding:8px 10px 9px}
 .intray .slip.empty{padding:7px 10px;font-size:12.5px}
 /* their name as they gave it, typed on a dotted rule to be corrected, as the key check card pencils a hello's */
 .intray .who{display:block;cursor:text}
@@ -41,6 +57,9 @@
 .intray .rule:empty,.intray .why:empty{display:none}
 .intray .why{font-size:12.5px;line-height:1.35;color:#7a3a30;margin-top:5px}
 /* the stamps, pressed on the slip as on the card: the same rubber, ink and tilt */
+/* held by the key check, Decline sits up beside their name, so it is never under the tray's fold */
+.intray .slip.ask.held .stamps{position:absolute;top:7px;right:10px;margin:0}
+.intray .slip.ask.held .who{padding-right:96px}
 .intray .stamps{display:flex;justify-content:flex-end;align-items:flex-end;gap:12px;margin-top:9px}
 .intray .rs{box-sizing:border-box;min-height:28px;font-size:14px}
 .intray .rs.ask{font-size:13.5px;padding:3px 8px 2px;min-height:26px;--tilt:-1.6deg}
@@ -56,5 +75,5 @@
 .intray .slip.near>small:last-child{margin-top:4px}
 
 /* a station added from a request, not yet confirmed by their machine */
-.stn .nc{font-weight:400;color:#7a3a30}
+.holder span small.nc{color:#7a3a30}
 
