@@ -10,8 +10,9 @@ use bombechat_bluetooth::wire::{
 };
 use bombechat_bluetooth::{
     bucket, BleEvent, BleHandle, BleTransport, FakeRadio, LinkId, Mode, Radio, RadioEvent, Room,
-    SeededRng, HOLD_MS, IDLE_MS, MAX_LINKS, QUEUE_CAP, REQUESTS_CAP, REQUEST_MS, SEEN_CAP, SEEN_MS,
-    SILENCE_MS, STRANGER_MS, TOKEN_MS, TRIAL_CAP, TRIAL_RETRY_MS,
+    SeededRng, ACK_DELAY_MAX_MS, HOLD_MS, IDLE_MS, MAX_LINKS, QUEUE_CAP, REQUESTS_CAP,
+    REQUEST_ATTEMPTS, REQUEST_MS, SEEN_CAP, SEEN_MS, SILENCE_MS, STRANGER_MS, TOKEN_MS, TRIAL_CAP,
+    TRIAL_RETRY_MS,
 };
 use bombechat_core::{seal_private, seal_public, Envelope, Identity, PublicIdentity};
 use bombechat_modem::{split, Event, Reassembler};
@@ -309,6 +310,56 @@ fn small_writes_and_long_envelopes_still_arrive() {
     a.send(&long, 1);
     run(&mut [&mut a, &mut b], t, t + 3_000);
     assert_eq!(b.heard(), vec![long]);
+}
+
+/// How soon an envelope draws a reply doesn't mark it: the receiver's
+/// acknowledgement waits a random 0 to 400 ms, drawn from its own
+/// generator, so it differs from one exchange to the next.
+#[test]
+fn an_acknowledgement_waits_a_random_moment_of_up_to_400_ms() {
+    const FINE: u64 = 10;
+    let mut delays = Vec::new();
+    for k in 0..8u64 {
+        let room = Room::new(90 + k);
+        let (mut a, mut b) = (Device::new(&room, 2 * k + 1), Device::new(&room, 2 * k + 2));
+        a.knows(&[&b]);
+        b.knows(&[&a]);
+        a.h.set_mode(Some(Mode::Contacts));
+        b.h.set_mode(Some(Mode::Contacts));
+        let t = run_until(&mut [&mut a, &mut b], 0, 10_000, |d| {
+            d.iter().all(|d| !d.h.peers().contacts.is_empty())
+        })
+        .expect("together");
+        // let the handshakes' own replies settle
+        let mut now = run(&mut [&mut a, &mut b], t, t + 2_000);
+        a.send(&private(&a, &[&b], "timed"), 1);
+        let mut arrived = None;
+        let replied = loop {
+            now += FINE;
+            assert!(now < t + 10_000, "no reply");
+            a.poll(now);
+            b.radio.take_written();
+            b.poll(now);
+            let wrote = !b.radio.take_written().is_empty();
+            if arrived.is_none() && !b.heard().is_empty() {
+                arrived = Some(now);
+                if wrote {
+                    break now;
+                }
+                continue;
+            }
+            if arrived.is_some() && wrote {
+                break now;
+            }
+        };
+        delays.push(replied - arrived.unwrap());
+    }
+    assert!(
+        delays.iter().all(|d| *d <= ACK_DELAY_MAX_MS + FINE),
+        "{delays:?}"
+    );
+    let (lo, hi) = (delays.iter().min().unwrap(), delays.iter().max().unwrap());
+    assert!(hi - lo >= 100, "they vary: {delays:?}");
 }
 
 #[test]
@@ -1307,9 +1358,18 @@ fn requests_are_not_answered_or_sent_in_contacts_mode() {
     let link = a.h.peers().strangers[0];
     a.h.request(link, hello_of(&a).encode());
     c.radio.take_written();
+    a.radio.take_written();
     let t = run(&mut [&mut a, &mut c], t, t + 20_000);
     assert!(c.ble.is_empty());
     assert!(a.ble.contains(&BleEvent::RequestFailed { link }));
+    let tries = written(&a.radio)
+        .iter()
+        .filter(|(l, m)| *l == link && m.kind == Kind::Request)
+        .count();
+    assert_eq!(
+        tries, REQUEST_ATTEMPTS as usize,
+        "tried that often, then failed"
+    );
     assert!(written(&c.radio)
         .iter()
         .all(|(_, m)| m.kind == Kind::Contact));

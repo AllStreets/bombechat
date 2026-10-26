@@ -18,7 +18,7 @@ use crate::link::{body_with_id, ExKey, Exchange, Link, Side};
 use crate::queue::{Key, Queue};
 use crate::radio::{LinkId, Mode, Radio, RadioEvent};
 use crate::route::{targets, Targets};
-use crate::session::{LinkSession, SessKind};
+use crate::session::{LinkSession, SessKind, ACK_DELAY_MAX_MS};
 use crate::wire::{Kind, LinkMessage};
 
 /// The advertising token changes at a random moment between this...
@@ -61,6 +61,9 @@ pub const REQUEST_MS: u64 = 3 * 60_000;
 /// ...and at most this many are held, one per link; a new one replaces
 /// the link's earlier one, or the oldest.
 pub const REQUESTS_CAP: usize = 4;
+/// A request this device sends is begun afresh, unanswered or broken
+/// off, until it has been tried this many times; then it has failed.
+pub const REQUEST_ATTEMPTS: u8 = 3;
 
 /// A link with no session and no handshake for this long is closed.
 pub const IDLE_MS: u64 = 120_000;
@@ -710,6 +713,8 @@ impl<R: Radio> BleTransport<R> {
         let Some(d) = s.receive(nonce, ct, take, now) else {
             return;
         };
+        // an acknowledgement on its own waits a random moment
+        s.hold_ack(now + self.rng.next_u64() % (ACK_DELAY_MAX_MS + 1));
         let kind = s.kind;
         let remote = s.remote.clone();
         let request_done = kind == SessKind::RequestOut && s.all_acked();
@@ -847,7 +852,7 @@ impl<R: Radio> BleTransport<R> {
     }
 
     fn retry_request(&mut self, id: LinkId, hello: Vec<u8>, attempt: u8) {
-        if attempt < 3 {
+        if attempt < REQUEST_ATTEMPTS {
             self.begin_request(id, hello, attempt + 1);
         } else {
             self.notify(BleEvent::RequestFailed { link: id });

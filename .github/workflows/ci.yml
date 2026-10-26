@@ -57,6 +57,12 @@ jobs:
             exit 1
           fi
 
+      # The Bluetooth edition's link crate builds off macOS too: its
+      # CoreBluetooth radio is macOS only, and elsewhere the radio says
+      # Bluetooth isn't supported yet.
+      - name: cargo check, Bluetooth crate on Linux (Bluetooth edition)
+        run: cd bluetooth && cargo check -p bombechat-bluetooth --all-targets --locked
+
   # The same on a Mac, where the lock can come off and the store key is kept
   # in the Keychain: the Keychain paths in app/src-tauri/tests/device.rs only
   # run here. CoreAudio and the system frameworks come with the runner.

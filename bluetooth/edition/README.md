@@ -31,7 +31,10 @@ What lives here:
   identity that is sent, then transport encryption. `crates/bluetooth` is the
   link protocol over any radio: adverts, fragments, contact and request
   handshakes, ordered and resent transport messages, and the node's
-  Bluetooth transport, with an in-memory radio for tests.
+  Bluetooth transport, with an in-memory radio for tests, and the real
+  radio: CoreBluetooth on macOS (both roles; its logic is platform-free in
+  `adapter.rs` and tested without hardware), and on other systems a radio
+  that says Bluetooth isn't supported yet.
 
 Prefer adding a file here over patching a shared one.
 

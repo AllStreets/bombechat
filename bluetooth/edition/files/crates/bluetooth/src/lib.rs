@@ -1,7 +1,8 @@
 //! bombechat-bluetooth: the Bluetooth link protocol, with no platform code.
 //!
 //! [`BleTransport`] is the node's [`Channel::Bluetooth`](bombechat_store::Channel)
-//! transport over any [`Radio`]. The CoreBluetooth radio comes later;
+//! transport over any [`Radio`]. [`CoreBluetoothRadio`] is the real one on
+//! macOS (on other systems it only says Bluetooth isn't supported yet);
 //! [`FakeRadio`] is an in-memory one for tests.
 //!
 //! # The advert
@@ -9,7 +10,10 @@
 //! A device advertises our service ([`SERVICE_UUID`]) and a random 16-byte
 //! token, replaced at a random moment between 12 and 15 minutes
 //! ([`TOKEN_MIN_MS`], [`TOKEN_MS`]). Nothing in the advert is
-//! stable. Links carry writes on one characteristic ([`CHARACTERISTIC_UUID`]),
+//! stable. On macOS the advert can hold only the token's first six bytes
+//! (as the local name); the radio hands the whole token to each device
+//! that connects, before anything else on the link (see
+//! [`CoreBluetoothRadio`]). Links carry writes on one characteristic ([`CHARACTERISTIC_UUID`]),
 //! write without response one way and notify the other.
 //!
 //! # Link messages
@@ -83,8 +87,16 @@
 //! ago, so its token is never more than one rotation stale (the radio then
 //! connects to the fresh advert); in Contacts mode, when it shows a
 //! stranger's token whose round is over; and, on this device's own
-//! rotation, when it carries no confirmed contact session, so nobody
+//! rotation, when it carries no confirmed contact session, so no stranger
 //! connected to this device follows it from one token to the next.
+//!
+//! A link with a confirmed contact session is kept across this device's
+//! rotation, for at most one more token (the contact closes a link it
+//! opened once it is that old). Someone sniffing it can link the two
+//! tokens; closing and redialling wouldn't stop that (the new connection
+//! between the same radios follows at once) and would cost a round of
+//! hellos and a gap in delivery at every rotation, so it is accepted, and
+//! only concerns two devices that are each other's contacts.
 //!
 //! # Order and loss
 //!
@@ -94,9 +106,11 @@
 //! encryption and are delivered in order, once each, with up to [`WINDOW`]
 //! messages or 64 KiB held ahead of a gap. Every message carries the
 //! receiver's cumulative acknowledgement, so acknowledgements are as
-//! authenticated as the data. The sender keeps what is unacknowledged (at
-//! most [`WINDOW`]) and sends it all again, newly sealed, every
-//! [`RESEND_MS`]. A confirmed contact session sends a keepalive every
+//! authenticated as the data. An acknowledgement that goes on its own
+//! waits a random moment, up to [`ACK_DELAY_MAX_MS`], so how soon a reply
+//! follows doesn't mark what was received as an envelope. The sender
+//! keeps what is unacknowledged (at most [`WINDOW`]) and sends it all
+//! again, newly sealed, every [`RESEND_MS`]. A confirmed contact session sends a keepalive every
 //! [`KEEPALIVE_MS`] and closes after [`SILENCE_MS`] without hearing
 //! anything, or without progress; it is then redialled, and its
 //! unacknowledged envelopes go again on the next session.
@@ -128,6 +142,10 @@
 //! answer. If this keeps happening, check both Macs' clocks.") is left for
 //! later, when a signal that tells the two apart exists.
 
+// The radio's logic is platform-free and tested everywhere, but only
+// macOS drives it.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod adapter;
 mod fake;
 mod handle;
 mod link;
@@ -136,17 +154,36 @@ mod radio;
 mod route;
 mod session;
 mod transport;
+mod unsupported;
+pub use unsupported::{UnsupportedRadio, BLUETOOTH_NOT_SUPPORTED};
 pub mod wire;
 
+/// The Bluetooth radio: CoreBluetooth on macOS. Bombechat has no Bluetooth
+/// code for other systems yet, so there it reports
+/// [`BLUETOOTH_NOT_SUPPORTED`] at the first start and does nothing else.
+#[cfg(not(target_os = "macos"))]
+pub type CoreBluetoothRadio = UnsupportedRadio;
+
+#[cfg(target_os = "macos")]
+mod macos;
+
+pub use adapter::{
+    BLUETOOTH_DENIED, BLUETOOTH_FAILED, BLUETOOTH_OFF, BLUETOOTH_UNSUPPORTED, CLOSED_MS,
+    CONNECT_MS, QUEUE_BYTES, RETRY_MS,
+};
 pub use fake::{FakeRadio, Room, SeededRng, FAKE_MAX_WRITE};
 pub use handle::{BleEvent, BleHandle, Peers, EVENTS_CAP};
+#[cfg(target_os = "macos")]
+pub use macos::CoreBluetoothRadio;
 pub use queue::{HOLD_MS, QUEUE_CAP};
 pub use radio::{LinkId, Mode, Radio, RadioEvent};
-pub use session::{bucket, AHEAD_BYTES, KEEPALIVE_MS, RESEND_MS, SILENCE_MS, WINDOW};
+pub use session::{
+    bucket, ACK_DELAY_MAX_MS, AHEAD_BYTES, KEEPALIVE_MS, RESEND_MS, SILENCE_MS, WINDOW,
+};
 pub use transport::{
     BleTransport, HANDSHAKE_MS, IDLE_MS, MAX_LINKS, REDIAL_FIRST_MS, REDIAL_MAX_MS, REQUESTS_CAP,
-    REQUEST_MS, ROUNDS_CAP, ROUND_MEMORY_MS, SEEN_CAP, SEEN_MS, STRANGER_MS, TOKEN_MIN_MS,
-    TOKEN_MS, TRIAL_ATTEMPTS, TRIAL_CAP, TRIAL_RETRY_MS,
+    REQUEST_ATTEMPTS, REQUEST_MS, ROUNDS_CAP, ROUND_MEMORY_MS, SEEN_CAP, SEEN_MS, STRANGER_MS,
+    TOKEN_MIN_MS, TOKEN_MS, TRIAL_ATTEMPTS, TRIAL_CAP, TRIAL_RETRY_MS,
 };
 
 /// Our GATT service, generated once for Bombechat (never Bitchat's).

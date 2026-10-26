@@ -12,7 +12,12 @@ use bombechat_session::SessionKeys;
 use bombechat_store::{Channel, Store};
 
 const BASE: u64 = 1_800_000_000_000;
-/// Far ahead, so the envelope never expires and no clock is read.
+/// Far ahead (about 7,600 years), so the envelope never expires and this
+/// test reads no clock. This relies on the node taking envelopes dated
+/// after its own clock: it only refuses ones that have expired
+/// (`expires_min` older than its clock less the skew allowance). If the
+/// node ever refuses envelopes from the future, seal at a fixed time
+/// instead and give the node that clock.
 const SENT_MIN: u32 = 4_000_000_000;
 
 /// A sound transport the test plays into by hand, keeping what it sends.

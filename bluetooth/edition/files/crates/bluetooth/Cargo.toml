@@ -3,8 +3,8 @@ name = "bombechat-bluetooth"
 version = "0.1.0"
 edition = "2021"
 
-# The link protocol only: no platform Bluetooth code and no networking
-# crates. The CoreBluetooth radio is added behind its own cfg later.
+# The link protocol, with no networking crates. The only platform code is
+# the CoreBluetooth radio, on macOS alone (below).
 [dependencies]
 bombechat-core = { path = "../core" }
 bombechat-modem = { path = "../modem" }
@@ -12,6 +12,43 @@ bombechat-node = { path = "../node" }
 bombechat-session = { path = "../session" }
 bombechat-store = { path = "../store" }
 rand_core = { version = "0.6", features = ["getrandom"] }
+
+# The radio, through CoreBluetooth only: no default features, just the
+# managers, the GATT classes and the advert keys, as the light crate's
+# camera takes AVFoundation.
+[target.'cfg(target_os = "macos")'.dependencies]
+dispatch2 = { version = "0.3", default-features = false, features = ["std", "objc2"] }
+objc2 = "0.6"
+objc2-core-bluetooth = { version = "0.3", default-features = false, features = [
+    "std",
+    "bitflags",
+    "dispatch2",
+    "CBAdvertisementData",
+    "CBATTRequest",
+    "CBAttribute",
+    "CBCentral",
+    "CBCentralManager",
+    "CBCentralManagerConstants",
+    "CBCharacteristic",
+    "CBManager",
+    "CBPeer",
+    "CBPeripheral",
+    "CBPeripheralManager",
+    "CBService",
+    "CBUUID",
+] }
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSArray",
+    "NSData",
+    "NSDictionary",
+    "NSEnumerator",
+    "NSError",
+    "NSObject",
+    "NSString",
+    "NSUUID",
+    "NSValue",
+] }
 
 [dev-dependencies]
 bombechat-modem = { path = "../modem", features = ["fake-audio"] }

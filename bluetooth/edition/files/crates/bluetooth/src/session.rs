@@ -32,6 +32,11 @@ pub const KEEPALIVE_MS: u64 = 20_000;
 pub const SILENCE_MS: u64 = 60_000;
 /// Unacknowledged envelopes go again this often.
 pub const RESEND_MS: u64 = 1_500;
+/// An acknowledgement on its own waits a random time up to this long
+/// after the envelope it answers (unless something else carries it
+/// sooner), so how soon a reply follows doesn't tell an envelope from a
+/// keepalive.
+pub const ACK_DELAY_MAX_MS: u64 = 400;
 /// At most this many envelopes in flight on a session, and at most this
 /// many held ahead of a gap...
 pub const WINDOW: usize = 32;
@@ -104,6 +109,8 @@ pub(crate) struct LinkSession {
     highest: Option<u64>,
     accepted: BTreeSet<u64>,
     ack_due: bool,
+    /// When an acknowledgement on its own may go; `None` is at once.
+    ack_at: Option<u64>,
     /// For a request sent: the hello and which attempt this is.
     pub hello: Option<(Vec<u8>, u8)>,
     /// For a request received: when its hello arrived, and whether the
@@ -139,6 +146,7 @@ impl LinkSession {
             highest: None,
             accepted: BTreeSet::new(),
             ack_due: false,
+            ack_at: None,
             hello: None,
             heard_ms: None,
             accepted_by_person: false,
@@ -189,6 +197,7 @@ impl LinkSession {
         self.next_nonce += 1;
         self.last_sent_ms = now_ms;
         self.ack_due = false;
+        self.ack_at = None;
         let mut wire = Vec::with_capacity(12 + ct.len());
         wire.extend_from_slice(&self.xid.to_be_bytes());
         wire.extend_from_slice(&nonce.to_be_bytes());
@@ -227,6 +236,15 @@ impl LinkSession {
             tag,
         });
         Some(wire)
+    }
+
+    /// Hold the acknowledgement now due until `at_ms`, unless something
+    /// else carries it sooner. Does nothing if none is due, or one is
+    /// already held.
+    pub fn hold_ack(&mut self, at_ms: u64) {
+        if self.ack_due && self.ack_at.is_none() {
+            self.ack_at = Some(at_ms);
+        }
     }
 
     /// A keepalive, which also acknowledges.
@@ -342,7 +360,7 @@ impl LinkSession {
                 writes.extend(self.seal(ENVELOPE, seq, &body, now_ms));
             }
         }
-        if self.ack_due {
+        if self.ack_due && self.ack_at.is_none_or(|at| now_ms >= at) {
             writes.extend(self.seal(ACK, 0, &[], now_ms));
         }
         if self.kind == SessKind::Contact
@@ -461,6 +479,31 @@ mod tests {
             b.receive(n, &c, true, RESEND_MS).unwrap().envelopes,
             vec![b"later".to_vec()]
         );
+    }
+
+    #[test]
+    fn a_held_acknowledgement_waits_unless_something_carries_it() {
+        let (mut a, mut b) = pair();
+        let (n, c) = open(&a.send_envelope(b"one", Some(1), 0).unwrap());
+        b.receive(n, &c, true, 0).unwrap();
+        b.hold_ack(300);
+        b.hold_ack(5); // the first hold stands
+        assert!(b.upkeep(299).0.is_empty(), "not yet");
+        let (writes, _) = b.upkeep(300);
+        assert_eq!(writes.len(), 1);
+        let (n, c) = open(&writes[0]);
+        assert_eq!(a.receive(n, &c, true, 300).unwrap().acked, vec![1]);
+        // an envelope going the other way carries it sooner
+        let (n, c) = open(&a.send_envelope(b"two", Some(2), 400).unwrap());
+        b.receive(n, &c, true, 400).unwrap();
+        b.hold_ack(800);
+        let (n, c) = open(&b.send_envelope(b"back", None, 410).unwrap());
+        assert_eq!(a.receive(n, &c, true, 410).unwrap().acked, vec![2]);
+        assert!(b.upkeep(800).0.is_empty(), "nothing left to acknowledge");
+        // with no hold, it goes at the next upkeep
+        let (n, c) = open(&a.send_envelope(b"three", Some(3), 900).unwrap());
+        b.receive(n, &c, true, 900).unwrap();
+        assert_eq!(b.upkeep(900).0.len(), 1);
     }
 
     #[test]
