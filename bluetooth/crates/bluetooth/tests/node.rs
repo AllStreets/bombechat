@@ -5,11 +5,10 @@
 
 use std::sync::{Arc, Mutex};
 
-use bombechat_bluetooth::{BleTransport, FakeRadio, Mode, Room, SeededRng};
+use bombechat_bluetooth::{BleTransport, FakeRadio, Mode, Room, SeededRng, TestClock};
 use bombechat_core::{seal_private, Envelope, Identity, Kind};
 use bombechat_modem::{split, Event, Reassembler};
 use bombechat_node::{Node, NodeEvent, Transport, TransportEvent};
-use bombechat_session::SessionKeys;
 use bombechat_store::{Channel, Store};
 
 const BASE: u64 = 1_800_000_000_000;
@@ -105,19 +104,27 @@ fn both_ways(sound_first: bool) {
     let room = Room::new(70);
 
     // a: a bare transport, sending
-    let a = BleTransport::with_rng(room.radio(), BASE, Box::new(SeededRng::new(1)));
+    let mut a = BleTransport::with_rng(
+        room.radio(),
+        TestClock::new(BASE),
+        Box::new(SeededRng::new(1)),
+    );
     let ah = a.handle();
-    ah.set_identity(Some(SessionKeys::new(&a_id)));
-    ah.set_contacts(vec![b_id.public()]);
+    a.set_identity(Some(&a_id));
+    a.set_contacts(&[b_id.public()]);
     ah.set_mode(Some(Mode::Contacts));
 
     // b: a node with Bluetooth and sound
     let store = Store::create(&dir.path().join("b.db"), "pass", &b_id, "b").unwrap();
     store.add_contact("a", &a_id.public(), true).unwrap();
-    let ble = BleTransport::with_rng(room.radio(), BASE, Box::new(SeededRng::new(2)));
+    let mut ble = BleTransport::with_rng(
+        room.radio(),
+        TestClock::new(BASE),
+        Box::new(SeededRng::new(2)),
+    );
     let bh = ble.handle();
-    bh.set_identity(Some(SessionKeys::new(&b_id)));
-    bh.set_contacts(vec![a_id.public()]);
+    ble.set_identity(Some(&b_id));
+    ble.set_contacts(&[a_id.public()]);
     bh.set_mode(Some(Mode::Contacts));
     let sound = Wire::default();
     let b = Node::new(Some(store), vec![Box::new(ble), Box::new(sound.clone())]);
@@ -229,7 +236,11 @@ fn side(room: &Room, base: u64, seed: u64, me: &Identity, them: &Identity) -> Si
     let dir = tempfile::TempDir::new().unwrap();
     let store = Store::create(&dir.path().join("s.db"), "pass", me, "me").unwrap();
     store.add_contact("them", &them.public(), true).unwrap();
-    let ble = BleTransport::with_rng(room.radio(), base, Box::new(SeededRng::new(seed)));
+    let ble = BleTransport::with_rng(
+        room.radio(),
+        TestClock::new(base),
+        Box::new(SeededRng::new(seed)),
+    );
     ble.handle().set_mode(Some(Mode::Contacts));
     let (given, handed) = (Arc::default(), Arc::default());
     let counted = Counted {

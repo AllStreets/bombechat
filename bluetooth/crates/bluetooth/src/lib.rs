@@ -197,9 +197,13 @@
 //!
 //! # Clocks
 //!
-//! The transport reads no clock. The node's `now_ms` drives every timer,
-//! and contact handshakes add the Unix time at which that clock read zero
-//! (given to [`BleTransport::new`]).
+//! The node's `now_ms`, a monotonic clock, drives every timer. Contact
+//! handshakes carry the Unix time, and request hellos are judged by it:
+//! that comes from a [`WallClock`], read afresh each time a handshake is
+//! built ([`SystemClock`] in the app, [`TestClock`] in tests). It is never
+//! the time at launch plus `now_ms`: on macOS the monotonic clock stops
+//! while the Mac sleeps, so that sum falls behind with every sleep, and
+//! after one longer than two minutes no contact would ever answer.
 //!
 //! A contact more than two minutes off gets no answer, and the answering
 //! side can't tell the stale message came from a contact, so neither side
@@ -212,6 +216,7 @@
 // macOS drives it.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod adapter;
+mod clock;
 mod fake;
 mod handle;
 mod link;
@@ -239,6 +244,7 @@ pub use adapter::{
     BLUETOOTH_DENIED, BLUETOOTH_FAILED, BLUETOOTH_OFF, BLUETOOTH_UNSUPPORTED, CENTRALS_CAP,
     CENTRAL_MEMORY_MS, CLOSED_MS, CONNECT_MS, QUEUE_BYTES, REFUSED_MS, RETRY_MS,
 };
+pub use clock::{SystemClock, TestClock, WallClock};
 pub use fake::{FakeRadio, Room, SeededRng, FAKE_MAX_WRITE};
 pub use handle::{BleHandle, BluetoothSwitch, Peers};
 #[cfg(target_os = "macos")]

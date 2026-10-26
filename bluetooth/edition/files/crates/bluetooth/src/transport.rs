@@ -13,6 +13,7 @@ use bombechat_session::{Handshake, Session, SessionKeys, TOKEN_LEN};
 use bombechat_store::Channel;
 use rand_core::{OsRng, RngCore};
 
+use crate::clock::{SystemClock, WallClock};
 use crate::handle::{BleHandle, Control, Peers};
 use crate::link::{body_with_id, ExKey, Exchange, Link, Side};
 use crate::queue::{Key, Queue};
@@ -139,13 +140,14 @@ struct Redial {
 }
 
 /// The Bluetooth transport: [`Channel::Bluetooth`] for the node, over any
-/// [`Radio`]. Its clock is the `now_ms` the node passes to
-/// [`Transport::poll`]; it reads none of its own.
+/// [`Radio`]. Its timers run on the `now_ms` the node passes to
+/// [`Transport::poll`]; contact handshakes and request hellos are stamped
+/// and judged by its [`WallClock`], read afresh each time.
 pub struct BleTransport<R: Radio> {
     radio: R,
     rng: Box<dyn RngCore + Send>,
     shared: Arc<Mutex<Control>>,
-    unix_base_ms: u64,
+    clock: Box<dyn WallClock>,
     keys: Option<SessionKeys>,
     contacts: Vec<PublicIdentity>,
     contact_keys: BTreeSet<Key>,
@@ -207,21 +209,25 @@ struct HeldProof {
 
 impl<R: Radio> BleTransport<R> {
     /// A transport over `radio`, off until it has keys and a mode.
-    /// `unix_base_ms` is the Unix time in milliseconds when the node's
-    /// clock read zero: contact handshakes carry the time they were sent,
-    /// and a device more than two minutes off answers none.
-    pub fn new(radio: R, unix_base_ms: u64) -> BleTransport<R> {
-        BleTransport::with_rng(radio, unix_base_ms, Box::new(OsRng))
+    /// Contact handshakes carry the system's wall clock as it reads when
+    /// each is built, and a device more than two minutes off answers none.
+    pub fn new(radio: R) -> BleTransport<R> {
+        BleTransport::with_rng(radio, SystemClock, Box::new(OsRng))
     }
 
-    /// As [`BleTransport::new`], drawing exchange numbers, tokens, decoys
-    /// and rotation times from `rng`: tests pass a seeded one.
-    pub fn with_rng(radio: R, unix_base_ms: u64, rng: Box<dyn RngCore + Send>) -> BleTransport<R> {
+    /// As [`BleTransport::new`], reading the Unix time from `clock` and
+    /// drawing exchange numbers, tokens, decoys and rotation times from
+    /// `rng`: tests pass a [`crate::TestClock`] and a seeded rng.
+    pub fn with_rng(
+        radio: R,
+        clock: impl WallClock + 'static,
+        rng: Box<dyn RngCore + Send>,
+    ) -> BleTransport<R> {
         BleTransport {
             radio,
             rng,
             shared: Arc::new(Mutex::new(Control::default())),
-            unix_base_ms,
+            clock: Box::new(clock),
             keys: None,
             contacts: Vec::new(),
             contact_keys: BTreeSet::new(),
@@ -382,8 +388,10 @@ impl<R: Radio> BleTransport<R> {
             .sum()
     }
 
+    /// The Unix time in milliseconds, read now from the wall clock: never
+    /// worked out from `now_ms`, which stops while the Mac sleeps.
     fn unix_now(&self) -> u64 {
-        self.unix_base_ms.saturating_add(self.now_ms)
+        self.clock.unix_ms(self.now_ms)
     }
 
     fn me(&self) -> Option<Key> {
@@ -1084,7 +1092,7 @@ impl<R: Radio> BleTransport<R> {
             }
         }
         // the answer to a request this device sent: who it claims to be
-        let unix_min = (self.unix_base_ms.saturating_add(now) / 60_000) as u32;
+        let unix_min = (self.clock.unix_ms(now) / 60_000) as u32;
         if kind == SessKind::RequestOut && s.answer.is_none() {
             if let Some(hello) = d.envelopes.first() {
                 let mine = self.keys.as_ref().map(|k| k.public().clone());

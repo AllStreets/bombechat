@@ -16,7 +16,7 @@ use bombechat_app::edition::{
 };
 use bombechat_app::Device;
 use bombechat_bluetooth::{
-    BleTransport, FakeRadio, Mode, Room, SeededRng, BLUETOOTH_OFF as SYSTEM_OFF,
+    BleTransport, FakeRadio, Mode, Room, SeededRng, TestClock, BLUETOOTH_OFF as SYSTEM_OFF,
     BLUETOOTH_SEND_OFF, REQUESTS_NEED_OPEN,
 };
 use bombechat_core::Identity;
@@ -48,7 +48,11 @@ impl Bench {
         }
         let radio = room.radio();
         let watch = radio.watch();
-        let ble = BleTransport::with_rng(radio, BASE, Box::new(SeededRng::new(u64::from(seed))));
+        let ble = BleTransport::with_rng(
+            radio,
+            TestClock::new(BASE),
+            Box::new(SeededRng::new(u64::from(seed))),
+        );
         let fittings = Fittings::bluetooth(ble.handle());
         let device = Device::fitted(
             path.to_path_buf(),

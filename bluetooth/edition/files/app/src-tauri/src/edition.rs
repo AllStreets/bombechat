@@ -15,8 +15,6 @@
 //! contacts need a key check is the person's choice here, On until they
 //! change it.
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use bombechat_bluetooth::{BleHandle, BleTransport, BluetoothSwitch, CoreBluetoothRadio};
 use bombechat_node::{NodeEvent, Transport};
 use bombechat_store::Channel;
@@ -92,12 +90,9 @@ impl Fittings {
     /// managers are made, and macOS asks for permission, only when the
     /// switch is first turned on.
     pub fn hardware() -> (Fittings, Vec<Box<dyn Transport>>, Vec<NodeEvent>) {
-        // the Unix time when the node's clock reads zero: the pump starts
-        // it moments from now, and contact handshakes allow two minutes
-        let base = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis() as u64);
-        let ble = BleTransport::new(CoreBluetoothRadio::new(), base);
+        // contact handshakes read the system clock each time one is built:
+        // the pump's clock stops while the Mac sleeps
+        let ble = BleTransport::new(CoreBluetoothRadio::new());
         let fittings = Fittings::bluetooth(ble.handle());
         (fittings, vec![Box::new(ble)], Vec::new())
     }

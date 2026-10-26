@@ -3,7 +3,7 @@
 //! in-person setting, and who is near.
 
 use bombechat_bluetooth::{
-    BleHandle, BleTransport, BluetoothSwitch, Room, SeededRng, BLUETOOTH_SEND_OFF,
+    BleHandle, BleTransport, BluetoothSwitch, Room, SeededRng, TestClock, BLUETOOTH_SEND_OFF,
 };
 use bombechat_core::Identity;
 use bombechat_node::{Node, NodeEvent, OutboxState, RequestState, MEET_FIRST, NOT_IN_RANGE};
@@ -33,7 +33,11 @@ impl Peer {
         let dir = tempfile::TempDir::new().unwrap();
         let id = identity(seed);
         let store = Store::create(&dir.path().join("s.db"), "pass", &id, name).unwrap();
-        let ble = BleTransport::with_rng(room.radio(), base, Box::new(SeededRng::new(seed)));
+        let ble = BleTransport::with_rng(
+            room.radio(),
+            TestClock::new(base),
+            Box::new(SeededRng::new(seed)),
+        );
         let h = ble.handle();
         let mut node = Node::new(Some(store), vec![Box::new(ble)]);
         node.set_in_person_only(false);
@@ -125,7 +129,11 @@ fn the_switch_starts_off_and_maps_onto_the_modes() {
     let store = Store::create(&dir.path().join("s.db"), "pass", &me, "Ann").unwrap();
     let ben = store.add_contact("Ben", &ben.public(), true).unwrap();
     let room = Room::new(1);
-    let ble = BleTransport::with_rng(room.radio(), BASE, Box::new(SeededRng::new(1)));
+    let ble = BleTransport::with_rng(
+        room.radio(),
+        TestClock::new(BASE),
+        Box::new(SeededRng::new(1)),
+    );
     let h = ble.handle();
     let mut node = Node::new(Some(store), vec![Box::new(ble)]);
     node.send(&[ben], "hi", Channel::Bluetooth);

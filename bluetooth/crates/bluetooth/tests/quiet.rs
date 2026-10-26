@@ -18,10 +18,10 @@ use std::collections::HashMap;
 use bombechat_bluetooth::wire::{fragment, Kind, LinkMessage, Reassembly, FROM_INITIATOR};
 use bombechat_bluetooth::{
     bucket, Advert, BleTransport, BluetoothSwitch, FakeRadio, LinkId, Mode, Radio, RadioEvent,
-    Room, SeededRng, REQUEST_MS,
+    Room, SeededRng, TestClock, REQUEST_MS,
 };
 use bombechat_core::Identity;
-use bombechat_node::{pairing_hello, Node, NodeEvent};
+use bombechat_node::{pairing_hello, Node, NodeEvent, Transport as _};
 use bombechat_session::{Session, SessionKeys, Transport as Cipher};
 use bombechat_store::Store;
 
@@ -122,13 +122,17 @@ impl Scene {
         for c in contacts {
             store.add_contact("known", &c.public(), false).unwrap();
         }
-        let ble = BleTransport::with_rng(room.radio(), BASE, Box::new(SeededRng::new(7)));
+        let mut ble = BleTransport::with_rng(
+            room.radio(),
+            TestClock::new(BASE),
+            Box::new(SeededRng::new(7)),
+        );
         let h = ble.handle();
         let mut node = if locked {
             drop(store);
             // the node is locked, but its radio has keys: the case where a
             // request reaches a node that can't open it
-            h.set_identity(Some(SessionKeys::new(&me)));
+            ble.set_identity(Some(&me));
             Node::new(None, vec![Box::new(ble)])
         } else {
             Node::new(Some(store), vec![Box::new(ble)])

@@ -80,24 +80,14 @@ pub(crate) struct Control {
 }
 
 /// The app's hold on a [`crate::BleTransport`] once the node owns it.
-/// Changes take effect at the transport's next poll. Requests to connect
-/// go through the node ([`bombechat_node::Node::request`] and the rest).
+/// Changes take effect at the transport's next poll. The keys and the
+/// contacts come from the node, through [`bombechat_node::Transport`]'s
+/// setters; requests to connect go through the node too
+/// ([`bombechat_node::Node::request`] and the rest).
 #[derive(Clone)]
 pub struct BleHandle(pub(crate) Arc<Mutex<Control>>);
 
 impl BleHandle {
-    /// This device's session keys, or `None` while locked. Without keys
-    /// the radio stays off. The node sets them when it is unlocked.
-    pub fn set_identity(&self, keys: Option<SessionKeys>) {
-        self.0.lock().unwrap().keys = Some(keys);
-    }
-
-    /// The people a contact session may be with. The node sets them
-    /// whenever its contacts change.
-    pub fn set_contacts(&self, contacts: Vec<PublicIdentity>) {
-        self.0.lock().unwrap().contacts = Some(contacts);
-    }
-
     /// The transport mode: `None` is Off, the radio stopped.
     pub fn set_mode(&self, mode: Option<Mode>) {
         self.0.lock().unwrap().mode = Some(mode);

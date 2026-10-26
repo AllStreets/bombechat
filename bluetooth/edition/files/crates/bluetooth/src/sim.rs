@@ -9,14 +9,14 @@ use std::sync::{Arc, Mutex};
 use bombechat_core::{seal_private, Envelope, Identity};
 use bombechat_modem::{split, Event, Reassembler};
 use bombechat_node::{Transport, TransportEvent};
-use bombechat_session::{SessionKeys, TOKEN_LEN};
+use bombechat_session::TOKEN_LEN;
 
 use crate::adapter::{
     parse_tag, Access, Adapter, CbEvent, PeerId, Power, Role, Stack, TOKEN_MARK, WITHHELD_MARK,
 };
 use crate::radio::Mode;
 use crate::transport::{BleTransport, FUTURE_TOKENS, TOKEN_MS};
-use crate::{BleHandle, SeededRng};
+use crate::{BleHandle, SeededRng, TestClock};
 
 struct Station {
     /// The station whose identifier this one shows: itself, or another
@@ -269,12 +269,13 @@ impl Mac {
             air: air.clone(),
             me,
         });
-        let t = BleTransport::with_rng(radio, BASE, Box::new(SeededRng::new(seed)));
+        let mut t =
+            BleTransport::with_rng(radio, TestClock::new(BASE), Box::new(SeededRng::new(seed)));
         let h = t.handle();
         let mut secret = [0u8; 64];
         rand_core::RngCore::fill_bytes(&mut SeededRng::new(seed ^ 0x5a), &mut secret);
         let id = Identity::from_secret_bytes(&secret);
-        h.set_identity(Some(SessionKeys::new(&id)));
+        t.set_identity(Some(&id));
         Mac {
             me,
             t,
@@ -375,8 +376,8 @@ fn contacts_with_stable_identifiers_keep_meeting_across_rotations_and_a_blackout
     let air = Arc::new(Mutex::new(Air::default()));
     let mut a = Mac::new(&air, 1);
     let mut b = Mac::new(&air, 2);
-    a.h.set_contacts(vec![b.id.public()]);
-    b.h.set_contacts(vec![a.id.public()]);
+    a.t.set_contacts(&[b.id.public()]);
+    b.t.set_contacts(&[a.id.public()]);
     a.h.set_mode(Some(Mode::Contacts));
     b.h.set_mode(Some(Mode::Contacts));
     let t = run(&air, &mut [&mut a, &mut b], 0, 5_000);
@@ -439,8 +440,8 @@ fn a_stranger_with_a_copied_identifier_gains_nothing_after_a_rotation() {
     let air = Arc::new(Mutex::new(Air::default()));
     let mut a = Mac::new(&air, 1);
     let mut b = Mac::new(&air, 2);
-    a.h.set_contacts(vec![b.id.public()]);
-    b.h.set_contacts(vec![a.id.public()]);
+    a.t.set_contacts(&[b.id.public()]);
+    b.t.set_contacts(&[a.id.public()]);
     a.h.set_mode(Some(Mode::Contacts));
     b.h.set_mode(Some(Mode::Contacts));
     let t = run(&air, &mut [&mut a, &mut b], 0, 5_000);
@@ -453,7 +454,7 @@ fn a_stranger_with_a_copied_identifier_gains_nothing_after_a_rotation() {
     let t = run(&air, &mut [&mut a, &mut b], t, t + 1_000);
     // the stranger shows a's identifier, and knows b's key
     let mut s = Mac::showing(&air, 3, Some(a.me));
-    s.h.set_contacts(vec![b.id.public()]);
+    s.t.set_contacts(&[b.id.public()]);
     s.h.set_mode(Some(Mode::Contacts));
     let from = t;
     let t = run(&air, &mut [&mut b, &mut s], t, t + 60_000);
@@ -514,8 +515,8 @@ fn apart_through(apart: usize) -> (Arc<Mutex<Air>>, Mac, Mac, u64) {
     let air = Arc::new(Mutex::new(Air::default()));
     let mut a = Mac::new(&air, 1);
     let mut b = Mac::new(&air, 2);
-    a.h.set_contacts(vec![b.id.public()]);
-    b.h.set_contacts(vec![a.id.public()]);
+    a.t.set_contacts(&[b.id.public()]);
+    b.t.set_contacts(&[a.id.public()]);
     a.h.set_mode(Some(Mode::Contacts));
     b.h.set_mode(Some(Mode::Contacts));
     let t = run_until(&air, &mut [&mut a, &mut b], 0, TOKEN_MS * 2, |m| {
@@ -611,7 +612,7 @@ fn a_held_connection_learns_nothing_of_the_new_advert() {
     let mut b = Mac::new(&air, 2);
     b.h.set_mode(Some(Mode::Contacts));
     let mut tracker = Mac::new(&air, 5);
-    tracker.h.set_contacts(vec![b.id.public()]); // it knows b's key
+    tracker.t.set_contacts(&[b.id.public()]); // it knows b's key
     tracker.h.set_mode(Some(Mode::Contacts));
     let t = run(&air, &mut [&mut b, &mut tracker], 0, 5_000);
     let first = b.token();
@@ -621,7 +622,7 @@ fn a_held_connection_learns_nothing_of_the_new_advert() {
     let t = run(&air, &mut [&mut b, &mut tracker], t, since + 1_000);
     assert_ne!(b.token(), first);
     let mut fresh = Mac::new(&air, 6);
-    fresh.h.set_contacts(vec![b.id.public()]);
+    fresh.t.set_contacts(&[b.id.public()]);
     fresh.h.set_mode(Some(Mode::Contacts));
     run(&air, &mut [&mut b, &mut tracker, &mut fresh], t, t + 60_000);
     let air_now = air.lock().unwrap();
@@ -661,8 +662,8 @@ fn a_lost_link_is_redialled_by_its_tag_where_the_token_is_withheld() {
     let air = Arc::new(Mutex::new(Air::default()));
     let mut a = Mac::new(&air, 1);
     let mut b = Mac::new(&air, 2);
-    a.h.set_contacts(vec![b.id.public()]);
-    b.h.set_contacts(vec![a.id.public()]);
+    a.t.set_contacts(&[b.id.public()]);
+    b.t.set_contacts(&[a.id.public()]);
     a.h.set_mode(Some(Mode::Contacts));
     b.h.set_mode(Some(Mode::Contacts));
     let t = run(&air, &mut [&mut a, &mut b], 0, 5_000);

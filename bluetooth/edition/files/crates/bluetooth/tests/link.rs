@@ -10,8 +10,8 @@ use bombechat_bluetooth::wire::{
 };
 use bombechat_bluetooth::{
     bucket, Advert, BleHandle, BleTransport, FakeRadio, LinkId, Mode, Radio, RadioEvent, Room,
-    SeededRng, ACK_DELAY_MAX_MS, FUTURE_TOKENS, HOLD_MS, IDLE_MS, KEEPALIVE_MS, MAX_LINKS,
-    PAST_TOKENS, QUEUE_CAP, REQUESTS_CAP, REQUESTS_NEED_OPEN, REQUESTS_PART_WAY_CAP,
+    SeededRng, TestClock, ACK_DELAY_MAX_MS, FUTURE_TOKENS, HOLD_MS, IDLE_MS, KEEPALIVE_MS,
+    MAX_LINKS, PAST_TOKENS, QUEUE_CAP, REQUESTS_CAP, REQUESTS_NEED_OPEN, REQUESTS_PART_WAY_CAP,
     REQUEST_ATTEMPTS, REQUEST_MS, SEEN_CAP, SEEN_MS, SILENCE_MS, STRANGER_MS, TOKEN_MS, TRIAL_CAP,
     TRIAL_RETRY_MS,
 };
@@ -48,11 +48,15 @@ impl Device {
     }
 
     fn with(radio: FakeRadio, base: u64, seed: u64) -> Device {
+        Device::with_clock(radio, TestClock::new(base), seed)
+    }
+
+    fn with_clock(radio: FakeRadio, clock: TestClock, seed: u64) -> Device {
         let watch = radio.watch();
-        let t = BleTransport::with_rng(radio, base, Box::new(SeededRng::new(seed)));
+        let mut t = BleTransport::with_rng(radio, clock, Box::new(SeededRng::new(seed)));
         let h = t.handle();
         let id = identity(seed);
-        h.set_identity(Some(SessionKeys::new(&id)));
+        t.set_identity(Some(&id));
         Device {
             t,
             h,
@@ -66,8 +70,9 @@ impl Device {
         self.id.public()
     }
 
-    fn knows(&self, others: &[&Device]) {
-        self.h.set_contacts(others.iter().map(|d| d.me()).collect());
+    fn knows(&mut self, others: &[&Device]) {
+        let contacts: Vec<PublicIdentity> = others.iter().map(|d| d.me()).collect();
+        self.t.set_contacts(&contacts);
     }
 
     fn send(&mut self, env: &Envelope, tag: u16) {
@@ -144,7 +149,7 @@ fn private(from: &Device, to: &[&Device], text: &str) -> Envelope {
 }
 
 fn pair(room: &Room) -> (Device, Device) {
-    let (a, b) = (Device::new(room, 1), Device::new(room, 2));
+    let (mut a, mut b) = (Device::new(room, 1), Device::new(room, 2));
     a.knows(&[&b]);
     b.knows(&[&a]);
     a.h.set_mode(Some(Mode::Contacts));
@@ -403,7 +408,7 @@ fn a_removed_contact_is_told_no_further_tokens() {
     assert_eq!(b.t.contact_token(&a.me()), known);
     let told = b.t.contact_schedule(&a.me());
     assert_eq!(told, a.t.token_schedule());
-    a.h.set_contacts(vec![]);
+    a.t.set_contacts(&[]);
     let t = run(&mut [&mut a, &mut b], t, t + STEP);
     assert_eq!(a.t.contact_token(&b.me()), None, "forgotten");
     // the tokens it was told ahead are drawn again: none will be current
@@ -437,12 +442,12 @@ fn a_removal_retells_the_schedule_only_with_the_next_keepalive() {
     let room = Room::new(16);
     let (mut a, mut b) = pair(&room);
     let gone = identity(77).public();
-    a.h.set_contacts(vec![b.me(), gone]);
+    a.t.set_contacts(&[b.me(), gone]);
     let t = run(&mut [&mut a, &mut b], 0, 5_000);
     let before = a.t.token_schedule();
     assert_eq!(b.t.contact_schedule(&a.me()), before);
     a.radio.take_written();
-    a.h.set_contacts(vec![b.me()]);
+    a.t.set_contacts(&[b.me()]);
     a.poll(t); // the same moment: only the removal is new
     assert!(
         written(&a.radio)
@@ -1070,7 +1075,7 @@ fn only_a_contact_with_a_fresh_hello_for_this_device_is_answered() {
     let (mut a, mut raw, _) = raw_beside(&room);
     let friend = identity(40);
     let stranger = identity(41);
-    a.h.set_contacts(vec![friend.public()]);
+    a.t.set_contacts(&[friend.public()]);
     let fk = SessionKeys::new(&friend);
     let sk = SessionKeys::new(&stranger);
     let now = 1_000;
@@ -1100,7 +1105,7 @@ fn a_replayed_hello_is_never_answered_twice() {
     let room = Room::new(31);
     let (mut a, mut raw, link) = raw_beside(&room);
     let friend = identity(40);
-    a.h.set_contacts(vec![friend.public()]);
+    a.t.set_contacts(&[friend.public()]);
     a.poll(STEP);
     let (_, token) = raw.opened();
     let mut hs = Session::contact_initiator(&SessionKeys::new(&friend), &a.me(), BASE, token);
@@ -1128,7 +1133,7 @@ fn the_seen_cache_is_bounded() {
     let (mut a, mut raw, link) = raw_beside(&room);
     let friend = identity(40);
     let fk = SessionKeys::new(&friend);
-    a.h.set_contacts(vec![friend.public()]);
+    a.t.set_contacts(&[friend.public()]);
     a.poll(STEP);
     let (_, token) = raw.opened();
     for i in 0..(SEEN_CAP as u32 + 50) {
@@ -1147,7 +1152,7 @@ fn the_seen_cache_is_bounded() {
 fn a_device_never_answers_itself() {
     let room = Room::new(33);
     let (mut a, mut raw, _) = raw_beside(&room);
-    a.h.set_contacts(vec![a.me()]);
+    a.t.set_contacts(&[a.me()]);
     a.poll(STEP);
     let keys = SessionKeys::new(&a.id);
     assert!(dial(&mut raw, &mut a, &keys, BASE + STEP, None, STEP).is_empty());
@@ -1159,7 +1164,7 @@ fn the_token_rotates_between_12_and_15_minutes_and_the_previous_still_answers() 
     let (mut a, mut raw, _) = raw_beside(&room);
     let friend = identity(40);
     let fk = SessionKeys::new(&friend);
-    a.h.set_contacts(vec![friend.public()]);
+    a.t.set_contacts(&[friend.public()]);
     a.poll(STEP);
     let first = a.radio.token().unwrap();
     a.poll(12 * 60_000 - STEP);
@@ -1235,7 +1240,7 @@ fn a_hello_may_name_the_last_four_tokens_but_not_the_fifth_or_anothers() {
     other.h.set_mode(Some(Mode::Open));
     let friend = identity(40);
     let fk = SessionKeys::new(&friend);
-    a.h.set_contacts(vec![friend.public()]);
+    a.t.set_contacts(&[friend.public()]);
     let mut t = STEP;
     a.poll(t);
     other.poll(t);
@@ -1301,7 +1306,7 @@ fn every_round_is_exactly_eight_hellos_whatever_the_contact_count() {
         let others: Vec<PublicIdentity> = (0..contacts)
             .map(|i| identity(100 + i as u64).public())
             .collect();
-        a.h.set_contacts(others);
+        a.t.set_contacts(&others);
         a.h.set_mode(Some(Mode::Contacts));
         let mut raw = Raw::new(&room);
         a.poll(0);
@@ -1321,7 +1326,11 @@ fn every_round_is_exactly_eight_hellos_whatever_the_contact_count() {
 fn a_token_gets_one_round_however_often_it_reconnects() {
     let room = Room::new(37);
     let mut a = Device::new(&room, 1);
-    a.h.set_contacts((0..20).map(|i| identity(100 + i).public()).collect());
+    a.t.set_contacts(
+        &(0..20)
+            .map(|i| identity(100 + i).public())
+            .collect::<Vec<_>>(),
+    );
     a.h.set_mode(Some(Mode::Contacts));
     let mut raw = Raw::new(&room);
     let t = run(&mut [&mut a], 0, 30_000);
@@ -1348,7 +1357,7 @@ fn the_most_recently_seen_contact_is_tried_first() {
     let (mut a, mut b) = (Device::new(&room, 1), Device::new(&room, 2));
     let mut contacts: Vec<PublicIdentity> = (0..19).map(|i| identity(100 + i).public()).collect();
     contacts.push(b.me());
-    a.h.set_contacts(contacts);
+    a.t.set_contacts(&contacts);
     b.knows(&[&a]);
     a.h.set_mode(Some(Mode::Contacts));
     b.h.set_mode(Some(Mode::Contacts));
@@ -1388,6 +1397,72 @@ fn clocks_two_minutes_apart_still_meet_and_three_do_not() {
         assert_eq!(!a.h.peers().contacts.is_empty(), meets, "skew {skew}");
         assert_eq!(!b.h.peers().contacts.is_empty(), meets, "skew {skew}");
     }
+}
+
+/// How long the Macs in the sleep tests slept: well past the two-minute
+/// contact window.
+const SLEEP: u64 = 10 * 60_000;
+
+#[test]
+fn a_mac_that_slept_ten_minutes_still_meets_its_contacts() {
+    let room = Room::new(40);
+    let clock = TestClock::new(BASE);
+    let mut a = Device::with_clock(room.radio(), clock.clone(), 1);
+    // b's wall clock reads the true time: ten minutes past a's launch
+    // time plus a's monotonic clock, once a has slept
+    let mut b = Device::with(room.radio(), BASE + SLEEP, 2);
+    a.knows(&[&b]);
+    b.knows(&[&a]);
+    a.h.set_mode(Some(Mode::Contacts));
+    let t = run(&mut [&mut a], 0, 5_000);
+    // a sleeps: its monotonic clock stops, its wall clock goes on
+    clock.shift(SLEEP as i64);
+    b.h.set_mode(Some(Mode::Contacts));
+    run(&mut [&mut a, &mut b], t, t + 15_000);
+    assert_eq!(a.h.peers().contacts, vec![b.me()]);
+    assert_eq!(b.h.peers().contacts, vec![a.me()]);
+}
+
+#[test]
+fn contact_hellos_are_stamped_and_judged_by_the_wall_clock_as_it_reads_then() {
+    let room = Room::new(41);
+    let clock = TestClock::new(BASE);
+    let mut a = Device::with_clock(room.radio(), clock.clone(), 1);
+    let friend = identity(40);
+    let fk = SessionKeys::new(&friend);
+    a.t.set_contacts(&[friend.public()]);
+    a.h.set_mode(Some(Mode::Open));
+    let token = [0xee; TOKEN_LEN];
+    let mut raw = Raw::with_token(&room, token);
+    // a slept after it was launched, before it met anyone
+    clock.shift(SLEEP as i64);
+    a.poll(0);
+    raw.poll();
+    a.poll(STEP);
+    raw.poll();
+    let now = STEP;
+    let unix = BASE + SLEEP + now;
+
+    // as the initiator: a's round to raw's advert carries the true time,
+    // so the contact it names reads it as fresh
+    let link = raw.theirs();
+    let fresh = raw
+        .got
+        .iter()
+        .filter(|(l, m)| *l == link && m.kind == Kind::Contact)
+        .filter(|(_, m)| {
+            Session::contact_responder(&fk, unix, &[token])
+                .read_message(&m.body[4..])
+                .is_ok()
+        })
+        .count();
+    assert_eq!(fresh, 1, "the one hello to the friend is fresh");
+
+    // as the responder: a hello stamped with the true time is answered
+    assert_eq!(
+        dial(&mut raw, &mut a, &fk, unix, None, now),
+        vec![Kind::Handshake]
+    );
 }
 
 // ---- links --------------------------------------------------------------
@@ -1453,7 +1528,7 @@ fn an_idle_link_closes_after_two_minutes_and_stays_closed_until_a_token_changes(
 fn in_contacts_mode_a_strangers_link_closes_when_its_round_is_over() {
     let room = Room::new(52);
     let mut a = Device::new(&room, 1);
-    a.h.set_contacts(vec![identity(99).public()]);
+    a.t.set_contacts(&[identity(99).public()]);
     a.h.set_mode(Some(Mode::Contacts));
     let mut raw = Raw::new(&room);
     a.poll(0);
@@ -2085,7 +2160,7 @@ fn off_stops_the_radio_drops_what_waits_and_fails_requests_in_flight() {
 
     // locked: no keys, no radio, whatever the mode
     a.h.set_mode(Some(Mode::Open));
-    a.h.set_identity(None);
+    a.t.set_identity(None);
     a.poll(t + 3 * STEP);
     assert!(!a.radio.is_on());
 }
