@@ -248,6 +248,13 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
 .ent.fresh{animation:feed .35s ease-out}
 @keyframes feed{from{transform:translateY(8px);opacity:0}to{transform:none;opacity:1}}
 
+/* an empty sheet: one typed line at its foot, where the next message would land, typed in the column messages
+   are typed in, with the drum's index mark under it pointing down at the Test the machine stamp
+   (setEmptyMark puts it over the stamp's middle) */
+.emptyline{position:absolute;left:112px;right:22px;bottom:12px;margin:0;padding-bottom:13px;text-wrap:balance;
+  font-family:var(--type);font-size:14.5px;line-height:1.38;color:#2a2620;text-shadow:0 0 .7px rgba(42,38,32,.6);pointer-events:none}
+.emptyline[hidden]{display:none}
+.emptyline::after{content:"";position:absolute;bottom:0;right:var(--mark-r,40px);width:0;height:0;border-left:4.5px solid transparent;border-right:4.5px solid transparent;border-top:7px solid var(--green-ink)}
 /* the "new below" index tab on the sheet's edge */
 .newtab{all:unset;position:absolute;right:26px;bottom:-15px;z-index:3;cursor:pointer;font-family:var(--type);font-size:12.5px;color:#1c1a16;background:var(--tape);padding:5px 12px 5px 10px;
   box-shadow:0 2px 4px rgba(0,0,0,.35),0 0 0 .5px rgba(120,100,60,.25);transform:rotate(-1deg);transition:transform .15s,opacity .2s;display:flex;align-items:center;gap:7px}
@@ -470,6 +477,9 @@ body:has(.lamp:not([hidden])){perspective:none}
 
 @media (max-width:1239px){
   .deck{grid-template-columns:minmax(0,1fr) 384px;grid-template-areas:"sheet panel" "sheet menu"}
+  /* cut to end inside the first screen (fitSheet); unseen until it is, so nothing in it moves once it shows */
+  .sheet{align-self:start;height:var(--sheet-h,auto)}
+  .sheet:not(.fitted){visibility:hidden}
   .menu{min-height:540px}
   .bank{--dr:clamp(66px,(100vw - 160px) / 12 - 8px,112px)}
 }
@@ -530,6 +540,7 @@ body:has(.lamp:not([hidden])){perspective:none}
       <div class="logwrap">
         <div class="log" id="log" tabindex="0" role="log" aria-label="Messages, oldest first">
         </div>
+        <p class="emptyline" id="emptyline" hidden>On your own? Press Test the machine to hear it work.</p>
         <button class="newtab" id="newtab" hidden><svg width="9" height="10" viewBox="0 0 9 10" aria-hidden="true"><path d="M4.5 1v7M1.2 5l3.3 3.3L7.8 5" fill="none" stroke="#1c1a16" stroke-width="1.3"/></svg>new below</button>
       </div>
       <form class="compose" id="compose" autocomplete="off">
@@ -602,6 +613,15 @@ body:has(.lamp:not([hidden])){perspective:none}
 <script type="module">
 import { bridge, buildPlate } from './bridge.js';
 import { front } from './edition.js';
+/* ---------- the sheet's foot in the first screen ----------
+   Below 1240px the deck runs taller than the window (the bank, then the panel and the menu beside the sheet), so the
+   sheet is cut to end inside the first screen: its foot, with Test the machine, is in view without scrolling, and the
+   log scrolls within it as it does on a wide window. Never shorter than 340px. */
+const NARROW=matchMedia('(max-width:1239px)');
+function fitSheet(){const sh=document.querySelector('.sheet');
+  if(!NARROW.matches){sh.style.removeProperty('--sheet-h');return}
+  const top=sh.getBoundingClientRect().top+scrollY;sh.style.setProperty('--sheet-h',Math.max(340,Math.floor(innerHeight-top-14))+'px');sh.classList.add('fitted')}
+fitSheet();addEventListener('resize',fitSheet);
 /* ---------- passphrase and contact ----------
    contacts() refuses until the store is open, saying whether one exists yet; then the
    page asks for the passphrase (the first time, chooses one) and asks again. */
@@ -655,11 +675,10 @@ function askPassphrase(first){return new Promise(done=>{
     clear();working(true);
     try{await bridge.unlock(pass.value,first?who.value.trim():undefined);f.remove();done()}
     catch(why){working(false);refuse(pass,sentence(why))}})})}
-// the registration card was filled in on this page: the machine is new
-let FIRST_RUN=false;
+// the store opened: asking for the passphrase (or a new one, with your name) until it does
 async function openContacts(){
   for(;;){
-    try{return await bridge.contacts()}catch(why){if(why!=='locked'&&why!=='no store yet')throw why;await askPassphrase(why==='no store yet');if(why==='no store yet')FIRST_RUN=true}}}
+    try{return await bridge.contacts()}catch(why){if(why!=='locked'&&why!=='no store yet')throw why;await askPassphrase(why==='no store yet')}}}
 // the reply line writes to the sheet's contact, or (the toggle thrown down) a public notice
 let PUBLIC=false;
 function replyLabels(){const r=document.getElementById('reply');
@@ -1503,8 +1522,19 @@ const testBtn=document.getElementById('testbtn'),testLightBtn=document.getElemen
 let Test=null;
 // the band sound is really on, as channels() says, for what to try when nothing was heard
 let soundBand=null;
-// the first run's line on the sheet, until a test has run
-let firstRunLine=null;
+// While the sheet has nothing on it, test or message, one typed line at its foot says how to try the machine alone,
+// with the index mark under it pointing down at the stamp. It goes the moment anything lands, and comes back if the
+// sheet is emptied (an arrival found to be for someone else is taken off it).
+const emptyLine=document.getElementById('emptyline');
+function setEmptyMark(){if(emptyLine.hidden)return;const w=emptyLine.parentElement.getBoundingClientRect(),b=testBtn.getBoundingClientRect();
+  // the mark stands over the stamp: down the gap between the reply line and its keys when that gap is over the stamp,
+  // so it points past them at the stamp alone, else over the stamp's middle
+  const line=document.querySelector('.compose .line').getBoundingClientRect(),key=document.querySelector('.compose .keys .key').getBoundingClientRect();
+  const gap=(line.right+key.left)/2,level=key.top<line.bottom&&key.bottom>line.top&&key.left>line.right;
+  const x=level&&gap>b.left+14&&gap<b.right-14?gap:b.left+b.width/2;
+  emptyLine.style.setProperty('--mark-r',Math.round(w.right-22-x-4.5)+'px')}
+function showEmptyLine(){const empty=!log.querySelector('.ent');if(emptyLine.hidden!==empty)return;emptyLine.hidden=!empty;setEmptyMark()}
+function watchEmptySheet(){new MutationObserver(showEmptyLine).observe(log,{childList:true});addEventListener('resize',setEmptyMark);showEmptyLine()}
 function testSays(text){testNote.textContent=text||''}
 // one stamp while a test runs, saying it stops it; both at rest
 function testStamps(){const on=Test&&Test.channel;testBtn.hidden=on==='light';testLightBtn.hidden=on==='sound';
@@ -1558,7 +1588,6 @@ function testFailed(t,light){switch(t.state){
   default:return light?'Not read. Hold a mirror square in front of the screen and test again.'
     :(t.band||soundBand)==='audible'?'Not heard. Raise the volume and test again.':'Not heard. Raise the volume, or set Band to Audible in Settings, and test again.'}}
 function testEnded(t){const T=Test;Test=null;testStamps();
-  if(firstRunLine){const f=firstRunLine;firstRunLine=null;grow(()=>f.remove())}
   if(!T||!T.ent)return;const ent=T.ent,what=ent.querySelector('.what'),st=what.querySelector('.state'),light=T.channel==='light';
   ent.querySelectorAll('.cur').forEach(c=>c.remove());st.classList.remove('live');
   if(t.state==='heard'){
@@ -1636,9 +1665,9 @@ for(const b of await bridge.broadcasts().catch(()=>[]))drawNotice(b);
 bridge.start();
 // a page opened (or reloaded) after the channel last changed still learns its state
 bridge.channels().then(list=>{list.forEach(onChannel);showRate(list)});
-booting=false;tick();setInterval(tick,20000);
-// a new machine: its empty sheet has one typed line, to try it alone first, until a test has run
-if(FIRST_RUN){const ent=entry(bridge.now(),'first run');ent.classList.add('firstrun');ent.querySelector('.what').appendChild(el('div','typed','On your own? Press Test the machine to hear it work.'));grow(()=>put(ent));firstRunLine=ent}
+booting=false;tick();setInterval(tick,20000);fitSheet();
+// an empty sheet has one typed line, to try the machine alone first, until anything lands on it
+watchEmptySheet();
 syncMirror();
 requestAnimationFrame(()=>toBottom(false));
 

@@ -102,6 +102,8 @@ Someone in range can still link some things. Every Bombechat Mac advertises the 
 
 The window is a Bombe and its paperwork. Three rows of drums show what the sender wrote, what the microphone caught, and the key you share. When a frame lands, the drums turn to it and the top row settles on the words. The drums are real 3D objects, built in three.js from the same enamel, brass and bakelite as the rest of the machine, and they make a ratchet click for every letter that passes the index and a clunk when they settle. That sound is synthesised in the browser and filtered hard above 7 kHz, so it never leaks into the band Bombechat listens on, and it goes quiet while a message is arriving.
 
+To see the drums work before you've paired with anyone, press Test the machine, the stamp at the bottom right of the message sheet: the machine plays a short message to itself and spells it out as the microphone hears it back.
+
 <img src="docs/media/notice.png" alt="The message sheet with the Public switch thrown and a notice typed in, signed with this machine's key" />
 
 Flip the switch beside the reply line from Reply to Public and the same line writes a public notice instead: unencrypted, signed with your key, readable by anyone in range. It's meant for things like *Water at the church on Fifth until dusk*.

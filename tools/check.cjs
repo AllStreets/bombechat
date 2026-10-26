@@ -13,6 +13,7 @@
 //   unlock-<w>-<state>.png  2x crops of the passphrase form on the app path at 1024, 1440 and 1728
 //   broadcast-<path>-<w>-<state>.png  2x crops of the message sheet writing a public notice
 //                         (idle, composing, sent; refused at 1440), browser and app path
+//   empty-<w>.png         2x crops of the empty sheet saying how to test the machine (app path)
 //   selftest-<path>-<w>-<state>.png  2x crops of the sheet testing the machine (rest, refused, waiting,
 //                         heard, stopped; not heard at 1440), browser and app path, and its stamps beside
 //                         the key check card's (selftest-<path>-<w>-stamps-foot.png, -stamps-card.png);
@@ -30,7 +31,8 @@
 // not cut as Pair by sound's are, refused at Off and Listen in sentence case with nothing asked of the machine, the
 // run waiting for quiet, the drums not spelling it, its entry not under the margin note self-test with what came
 // back, the rate and band and the stamp, anything of it in the outbox, Escape not stopping it, a test nobody hears
-// not saying what to try, Test by light not on the lamp for a mirror, the first run's typed line missing), when writing a public notice doesn't work in the browser or on the app
+// not saying what to try, Test by light not on the lamp for a mirror, an empty sheet's typed line missing or not
+// pointing at the stamp, or Test the machine outside the first screen at any window size, empty or full), when writing a public notice doesn't work in the browser or on the app
 // path (the Reply/Public toggle, the line saying who can read it and the key that signs it,
 // empty, too long and Sound at Listen refused in sentence case with nothing sent, a sent
 // notice on the sheet as a signed public entry with its outbox status, the toggle springing
@@ -1068,13 +1070,14 @@ function measureText() {
     // mirror. Every wait is for a state on the page, never a time.
     report.selfTest = {};
     const TESTED = 'The machine hears itself.';
+    const EMPTY_LINE = 'On your own? Press Test the machine to hear it work.';
     const testView = () => { const ents = [...document.querySelectorAll('#log .ent.selftest')], e = ents[ents.length - 1], q = s => e && e.querySelector(s);
       return { entries: ents.length, how: q('.when span') ? q('.when span').textContent : '', typed: !!q('.typed'), mine: !!e && e.classList.contains('mine'),
         tape: e ? [...e.querySelectorAll('.strip')].map(s => s.textContent).join(' ') : '', state: q('.state') ? q('.state').textContent : '', failed: !!e && e.classList.contains('failed'),
         stamp: q('.stamp') ? q('.stamp').textContent : '', note: document.getElementById('testnote').textContent,
         fields: [...document.querySelectorAll('.sh-foot .fld')].map(f => getComputedStyle(f).visibility),
         button: document.getElementById('testbtn').textContent, lightHidden: document.getElementById('testlight').hidden,
-        firstRun: [...document.querySelectorAll('#log .ent.firstrun')].map(f => ({ how: f.querySelector('.when span').textContent, typed: (f.querySelector('.typed') || {}).textContent })),
+        emptyLine: (l => l.hidden ? null : l.textContent)(document.getElementById('emptyline')),
         calls: window.__TAURI__ ? __calls.filter(c => /self_test/.test(c[0])).map(c => c[0] + (c[1] ? ':' + c[1].channel : '')) : null,
         sent: window.__TAURI__ ? __calls.filter(c => c[0] === 'send' || c[0] === 'broadcast').length : 0,
         slips: [...document.querySelectorAll('#outbox .slip:not(.empty)')].map(s => s.textContent),
@@ -1110,15 +1113,47 @@ function measureText() {
     // the log's height with the stamps in place, against the same sheet without them: they must take none of it
     const logWithout = tp => tp.evaluate(() => { const r = document.querySelector('.teststamps'), n = document.getElementById('testnote'), h0 = document.getElementById('log').clientHeight;
       r.style.display = 'none'; n.style.display = 'none'; const h1 = document.getElementById('log').clientHeight; r.style.display = ''; n.style.display = ''; return { with: h0, without: h1 }; });
+    // the stamp is found from the first moment: at every window size, with the sheet empty (the app, first run) and full
+    // (the simulator's conversation), Test the machine is inside the first screen with nothing scrolled; on the empty
+    // sheet one typed line says to press it, in the sheet's own face and ink, with the index mark under it standing over
+    // the stamp and pointing down at it
+    report.emptySheet = {};
+    for (const [w, h] of VIEWPORTS) for (const where of ['app', 'browser']) {
+      const tag = `stamp in view ${where} ${w}x${h}`;
+      const tp = await testPage(where, w, h, { query: '' });
+      const v = await tp.evaluate(() => {
+        const b = document.getElementById('testbtn').getBoundingClientRect(), l = document.getElementById('emptyline'), log = document.getElementById('log');
+        const r = { stamp: [b.left, b.top, b.right, b.bottom].map(Math.round), view: [innerWidth, innerHeight], scrolled: scrollY, entries: log.querySelectorAll('.ent').length, line: l.hidden ? null : l.textContent };
+        if (!l.hidden) {
+          const lr = l.getBoundingClientRect(), m = getComputedStyle(l, '::after'), c = getComputedStyle(l), first = log.getBoundingClientRect();
+          const markX = lr.right - parseFloat(m.right) - parseFloat(m.borderLeftWidth);
+          r.mark = { x: Math.round(markX), bottom: Math.round(lr.bottom), down: parseFloat(m.borderTopWidth) > 0 && parseFloat(m.borderBottomWidth) === 0, ink: m.borderTopColor };
+          r.face = c.fontFamily.split(',')[0] + ' ' + c.fontSize + ' ' + c.color;
+          r.inLog = lr.top >= first.top && lr.bottom <= first.bottom && lr.left >= first.left + 100;
+        }
+        return r;
+      });
+      const [x0, y0, x1, y1] = v.stamp;
+      if (v.scrolled || x0 < 0 || y0 < 0 || x1 > v.view[0] || y1 > v.view[1]) problems.push(`${tag}: Test the machine is not in the first screen: ${JSON.stringify(v)}`);
+      if (where === 'app') {
+        const typed = await tp.evaluate(() => { const t = document.createElement('div'); t.className = 'typed'; document.body.append(t); const c = getComputedStyle(t), f = c.fontFamily.split(',')[0] + ' ' + c.fontSize + ' ' + c.color; t.remove(); return f; });
+        const ink = await tp.evaluate(() => getComputedStyle(document.querySelector('.sh-head')).color);
+        if (v.entries || v.line !== EMPTY_LINE) problems.push(`${tag}: the empty sheet does not say how to test the machine: ${JSON.stringify(v)}`);
+        else if (v.face !== typed || !v.inLog || !v.mark.down || v.mark.ink !== ink || v.mark.x < x0 + 8 || v.mark.x > x1 - 8 || v.mark.bottom > y0) problems.push(`${tag}: the empty sheet's line is not typed as the sheet is with its mark over the stamp: ${JSON.stringify(v)} (typed ${typed}, ink ${ink})`);
+        if (w === 1440 || w === 1024 || w === 1728) await tp.locator('.sheet').screenshot({ path: path.join(out, `empty-${w}.png`) });
+      } else if (!v.entries || v.line !== null) problems.push(`${tag}: a sheet with messages on it still says how to test the machine: ${JSON.stringify(v)}`);
+      report.emptySheet[tag] = { stamp: v.stamp, line: !!v.line, mark: v.mark && v.mark.x };
+      await tp.close();
+    }
     for (const where of ['browser', 'app']) for (const [w, h] of [[1024, 768], [1440, 900], [1728, 1117]]) {
       const tag = `self-test ${where} ${w}`;
       const tp = await testPage(where, w, h);
       const shot = st => tp.locator('.sheet').screenshot({ path: path.join(out, `selftest-${where}-${w}-${st}.png`) });
       const rest = await tp.evaluate(testView);
       if (rest.button !== 'Test the machine' || rest.lightHidden || rest.entries || rest.note) problems.push(`${tag}: the stamps are not at rest: ${JSON.stringify(rest)}`);
-      // the first run, and only the first run, suggests it: one line on the empty sheet, typed as the sheet is
-      const wantFirst = where === 'app' ? [{ how: 'first run', typed: 'On your own? Press Test the machine to hear it work.' }] : [];
-      if (JSON.stringify(rest.firstRun) !== JSON.stringify(wantFirst)) problems.push(`${tag}: the first run's line reads ${JSON.stringify(rest.firstRun)}`);
+      // an empty sheet (the app's, from first run) suggests it: one typed line; the simulator's sheet has its conversation
+      const wantEmpty = where === 'app' ? EMPTY_LINE : null;
+      if (rest.emptyLine !== wantEmpty) problems.push(`${tag}: the empty sheet's line reads ${JSON.stringify(rest.emptyLine)}`);
       const stamps = await tp.evaluate(cut);
       if (stamps.some(s => JSON.stringify(s) !== JSON.stringify(stamps[2]))) problems.push(`${tag}: the test stamps are not cut as Pair by sound's: ${JSON.stringify(stamps)}`);
       const placed = await tp.evaluate(() => { const s = document.querySelector('.sheet').getBoundingClientRect(), f = document.querySelector('.sh-foot').getBoundingClientRect();
@@ -1158,7 +1193,7 @@ function measureText() {
       if (!spelled || heard.tape.toLowerCase() !== TESTED.toLowerCase() || heard.failed || heard.typed || heard.mine || !/^Heard back after \d+ s: \d+\.\d bytes a second on the near silent band\.$/.test(heard.state)
         || !/^heard by this machine, \d\d\.\d\d$/.test(heard.stamp) || heard.button !== 'Test the machine' || heard.lightHidden) problems.push(`${tag}: the test did not land on the sheet as heard: ${JSON.stringify(heard)}`);
       if (heard.slips.some(s => s.includes(TESTED)) || heard.sent || (heard.calls && JSON.stringify(heard.calls) !== '["self_test:sound"]')) problems.push(`${tag}: the test went further than itself: ${JSON.stringify(heard)}`);
-      if (heard.firstRun.length) problems.push(`${tag}: the first run's line stayed after a test: ${JSON.stringify(heard.firstRun)}`);
+      if (heard.emptyLine !== null) problems.push(`${tag}: the empty sheet's line stayed after a test landed: ${JSON.stringify(heard.emptyLine)}`);
       await shot('heard');
       // Escape stops one
       await tp.click('#testbtn');
@@ -1168,7 +1203,7 @@ function measureText() {
       const stopped = await tp.evaluate(testView);
       if (stopped.failed || stopped.button !== 'Test the machine' || stopped.entries !== 2 || (stopped.calls && !stopped.calls.includes('stop_self_test'))) problems.push(`${tag}: Escape did not stop the test: ${JSON.stringify(stopped)}`);
       await shot('stopped');
-      report.selfTest[tag] = { firstRun: rest.firstRun, waiting: waiting.state, heard: heard.state, stamp: heard.stamp, stopped: stopped.state, log: room };
+      report.selfTest[tag] = { emptyLine: rest.emptyLine, waiting: waiting.state, heard: heard.state, stamp: heard.stamp, stopped: stopped.state, log: room };
       await tp.close();
       if (w !== 1440) continue;
       // nobody hears it: given up, saying what to try
