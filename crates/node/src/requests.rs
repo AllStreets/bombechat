@@ -130,6 +130,9 @@ pub(crate) struct Requests {
     stale: bool,
     /// What [`NodeEvent::Peers`] last said.
     said: Option<(Vec<ContactId>, usize)>,
+    /// The strangers' labels when it last said it: a change to who can
+    /// be asked is announced too, even with the counts unchanged.
+    said_listed: Vec<String>,
 }
 
 impl Requests {
@@ -543,8 +546,10 @@ impl Node {
         }
         let strangers = self.requests.near.iter().map(|n| n.seen).sum();
         let now = (contacts, strangers);
-        if self.requests.said.as_ref() != Some(&now) {
+        let listed = self.strangers();
+        if self.requests.said.as_ref() != Some(&now) || self.requests.said_listed != listed {
             self.requests.said = Some(now.clone());
+            self.requests.said_listed = listed;
             events.push(NodeEvent::Peers {
                 contacts_in_range: now.0,
                 strangers_in_range: now.1,
@@ -1084,6 +1089,40 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn a_change_in_who_can_be_asked_is_announced_even_with_the_same_counts() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (mut node, reach) = node(&dir, &Identity::generate());
+        let peers = |events: Vec<NodeEvent>| {
+            events
+                .into_iter()
+                .filter(|e| matches!(e, NodeEvent::Peers { .. }))
+                .count()
+        };
+        let near = |strangers: Vec<u64>| TransportEvent::Peers {
+            contacts: vec![],
+            strangers,
+            strangers_seen: 2,
+        };
+        reach.tell(near(vec![1, 2]));
+        assert_eq!(peers(node.tick(0)), 1);
+        let before = node.strangers();
+        // the same again says nothing
+        reach.tell(near(vec![1, 2]));
+        assert_eq!(peers(node.tick(10)), 0);
+        // one stranger's link closed, another's opened: the counts hold,
+        // the list does not
+        reach.tell(near(vec![2, 3]));
+        assert_eq!(peers(node.tick(20)), 1, "announced");
+        let after = node.strangers();
+        assert_eq!(after[0], before[1], "a stranger keeps its label");
+        assert!(!before.contains(&after[1]), "a new one gets a new label");
+        // one goes, with the seen count unchanged
+        reach.tell(near(vec![3]));
+        assert_eq!(peers(node.tick(30)), 1, "announced");
+        assert_eq!(node.strangers(), vec![after[1].clone()]);
     }
 
     #[test]

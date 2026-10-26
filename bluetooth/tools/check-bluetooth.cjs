@@ -23,7 +23,8 @@
 // isn't said; Send by Bluetooth isn't beside Flash and Send by sound with the line uncrowded, isn't refused under the line
 // at Off, when the contact is out of range or for a public notice, doesn't send and get heard in range, or doesn't wait
 // for a contact who left and go when they are back; a station's line is cut short; or, at 1280 and up, the deck or the
-// stations move when the tray fills. Every wait is on a condition in the page, and one that never comes fails.
+// stations move when the tray fills; or the strangers' list doesn't follow a change in who is in range with the counts
+// the same. Every wait is on a condition in the page, and one that never comes fails.
 const path = require('path'), fs = require('fs');
 const { chromium } = require('playwright');
 const { start } = require('./serve.cjs');
@@ -375,6 +376,11 @@ const GROUP_NOTE = 'Anyone in Bluetooth range can read this Mac\'s name. Give it
     let f = await face(p);
     if (JSON.stringify(f.strangers.map(s => s.label)) !== '["K7MX","P2QD","W9HT"]' || f.strangers.some(s => !s.ask)) fail(`ask: strangers ${JSON.stringify(f.strangers)}`);
     if (JSON.stringify(f.near) !== JSON.stringify(['01', '03'])) fail(`ask: who is in range reads ${JSON.stringify(f.near)}`);
+    // one stranger leaves and another comes, the counts the same: the list follows
+    await p.evaluate(() => window.__sim.bluetoothStrangers(['P2QD', 'R3TV'], ['W9HT'], ['P2QD']));
+    await wait(p, 'the list follows', () => !!document.querySelector('li[data-label="R3TV"]') && !document.querySelector('li[data-label="W9HT"]'));
+    await p.evaluate(() => window.__sim.bluetoothStrangers(['P2QD', 'W9HT'], ['W9HT'], ['P2QD']));
+    await wait(p, 'and back', () => !!document.querySelector('li[data-label="W9HT"]') && !document.querySelector('li[data-label="R3TV"]'));
     await p.click('li[data-label="W9HT"] .rs');
     await p.click('li[data-label="P2QD"] .rs');
     await p.focus('li[data-label="K7MX"] .rs'); await p.keyboard.press('Enter');

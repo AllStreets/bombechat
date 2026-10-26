@@ -77,7 +77,8 @@ export function simulate({ emit, settings, people, test, later, seeded, outbox }
   function near() {
     const now = { contacts: on() ? people.filter(p => inRange.has(p.id) && !away.has(p.id) && !unconfirmed.includes(p.id)).map(p => p.id) : [],
       strangers: on() ? (inesKnown() ? 0 : 1) + (at() === 2 ? extra.length : 0) : 0 };
-    const key = JSON.stringify(now);
+    // as the node does: said again when the strangers to ask change, even with the counts the same
+    const key = JSON.stringify([now, strangers()]);
     if (key !== said) { said = key; emit('peers', now); }
     return now;
   }
@@ -503,7 +504,8 @@ export function front(bridge, kit) {
     if (!atOpen()) strangers = [];
     draw();
   });
-  bridge.on('peers', p => { const more = p.strangers !== peers.strangers; peers = p; if (more) refreshStrangers(); draw(); });
+  // every peers event may bring a change in who can be asked, even with the counts the same
+  bridge.on('peers', p => { peers = p; refreshStrangers(); draw(); });
   bridge.on('request', q => {
     waiting.set(q.id, { ...q, at: bridge.now() });
     kit.say(`${q.name} asks to connect.`, `${q.name} asks to connect by Bluetooth. The request is in the tray above the outbox.`);

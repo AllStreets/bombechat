@@ -456,7 +456,9 @@ pub enum NodeEvent {
     /// Who is near, when it changes: contacts with a proven connection
     /// now, and how many strangers were seen lately (an upper bound: a
     /// stranger's carrier may show them under a new random name, and
-    /// nothing links the two).
+    /// nothing links the two). Also sent when the strangers that can be
+    /// asked ([`Node::strangers`]) change, with the counts as they were:
+    /// the list is read afresh on every one.
     Peers {
         contacts_in_range: Vec<ContactId>,
         strangers_in_range: usize,

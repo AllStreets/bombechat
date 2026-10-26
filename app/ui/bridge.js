@@ -148,7 +148,8 @@
 //                                       never told, so it ends this way too) or 'accepted' with the new contact's id;
 //                                       'failed' only for a request that never reached them
 //   peers      { contacts, strangers }  who is near: contact ids in range, and how many strangers were seen lately (an
-//                                       upper bound)
+//                                       upper bound). Also sent when the strangers that can be asked change, the counts
+//                                       as they were: strangers() is read afresh on every one
 //   contactConfirmed { contact }       a contact an accept added has shown it holds this machine too
 // Ids arrive as byte arrays or hex and leave as lowercase hex. Channels arrive as "Sound" or "sound" and leave lower case.
 //
