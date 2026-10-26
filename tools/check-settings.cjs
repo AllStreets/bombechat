@@ -3,7 +3,8 @@
 //   node tools/check-settings.cjs mockups/settings.html   the frozen design reference
 // Writes checks/<folder>/settings/: overview, focused rows, mid-move frames, narrow layout, 2x details.
 // Fails on page errors, a plug that does not end in the jack its setting names, or a slow frame rate,
-// and for the app's interface on any request that leaves this machine.
+// and for the app's interface on any request that leaves this machine, on a drum connector field that is not
+// three rows of twelve signed Row 1 to Row 3 with columns 12 to 1 clear of the plates below it.
 const path = require('path'), fs = require('fs');
 const { chromium } = require('playwright');
 const ROOTDIR = path.resolve(__dirname, '..');
@@ -45,6 +46,37 @@ const url = q => 'http://127.0.0.1:4811/' + path.relative(ROOTDIR, page) + (q ? 
   }
   if (ONLY_IN_PERSON) NOTES.inperson = { note: 'always, on this build', value: 1 };
   await p.screenshot({ path: path.join(out, 'overview.png') });
+  // the back carries the front's three rows of drums: 36 connectors, Rows 1 to 3 signed on plates, columns 12 to 1
+  // from left to right (each behind its drum, so mirrored about the panel's middle), evenly spaced, and nothing of
+  // the field (a connector or a loom hanging from one) over the maker's plate or a group's plate below it
+  let field = null;
+  if (APP) {
+    field = await p.evaluate(() => ({ connectors: window.__bc.connectors(), signs: window.__bc.rowSigns(), parts: window.__bc.parts(), mid: window.__bc.at(0, 0, .05).x }));
+    const C = field.connectors, why = [];
+    if (C.length !== 36) why.push(`${C.length} connectors`);
+    if (JSON.stringify(field.signs) !== JSON.stringify(['Row 1', 'Row 2', 'Row 3'])) why.push(`row signs ${JSON.stringify(field.signs)}`);
+    for (const r of [1, 2, 3]) {
+      const row = C.filter(c => c.row === r).sort((a, b) => a.x - b.x);
+      if (row.length !== 12) { why.push(`row ${r} has ${row.length}`); continue; }
+      if (row.map(c => c.col).join() !== '12,11,10,9,8,7,6,5,4,3,2,1') why.push(`row ${r} columns run ${row.map(c => c.col).join(' ')}`);
+      if (row.some(c => c.label !== 'Row ' + r)) why.push(`row ${r} labelled ${[...new Set(row.map(c => c.label))].join(', ')}`);
+      const steps = row.slice(1).map((c, i) => c.x - row[i].x);
+      if (Math.max(...steps) - Math.min(...steps) > 2) why.push(`row ${r} unevenly spaced: ${steps.map(Math.round).join(' ')}`);
+      if (Math.abs((row[0].x + row[11].x) / 2 - field.mid) > 3) why.push(`row ${r} is not centred on the panel`);
+      // level, but for the lens: the camera stands a little right of and below the panel's middle
+      const tilt = Math.max(...row.map(c => c.y)) - Math.min(...row.map(c => c.y));
+      if (tilt > steps[0] * .08) why.push(`row ${r} is not level (${tilt.toFixed(1)} px)`);
+    }
+    const rowsY = [1, 2, 3].map(r => C.find(c => c.row === r).y);
+    if (!(rowsY[0] < rowsY[1] && rowsY[1] < rowsY[2])) why.push(`rows out of order top to bottom: ${rowsY.map(Math.round)}`);
+    const overlap = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+    const below = [field.parts.makersPlate, ...field.parts.groupPlates];
+    field.parts.connectors.forEach((c, i) => below.forEach(b => overlap(c, b) && why.push(`connector ${i} over a plate`)));
+    field.parts.looms.forEach((l, i) => below.forEach(b => overlap(l, b) && why.push(`loom ${i} hangs over a plate (to ${Math.round(l.bottom)}, the plate from ${Math.round(b.top)})`)));
+    field.parts.rowSigns.forEach((s, i) => field.parts.connectors.forEach(c => overlap(s, c) && why.push(`Row ${i + 1}'s sign touches a connector`)));
+    if (why.length) problems.push('the back\'s drum connectors: ' + [...new Set(why)].join('; '));
+    field = { signs: field.signs, rowsY: rowsY.map(Math.round), pitch: Math.round(C.filter(c => c.row === 1).sort((a, b) => a.x - b.x).slice(0, 2).reduce((a, b) => b.x - a.x)), problems: why.length };
+  }
   // frame rate over 2 s
   const fps = await p.evaluate(() => new Promise(r => { let n = 0; const t0 = performance.now(); const f = () => { n++; performance.now() - t0 < 2000 ? requestAnimationFrame(f) : r(Math.round(n / 2)) }; requestAnimationFrame(f) }));
   if (fps < 30) problems.push('frame rate ' + fps);
@@ -379,7 +411,7 @@ const url = q => 'http://127.0.0.1:4811/' + path.relative(ROOTDIR, page) + (q ? 
     await kp.context().close();
   }
   await browser.close();
-  console.log(JSON.stringify({ out, fps, results, keyboard: [before, after], atBoot, history, refused, band, lockNotice, heldPress, problems }, null, 2));
+  console.log(JSON.stringify({ out, fps, field, results, keyboard: [before, after], atBoot, history, refused, band, lockNotice, heldPress, problems }, null, 2));
   server.close();
   process.exit(problems.length ? 1 : 0);
 })();

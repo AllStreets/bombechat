@@ -287,23 +287,36 @@ async function build(){
   const lamp=new THREE.SpotLight('#ffe2b8',0,12,Math.PI/6,.85,1.4);lamp.castShadow=false;scene.add(lamp);scene.add(lamp.target);
 
   /* the back panel */
-  const PW=19.6,PH=20.2,CY=.9;// the panel runs from y -9.2 up to 11
+  // three rows of twelve drum connectors, one behind each drum of the front's bank: seen from behind, the front's
+  // drum 1 (front left) is at the right, so the columns run 12 on the left to 1 on the right. Rows are not mirrored:
+  // Row 1, the Plain row, is the top row on both sides. The pitches keep the front's proportions (at 1440 its row
+  // pitch is .98 of its column pitch), so these read as the same drums seen from behind.
+  const CROWS=3,CCOLS=12,CPX=1.4,CPY=1.38,CY0=3.42+(CROWS-1)*CPY;// Row 3 sits where the plate's gap above it has always been
+  const conX=c=>(c-(CCOLS-1)/2)*CPX,conY=r=>CY0-r*CPY;
+  const PTOP=CY0+1.9,PBOT=-9.2;
+  const PW=19.6,PH=PTOP-PBOT,CY=(PTOP+PBOT)/2;// the panel runs from y -9.2 up to its top bolt row, 1.9 above Row 1
   const panel=new THREE.Mesh(new THREE.BoxGeometry(PW,PH,.3),M.panel);panel.position.set(0,CY,-.15);panel.receiveShadow=true;scene.add(panel);
   const rimFrame=new THREE.Mesh(new THREE.BoxGeometry(PW+.5,PH+.5,.2),new THREE.MeshStandardMaterial({color:'#121311',roughness:.6,metalness:.5}));rimFrame.position.set(0,CY,-.32);scene.add(rimFrame);
-  for(let i=0;i<=12;i++){bolt(-PW/2+.35+i*(PW-.7)/12,CY+PH/2-.35);bolt(-PW/2+.35+i*(PW-.7)/12,CY-PH/2+.35)}
-  for(let i=1;i<10;i++){bolt(-PW/2+.35,CY-PH/2+.35+i*(PH-.7)/10);bolt(PW/2-.35,CY-PH/2+.35+i*(PH-.7)/10)}
+  const topBolts=[];for(let i=0;i<=12;i++){topBolts.push(bolt(-PW/2+.35+i*(PW-.7)/12,CY+PH/2-.35));bolt(-PW/2+.35+i*(PW-.7)/12,CY-PH/2+.35)}
+  // the sides' bolts about two units apart, as they always were
+  const SIDE=Math.round((PH-.7)/2);for(let i=1;i<SIDE;i++){bolt(-PW/2+.35,CY-PH/2+.35+i*(PH-.7)/SIDE);bolt(PW/2-.35,CY-PH/2+.35+i*(PH-.7)/SIDE)}
 
   /* ---------- upper field: the drum wiring, 12 by 3 big connectors ---------- */
   const conGeo=(()=>{const pts=[[0,0],[.42,0],[.42,.05],[.36,.08],[.36,.34],[.32,.38],[.3,.62],[.22,.7],[.16,.78],[.16,.95],[0,.95]].map(([r,y])=>new THREE.Vector2(r,y));const g=new THREE.LatheGeometry(pts,48);g.rotateX(Math.PI/2);return g})();
   const ringGeo=new THREE.TorusGeometry(.43,.035,12,48);
-  const bigCons=[];
-  const CROWS=5,CY0=9.1;for(let r=0;r<CROWS;r++)for(let c=0;c<12;c++){const x=-7.9+c*1.436,y=CY0-r*1.42;
+  const bigCons=[],conMeshes=[];
+  for(let r=0;r<CROWS;r++)for(let c=0;c<CCOLS;c++){const x=conX(c),y=conY(r);
     const ring=new THREE.Mesh(ringGeo,M.brassDull);ring.position.set(x,y,.03);scene.add(ring);
     const body=new THREE.Mesh(conGeo,M.bakelite);body.position.set(x,y,0);body.castShadow=true;body.receiveShadow=true;scene.add(body);
     const k=new THREE.Mesh(new THREE.CylinderGeometry(.305,.305,.1,48,1,true),new THREE.MeshStandardMaterial({color:'#2a2a28',roughness:.4,metalness:.8,bumpMap:knurl,bumpScale:2}));k.rotation.x=Math.PI/2;k.position.set(x,y,.5);scene.add(k);
-    bigCons.push(new THREE.Vector3(x,y,.95))}
-  for(let c=0;c<12;c++)engrave(String(c+1),-7.9+c*1.436,CY0+.92,.17);
-  for(let r=0;r<CROWS;r++)engrave('ROW '+(r+1),-9.1,CY0-r*1.42,.12);
+    bigCons.push(new THREE.Vector3(x,y,.95));conMeshes.push({row:r+1,col:CCOLS-c,ring,label:'Row '+(r+1)})}
+  const colNums=[...Array(CCOLS)].map((_,c)=>engrave(String(CCOLS-c),conX(c),CY0+.92,.17));
+  // each row signed on a traffolyte plate at its left, screwed on at both ends, as the front's Plain, Heard and Key are
+  const rowSigns=[...Array(CROWS)].map((_,r)=>{const text='Row '+(r+1);
+    const m=plate(text.toUpperCase(),0,conY(r),{h:.22,size:56,pad:.7});const w=m.geometry.parameters.width;
+    m.position.x=conX(0)-.6-w/2;
+    [-1,1].forEach(sx=>bolt(m.position.x+sx*(w/2-.085),conY(r),{scale:.4,z:.04}));
+    return {text,mesh:m}});
 
   /* cable builder: a hanging curve that leaves each end straight out of its socket */
   function hangPoints(a,b,{sag=.6,out=.55,bulge=.25,droop=0}={}){
@@ -313,22 +326,30 @@ async function build(){
     pts.push(B1,b.clone().add(new THREE.Vector3(0,0,out*.45)),b.clone());return pts}
   function tube(points,radius,mat,seg=120){const curve=new THREE.CatmullRomCurve3(points,false,'centripetal');const g=new THREE.TubeGeometry(curve,seg,radius,12,false);const m=new THREE.Mesh(g,mat);m.castShadow=true;m.receiveShadow=true;return m}
 
-  // decorative drum-to-drum looms: seeded so the tangle is the same every visit
+  // decorative drum-to-drum looms: seeded so the tangle is the same every visit. Each joins a connector to its
+  // neighbours, to a neighbour's in the row below, or to one two to five columns away in any row: never straight
+  // down (a cord hung plumb reads as a rod), never off the field
   let seed=1931;const rnd=()=>{seed=(seed*16807)%2147483647;return seed/2147483647};
   const decor=[];
-  const NC=CROWS*12;for(let i=0;i<NC;i++){const a=bigCons[i];const n=1+(rnd()<.55?1:0);
-    for(let k=0;k<n;k++){let j;const roll=rnd();if(roll<.45)j=i+(rnd()<.5?1:2);else if(roll<.8)j=i+12+Math.floor(rnd()*3)-1;else j=Math.floor(rnd()*NC);
-      if(j<0||j>=NC||j===i)continue;const b=bigCons[j];
+  const NC=CROWS*CCOLS,looms=[];for(let i=0;i<NC;i++){const a=bigCons[i],r=Math.floor(i/CCOLS),c=i%CCOLS;const n=1+(rnd()<.6?1:0)+(rnd()<.25?1:0);
+    for(let k=0;k<n;k++){let r2=r,c2;const roll=rnd();if(roll<.45)c2=c+(rnd()<.5?1:2);else if(roll<.8){r2=r+1;c2=c+(rnd()<.5?-1:1)}else{r2=Math.floor(rnd()*CROWS);c2=c+(2+Math.floor(rnd()*4))*(rnd()<.5?-1:1)}
+      if(c2<0||c2>=CCOLS||r2>=CROWS)continue;const j=r2*CCOLS+c2;const b=bigCons[j];
       const pts=hangPoints(a,b,{sag:.25+rnd()*.4,out:.3,bulge:.15+rnd()*.55,droop:.25});
-      const m=tube(pts,.085+rnd()*.03,cableMat(CABLE_COLORS[Math.floor(rnd()*CABLE_COLORS.length)]),90);scene.add(m);decor.push(m)}}
+      const m=tube(pts,.085+rnd()*.03,cableMat(CABLE_COLORS[Math.floor(rnd()*CABLE_COLORS.length)]),90);scene.add(m);decor.push(m);looms.push(m)}}
   // a few heavy looms that hang lower, the way the real back looked
   for(let i=0;i<14;i++){const a=bigCons[NC-12+Math.floor(rnd()*12)],b=bigCons[NC-12+Math.floor(rnd()*12)];if(a===b)continue;
-    const m=tube(hangPoints(a,b,{sag:.4+rnd()*.25,out:.35,bulge:.5+rnd()*.5,droop:.3}),.1,cableMat(CABLE_COLORS[i%CABLE_COLORS.length]),110);scene.add(m);decor.push(m)}
+    const m=tube(hangPoints(a,b,{sag:.4+rnd()*.25,out:.35,bulge:.5+rnd()*.5,droop:.3}),.1,cableMat(CABLE_COLORS[i%CABLE_COLORS.length]),110);scene.add(m);decor.push(m);looms.push(m)}
 
-  // trunks: heavy cables from the top row rising out of view, toward the rest of the machine
-  for(let c=0;c<12;c++){const a=bigCons[c];const n=c%3===1?2:1;for(let k=0;k<n;k++){const x2=a.x+(rnd()-.5)*1.4;
-    const pts=[a.clone(),a.clone().add(new THREE.Vector3(0,.1,.35)),new THREE.Vector3(a.x+(x2-a.x)*.3,a.y+.75,1.0+rnd()*.3),new THREE.Vector3(x2,a.y+1.7,.9+rnd()*.4),new THREE.Vector3(x2+(rnd()-.5)*.4,CY+PH/2+1.5,.7+rnd()*.5)];
-    const m=tube(pts,.1+rnd()*.03,cableMat(CABLE_COLORS[(c*5+k)%CABLE_COLORS.length]),80);scene.add(m);decor.push(m)}}
+  // trunks: heavy cables from the top row to the rest of the machine. Each leaves its connector, rises through the gap
+  // between two column numbers, then goes over the panel's top edge between two of its bolts and down behind it
+  const boltXs=topBolts.map(b=>b.position.x);
+  for(let g=0;g<CCOLS-1;g++){const gx=conX(g)+CPX/2;if(Math.min(...boltXs.map(x=>Math.abs(x-gx)))<.3)continue;
+    const mids=boltXs.slice(1).map((x,i)=>(x+boltXs[i])/2),tx=mids.reduce((a,b)=>Math.abs(b-gx)<Math.abs(a-gx)?b:a);
+    const from=[g,g+1].filter(()=>rnd()<.65);if(!from.length)from.push(g+(rnd()<.5?0:1));
+    from.forEach((c,k)=>{const a=bigCons[c],side=from.length>1?(k?.09:-.09):0,x=gx+side*.6,xt=tx+side,z=.75+rnd()*.25;
+      const pts=[a.clone(),a.clone().add(new THREE.Vector3(0,.1,.3)),new THREE.Vector3(a.x*.35+x*.65,a.y+.6,z),new THREE.Vector3((x+xt)/2,CY0+1.2,z*.9),
+        new THREE.Vector3(xt,PTOP+.05,.45),new THREE.Vector3(xt,PTOP+.4,0),new THREE.Vector3(xt,PTOP+.32,-.6),new THREE.Vector3(xt,PTOP-.3,-1)];
+      const m=tube(pts,.1+rnd()*.025,cableMat(CABLE_COLORS[(c*5+k)%CABLE_COLORS.length]),110);scene.add(m);decor.push(m)})}
 
   // the cable trough along the bottom: an open steel channel with a bundle running sideways through it
   {const TY=-8.05;const chMat=new THREE.MeshStandardMaterial({color:'#2b2c29',roughness:.42,metalness:.85,bumpMap:wrinkle,bumpScale:.25});
@@ -340,7 +361,7 @@ async function build(){
      const m=tube(pts,.085+rnd()*.025,cableMat(CABLE_COLORS[(i*3+1)%CABLE_COLORS.length]),160);scene.add(m);decor.push(m)}
    for(let i=0;i<7;i++){const strap=new THREE.Mesh(new THREE.BoxGeometry(.09,1.02,.06),M.brassDull);strap.position.set(-8+i*2.67,TY,.66);strap.castShadow=true;scene.add(strap)}}
 
-  K.makersPlate(-.35,1.45);
+  const makers=K.makersPlate(-.35,1.45);
 
   /* ---------- lower field: one plug per setting ---------- */
   const jackGeo=new THREE.TorusGeometry(.105,.03,12,32);const nutGeo=new THREE.CylinderGeometry(.15,.15,.04,6);nutGeo.rotateX(Math.PI/2);
@@ -367,13 +388,13 @@ async function build(){
     const t=new THREE.CanvasTexture(c);t.colorSpace=THREE.SRGBColorSpace;t.anisotropy=8;
     const m=new THREE.Mesh(new THREE.PlaneGeometry(w,TAPE_H),new THREE.MeshStandardMaterial({map:t,transparent:true,roughness:.92,metalness:0,alphaTest:.5}));
     m.position.set(x,y,.105);m.rotation.z=(r()-.5)*.03;m.castShadow=true;m.receiveShadow=true;m.userData={id};scene.add(m);tapes.push(m);return m}
-  const tapes=[];
+  const tapes=[],groupPlates=[];
   const LAYOUT={left:{x:-8.9,groups:['Sound','Light','Bluetooth','Machine']},right:{x:.55,groups:['Passing on','Quiet sending','Privacy']}};
   const ROWH=.74,TOP=.75;
   const plugs={};const jackMeshes=[];
   const valueWidth=t=>{const m=engrave(t,0,0,.1);m.geometry.computeBoundingBox();const b=m.geometry.boundingBox;scene.remove(m);m.geometry.dispose();m.material.map.dispose();m.material.dispose();return b.max.x-b.min.x};
       for(const side of Object.values(LAYOUT)){let y=TOP;
-    for(const g of side.groups){plate(g.toUpperCase(),side.x,y,{h:.24,red:!fitted(g),align:'left'});y-=.42;
+    for(const g of side.groups){const gp=plate(g.toUpperCase(),side.x,y,{h:.24,red:!fitted(g),align:'left'});groupPlates.push(gp);y-=.42;
       if(!fitted(g)){const cov=new THREE.Mesh(new THREE.BoxGeometry(5.6,.9,.05),new THREE.MeshStandardMaterial({color:'#262724',roughness:.45,metalness:.6,bumpMap:wrinkle,bumpScale:.4}));cov.position.set(side.x+2.8,y-.3,.025);cov.castShadow=true;cov.receiveShadow=true;scene.add(cov);
         [[-2.65,.33],[2.65,.33],[-2.65,-.33],[2.65,-.33]].forEach(([dx,dy])=>bolt(side.x+2.8+dx,y-.3+dy));const e=engrave('NOT FITTED TO THIS BUILD',side.x+2.8,y-.3,.15,'#6f6a5e');e.position.z=.055;y-=1.12;continue}
       for(const s of SETTINGS.filter(q=>q.g===g)){
@@ -505,7 +526,17 @@ async function build(){
   const rowBand=id=>{const P=plugs[id],a=toPx(new THREE.Vector3(P.jacks[0].x,P.jacks[0].y+.135,.05)),b=toPx(new THREE.Vector3(P.jacks[0].x,P.jacks[0].y-.135,.05));const r=renderer.domElement.getBoundingClientRect();return {top:r.top+a.y,bottom:r.top+b.y}};
   // for the README's clip: where a point of the panel lands on the screen, and where a row's parts are on the panel
   const at=(x,y,z)=>toScreen(new THREE.Vector3(x,y,z)),row=id=>{const P=plugs[id];return {name:P.nameX,y:P.src.y,jacks:P.jacks.map(j=>j.x)}};
-  return {focus,move,seat,plugs,camera,screen,at,row,rowBand,get ready(){return frames>2},endOf:id=>{const P=plugs[id];return {x:P.end.x,jack:P.jacks.findIndex(j=>Math.abs(j.x-P.end.x)<1e-3&&Math.abs(j.y-P.end.y)<1e-3),lift:P.lift,parked:!!P.park&&P.end.distanceTo(P.park)<1e-3,dim:P.dim}}};
+  // for checks: where the back's parts land on the screen, as boxes in page pixels
+  const box3=new THREE.Box3();
+  function screenBox(o){box3.setFromObject(o);const r=renderer.domElement.getBoundingClientRect();let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;
+    for(let i=0;i<8;i++){const v=new THREE.Vector3(i&1?box3.max.x:box3.min.x,i&2?box3.max.y:box3.min.y,i&4?box3.max.z:box3.min.z).project(camera);
+      const x=r.left+(v.x*.5+.5)*r.width,y=r.top+(-v.y*.5+.5)*r.height;x0=Math.min(x0,x);y0=Math.min(y0,y);x1=Math.max(x1,x);y1=Math.max(y1,y)}
+    return {left:x0,top:y0,right:x1,bottom:y1}}
+  const connectors=()=>conMeshes.map(m=>{const b=screenBox(m.ring);return {row:m.row,col:m.col,x:(b.left+b.right)/2,y:(b.top+b.bottom)/2,label:m.label}});
+  const parts=()=>({view:(r=>({left:r.left,top:r.top,right:r.right,bottom:r.bottom}))(renderer.domElement.getBoundingClientRect()),
+    topBolts:topBolts.map(screenBox),colNums:colNums.map(screenBox),rowSigns:rowSigns.map(s=>screenBox(s.mesh)),connectors:conMeshes.map(m=>screenBox(m.ring)),
+    looms:looms.map(screenBox),makersPlate:screenBox(makers),groupPlates:groupPlates.map(screenBox)});
+  return {focus,move,seat,plugs,camera,screen,at,row,rowBand,connectors,rowSigns:()=>rowSigns.map(s=>s.text),parts,get ready(){return frames>2},endOf:id=>{const P=plugs[id];return {x:P.end.x,jack:P.jacks.findIndex(j=>Math.abs(j.x-P.end.x)<1e-3&&Math.abs(j.y-P.end.y)<1e-3),lift:P.lift,parked:!!P.park&&P.end.distanceTo(P.park)<1e-3,dim:P.dim}}};
 }
 
 /* arriving from the front: finish the turn the front started */
@@ -515,7 +546,7 @@ try{if(sessionStorage.getItem('bombechat-turn')==='front-to-back'&&!REDUCED){ses
 // back here by history (bfcache): the settings may have moved on the front, so read them again from the machine
 // and show them, sending nothing
 addEventListener('pageshow',e=>{if(!e.persisted)return;bridge.settings().then(kept=>{for(const id of takeKept(kept)){syncRow(id);machine&&machine.seat(id,byId[id].v)}},()=>{})});
-window.__bc={screen:id=>machine.screen(id),rowBand:id=>machine.rowBand(id),tag:()=>{const r=document.getElementById('tag').getBoundingClientRect();return {top:r.top,bottom:r.bottom,on:document.getElementById('tag').classList.contains('on')}},focused:()=>focusId,get:id=>byId[id].v,held:()=>Object.fromEntries(SETTINGS.filter(s=>s.held).map(s=>[s.id,{note:s.held,parked:!!s.parked}])),set:(id,i)=>setValue(id,i,'test'),focus:id=>focusSetting(id,'pin'),at:(x,y,z)=>machine.at(x,y,z),row:id=>machine.row(id),end:id=>machine&&machine.endOf(id),settings:SETTINGS.map(s=>s.id)};
+window.__bc={screen:id=>machine.screen(id),rowBand:id=>machine.rowBand(id),tag:()=>{const r=document.getElementById('tag').getBoundingClientRect();return {top:r.top,bottom:r.bottom,on:document.getElementById('tag').classList.contains('on')}},focused:()=>focusId,get:id=>byId[id].v,held:()=>Object.fromEntries(SETTINGS.filter(s=>s.held).map(s=>[s.id,{note:s.held,parked:!!s.parked}])),set:(id,i)=>setValue(id,i,'test'),focus:id=>focusSetting(id,'pin'),at:(x,y,z)=>machine.at(x,y,z),row:id=>machine.row(id),connectors:()=>machine.connectors(),rowSigns:()=>machine.rowSigns(),parts:()=>machine.parts(),end:id=>machine&&machine.endOf(id),settings:SETTINGS.map(s=>s.id)};
 if(Q.has('focus'))focusSetting(Q.get('focus'),'pin');
 document.getElementById('back').addEventListener('click',e=>{if(REDUCED)return;e.preventDefault();const href=e.currentTarget.href;try{sessionStorage.setItem('bombechat-turn','back-to-front')}catch(_){}document.body.animate([{transform:'perspective(1600px) rotateY(0deg)',opacity:1},{transform:'perspective(1600px) rotateY(-80deg)',opacity:0}],{duration:420,easing:'cubic-bezier(.5,0,.75,0)'}).onfinish=()=>location.href=href});
 </script>
