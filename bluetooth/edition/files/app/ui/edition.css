@@ -33,7 +33,13 @@
 .col.tray{display:flex;flex-direction:column;gap:8px;min-width:0}
 .intray{display:flex;flex-direction:column;gap:8px;min-width:0}
 .intray:empty{display:none}
-.col.tray:has(.intray:not(:empty)) .outbox:has(>.slip.empty:only-child){display:none}
+.row2:has(.intray:not(:empty)) .outbox:has(>.slip.empty:only-child){display:none}
+/* the narrow layout: the request heads the tray's column, the room meter beside both */
+.panel .row2{grid-template-areas:"vu req" "vu tray"}
+.row2>.vu{grid-area:vu}
+.row2>#intray{grid-area:req}
+.row2>.col.tray{grid-area:tray}
+.row2>#intray:not(:empty){margin-bottom:8px}
 /* where the panel stands beside the sheet and the card, the tray has the room between the switches and the stations
    and no more: it scrolls inside, fading at its foot as the sheet's log fades at its head, and nothing moves */
 @media (min-width:1240px){
@@ -42,7 +48,18 @@
   .row2>.vu{align-self:start}
   .row2>.col.tray{contain:size;overflow-y:auto;overscroll-behavior:contain;padding:3px 8px 10px;margin:-3px -8px -10px;
     scrollbar-width:thin;scrollbar-color:rgba(160,154,140,.45) transparent}
-  .row2>.col.tray.more{-webkit-mask-image:linear-gradient(#000 calc(100% - 22px),transparent);mask-image:linear-gradient(#000 calc(100% - 22px),transparent)}
+  .row2>.col.tray.more{-webkit-mask-image:linear-gradient(#000 calc(100% - 14px),rgba(0,0,0,.35));mask-image:linear-gradient(#000 calc(100% - 14px),rgba(0,0,0,.35))}
+  .panel .row2{position:relative;grid-template-areas:"vu tray"}
+  .row2>.col.tray{padding-top:calc(var(--req,0px) + 3px)}
+  /* a request lies across the whole row, over the room meter, the stamps at its right */
+  .row2>#intray{position:absolute;left:0;right:0;top:0;z-index:3;margin:0!important}
+  .row2>#intray .slip.ask{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:14px;align-items:start}
+  .row2>#intray .slip.ask>*{grid-column:1}
+  .row2>#intray .slip.ask .stamps{grid-column:2;grid-row:1/3;margin:2px 0 0;align-self:start}
+  .row2>#intray .slip.ask .rule,.row2>#intray .slip.ask .why{grid-column:1/-1}
+  .row2>#intray .who .asks{display:inline;margin-left:.45em}
+  /* Accept and Decline both: they take their own row, so the name and "asks to connect" keep one line */
+  .row2>#intray .slip.ask:not(.held) .stamps{grid-column:1/-1;grid-row:auto;margin-top:7px}
 }
 .intray .slip{position:relative;padding:8px 10px 9px}
 .intray .slip.empty{padding:7px 10px;font-size:12.5px}
@@ -57,9 +74,7 @@
 .intray .rule:empty,.intray .why:empty{display:none}
 .intray .why{font-size:12.5px;line-height:1.35;color:#7a3a30;margin-top:5px}
 /* the stamps, pressed on the slip as on the card: the same rubber, ink and tilt */
-/* held by the key check, Decline sits up beside their name, so it is never under the tray's fold */
-.intray .slip.ask.held .stamps{position:absolute;top:7px;right:10px;margin:0}
-.intray .slip.ask.held .who{padding-right:96px}
+
 .intray .stamps{display:flex;justify-content:flex-end;align-items:flex-end;gap:12px;margin-top:9px}
 .intray .rs{box-sizing:border-box;min-height:28px;font-size:14px}
 .intray .rs.ask{font-size:13.5px;padding:3px 8px 2px;min-height:26px;--tilt:-1.6deg}

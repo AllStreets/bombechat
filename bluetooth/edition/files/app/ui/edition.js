@@ -222,6 +222,7 @@ export function front(bridge, kit) {
     waiting: () => `waiting for ${contact().short} in Bluetooth range`, slip: () => `sends when ${contact().short} is in Bluetooth range` });
   function drawKey() {
     const ok = !sendRefusal(false);
+    key.setAttribute('aria-disabled', String(!!sendRefusal(kit.isPublic())));
     key.querySelector('.jewel').classList.toggle('off', !ok);
     key.title = ok ? `Sends the message to ${contact().short}, in Bluetooth range now.` : sentence(sendRefusal(false));
   }
@@ -241,10 +242,13 @@ export function front(bridge, kit) {
   const fade = () => right.classList.toggle('more', right.scrollHeight - right.scrollTop - right.clientHeight > 2);
   right.addEventListener('scroll', fade);
   new ResizeObserver(fade).observe(right);
+  // the request is the row's own child: beside the sheet and the card, it lies across the whole row, over the room
+  // meter, so the key check's sentence is never under the tray's fold; the tray starts under it
   const tray = document.createElement('div');
   tray.className = 'intray'; tray.id = 'intray';
   tray.setAttribute('role', 'region'); tray.setAttribute('aria-label', 'Requests to connect');
-  right.prepend(tray);
+  row2.insertBefore(tray, right);
+  new ResizeObserver(() => row2.style.setProperty('--req', tray.offsetHeight ? tray.offsetHeight + 8 + 'px' : '0px')).observe(tray);
   const nearTray = document.createElement('div');
   nearTray.className = 'intray'; nearTray.id = 'neartray';
   nearTray.setAttribute('role', 'region'); nearTray.setAttribute('aria-label', 'Strangers in range');
@@ -346,7 +350,7 @@ export function front(bridge, kit) {
   function strangersSlip() {
     const s = document.createElement('div');
     s.className = 'slip near'; s.setAttribute('role', 'group'); s.setAttribute('aria-label', 'Strangers in range');
-    const labels = [...new Set([...[...asked.keys()].filter(l => asked.get(l).state !== 'gone'), ...strangers])];
+    const labels = listed();
     const shown = labels.slice(0, 3);
     s.innerHTML = '<small class="hd">Strangers in range</small><ul></ul>';
     const ul = s.querySelector('ul');
@@ -374,6 +378,7 @@ export function front(bridge, kit) {
     return s;
   }
   let nearSlip = null;
+  const listed = () => [...new Set([...[...asked.keys()].filter(l => asked.get(l).state !== 'gone'), ...strangers])];
   function drawTray() {
     const active = document.activeElement, focusIn = tray.contains(active) || nearTray.contains(active);
     const focusKey = focusIn && active.closest('li[data-label]') ? active.closest('li[data-label]').dataset.label : null;
@@ -381,7 +386,8 @@ export function front(bridge, kit) {
     const reqs = [...waiting.values()];
     if (reqs.length) nodes.push(requestSlip(reqs[0]));
     if (reqs.length > 1) { const m = document.createElement('div'); m.className = 'slip empty'; m.textContent = `and ${reqs.length - 1} more asking`; nodes.push(m); }
-    nearSlip = atOpen() && (strangers.length || asked.size) ? strangersSlip() : null;
+    // only while there is someone to show: a stranger who accepted and left the list takes the slip with them
+    nearSlip = atOpen() && listed().length ? strangersSlip() : null;
     nearTray.replaceChildren(...(nearSlip ? [nearSlip] : []));
     nodes.forEach((n, i) => { if (tray.children[i] !== n) tray.insertBefore(n, tray.children[i] || null); });
     while (tray.children.length > nodes.length) tray.lastChild.remove();

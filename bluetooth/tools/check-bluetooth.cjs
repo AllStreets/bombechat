@@ -93,6 +93,16 @@ const GROUP_NOTE = 'Anyone in Bluetooth range can read this Mac\'s name. Give it
         let px = parseFloat(getComputedStyle(el).fontSize); if (el instanceof SVGElement) { const m = el.getScreenCTM(); px = parseFloat(el.getAttribute('font-size')) * Math.hypot(m.a, m.b); }
         if (px < 11.75) out.push(`${n.nodeValue.trim()} ${px.toFixed(1)}px`); } }
     return out; });
+  // the request slip shown whole: inside the row it lies on, none of its text cut, "asks to connect" on the name's line
+  // where it lies across the row; returns what is wrong, or nothing
+  const slipWhole = p => p.evaluate(() => { const s = document.querySelector('#intray .slip.ask'); if (!s) return 'no request slip';
+    const r = s.getBoundingClientRect(), row = document.querySelector('.row2').getBoundingClientRect(), wide = innerWidth >= 1240;
+    if (r.top < row.top - 4 || r.bottom > row.bottom + 4 || r.left < row.left - 4 || r.right > row.right + 4) return `the slip runs out of its row: ${JSON.stringify([r.top, r.bottom, row.top, row.bottom])}`;
+    const cut = [...s.querySelectorAll('.who, small, .rule, .why, .rs')].filter(e => e.offsetParent && e.scrollWidth > e.clientWidth + 1).map(e => e.textContent);
+    if (cut.length) return `text cut on the slip: ${JSON.stringify(cut)}`;
+    const name = s.querySelector('.askname').getBoundingClientRect(), asks = s.querySelector('.asks').getBoundingClientRect();
+    if (wide && (asks.height > 24 || Math.abs(asks.top - name.top) > 6)) return `"asks to connect" is not on the name's line: ${JSON.stringify([asks.height, asks.top, name.top])}`;
+    return ''; });
   const setting = (p, id, v) => p.evaluate(([id, v]) => window.__bt.setSetting(id, v), [id, v]);
   // waits on a condition in the page; one that never comes is a failure, named
   const wait = (p, what, f, arg) => p.waitForFunction(f, arg, { timeout: 15000 }).then(() => true, () => { fail(`${what}: never came`); return false; });
@@ -201,20 +211,24 @@ const GROUP_NOTE = 'Anyone in Bluetooth range can read this Mac\'s name. Give it
     if (!keyFit.inside || !keyFit.apart || keyFit.line < 300) fail(`send: the keys crowd the sheet: ${JSON.stringify(keyFit)}`);
     const sends = () => p.evaluate(() => window.__seen.filter(e => e[0] === 'outbox').length);
     const note = () => p.evaluate(() => ({ note: document.getElementById('pubnote').textContent, refused: document.getElementById('pubnote').classList.contains('refused'), kept: document.getElementById('reply').value }));
+    const disabled = () => p.evaluate(() => document.getElementById('sendbluetooth').getAttribute('aria-disabled'));
+    if (await disabled() !== 'true') fail('send: at Off the key is not disabled for a screen reader');
     await p.fill('#reply', 'By the radio.');
-    await p.click('#sendbluetooth');
+    await p.click('#sendbluetooth', { force: true });
     let n = await note();
     if (n.note !== 'Bluetooth is off. Turn it to Contacts or Open to send this way.' || !n.refused || n.kept !== 'By the radio.' || await sends()) fail(`send: at Off ${JSON.stringify(n)}`);
     await setting(p, 'bluetooth', 1);
     await wait(p, 'Contacts', () => document.querySelector('.mod.bt').dataset.bluetooth === 'contacts only');
     await p.evaluate(() => window.__sim.bluetoothAway(1));
     await wait(p, 'Marisol away', () => !document.querySelector('#sendbluetooth .jewel:not(.off)'));
-    await p.click('#sendbluetooth');
+    await p.click('#sendbluetooth', { force: true });
     n = await note();
     if (n.note !== 'Marisol is not in Bluetooth range.' || n.kept !== 'By the radio.' || await sends()) fail(`send: out of range ${JSON.stringify(n)}`);
+    if (await disabled() !== 'true') fail('send: out of range the key is not disabled');
     await p.evaluate(() => window.__sim.bluetoothBack(1));
     await wait(p, 'Marisol back', () => !!document.querySelector('#sendbluetooth .jewel:not(.off)'));
-    await p.click('#sendbluetooth');
+    if (await disabled() !== 'false') fail('send: in range the key is still disabled');
+    await p.click('#sendbluetooth', { force: true });
     await wait(p, 'heard by Bluetooth', () => { const e = [...document.querySelectorAll('#log .ent')].pop(); return e && /heard by Marisol/.test(e.textContent); });
     const sent = await p.evaluate(() => { const e = [...document.querySelectorAll('#log .ent')].pop(); return { how: e.querySelector('.when span').textContent, typed: e.querySelector('.typed').textContent }; });
     if (sent.how !== 'bluetooth' || sent.typed !== 'By the radio.') fail(`send: the sheet shows ${JSON.stringify(sent)}`);
@@ -228,7 +242,8 @@ const GROUP_NOTE = 'Anyone in Bluetooth range can read this Mac\'s name. Give it
     await wait(p, 'heard once she is back', () => { const e = [...document.querySelectorAll('#log .ent')].pop(); return e && /heard by Marisol/.test(e.textContent); });
     // a public notice doesn't go by Bluetooth
     await p.click('#mode'); await p.fill('#reply', 'Public.');
-    await p.click('#sendbluetooth');
+    if (await disabled() !== 'true') fail('send: writing a notice, the key is not disabled');
+    await p.click('#sendbluetooth', { force: true });
     n = await note();
     if (n.note !== 'A public notice goes by sound or light, not by Bluetooth.' || n.kept !== 'Public.') fail(`send: a notice ${JSON.stringify(n)}`);
     await ctx.close();
@@ -315,9 +330,8 @@ const GROUP_NOTE = 'Anyone in Bluetooth range can read this Mac\'s name. Give it
     let f = await face(p);
     if (!f.request || f.request.accept || !f.request.decline || f.request.rule !== MEET_FIRST) fail(`held: the slip shows ${JSON.stringify(f.request)}`);
     if (JSON.stringify(f.strangers) !== JSON.stringify([{ label: 'K7MX', ask: false, said: '' }]) || f.strangersRule !== 'Not asked while new contacts need a key check.') fail(`held: strangers ${JSON.stringify([f.strangers, f.strangersRule])}`);
-    // Decline is in sight in the tray, not under its fold
-    const seenDecline = await p.evaluate(() => { const d = document.querySelector('#intray .rs.no').getBoundingClientRect(), t = document.querySelector('.col.tray').getBoundingClientRect(); return d.top >= t.top && d.bottom <= t.bottom; });
-    if (!seenDecline) fail('held: Decline is under the tray\'s fold');
+    const whole = await slipWhole(p);
+    if (whole) fail(`held: ${whole}`);
     await p.press('#intray .askname', 'Enter');
     if ((await call(p, 'requests')).ok.length !== 1 || (await call(p, 'contacts')).ok.some(c => c.id === 3)) fail('held: Enter accepted');
     await setting(p, 'inperson', 0);
@@ -366,6 +380,17 @@ const GROUP_NOTE = 'Anyone in Bluetooth range can read this Mac\'s name. Give it
     f = await face(p);
     if (f.lit || f.near || f.strangers) fail(`ask: Off left ${JSON.stringify(f)}`);
     if ((await call(p, 'requests')).ok.length) fail('ask: a request still waits at Off');
+    await ctx.close();
+  }
+
+  // 7b. the simulator's own story: the one stranger in range is asked, accepts, and the strangers' slip goes with her
+  {
+    const ctx = await machine({ bluetooth: 2, inperson: 0 });
+    const p = await front(ctx, 'sole stranger');
+    await wait(p, 'K7MX offered', () => !!document.querySelector('li[data-label="K7MX"] button'));
+    await p.click('li[data-label="K7MX"] .rs');
+    await wait(p, 'said she accepted', () => document.getElementById('said').textContent === 'K7MX accepted: Ines Duarte is added.');
+    await wait(p, 'the strangers slip gone', () => !document.querySelector('#neartray .slip'));
     await ctx.close();
   }
 
@@ -418,7 +443,7 @@ const GROUP_NOTE = 'Anyone in Bluetooth range can read this Mac\'s name. Give it
       await p.click('#intray .rs.ok'); await settle(p, 'added', () => !document.querySelector('#intray .slip.ask') && !!document.querySelector('.stn small.nc')); }],
     ['asking', { bluetooth: 2, inperson: 0 }, async p => { await p.evaluate(() => window.__sim.bluetoothStrangers(['P2QD', 'W9HT'], ['W9HT'])); await settle(p, 'strangers', () => document.querySelectorAll('#neartray li').length === 3);
       await p.click('li[data-label="P2QD"] .rs'); await p.click('li[data-label="W9HT"] .rs'); await settle(p, 'answers', () => (document.querySelector('li[data-label="W9HT"] small') || {}).textContent === 'not delivered' && (document.querySelector('li[data-label="P2QD"] small') || {}).textContent === 'asked, delivered'); }],
-    ['send', { bluetooth: 1 }, async p => { await p.fill('#reply', 'By the radio.'); await p.click('#sendbluetooth'); await settle(p, 'heard', () => { const e = [...document.querySelectorAll('#log .ent')].pop(); return e && /heard by Marisol/.test(e.textContent); }); }],
+    ['send', { bluetooth: 1 }, async p => { await p.fill('#reply', 'By the radio.'); await p.click('#sendbluetooth', { force: true }); await settle(p, 'heard', () => { const e = [...document.querySelectorAll('#log .ent')].pop(); return e && /heard by Marisol/.test(e.textContent); }); }],
     ['locked', { bluetooth: 2 }, async p => { await p.evaluate(() => window.__sim.bluetoothLocked()); await settle(p, 'locked', () => !!document.querySelector('#btnote b').textContent); }],
     ['unavailable', { bluetooth: 2 }, async p => { await p.evaluate(() => window.__sim.bluetoothUnavailable('Bluetooth is off in System Settings.')); await settle(p, 'tape', () => !!document.querySelector('#btnote b').textContent); }],
     ['unavailable-long', { bluetooth: 1 }, async p => { await p.evaluate(() => window.__sim.bluetoothUnavailable('Bombechat may not use Bluetooth. Allow it in System Settings, Privacy and Security, Bluetooth.')); await settle(p, 'tape', () => !!document.querySelector('#btnote b').textContent); }],
@@ -434,6 +459,7 @@ const GROUP_NOTE = 'Anyone in Bluetooth range can read this Mac\'s name. Give it
         uncut: [...document.querySelectorAll('.row3 .stn .holder small')].filter(e => e.scrollWidth > e.clientWidth + 1 && !e.closest('.holder').title).map(e => e.textContent) }));
       if (m.over > 0) fail(`${name} ${w}: the page scrolls sideways by ${m.over}px`);
       if (m.cut.length || m.uncut.length) fail(`${name} ${w}: a station's line is cut short: ${JSON.stringify(m)}`);
+      if (name.startsWith('request')) { const whole = await slipWhole(p); if (whole) fail(`${name} ${w}: ${whole}`); }
       if (name === 'off') atOff = m;
       else if (w >= 1280 && (m.deck !== atOff.deck || m.row3 !== atOff.row3)) fail(`${name} ${w}: the deck or the stations moved: ${JSON.stringify({ off: atOff, now: m })}`);
       const small = await smallText(p);

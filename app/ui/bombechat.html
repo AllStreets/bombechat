@@ -944,6 +944,8 @@ function applyChannels(){const s=KNOBS.k1.pos,l=KNOBS.k2.pos;
   sendBtn.title=s<2?`Sound is set to ${KNOBS.k1.labels[s].toLowerCase()}. Turn it to Listen and send to play replies.`:'Plays the message through the speaker. Enter does the same.';
   flashBtn.setAttribute('aria-disabled',l<2);
   flashBtn.title=l<2?'Light is not set to Read and flash. Turn the Light switch to Read and flash to send this way.':PUBLIC?'Flashes the notice on screen, for any camera held up to it.':`Flashes the message on screen. Hold it up to ${CONTACT.short}'s camera.`;
+  // a fitted channel's key is disabled while it would refuse, as these two are
+  for(const f of FITTED.values())f.btn.setAttribute('aria-disabled',!!f.refusal(PUBLIC));
   showEyepiece();outbox.forEach(status);drawOutbox()}
 
 /* ---------- room meter and the quiet rule ---------- */
@@ -1614,6 +1616,8 @@ front(bridge,{
       stationsDrawn.forEach(f=>f(row))}
     else drawStations()},
   contact:()=>CONTACT,
+  // whether the reply line is writing a public notice
+  isPublic:()=>PUBLIC,
   // a send key for a channel this build fits, beside Flash and Send by sound
   sendKey(how,spec){const b=el('button','key pb');b.type='button';b.id='send'+how;b.innerHTML=`<span class="jewel off" aria-hidden="true"></span>${esc(spec.label)}`;
     document.querySelector('.compose .keys').appendChild(b);FITTED.set(how,{...spec,btn:b});b.addEventListener('click',()=>send(how));return b},
