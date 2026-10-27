@@ -98,11 +98,10 @@
    code flashes (the photosensitivity rule): only its finish is the escutcheons' (lit from the key light's side, a
    bevel catching the light on top and falling away below, bolted at its corners), its bezel the scene's bright brass
    and its card holder the stations' dull brass, both baked */
-.baked .app.gl .lamp{background:var(--screw-a) 7px 7px/14px no-repeat,var(--screw-b) calc(100% - 7px) 7px/14px no-repeat,var(--screw-b) 7px calc(100% - 7px)/14px no-repeat,var(--screw-a) calc(100% - 7px) calc(100% - 7px)/14px no-repeat,
+.baked .app.gl .lamp{background:var(--screw-a) 3px 3px/12px no-repeat,var(--screw-b) calc(100% - 3px) 3px/12px no-repeat,var(--screw-b) 3px calc(100% - 3px)/12px no-repeat,var(--screw-a) calc(100% - 3px) calc(100% - 3px)/12px no-repeat,
     linear-gradient(var(--la),#918d82,#8b8679);
   box-shadow:inset calc(var(--lx) * -1px) calc(var(--ly) * -1px) 0 rgba(255,255,255,.2),inset calc(var(--lx) * 1px) calc(var(--ly) * 1px) 0 rgba(0,0,0,.35),inset 0 0 0 1px rgba(0,0,0,.45),
     0 0 0 .5px rgba(0,0,0,.7),calc(var(--lx) * -2px) calc(var(--ly) * -2px) 3px rgba(0,0,0,.5),calc(var(--lx) * -8px) calc(var(--ly) * -8px) 18px rgba(0,0,0,.4)}
-.baked .app.gl .lamp-head{padding-left:14px;padding-right:14px}
 .baked .app.gl .bezel{background:none;box-shadow:calc(var(--lx) * -2px) calc(var(--ly) * -2px) 4px rgba(0,0,0,.4)}
 .baked .app.gl .bezel::before{inset:0;border-radius:0;border:14px solid transparent;border-image:var(--bezel) var(--bezel-cut) / 14px stretch;box-shadow:none}
 .baked .app.gl .bezel::after{content:"";position:absolute;inset:13px;pointer-events:none;box-shadow:0 0 0 1px rgba(0,0,0,.55),inset calc(var(--lx) * -1px) calc(var(--ly) * -1px) 1.5px rgba(0,0,0,.35)}
