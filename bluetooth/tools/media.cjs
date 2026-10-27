@@ -1,11 +1,15 @@
 // Renders the README's pictures from the app itself, headless, on the GPU:
-//   node tools/media.cjs [icon] [logo] [banner] [shots] [demo] [settings] [light] [bluetooth] [--edition bluetooth]
+//   node tools/media.cjs [icon] [logo] [banner] [shots] [demo] [settings] [light] [bluetooth] [backstill] [--edition bluetooth]
 // (all of them when none is named). Writes to docs/media/, and the app icon to app/src-tauri/icons/. Every picture is a
 // page of this repository served by tools/serve.cjs (the browser simulator for the front, a stand-in for the
 // Tauri shell for the first run); nothing on the screen is captured. --edition bluetooth serves the standard edition's
 // tree (bluetooth/, through its own copy of serve.cjs) instead of the root's, still writing to the root's docs/media/;
 // the bluetooth target always renders from that tree, since the Bluetooth switch is only there. Run
 // tools/sync-bluetooth.sh first so the edition shows what the root does.
+// backstill is not a README picture: it is the still of the back panel the front shows for the second half of its turn
+// to the settings page (app/ui/img/back.webp, and the standard edition's own, with its live Bluetooth row, at
+// bluetooth/edition/files/app/ui/img/back.webp). Regenerate it whenever the back's geometry changes, then run
+// tools/sync-bluetooth.sh.
 // Needs Google Chrome (Playwright's channel 'chrome', for Metal) and ffmpeg for the GIFs, and gifsicle to make
 // the clips small enough. The icon needs python3 with Pillow, and macOS's iconutil for icon.icns.
 const path = require('path');
@@ -105,11 +109,44 @@ function virtualClock() {
     if (doing('settings')) await settingsClip();
     if (doing('light')) await lightClip();
     if (doing('bluetooth')) await bluetoothClip();
+    if (doing('backstill')) await backStill();
     shrink();
   } finally {
     await browser.close();
     server.close();
     if (btServer) btServer.close();
+  }
+
+  // The back panel as the settings page opens on it, without its card: the machine's top strip (its maker's plate
+  // only) and the panel's overview filling the window below it, rendered in each tree (the airgapped build's back has
+  // Bluetooth blanked off, the standard edition's a live row) and written as WebP, 1.5 times a 1440 by 900 window
+  async function backStill() {
+    const BUDGET = 400 * 1024;
+    for (const [tree, port, dest] of [[null, PORT + 2, path.join(ROOT, 'app', 'ui', 'img', 'back.webp')],
+      ['bluetooth', PORT + 3, path.join(EDITION_ROOT, 'edition', 'files', 'app', 'ui', 'img', 'back.webp')]]) {
+      const srv = await serverFor(tree)(port);
+      try {
+        const c = await ctx(1440, 900, 1.5);
+        await c.addInitScript(() => { try { localStorage.clear(); sessionStorage.clear(); } catch (e) {} });
+        const p = await c.newPage(); errors(p);
+        await p.goto(`http://127.0.0.1:${port}/app/ui/settings.html?still`);
+        await p.waitForFunction(() => window.__ready, null, { timeout: 60000 });
+        await p.evaluate(() => document.fonts.ready);
+        await p.addStyleTag({ content: '.cardwrap,.top .rt,.top #back,#loading,#tag,#fullview,#hint{display:none!important}.stage{grid-template-columns:minmax(0,1fr)!important}' });
+        // the view grows to the window; let the panel fit itself to it and settle
+        await p.evaluate(() => new Promise(r => { dispatchEvent(new Event('resize')); let n = 0; const f = () => ++n > 40 ? r() : requestAnimationFrame(f); requestAnimationFrame(f); }));
+        await p.waitForTimeout(800);
+        const png = await p.screenshot({ type: 'png' });
+        const webp = await p.evaluate(async b64 => { const i = new Image(); i.src = 'data:image/png;base64,' + b64; await i.decode();
+          const cv = document.createElement('canvas'); cv.width = i.naturalWidth; cv.height = i.naturalHeight; cv.getContext('2d').drawImage(i, 0, 0);
+          return cv.toDataURL('image/webp', .8).split(',')[1]; }, png.toString('base64'));
+        const buf = Buffer.from(webp, 'base64');
+        if (buf.length > BUDGET) throw new Error(`the back's still is ${buf.length} bytes, over its ${BUDGET}`);
+        fs.mkdirSync(path.dirname(dest), { recursive: true }); fs.writeFileSync(dest, buf);
+        console.log(path.relative(ROOT, dest), `${Math.round(buf.length / 1024)} KB`);
+        await c.close();
+      } finally { srv.close(); }
+    }
   }
 
   // Shrink the PNGs: full-window shots down to 1.5x, then everything but the logo to 256 colours (Pillow,

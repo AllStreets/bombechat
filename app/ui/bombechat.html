@@ -129,12 +129,10 @@ body:has(>.unlock){perspective:none;overflow:hidden;height:100vh}
   background-image:var(--noise)}
 .app.turning{transform:rotateY(180deg);filter:brightness(.5)}
 body.turning{background:#0c0c0b}
-/* the machine's back, seen for the second half of the turn */
+/* the machine's back, seen for the second half of the turn: a still of the real back panel as the settings page opens on
+   it, without its card (tools/media.cjs backstill renders it from settings.html; the standard edition has its own) */
 #back{position:fixed;inset:0;z-index:5;pointer-events:none;visibility:hidden;transform:rotateY(-180deg);backface-visibility:hidden;transition:transform .65s cubic-bezier(.55,.05,.35,1),visibility 0s .65s;
-  display:grid;place-items:center;background:
-   radial-gradient(circle at 22px 22px,#c9c4b6 0 3px,#4c4a44 3.5px,transparent 4.5px),radial-gradient(circle at calc(100% - 22px) 22px,#c9c4b6 0 3px,#4c4a44 3.5px,transparent 4.5px),
-   radial-gradient(circle at 22px calc(100% - 22px),#c9c4b6 0 3px,#4c4a44 3.5px,transparent 4.5px),radial-gradient(circle at calc(100% - 22px) calc(100% - 22px),#c9c4b6 0 3px,#4c4a44 3.5px,transparent 4.5px),
-   linear-gradient(90deg,transparent 15%,rgba(0,0,0,.35) 15%,rgba(0,0,0,.35) calc(15% + 6px),transparent calc(15% + 6px),transparent 85%,rgba(0,0,0,.35) 85%,rgba(0,0,0,.35) calc(85% + 6px),transparent calc(85% + 6px)),#171816}
+  background:#0b0b0a url("img/back.webp") center top/cover no-repeat}
 body.turning #back{visibility:visible;transform:rotateY(0);transition:transform .65s cubic-bezier(.55,.05,.35,1),visibility 0s}
 
 /* engraved traffolyte plate */
@@ -556,7 +554,7 @@ body:has(.lamp:not([hidden])){perspective:none}
 </script>
 </head>
 <body>
-<div id="back" aria-hidden="true"><span class="pl screw">Rear panel</span></div>
+<div id="back" aria-hidden="true"></div>
 <div class="app" id="app">
   <header class="top">
     <span class="maker">Bombechat<small></small></span>

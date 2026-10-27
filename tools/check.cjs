@@ -467,6 +467,29 @@ function measureText() {
   if (rmSpin) problems.push('reduced motion still turns the 3D drums');
   await rm.close();
 
+  // 6a. the turn to the back panel: its second half shows the still of the real back (tools/media.cjs backstill),
+  // there and within its budget
+  if (APP) {
+    const still = path.join(path.dirname(page), 'img', 'back.webp');
+    const bytes = fs.existsSync(still) ? fs.statSync(still).size : 0;
+    if (!bytes) problems.push(`the turn: no still of the back at ${path.relative(ROOTDIR, still)}`);
+    else if (bytes > 400 * 1024) problems.push(`the turn: the back's still is ${bytes} bytes, over its 400 KB`);
+    const tp = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    watch(tp, 'turn');
+    await tp.goto(url('still'));
+    await tp.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
+    const turn = await tp.evaluate(async () => {
+      document.body.classList.add('turning'); document.getElementById('app').classList.add('turning');
+      await new Promise(r => setTimeout(r, 900));
+      const b = document.getElementById('back'), cs = getComputedStyle(b), src = (cs.backgroundImage.match(/url\("?([^")]+)"?\)/) || [])[1];
+      const img = src && await new Promise(r => { const i = new Image(); i.onload = () => r(i.naturalWidth); i.onerror = () => r(0); i.src = src; });
+      return { visible: cs.visibility, src: src || '', width: img || 0, rect: b.getBoundingClientRect().width };
+    });
+    if (turn.visible !== 'visible' || !/img\/back\.webp$/.test(turn.src) || turn.width < 1440 || turn.rect !== 1440) problems.push(`the turn's second half does not show the back's still: ${JSON.stringify(turn)}`);
+    await tp.screenshot({ path: path.join(out, 'turn-back.png') });
+    await tp.close();
+  }
+
   // 6b. the drums follow the bridge: a known chunk injected through the simulator
   // lands on the plain row, and nothing clicks while it arrives by sound
   if (APP) {
