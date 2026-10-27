@@ -95,13 +95,14 @@ export function createMachine(container, { still = false, background = '#0d0d0c'
 
   const boltGeo = new THREE.CylinderGeometry(.09, .09, .06, 20); boltGeo.rotateX(Math.PI / 2);
   const slotGeo = new THREE.BoxGeometry(.13, .022, .02);
-  function bolt(x, y, { scale = 1, z = .03 } = {}) {
-    const b = new THREE.Mesh(boltGeo, M.steel); b.scale.setScalar(scale); b.position.set(x, y, z); b.castShadow = true; scene.add(b);
-    const s = new THREE.Mesh(slotGeo, M.hole); s.scale.setScalar(scale); s.position.set(x, y, z + .032 * scale); s.rotation.z = Math.random() * 3; scene.add(s);
+  function bolt(x, y, { scale = 1, z = .03, parent = scene, slot = Math.random() * 3 } = {}) {
+    const b = new THREE.Mesh(boltGeo, M.steel); b.scale.setScalar(scale); b.position.set(x, y, z); b.castShadow = true; parent.add(b);
+    const s = new THREE.Mesh(slotGeo, M.hole); s.scale.setScalar(scale); s.position.set(x, y, z + .032 * scale); s.rotation.z = slot; parent.add(s);
+    b.userData.slot = s;
     return b;
   }
   // a traffolyte plate: black (or red) with the text engraved through to white
-  function plate(text, x, y, { w = null, h = .26, red = false, size = 56, align = 'center', z = .013, pad = 0 } = {}) { // pad: room each side for screws, in units of the type size
+  function plate(text, x, y, { w = null, h = .26, red = false, size = 56, align = 'center', z = .013, pad = 0, parent = scene } = {}) { // pad: room each side for screws, in units of the type size
     const c = document.createElement('canvas'); const ctx = c.getContext('2d'); setEngraving(ctx, size); const tw = ctx.measureText(text).width;
     c.width = Math.ceil(tw + size * (1.2 + 2 * pad)); c.height = Math.ceil(size * 1.5); const k = c.getContext('2d');
     const g = k.createLinearGradient(0, 0, 0, c.height); g.addColorStop(0, red ? '#8a2a22' : '#191918'); g.addColorStop(1, red ? '#6d1e18' : '#0b0b0a'); k.fillStyle = g; k.fillRect(0, 0, c.width, c.height);
@@ -109,18 +110,18 @@ export function createMachine(container, { still = false, background = '#0d0d0c'
     const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8;
     const pw = w || h * c.width / c.height;
     const m = new THREE.Mesh(new THREE.BoxGeometry(pw, h, .025), [M.bakelite, M.bakelite, M.bakelite, M.bakelite, new THREE.MeshStandardMaterial({ map: t, roughness: .55 }), M.bakelite]);
-    m.position.set(align === 'left' ? x + pw / 2 : x, y, z); m.castShadow = true; m.receiveShadow = true; scene.add(m);
+    m.position.set(align === 'left' ? x + pw / 2 : x, y, z); m.castShadow = true; m.receiveShadow = true; parent.add(m);
     return m;
   }
   // letters painted into the enamel
-  function engrave(text, x, y, size = .14, color = '#cfc7b2') {
+  function engrave(text, x, y, size = .14, color = '#cfc7b2', { parent = scene } = {}) {
     const s = 64; const c = document.createElement('canvas'); const ctx = c.getContext('2d'); setEngraving(ctx, s); const tw = ctx.measureText(text).width;
     c.width = Math.ceil(tw + 16); c.height = s + 16; const k = c.getContext('2d'); setEngraving(k, s); k.textAlign = 'center'; k.textBaseline = 'middle';
     k.fillStyle = 'rgba(0,0,0,.8)'; engraveText(k, text, c.width / 2, c.height / 2 + 3, s); k.fillStyle = color; engraveText(k, text, c.width / 2, c.height / 2, s);
     const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8;
     const h = size * (c.height / s), w = h * c.width / c.height;
     const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshStandardMaterial({ map: t, transparent: true, roughness: .7, depthWrite: false }));
-    m.position.set(x, y, .004); m.receiveShadow = true; scene.add(m);
+    m.position.set(x, y, .004); m.receiveShadow = true; parent.add(m);
     return m;
   }
   // which build this is, as edition.css names it for every plate ('airgapped build')
@@ -143,5 +144,174 @@ export function createMachine(container, { still = false, background = '#0d0d0c'
     return mp;
   }
 
-  return { THREE, renderer, scene, camera, tex, M, cableMat, CABLE_COLORS, key, rim, makeComposer, bolt, plate, engrave, makersPlate, canvasTex };
+
+  /* ---------- the parts the front and the back share ---------- */
+
+  // the panel's frame and bolt ring: the enamel panel, the dark frame standing out round it, and a bolt every so often
+  // along each edge (across along the top and the foot, about every two units down the sides unless down says)
+  function perimeter(w, h, cy, { across = 13, down = null, inset = .35, scale = 1, z = .03, parent = scene } = {}) {
+    const panel = new THREE.Mesh(new THREE.BoxGeometry(w, h, .3), M.panel); panel.position.set(0, cy, -.15); panel.receiveShadow = true; parent.add(panel);
+    const frame = new THREE.Mesh(new THREE.BoxGeometry(w + .5, h + .5, .2), M.frame); frame.position.set(0, cy, -.32); parent.add(frame);
+    const bolts = { top: [], bottom: [], left: [], right: [] };
+    for (let i = 0; i < across; i++) {
+      const x = -w / 2 + inset + i * (w - 2 * inset) / (across - 1);
+      bolts.top.push(bolt(x, cy + h / 2 - inset, { scale, z, parent })); bolts.bottom.push(bolt(x, cy - h / 2 + inset, { scale, z, parent }));
+    }
+    const side = down || Math.round((h - 2 * inset) / 2);
+    for (let i = 1; i < side; i++) {
+      const y = cy - h / 2 + inset + i * (h - 2 * inset) / side;
+      bolts.left.push(bolt(-w / 2 + inset, y, { scale, z, parent })); bolts.right.push(bolt(w / 2 - inset, y, { scale, z, parent }));
+    }
+    return { panel, frame, bolts };
+  }
+
+  // a blanking plate: wrinkle-finish steel over a hole where nothing is fitted, a slotted bolt in each corner and what it
+  // covers engraved across it. Centred on the group's origin, its face at z .05
+  const blankMat = new THREE.MeshStandardMaterial({ color: '#262724', roughness: .45, metalness: .6, bumpMap: tex.wrinkle, bumpScale: .4 });
+  function blank(w, h, text, { size = .15, bolts = 1, parent = scene } = {}) {
+    const g = new THREE.Group(); parent.add(g);
+    const cov = new THREE.Mesh(new THREE.BoxGeometry(w, h, .05), blankMat); cov.position.z = .025; cov.castShadow = true; cov.receiveShadow = true; g.add(cov);
+    const dx = w / 2 - .15 * bolts, dy = h / 2 - .12 * bolts;
+    [[-dx, dy], [dx, dy], [-dx, -dy], [dx, -dy]].forEach(([x, y]) => bolt(x, y, { scale: bolts, parent: g }));
+    const e = text ? engrave(text, 0, 0, size, '#6f6a5e', { parent: g }) : null; if (e) e.position.z = .055;
+    return { group: g, cover: cov, text: e };
+  }
+
+  // a rotary switch in bakelite: a skirt turned with a bevelled edge, a fluted grip and a domed cap, a cream enamel line
+  // inlaid across the cap and the skirt for its pointer, and its stops engraved on the enamel round it. In the knob's own
+  // units its skirt is radius 1; place gives each stop's words ({x, y} of the first baseline's middle or end, two to break
+  // after the first word, anchor 'end' to set it right), in the same units, and line the second line's drop
+  const knobGeo = (() => {
+    const p = [[0, .5], [.52, .5], [.6, .485], [.64, .455], [.66, .41], [.66, .2], [.7, .175], [.93, .165], [.985, .14], [1, .1], [1, .03], [.985, 0], [0, 0]]
+      .reverse().map(([r, y]) => new THREE.Vector2(r, y));
+    const g = new THREE.LatheGeometry(p, 240), pos = g.attributes.position;
+    // 24 flutes cut into the grip (between y .2 and .41), fading out over the cap's shoulder
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i), r = Math.hypot(x, z);
+      if (r < .5 || y < .19 || y > .47) continue;
+      const a = Math.atan2(z, x), f = Math.pow(Math.max(0, Math.cos(a * 24)), 2), k = y > .41 ? 1 - (y - .41) / .06 : 1;
+      const s = 1 - .055 * f * k; pos.setX(i, x * s); pos.setZ(i, z * s);
+    }
+    g.computeVertexNormals(); g.rotateX(Math.PI / 2);
+    return g;
+  })();
+  const cream = new THREE.MeshStandardMaterial({ color: '#e9e3d2', roughness: .4, metalness: 0 });
+  function knob({ labels = [], angles = [-120, 0, 120], place = [], line = .5, size = .53, radius = 1, parent = scene } = {}) {
+    const g = new THREE.Group(); parent.add(g);
+    const rot = new THREE.Group(); g.add(rot);
+    const body = new THREE.Mesh(knobGeo, M.bakelite); body.castShadow = true; body.receiveShadow = true; rot.add(body);
+    // the pointer: an enamel line across the cap from near its middle to its edge, and on across the skirt
+    const capLine = new THREE.Mesh(new THREE.BoxGeometry(.075, .5, .012), cream); capLine.position.set(0, .34, .5); rot.add(capLine);
+    const skirtLine = new THREE.Mesh(new THREE.BoxGeometry(.075, .25, .012), cream); skirtLine.position.set(0, .845, .166); rot.add(skirtLine);
+    // the stops: a tick and the words engraved on the enamel, the chosen stop's lighter
+    const stops = labels.map((t, i) => {
+      const a = angles[i] * Math.PI / 180, sx = Math.sin(a), sy = Math.cos(a);
+      const tick = new THREE.Mesh(new THREE.PlaneGeometry(.047, .16), new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: .7 }));
+      tick.position.set(sx * 1.19, sy * 1.19, .004); tick.rotation.z = -a; g.add(tick);
+      const P = place[i] || { x: sx * 1.6, y: -sy * 1.6 }, w = t.split(' ');
+      const lines = P.two && w.length > 1 ? [w[0], w.slice(1).join(' ')] : [t];
+      const words = lines.map((l, j) => {
+        const m = engrave(l, 0, 0, size, '#ffffff', { parent: g });
+        m.geometry.computeBoundingBox(); const bw = m.geometry.boundingBox.max.x - m.geometry.boundingBox.min.x;
+        // engrave() centres the words on their middle: set the first baseline where the SVG had it
+        m.position.set(P.anchor === 'end' ? P.x - bw / 2 : P.x, -(P.y + j * line) + size * .36, .004);
+        return m;
+      });
+      return { tick, words };
+    });
+    let at = 0, from = 0, to = 0, t0 = 0;
+    const DUR = 320;
+    // the CSS knob's spring: cubic-bezier(.3,1.5,.5,1)
+    const spring = x => { const cx = .9, bx = 3 * (.5 - .3) - cx, ax = 1 - cx - bx, cy = 4.5, by = 3 * (1 - 1.5) - cy, ay = 1 - cy - by; let t = x;
+      for (let i = 0; i < 6; i++) { const fx = ((ax * t + bx) * t + cx) * t - x, d = (3 * ax * t + 2 * bx) * t + cx; if (Math.abs(fx) < 1e-5) break; t -= fx / d; } return ((ay * t + by) * t + cy) * t; };
+    const light = i => stops.forEach((s, j) => { const c = j === i ? '#f1ebd9' : '#8a8476'; s.tick.material.color.set(j === i ? '#e8e1cf' : '#6d685c'); s.words.forEach(w => w.material.color.set(c)); });
+    let lit = -1;
+    function set(i, animate = false) {
+      if (i === lit && !animate) return; lit = i; light(i);
+      to = -(angles[i] || 0) * Math.PI / 180;
+      if (animate) { from = rot.rotation.z; t0 = performance.now(); } else { from = to; rot.rotation.z = to; t0 = 0; }
+    }
+    // turns it on toward where it was set; true while it is still moving
+    function tick(now = performance.now()) {
+      if (!t0) return false;
+      const k = Math.min(1, (now - t0) / DUR); rot.rotation.z = from + (to - from) * spring(k);
+      if (k >= 1) { t0 = 0; rot.rotation.z = to; }
+      return true;
+    }
+    g.scale.setScalar(radius);
+    set(0);
+    return { group: g, rot, stops, set, tick };
+  }
+
+  // a jewel lamp: a glass cabochon in a turned brass bezel. Lit, its core glows in the glass and a small light, too short
+  // to reach past it, warms the bezel's lip; no bloom and no halo. Unlit, dark glass with the room in it. Radius 1 is the
+  // bezel's outside
+  const bezelGeo = (() => { const p = [[.62, 0], [1, 0], [1, .12], [.96, .2], [.86, .26], [.74, .27], [.66, .22], [.62, .14]].map(([r, y]) => new THREE.Vector2(r, y)); const g = new THREE.LatheGeometry(p, 64); g.rotateX(Math.PI / 2); return g; })();
+  const domeGeo = (() => { const g = new THREE.SphereGeometry(.7, 48, 24, 0, Math.PI * 2, 0, Math.PI / 2.6); g.rotateX(Math.PI / 2); g.translate(0, 0, -.27); return g; })();
+  const coreGeo = new THREE.SphereGeometry(.38, 24, 16);
+  const seatMat = new THREE.MeshStandardMaterial({ color: '#0c0b09', roughness: .5, metalness: .2 });
+  function jewel(color = '#f0b64c', { radius = 1, light = true, parent = scene } = {}) {
+    const g = new THREE.Group(); parent.add(g);
+    const bezel = new THREE.Mesh(bezelGeo, M.brass); bezel.castShadow = true; bezel.receiveShadow = true; g.add(bezel);
+    const seat = new THREE.Mesh(new THREE.CircleGeometry(.64, 32), seatMat); seat.position.z = .02; g.add(seat);
+    const glass = new THREE.MeshPhysicalMaterial({ color, roughness: .06, metalness: 0, transmission: .9, ior: 1.5, thickness: .35, clearcoat: 1, clearcoatRoughness: .04, attenuationColor: new THREE.Color(color), attenuationDistance: .6, emissive: new THREE.Color(color), emissiveIntensity: 0 });
+    const dome = new THREE.Mesh(domeGeo, glass); dome.position.z = .02; g.add(dome);
+    const coreMat = new THREE.MeshStandardMaterial({ color: '#000000', emissive: new THREE.Color(color), emissiveIntensity: 0, roughness: 1 });
+    const core = new THREE.Mesh(coreGeo, coreMat); core.position.z = .05; core.scale.set(1, 1, .55); g.add(core);
+    const lamp = light ? new THREE.PointLight(color, 0, 2.2 * radius, 2) : null; if (lamp) { lamp.position.z = .35; g.add(lamp); }
+    let on = null;
+    function set(v) {
+      v = !!v; if (v === on) return false; on = v;
+      coreMat.emissiveIntensity = v ? 3.2 : 0; glass.emissiveIntensity = v ? .55 : 0;
+      glass.color.set(v ? color : '#3a2c18'); glass.transmission = v ? .9 : .55; glass.attenuationColor.set(v ? color : '#20160a');
+      if (lamp) lamp.intensity = v ? .7 * radius * radius : 0;
+      return true;
+    }
+    g.scale.setScalar(radius);
+    set(false);
+    return { group: g, set, get on() { return on; } };
+  }
+
+  // a part drawn on its own, in this machine's lights and room, into a picture with a clear background: for hardware that
+  // sits on paper, where the 3D scene behind the page can't reach. view 'front' looks straight at its face; 'tilt' a
+  // little from above and the left, as the key light falls. With shadow, a catcher under it takes the part's shadow from
+  // the key light as see-through dark. Returns a PNG data URL px wide
+  let baker = null;
+  function bake(object3D, { px = 64, view = 'front', shadow = false, margin = .12 } = {}) {
+    if (!baker) {
+      const r = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+      r.toneMapping = renderer.toneMapping; r.toneMappingExposure = renderer.toneMappingExposure; r.setClearColor(0x000000, 0);
+      r.shadowMap.enabled = true; r.shadowMap.type = THREE.PCFSoftShadowMap;
+      const s = new THREE.Scene(); const pm = new THREE.PMREMGenerator(r); s.environment = pm.fromScene(new RoomEnvironment(), .04).texture; s.environmentIntensity = scene.environmentIntensity; pm.dispose();
+      s.add(new THREE.HemisphereLight('#d9d4c8', '#0b0a09', .25));
+      const k = new THREE.DirectionalLight(key.color, key.intensity); k.castShadow = true; k.shadow.mapSize.set(1024, 1024); k.shadow.radius = 6; k.shadow.bias = -.0004; s.add(k); s.add(k.target);
+      const rm = new THREE.DirectionalLight(rim.color, rim.intensity); s.add(rm);
+      baker = { r, s, k, rm };
+    }
+    const { r, s, k, rm } = baker;
+    const box = new THREE.Box3().setFromObject(object3D), size = box.getSize(new THREE.Vector3()), mid = box.getCenter(new THREE.Vector3());
+    const m = Math.max(size.x, size.y) * margin, w = size.x + 2 * m, h = size.y + 2 * m;
+    const cam = new THREE.OrthographicCamera(-w / 2, w / 2, h / 2, -h / 2, .01, 100);
+    const dist = 10;
+    if (view === 'tilt') cam.position.set(mid.x - .08 * dist, mid.y + .1 * dist, mid.z + dist); else cam.position.set(mid.x, mid.y, mid.z + dist);
+    cam.lookAt(mid);
+    // the kit's key and rim, keeping their directions
+    const dir = key.position.clone().normalize(); k.position.copy(mid).addScaledVector(dir, dist); k.target.position.copy(mid);
+    Object.assign(k.shadow.camera, { left: -w, right: w, top: h, bottom: -h, near: .01, far: dist * 2 }); k.shadow.camera.updateProjectionMatrix();
+    rm.position.copy(mid).addScaledVector(rim.position.clone().normalize(), dist);
+    let catcher = null;
+    if (shadow) { catcher = new THREE.Mesh(new THREE.PlaneGeometry(w * 3, h * 3), new THREE.ShadowMaterial({ opacity: .55 })); catcher.position.set(mid.x, mid.y, box.min.z + .001); catcher.receiveShadow = true; s.add(catcher); }
+    const parent = object3D.parent; s.add(object3D);
+    object3D.traverse(o => { if (o.isMesh) o.castShadow = true; });
+    const H = Math.max(1, Math.round(px * h / w)); r.setPixelRatio(1); r.setSize(px, H, false);
+    r.render(s, cam);
+    const url = r.domElement.toDataURL('image/png');
+    s.remove(object3D); if (parent) parent.add(object3D);
+    if (catcher) { s.remove(catcher); catcher.geometry.dispose(); catcher.material.dispose(); }
+    return url;
+  }
+  // let the baker's context go once the parts that need it are drawn
+  function bakeDone() { if (baker) { baker.r.dispose(); baker.r.forceContextLoss(); baker = null; } }
+
+  return { THREE, renderer, scene, camera, tex, M, cableMat, CABLE_COLORS, key, rim, makeComposer, bolt, plate, engrave, makersPlate, canvasTex, perimeter, blank, knob, jewel, bake, bakeDone };
 }

@@ -55,6 +55,34 @@ const url = q => 'http://127.0.0.1:4811/' + path.relative(ROOTDIR, page) + (q ? 
     if (b.text !== `Build ${workspaceVersion(ROOTDIR)} \u00b7 browser`) problems.push(`the top plate says ${JSON.stringify(b.text)}`);
     if (b.moved) problems.push("the build plate's longest form moves what is beside it");
   }
+  // the kit's shared parts (the front and the back draw their blanking plates, bolt rings, switches and jewels with
+  // them): each builds and renders without an error, and a baked part comes back as a picture with clear corners
+  if (APP) {
+    const kit = await p.evaluate(async () => {
+      const K0 = await import('./machine-kit.js'), host = document.createElement('div');
+      host.style.cssText = 'position:fixed;left:-400px;top:0;width:200px;height:200px'; document.body.appendChild(host);
+      const out = {};
+      try {
+        const K = K0.createMachine(host, { still: true }); K.renderer.setSize(200, 200, false);
+        const per = K.perimeter(6, 4, 0, { across: 13, down: 3 }); out.perimeter = per.bolts.top.length + '/' + per.bolts.left.length;
+        const b = K.blank(2, .8, 'NOT FITTED'); out.blank = b.group.children.length;
+        const kn = K.knob({ labels: ['Off', 'Listen', 'Listen and send'] }); kn.set(2, true); kn.tick(performance.now() + 1000); out.knob = +(kn.rot.rotation.z).toFixed(3);
+        const j = K.jewel('#f0b64c'); out.jewel = [j.set(true), j.on, j.set(true)].join();
+        K.camera.position.set(0, 0, 12); K.renderer.render(K.scene, K.camera);
+        const url = K.bake(K.jewel('#f0b64c', { parent: new K.THREE.Group() }).group, { px: 48, shadow: true });
+        const img = new Image(); img.src = url; await img.decode();
+        const c = document.createElement('canvas'); c.width = img.width; c.height = img.height; const k = c.getContext('2d'); k.drawImage(img, 0, 0);
+        const a = (x, y) => k.getImageData(x, y, 1, 1).data[3], d = k.getImageData(0, 0, c.width, c.height).data;
+        let solid = 0; for (let i = 3; i < d.length; i += 4) if (d[i] > 200) solid++;
+        out.bake = { w: img.width, corners: [a(0, 0), a(c.width - 1, 0), a(0, c.height - 1), a(c.width - 1, c.height - 1)], solid };
+        K.bakeDone(); K.renderer.dispose(); K.renderer.forceContextLoss();
+      } catch (e) { out.error = e.message; }
+      host.remove();
+      return out;
+    });
+    if (kit.error || kit.perimeter !== '13/2' || !(kit.blank >= 9) || kit.knob !== -2.094 || kit.jewel !== 'true,true,false') problems.push(`the kit's shared parts: ${JSON.stringify(kit)}`);
+    else if (!kit.bake || kit.bake.w !== 48 || kit.bake.corners.some(v => v !== 0) || kit.bake.solid < 200) problems.push(`the kit's bake: ${JSON.stringify(kit.bake)}`);
+  }
   if (ONLY_IN_PERSON) NOTES.inperson = { note: 'always, on this build', value: 1 };
   await p.screenshot({ path: path.join(out, 'overview.png') });
   // the back carries the front's three rows of drums: 36 connectors, Rows 1 to 3 signed on plates, columns 12 to 1

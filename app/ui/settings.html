@@ -302,11 +302,8 @@ async function build(){
   const conX=c=>(c-(CCOLS-1)/2)*CPX,conY=r=>CY0-r*CPY;
   const PTOP=CY0+2.65,PBOT=-9.2;
   const PW=19.6,PH=PTOP-PBOT,CY=(PTOP+PBOT)/2;// the panel runs from y -9.2 up to its top bolt row, above the trunks' duct
-  const panel=new THREE.Mesh(new THREE.BoxGeometry(PW,PH,.3),M.panel);panel.position.set(0,CY,-.15);panel.receiveShadow=true;scene.add(panel);
-  const rimFrame=new THREE.Mesh(new THREE.BoxGeometry(PW+.5,PH+.5,.2),new THREE.MeshStandardMaterial({color:'#121311',roughness:.6,metalness:.5}));rimFrame.position.set(0,CY,-.32);scene.add(rimFrame);
-  const topBolts=[];for(let i=0;i<=12;i++){topBolts.push(bolt(-PW/2+.35+i*(PW-.7)/12,CY+PH/2-.35));bolt(-PW/2+.35+i*(PW-.7)/12,CY-PH/2+.35)}
-  // the sides' bolts about two units apart, as they always were
-  const SIDE=Math.round((PH-.7)/2);for(let i=1;i<SIDE;i++){bolt(-PW/2+.35,CY-PH/2+.35+i*(PH-.7)/SIDE);bolt(PW/2-.35,CY-PH/2+.35+i*(PH-.7)/SIDE)}
+  // the panel, its frame and bolt ring, drawn by the kit as the front's are: 13 across, the sides' bolts about two units apart
+  const {bolts:{top:topBolts}}=K.perimeter(PW,PH,CY,{across:13});
 
   /* ---------- upper field: the drum wiring, 12 by 3 big connectors ---------- */
   const conGeo=(()=>{const pts=[[0,0],[.42,0],[.42,.05],[.36,.08],[.36,.34],[.32,.38],[.3,.62],[.22,.7],[.16,.78],[.16,.95],[0,.95]].map(([r,y])=>new THREE.Vector2(r,y));const g=new THREE.LatheGeometry(pts,48);g.rotateX(Math.PI/2);return g})();
@@ -439,8 +436,8 @@ async function build(){
   const valueWidth=t=>{const m=engrave(t,0,0,.1);m.geometry.computeBoundingBox();const b=m.geometry.boundingBox;scene.remove(m);m.geometry.dispose();m.material.map.dispose();m.material.dispose();return b.max.x-b.min.x};
       for(const side of Object.values(LAYOUT)){let y=TOP;
     for(const g of side.groups){const gp=plate(g.toUpperCase(),side.x,y,{h:.24,red:!fitted(g),align:'left'});groupPlates.push(gp);y-=.42;
-      if(!fitted(g)){const cov=new THREE.Mesh(new THREE.BoxGeometry(5.6,.9,.05),new THREE.MeshStandardMaterial({color:'#262724',roughness:.45,metalness:.6,bumpMap:wrinkle,bumpScale:.4}));cov.position.set(side.x+2.8,y-.3,.025);cov.castShadow=true;cov.receiveShadow=true;scene.add(cov);
-        [[-2.65,.33],[2.65,.33],[-2.65,-.33],[2.65,-.33]].forEach(([dx,dy])=>bolt(side.x+2.8+dx,y-.3+dy));const e=engrave('NOT FITTED TO THIS BUILD',side.x+2.8,y-.3,.15,'#6f6a5e');e.position.z=.055;y-=1.12;continue}
+      // the kit's blanking plate, the one the front carries where its Bluetooth switch would be
+      if(!fitted(g)){K.blank(5.6,.9,'NOT FITTED TO THIS BUILD').group.position.set(side.x+2.8,y-.3,0);y-=1.12;continue}
       for(const s of SETTINGS.filter(q=>q.g===g)){
         {const e=engrave(s.name.toUpperCase(),0,y-.01,.12,'#ddd5c0');e.geometry.computeBoundingBox();const w=e.geometry.boundingBox.max.x-e.geometry.boundingBox.min.x;e.position.x=side.x+w/2+.02}
         // jacks sit .74 apart, or as far apart as their longest engraved value needs
