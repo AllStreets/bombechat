@@ -184,7 +184,10 @@ const person = c => ({ id: contactId(c.id), name: String(c.name), short: String(
 // isn't known, but `of` bounds it: every chunk but the last is full, so the
 // whole is at least (of - 1) chunks and one byte, and the text ends no earlier
 // than 64 bytes before that.
-const SENDER_LEN = 68, SIGNATURE_LEN = 64;
+// TEXT_AT and CHUNK are crates/core's (where the text starts, the bytes each chunk but the last carries); the app's
+// tests hold these to the node's. The page lays the drums' plain row from them.
+export const TEXT_AT = 68, CHUNK = 48;
+const SIGNATURE_LEN = 64;
 const arriving = new Map(); // tag -> { bytes so far, chunk size }
 const decoder = new TextDecoder('utf-8');
 function provisional(tag, index, of, plain) {
@@ -196,8 +199,8 @@ function provisional(tag, index, of, plain) {
   a.so.push(...plain); arriving.set(tag, a);
   const last = index === of - 1;
   const end = last ? a.so.length - SIGNATURE_LEN : Math.min(a.so.length, (of - 1) * a.size + 1 - SIGNATURE_LEN);
-  if (end <= SENDER_LEN) return '';
-  return decoder.decode(new Uint8Array(a.so.slice(SENDER_LEN, end))).replace(/\uFFFD+$/, '');
+  if (end <= TEXT_AT) return '';
+  return decoder.decode(new Uint8Array(a.so.slice(TEXT_AT, end))).replace(/\uFFFD+$/, '');
 }
 
 const EVENTS = ['chunk', 'message', 'heard', 'broadcast', 'pairOffer', 'roomDb', 'channel', 'outbox', 'display', 'displayStopped', 'eyepiece', 'selfTest', 'request', 'requestGone', 'requested', 'peers', 'contactConfirmed'];

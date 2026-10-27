@@ -6,7 +6,7 @@
   <img alt="channel" src="https://img.shields.io/badge/channel-sound_%C2%B7_light-c29a5c?style=for-the-badge&labelColor=141311" />
   <img alt="build" src="https://img.shields.io/badge/build-airgapped-2c4a3a?style=for-the-badge&labelColor=141311" />
   <img alt="crypto" src="https://img.shields.io/badge/crypto-X25519_%C2%B7_XChaCha20_%C2%B7_Ed25519-33465b?style=for-the-badge&labelColor=141311" />
-  <img alt="tests" src="https://img.shields.io/badge/tests-471_passing-a5822e?style=for-the-badge&labelColor=141311" />
+  <img alt="tests" src="https://img.shields.io/badge/tests-473_passing-a5822e?style=for-the-badge&labelColor=141311" />
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-7a2a22?style=for-the-badge&labelColor=141311" /></a>
   <br />
   <img alt="Rust" src="https://img.shields.io/badge/Rust-workspace-6e6656?style=flat-square&labelColor=141311" />
@@ -203,14 +203,14 @@ cd bluetooth/app/src-tauri
 cargo tauri build
 ```
 
-It lands in `bluetooth/target/release/bundle/macos/Bombechat Standard.app`, so both apps can sit in `/Applications` side by side. The standard build's checks run from inside `bluetooth/`: `cargo test --workspace` (672 tests there) and `npm run check`.
+It lands in `bluetooth/target/release/bundle/macos/Bombechat Standard.app`, so both apps can sit in `/Applications` side by side. The standard build's checks run from inside `bluetooth/`: `cargo test --workspace` (674 tests there) and `npm run check`.
 
 `bluetooth/` is generated. `tools/sync-bluetooth.sh` copies everything the root tracks (apart from `docs/`, `mockups/`, `.github/`, this README and the script and its test) into it, applies the small patches in `bluetooth/edition/patches/` and lays `bluetooth/edition/files/` over the top. Fix things at the root and run the script; CI fails if `bluetooth/` doesn't match what it writes, so the two editions differ only where `bluetooth/edition/` says they do. The one exception is `bluetooth/Cargo.lock`, which the edition keeps for itself since its dependencies will differ. The root never gains Bluetooth code, and the airgapped check still runs on it alone.
 
 ## Checks
 
 ```sh
-cargo test --workspace     # 471 tests: the crypto, the modem, the store, the node and the app's commands
+cargo test --workspace     # 473 tests: the crypto, the modem, the store, the node and the app's commands
 npm run check              # both pages in Chrome on the GPU
 npm run check:airgapped    # the dependency gate
 ```

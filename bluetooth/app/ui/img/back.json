@@ -1,0 +1,64 @@
+{
+ "sizes": [
+  {
+   "w": 1024,
+   "h": 768,
+   "file": "back-1024x768.webp",
+   "scale": 2,
+   "panel": {
+    "left": 435.8,
+    "top": 113.3,
+    "right": 1030.2,
+    "bottom": 660.3
+   }
+  },
+  {
+   "w": 1280,
+   "h": 800,
+   "file": "back-1280x800.webp",
+   "scale": 2,
+   "panel": {
+    "left": 452,
+    "top": 58,
+    "right": 1273,
+    "bottom": 814.3
+   }
+  },
+  {
+   "w": 1440,
+   "h": 900,
+   "file": "back-1440x900.webp",
+   "scale": 2,
+   "panel": {
+    "left": 477.9,
+    "top": 59.6,
+    "right": 1407.7,
+    "bottom": 916.2
+   }
+  },
+  {
+   "w": 1512,
+   "h": 982,
+   "file": "back-1512x982.webp",
+   "scale": 1.75,
+   "panel": {
+    "left": 469.5,
+    "top": 60.9,
+    "right": 1488.6,
+    "bottom": 999.8
+   }
+  },
+  {
+   "w": 1728,
+   "h": 1117,
+   "file": "back-1728x1117.webp",
+   "scale": 1.75,
+   "panel": {
+    "left": 496.4,
+    "top": 63.3,
+    "right": 1679,
+    "bottom": 1152.9
+   }
+  }
+ ]
+}

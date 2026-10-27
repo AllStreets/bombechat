@@ -604,7 +604,10 @@ async function build(){
   const duct=()=>({...ductParts.lip,clamps:ductParts.map(c=>({...c})),cords:trunkCords.map(t=>{const pts=t.mesh.geometry.parameters.path.getSpacedPoints(400),c=ductParts.find(c=>c.gi===t.gi);
     const at=pts.filter(p=>p.y>=c.y0&&p.y<=c.y1),up=pts.filter(p=>p.y>=ductParts.lip.HB),end=pts[pts.length-1];
     return {gi:t.gi,r:t.r,end:{y:end.y,z:end.z},atClamp:{front:Math.max(...at.map(p=>p.z))+t.r,x0:Math.min(...at.map(p=>p.x))-t.r,x1:Math.max(...at.map(p=>p.x))+t.r},underLip:Math.max(...up.map(p=>p.z))+t.r,top:Math.max(...pts.map(p=>p.y))+t.r}})});
-  return {focus,move,seat,plugs,camera,screen,at,row,rowBand,connectors,duct,rowSigns:()=>rowSigns.map(s=>s.text),parts,get ready(){return frames>2},endOf:id=>{const P=plugs[id];return {x:P.end.x,jack:P.jacks.findIndex(j=>Math.abs(j.x-P.end.x)<1e-3&&Math.abs(j.y-P.end.y)<1e-3),lift:P.lift,parked:!!P.park&&P.end.distanceTo(P.park)<1e-3,dim:P.dim}}};
+  // the panel's face as the camera frames it now, in page pixels: its corners, from its top bolt row to its foot
+  const panelRect=()=>{const c=[[-PW/2,PTOP],[PW/2,PTOP],[-PW/2,PBOT],[PW/2,PBOT]].map(([x,y])=>toScreen(new THREE.Vector3(x,y,0)));
+    const xs=c.map(p=>p.x),ys=c.map(p=>p.y);return {left:Math.min(...xs),top:Math.min(...ys),right:Math.max(...xs),bottom:Math.max(...ys)}};
+  return {focus,move,seat,plugs,camera,screen,at,row,rowBand,connectors,duct,panel:panelRect,rowSigns:()=>rowSigns.map(s=>s.text),parts,get ready(){return frames>2},endOf:id=>{const P=plugs[id];return {x:P.end.x,jack:P.jacks.findIndex(j=>Math.abs(j.x-P.end.x)<1e-3&&Math.abs(j.y-P.end.y)<1e-3),lift:P.lift,parked:!!P.park&&P.end.distanceTo(P.park)<1e-3,dim:P.dim}}};
 }
 
 /* arriving from the front: finish the turn the front started */
@@ -614,7 +617,7 @@ try{if(sessionStorage.getItem('bombechat-turn')==='front-to-back'&&!REDUCED){ses
 // back here by history (bfcache): the settings may have moved on the front, so read them again from the machine
 // and show them, sending nothing
 addEventListener('pageshow',e=>{if(!e.persisted)return;bridge.settings().then(kept=>{for(const id of takeKept(kept)){syncRow(id);machine&&machine.seat(id,byId[id].v)}},()=>{})});
-window.__bc={screen:id=>machine.screen(id),rowBand:id=>machine.rowBand(id),tag:()=>{const r=document.getElementById('tag').getBoundingClientRect();return {top:r.top,bottom:r.bottom,on:document.getElementById('tag').classList.contains('on')}},focused:()=>focusId,get:id=>byId[id].v,held:()=>Object.fromEntries(SETTINGS.filter(s=>s.held).map(s=>[s.id,{note:s.held,parked:!!s.parked}])),set:(id,i)=>setValue(id,i,'test'),focus:id=>focusSetting(id,'pin'),at:(x,y,z)=>machine.at(x,y,z),row:id=>machine.row(id),connectors:()=>machine.connectors(),rowSigns:()=>machine.rowSigns(),parts:()=>machine.parts(),duct:()=>machine.duct(),end:id=>machine&&machine.endOf(id),settings:SETTINGS.map(s=>s.id)};
+window.__bc={screen:id=>machine.screen(id),rowBand:id=>machine.rowBand(id),tag:()=>{const r=document.getElementById('tag').getBoundingClientRect();return {top:r.top,bottom:r.bottom,on:document.getElementById('tag').classList.contains('on')}},focused:()=>focusId,get:id=>byId[id].v,held:()=>Object.fromEntries(SETTINGS.filter(s=>s.held).map(s=>[s.id,{note:s.held,parked:!!s.parked}])),set:(id,i)=>setValue(id,i,'test'),focus:id=>focusSetting(id,'pin'),at:(x,y,z)=>machine.at(x,y,z),row:id=>machine.row(id),connectors:()=>machine.connectors(),rowSigns:()=>machine.rowSigns(),parts:()=>machine.parts(),panel:()=>machine.panel(),duct:()=>machine.duct(),end:id=>machine&&machine.endOf(id),settings:SETTINGS.map(s=>s.id)};
 if(Q.has('focus'))focusSetting(Q.get('focus'),'pin');
 document.getElementById('back').addEventListener('click',e=>{if(REDUCED)return;e.preventDefault();const href=e.currentTarget.href;try{sessionStorage.setItem('bombechat-turn','back-to-front')}catch(_){}document.body.animate([{transform:'perspective(1600px) rotateY(0deg)',opacity:1},{transform:'perspective(1600px) rotateY(-80deg)',opacity:0}],{duration:420,easing:'cubic-bezier(.5,0,.75,0)'}).onfinish=()=>location.href=href});
 </script>

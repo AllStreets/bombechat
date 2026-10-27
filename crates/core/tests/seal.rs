@@ -1,5 +1,5 @@
 use bombechat_core::{
-    open_private, open_public, seal_private, seal_public, split_private_body, ChunkOpener,
+    open_private, open_public, seal_private, seal_public, split_private_body, ChunkOpener, TEXT_AT,
     Envelope, Identity, Kind, OpenError, CHUNK, MAX_ENVELOPE,
 };
 
@@ -366,4 +366,27 @@ fn low_order_recipient_key_panics() {
     let mut bogus = bob().public();
     bogus.dh = [0u8; 32];
     seal_private(&alice(), &[bogus], "never sealed", 100, 60);
+}
+
+/// The text starts TEXT_AT bytes into the plaintext the chunks carry, every
+/// chunk but the last is CHUNK bytes of it, and the page lays the plain row
+/// from both as the machine reports them.
+#[test]
+fn text_starts_at_text_at_in_whole_chunks() {
+    let b = bob();
+    let text = "Water is at the church on Fifth.";
+    let e = seal_private(&alice(), &[b.public()], text, 4321, 600);
+    let (header, chunks) = split_private_body(&e.body).unwrap();
+    let mut o = ChunkOpener::start(&b, e.id, e.expires_min, header).unwrap();
+    let mut plain = Vec::new();
+    for (i, c) in chunks.iter().enumerate() {
+        let last = i == chunks.len() - 1;
+        let view = o.next(c, last).unwrap();
+        if !last {
+            assert_eq!(view.plain.len(), CHUNK);
+        }
+        plain.extend(view.plain);
+    }
+    assert_eq!(TEXT_AT, 68);
+    assert_eq!(&plain[TEXT_AT..TEXT_AT + text.len()], text.as_bytes());
 }

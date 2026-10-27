@@ -386,13 +386,15 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
     // number of chunks in the scripted incoming message
     chunks: NC,
     // this text sealed as a message, its chunks all at once with no message after them; stops the scripted
-    // conversation first
-    inject(text, { end = false } = {}) {
+    // conversation first. `only`: the indexes of the chunks that are heard (the others missed); it returns how many
+    // bytes the sealed message's chunks carry
+    inject(text, { end = false, only = null } = {}) {
       paused = true;
-      const tag = ++testTag, parts = chunked(sealedInner(text, Math.floor(clock / 60000), tag), tag);
+      const tag = ++testTag, inner = sealedInner(text, Math.floor(clock / 60000), tag), parts = chunked(inner, tag);
       sound('receiving');
-      parts.forEach((view, index) => emit('chunk', { tag, index, of: parts.length, view, channel: 'Sound' }));
+      parts.forEach((view, index) => { if (!only || only.includes(index)) emit('chunk', { tag, index, of: parts.length, view, channel: 'Sound' }); });
       if (end) sound('listening');
+      return inner.length;
     },
     // a whole sealed message from Marisol, chunk by chunk at once; `complete` false leaves it hanging. By light it
     // arrives as the light transport hands one over: whole, so every chunk at once

@@ -263,10 +263,15 @@ export function front(bridge, kit) {
     const lifts = rects.map(() => 0), seen = i => ({ top: rects[i].top - lifts[i], bottom: rects[i].bottom - lifts[i] });
     for (let i = 1; i < list.length; i++) if (edges[i] && rects[i].bottom > foot + 3) lifts[i] = Math.max(0, rects[i].bottom - seen(i - 1).bottom - EDGE);
     for (let i = list.length - 2; i >= 0; i--) if (edges[i] && !(rects[i].bottom > foot + 3 && i > 0)) lifts[i] = -Math.max(0, seen(i + 1).top - rects[i].top - EDGE);
+    // and only its edge: what of it would stand above the slip it is tucked under (or below, up the pile) is cut away,
+    // so none of it shows in the gap past that slip either
+    const clips = rects.map((r, i) => !edges[i] || !lifts[i] ? 0 : lifts[i] > 0 ? Math.max(0, seen(i - 1).top - (r.top - lifts[i])) : Math.max(0, (r.bottom - lifts[i]) - seen(i + 1).bottom));
     list.forEach((s, i) => {
       s.classList.toggle('edge', edges[i]);
       const lift = lifts[i];
       if (lift) { s.dataset.lift = lift; s.style.setProperty('--lift', lift + 'px'); } else if (s.dataset.lift) { delete s.dataset.lift; s.style.removeProperty('--lift'); }
+      const cut = Math.floor(clips[i]);
+      if (cut) s.style.setProperty('--cut', lift > 0 ? `${cut}px 0 0 0` : `0 0 ${cut}px 0`); else s.style.removeProperty('--cut');
     });
   };
   right.addEventListener('scroll', fade);

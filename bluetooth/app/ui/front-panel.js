@@ -209,8 +209,9 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
   const bossGeo = (() => { const p = [[0, 0], [1, 0], [1, .35], [.9, .55], [.6, .66], [0, .7]].map(([r, y]) => new THREE.Vector2(r, y)); const g = new THREE.LatheGeometry(p, 32); g.rotateX(Math.PI / 2); g.userData.keep = true; return g; })();
   let shutter = null, eyeEl = null;
   // parts sitting at the given boxes; z the face of the deck under them
+  let trayWell = null;// the outbox tray's well as last laid out, in host pixels
   function layoutDeck(holes) {
-    clear(deckParts);
+    clear(deckParts); trayWell = null;
     const bs = BOLT / U / .09;// the bolt ring's bolts, here too
     // each switch tile: a pressed steel escutcheon let into the enamel, a slotted bolt in each corner
     for (const mod of deck.querySelectorAll('.mods .mod')) {
@@ -266,9 +267,17 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
     // the outbox: a shallow letter tray under the slips' column, a brass rim round a steel floor
     const col = deck.querySelector('.row2 > .col.tray') || deck.querySelector('.outbox');
     if (col && shown(col)) {
-      // round the column's content (the standard build's tray column reaches past it into its margins to scroll)
+      // round the column's content (the standard build's tray column reaches past it into its margins to scroll), and
+      // only as deep as the slips in it: a tray the size of what it holds, on either build. When they fill the column's
+      // room (they scroll in it), the tray is the room
       const b = box(col), cs = getComputedStyle(col), pl = parseFloat(cs.paddingLeft), pr = parseFloat(cs.paddingRight), pt = parseFloat(cs.paddingTop), pbm = parseFloat(cs.paddingBottom);
-      const pad = 6, x = b.x + pl - pad, y = b.y + pt - pad, w = b.w - pl - pr + 2 * pad, h = b.h - pt - pbm + 2 * pad, c = at(x + w / 2, y + h / 2, 0), rim = 4 / U;
+      let top = b.y + pt, foot = b.y + b.h - pbm;
+      if (!/auto|scroll/.test(cs.overflowY) || col.scrollHeight <= col.clientHeight + 4) {
+        const held = [...col.querySelectorAll('.slip:not(.gone)')].filter(placed).map(box);
+        if (held.length) { top = Math.max(top, Math.min(...held.map(r => r.y))); foot = Math.min(foot, Math.max(...held.map(r => r.y + r.h))); }
+      }
+      const pad = 6, x = b.x + pl - pad, y = top - pad, w = b.w - pl - pr + 2 * pad, h = foot - top + 2 * pad, c = at(x + w / 2, y + h / 2, 0), rim = 4 / U;
+      trayWell = { x, y, w, h };
       // its floor the switches' pressed steel, inside a brass rim
       const fl = new THREE.Mesh(slab(w / U, h / U, .012, { r: 2 / U, b: .004 }), M.cover); fl.position.set(c.x, c.y, 0); fl.receiveShadow = true; fl.castShadow = true; deckParts.add(fl);
       // nothing waiting: the words engraved in the floor where the slip would lie (the HTML keeps them, unseen, for
@@ -405,7 +414,7 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
 
   let dirty = true, renders = 0, laidSig = '';
   // what the scene was laid out from: every box it reads. A change in the HTML lays it out again only if one moved
-  const WATCHED = '.bank, .colno, .rowlab, .bankfoot .rd, .bankfoot .odo, .lampset i, .mods .mod, .mod .knob, .mod .jewel, .mod .blank, .eyepiece, .vu, .vu svg, .row2 > .col.tray, .outbox, .outbox > .slip.empty, .row3 .stn, .row3 .holder, .row3 .holder > span, .stn .jewel, .counter .odo, .sheet, .menu';
+  const WATCHED = '.bank, .colno, .rowlab, .bankfoot .rd, .bankfoot .odo, .lampset i, .mods .mod, .mod .knob, .mod .jewel, .mod .blank, .eyepiece, .vu, .vu svg, .row2 > .col.tray, .outbox, .row2 .slip, .outbox > .slip.empty, .row3 .stn, .row3 .holder, .row3 .holder > span, .stn .jewel, .counter .odo, .sheet, .menu';
   function signature() { const hr = host.getBoundingClientRect(); let s = `${hr.width}x${hr.height}`;
     for (const el of app.querySelectorAll(WATCHED)) { const r = el.getBoundingClientRect(); s += `|${Math.round(r.left - hr.left)},${Math.round(r.top - hr.top)},${Math.round(r.width)},${Math.round(r.height)},${el.offsetParent ? 1 : 0}`; }
     for (const el of app.querySelectorAll('.bankfoot .rd')) s += getComputedStyle(el).visibility[0];
@@ -486,6 +495,9 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
   api.ringBolts = () => { const hr = host.getBoundingClientRect();
     return Object.values(front.bolts).flat().map(m => ({ x: m.position.x * U + W / 2 + hr.left + scrollX, y: H / 2 - m.position.y * U + hr.top + scrollY, r: .09 * m.scale.x * U })); };
   api.ringParts = PARTS;
+  // for checks: the outbox tray's well as drawn, in page pixels (its brass rim's outer edge)
+  api.trayWell = () => { if (!trayWell) return null; const hr = host.getBoundingClientRect();
+    return { x: trayWell.x + hr.left + scrollX, y: trayWell.y + hr.top + scrollY, w: trayWell.w, h: trayWell.h }; };
   // the room meter behind its glass, on its own canvas
   const vuEl = deck.querySelector('.vu');
   if (vuEl) try { vuEl.classList.add('gl'); self.vu = await mountVu(vuEl, { still }); } catch (e) { vuEl.classList.remove('gl'); console.warn('the meter stays flat:', e.message); }

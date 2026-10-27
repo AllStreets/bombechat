@@ -106,6 +106,11 @@ const HEADER_FIXED: usize = 2 + STREAM_PREFIX_LEN;
 const SIGNATURE_LEN: usize = 64;
 /// sender sign ‖ sender dh ‖ sent_min.
 const SENDER_LEN: usize = 32 + 32 + 4;
+/// Where a private message's text starts in its inner plaintext, the bytes
+/// [`ChunkView::plain`] runs through chunk by chunk: after the sender's keys
+/// and the minute it was sent. The front's plain row shows the plaintext
+/// from here (the machine reports it to the page).
+pub const TEXT_AT: usize = SENDER_LEN;
 /// The shortest possible inner plaintext: empty text.
 const INNER_MIN: usize = SENDER_LEN + SIGNATURE_LEN;
 /// The largest envelope body that still fits in [`MAX_ENVELOPE`].

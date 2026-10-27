@@ -2,7 +2,7 @@
 // the shared checks):
 //   node tools/check-bluetooth.cjs
 // Writes checks/app-ui/bluetooth/: 2x crops of the front's panel in every Bluetooth state (off, contacts, open,
-// request, request-held, requests-two, accepted, asking, send, locked, unavailable, unavailable-long) at 1024, 1440 and 1728
+// request, request-held, requests-two, accepted, asking, send, locked, unavailable, unavailable-long) at 1024, 1440, 1512 by 982 and 1728
 // (x2-<w>-<state>.png, with the deck, top bar and bank's foot for some), and the settings card's Bluetooth row.
 // Fails on page errors, a request to another host, text under 12px in the Bluetooth parts, a page that scrolls
 // sideways, and when: the settings card has no live Bluetooth row (Off, Contacts, Open; Off by default, kept across
@@ -474,7 +474,7 @@ const GROUP_NOTE = 'Anyone in Bluetooth range can read this Mac\'s name. Give it
     ['unavailable', { bluetooth: 2 }, async p => { await p.evaluate(() => window.__sim.bluetoothUnavailable('Bluetooth is off in System Settings.')); await settle(p, 'tape', () => !!document.querySelector('#btnote b').textContent); }],
     ['unavailable-long', { bluetooth: 1 }, async p => { await p.evaluate(() => window.__sim.bluetoothUnavailable('Bombechat may not use Bluetooth. Allow it in System Settings, Privacy and Security, Bluetooth.')); await settle(p, 'tape', () => !!document.querySelector('#btnote b').textContent); }],
   ];
-  for (const [w, h] of [[1024, 768], [1280, 800], [1440, 900], [1728, 1117]]) {
+  for (const [w, h] of [[1024, 768], [1280, 800], [1440, 900], [1512, 982], [1728, 1117]]) {
     let atOff = null;
     for (const [name, settings, run] of CROPS) {
       const ctx = await machine(settings);
@@ -499,7 +499,9 @@ const GROUP_NOTE = 'Anyone in Bluetooth range can read this Mac\'s name. Give it
       // uncovered by the slips around it, never a strip of blank paper
       const blank = await p.evaluate(() => { const col = document.querySelector('.col.tray'); if (!col) return []; const c = col.getBoundingClientRect(), all = [...col.querySelectorAll('.slip:not(.gone)')], out = [];
         for (const s of all.filter(e => e.classList.contains('edge'))) {
-          const r = s.getBoundingClientRect(), top = Math.max(r.top, c.top), bottom = Math.min(r.bottom, c.bottom); if (bottom <= top) continue;
+          // (as it shows: less what its clip-path cuts away)
+          const r = s.getBoundingClientRect(), cut = (getComputedStyle(s).clipPath.match(/inset\(([^)]*)\)/) || [, '0px'])[1].split(/\s+/).map(parseFloat), [ct, , cb = ct] = cut;
+          const top = Math.max(r.top + (ct || 0), c.top), bottom = Math.min(r.bottom - (cb || 0), c.bottom); if (bottom <= top) continue;
           const cover = all.filter(o => o !== s && !o.classList.contains('edge')).concat(all.filter(o => o !== s && o.classList.contains('edge') && all.indexOf(o) < all.indexOf(s))).map(o => o.getBoundingClientRect()).map(o => [o.top, o.bottom]).sort((a, b) => a[0] - b[0]);
           let shown = 0, y = top; for (const [t, b] of cover) { if (t > y) shown += Math.min(t, bottom) - y; y = Math.max(y, b); if (y >= bottom) break; } if (y < bottom) shown += bottom - y;
           if (shown > 14) out.push(`${s.textContent.trim().slice(0, 24)}: ${Math.round(shown)}px`); }

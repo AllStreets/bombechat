@@ -497,7 +497,8 @@ const url = q => 'http://127.0.0.1:4811/' + path.relative(ROOTDIR, page) + (q ? 
     await fp.waitForFunction(() => getComputedStyle(document.getElementById('fallback')).display !== 'none', null, { timeout: 60000 });
     const was = await fp.evaluate(() => window.__bc.get('volume'));
     await fp.click(`.row[data-id="volume"] .jk[data-i="${(was + 1) % 5}"]`);
-    await fp.waitForTimeout(300);
+    // the plug moved, as the card shows it (the check below says if it never did)
+    await fp.waitForFunction(w => window.__bc.get('volume') !== w && document.querySelector('.row[data-id="volume"] .val').textContent === String((w + 1) % 5 + 1), was, { timeout: 5000 }).catch(() => {});
     flat = await fp.evaluate(() => ({ fallback: getComputedStyle(document.getElementById('fallback')).display, hint: !!document.getElementById('hint').getBoundingClientRect().width,
       volume: window.__bc.get('volume'), label: document.querySelector('.row[data-id="volume"] .val').textContent }));
     flat.was = was;

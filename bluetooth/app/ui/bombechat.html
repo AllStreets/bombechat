@@ -130,10 +130,13 @@ body:has(>.unlock){perspective:none;overflow:hidden;height:100vh}
   background-image:var(--noise)}
 .app.turning{transform:rotateY(180deg);filter:brightness(.5)}
 body.turning{background:#0c0c0b}
-/* the machine's back, seen for the second half of the turn: a still of the real back panel as the settings page opens on
-   it, without its card (tools/media.cjs backstill renders it from settings.html; the standard edition has its own) */
-#back{position:fixed;inset:0;z-index:5;pointer-events:none;visibility:hidden;transform:rotateY(-180deg);backface-visibility:hidden;transition:transform .65s cubic-bezier(.55,.05,.35,1),visibility 0s .65s;
-  background:#0b0b0a url("img/back.webp") center top/cover no-repeat}
+/* the machine's back, seen for the second half of the turn: a still of the settings page as it opens, its card and its
+   panel framed as they will be when the turn lands. tools/media.cjs backstill renders one from settings.html for each
+   size of window (img/back-<w>x<h>.webp; the standard edition has its own) and backStill() lays the nearest. Fixed to
+   the window: body's perspective makes body the box a fixed child is placed in, so it is sized to the window, not the
+   page (the page is at its top while it turns) */
+#back{position:fixed;left:0;top:0;width:100vw;height:100vh;z-index:5;pointer-events:none;visibility:hidden;transform:rotateY(-180deg);backface-visibility:hidden;transition:transform .65s cubic-bezier(.55,.05,.35,1),visibility 0s .65s;
+  background:#0b0b0a left top/cover no-repeat}
 body.turning #back{visibility:visible;transform:rotateY(0);transition:transform .65s cubic-bezier(.55,.05,.35,1),visibility 0s}
 
 /* engraved traffolyte plate */
@@ -241,11 +244,11 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
 
 .logwrap{position:relative;flex:1 1 auto;min-height:0;margin-left:0!important;margin-right:0!important}
 .log{position:absolute;inset:0;overflow-y:auto;
-  /* its ends: whatever has scrolled toward the head, or down toward the reply line, fades out over most of a line, so
-     no line stands half cut at either edge; at the top or the foot of what it holds, that end is not faded at all.
-     --fade and --fade-b follow the scroll (fadeLog) */
-  -webkit-mask-image:linear-gradient(transparent 0,transparent calc(var(--fade,0px) * .25),#000 calc(6px + var(--fade,0px)),#000 calc(100% - 6px - var(--fade-b,0px)),transparent calc(100% - var(--fade-b,0px) * .25));
-  mask-image:linear-gradient(transparent 0,transparent calc(var(--fade,0px) * .25),#000 calc(6px + var(--fade,0px)),#000 calc(100% - 6px - var(--fade-b,0px)),transparent calc(100% - var(--fade-b,0px) * .25));overscroll-behavior:contain;padding:8px 14px 10px 22px;margin-right:8px;
+  /* its ends: a line the head or the reply line cuts through is not shown at all, so no part of a line stands at
+     either edge; the next line comes in over the white between them. At the top or the foot of what it holds, that
+     end is not masked. --ta/--tb (from the top) and --ba/--bb (from the foot) follow the scroll (fadeLog) */
+  -webkit-mask-image:linear-gradient(transparent 0,transparent var(--ta,0px),#000 var(--tb,0px),#000 calc(100% - var(--bb,0px)),transparent calc(100% - var(--ba,0px)));
+  mask-image:linear-gradient(transparent 0,transparent var(--ta,0px),#000 var(--tb,0px),#000 calc(100% - var(--bb,0px)),transparent calc(100% - var(--ba,0px)));overscroll-behavior:contain;padding:8px 14px 10px 22px;margin-right:8px;
   scrollbar-width:thin;scrollbar-color:rgba(75,74,71,.55) transparent;
   background:linear-gradient(90deg,transparent 99.5px,rgba(47,90,75,.45) 99.5px,rgba(47,90,75,.45) 100.5px,transparent 100.5px) no-repeat;background-attachment:local}
 .log::-webkit-scrollbar{width:6px}
@@ -439,6 +442,12 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
 .blank i::after{content:"";position:absolute;left:1px;right:1px;top:3px;height:1px;background:#3b3934}
 .blank b{position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);text-align:center;font-family:var(--engr);font-weight:400;font-size:12px;letter-spacing:.05em;color:#5a5750;text-shadow:0 1px 0 rgba(255,255,255,.07),0 -1px 0 rgba(0,0,0,.75)}
 .row2{display:grid;grid-template-columns:minmax(0,190px) minmax(0,1fr);gap:12px;align-items:start}
+/* where the panel stands beside the sheet and the card, a taller window gives it room between the switches and the
+   stations: the meter takes it, a larger instrument as the knobs are larger, never more than about half the row */
+@media (min-width:1400px){.row2{grid-template-columns:minmax(0,clamp(190px,(100vh - 960px) * .5 + 190px,min(270px,48%))) minmax(0,1fr);
+  /* and the row stands in the middle of that room: the switches keep room under them for Light's tape, the stations
+     the same above them */
+  margin-bottom:16px}}
 .vu{border-radius:3px;background:#0d0d0c;padding:6px;box-shadow:inset 0 0 0 1px #000,0 1px 0 rgba(255,255,255,.04)}
 .vu svg{display:block;width:100%;height:auto}
 .outbox{display:flex;flex-direction:column;gap:8px;min-width:0}
@@ -503,6 +512,23 @@ body:has(.lamp:not([hidden])){overflow:hidden}
 .bezel>i:nth-of-type(3){left:4px;bottom:4px;transform:rotate(-40deg)}.bezel>i:nth-of-type(4){right:4px;bottom:4px;transform:rotate(25deg)}
 .bezel canvas{display:block;position:relative;background:#fff}
 .lamp-foot{display:flex;align-items:center;gap:14px}
+/* the band over the drum bay, where it has the room: the lamp's instruments on a tile of their own in its middle, the
+   switches' pressed steel with the lamp's name engraved across its head and its two readouts, larger, under it; the head
+   keeps the lamp's plate. Placed from the shape (--nx, --ny), so it moves with nothing and changes only as they count */
+.lamp.roomy .lamp-head{position:static;min-height:var(--head-h,auto)}
+.lamp.roomy{--tw:min(380px,100% - var(--nx) - 48px);--tt:calc((44px + var(--ny) - 196px) / 2)}
+.lamp.roomy .lamp-head::after{content:"Signal lamp" / "";position:absolute;z-index:0;width:var(--tw);height:196px;box-sizing:border-box;padding-top:24px;
+  left:calc(var(--nx) / 2 + 50% - var(--tw) / 2);top:var(--tt);
+  font-family:var(--engr);font-size:15px;letter-spacing:.1em;text-align:center;color:#d9d2bf;text-shadow:0 -1px 0 rgba(0,0,0,.8),0 1px 0 rgba(255,255,255,.06);
+  border-radius:2px;background:var(--screw-a,none) 7px 7px/10px no-repeat,var(--screw-b,none) calc(100% - 7px) 7px/10px no-repeat,var(--screw-b,none) 7px calc(100% - 7px)/10px no-repeat,var(--screw-a,none) calc(100% - 7px) calc(100% - 7px)/10px no-repeat,
+    linear-gradient(var(--la),#2b2c29,#1d1e1b);
+  box-shadow:inset calc(var(--lx) * -1px) calc(var(--ly) * -1px) 0 rgba(255,255,255,.1),inset calc(var(--lx) * 1px) calc(var(--ly) * 1px) 0 rgba(0,0,0,.55),inset 0 0 0 1px rgba(0,0,0,.6),
+    calc(var(--lx) * -1.5px) calc(var(--ly) * -1.5px) 1.5px rgba(0,0,0,.5),calc(var(--lx) * -5px) calc(var(--ly) * -5px) 8px rgba(0,0,0,.28)}
+/* the two readouts as a table: their plates down the left, their wheels down the right */
+.lamp.roomy #lampnrd,.lamp.roomy #lamprd{position:absolute;z-index:1;left:calc(var(--nx) / 2 + 50% - min(150px,var(--tw) / 2 - 28px));width:min(300px,var(--tw) - 56px);justify-content:space-between}
+.lamp.roomy #lampnrd{top:calc(var(--tt) + 70px)}
+.lamp.roomy #lamprd{top:calc(var(--tt) + 128px)}
+.lamp.roomy .lamp-head .odo i{font-size:19px;width:17px;height:25px}
 .lamp-foot .holder{flex:1 1 auto}
 .lamp-foot .holder span{white-space:normal}
 
@@ -682,7 +708,7 @@ body:has(.lamp:not([hidden])){overflow:hidden}
 </div>
 
 <script type="module">
-import { bridge, buildPlate } from './bridge.js';
+import { bridge, buildPlate, TEXT_AT, CHUNK } from './bridge.js';
 import { front } from './edition.js';
 /* ---------- the sheet's foot in the first screen ----------
    Below 1400px the deck runs taller than the window (the bank, then the panel and the menu beside the sheet), so the
@@ -883,10 +909,25 @@ function put(ent){if(!booting){log.appendChild(ent);return}const at=+ent.dataset
 // the compose block changes height (a notice's line, a longer reply): a reader at the bottom stays there
 function pinned(fn){const was=atBottom();fn();if(was)log.scrollTop=log.scrollHeight}
 // the log's ends fade by as much as there is beyond them, up to most of a line
-function fadeLog(){const below=Math.max(0,log.scrollHeight-log.clientHeight-log.scrollTop);
-  log.style.setProperty('--fade',Math.min(18,log.scrollTop)+'px');log.style.setProperty('--fade-b',Math.min(18,below)+'px')}
+// the lines on the sheet as they stand in the log's box, top and bottom from its top edge: each line of type, and each
+// strip of tape or stamp whole (its paper is part of its line)
+function logLines(){const lb=log.getBoundingClientRect(),out=[],r=document.createRange();
+  for(const e of log.querySelectorAll('.strip,.stamp')){const b=e.getBoundingClientRect();if(b.height)out.push([b.top-lb.top,b.bottom-lb.top])}
+  const w=document.createTreeWalker(log,NodeFilter.SHOW_TEXT,{acceptNode:n=>n.nodeValue.trim()&&!n.parentElement.closest('.strip,.stamp')?1:2});
+  while(w.nextNode()){r.selectNodeContents(w.currentNode);for(const b of r.getClientRects())if(b.height)out.push([b.top-lb.top,b.bottom-lb.top])}
+  return out}
+// a line the edge cuts through is masked whole, and the mask opens over the white under it (or above it, at the foot),
+// never more than 10 px: so the first and last lines that show are whole
+function fadeLog(){const h=log.clientHeight,set=(k,v)=>log.style.setProperty(k,Math.round(v*10)/10+'px');
+  const top=log.scrollTop>0,foot=log.scrollHeight-log.clientHeight-log.scrollTop>1;
+  if(!top&&!foot){for(const k of ['--ta','--tb','--ba','--bb'])log.style.removeProperty(k);return}
+  const L=logLines();
+  let ta=0,tb=0,ba=0,bb=0;
+  if(top){ta=Math.max(0,...L.filter(l=>l[0]<0&&l[1]>0).map(l=>l[1]));const next=Math.min(h,...L.filter(l=>l[0]>=ta-.5).map(l=>l[0]));tb=Math.max(ta+1,Math.min(next,ta+10))}
+  if(foot){const cut=Math.min(h,...L.filter(l=>l[0]<h&&l[1]>h).map(l=>l[0]));ba=h-cut;const prev=Math.max(0,...L.filter(l=>l[1]<=cut+.5).map(l=>l[1]));bb=Math.max(ba+1,Math.min(h-prev,ba+10))}
+  set('--ta',ta);set('--tb',tb);set('--ba',ba);set('--bb',bb)}
 log.addEventListener('scroll',()=>{if(atBottom())newtab.hidden=true;fadeLog()},{passive:true});
-new ResizeObserver(fadeLog).observe(log);new MutationObserver(fadeLog).observe(log,{childList:true,subtree:true});
+new ResizeObserver(fadeLog).observe(log);new MutationObserver(fadeLog).observe(log,{childList:true,subtree:true});document.fonts&&document.fonts.ready.then(fadeLog);
 newtab.addEventListener('click',()=>{toBottom(true);log.focus({preventScroll:true})});
 const hhmm=ms=>{const d=new Date(ms);return String(d.getHours()).padStart(2,'0')+'.'+String(d.getMinutes()).padStart(2,'0')};
 const el=(tag,cls,text)=>{const e=document.createElement(tag);if(cls)e.className=cls;if(text!=null)e.textContent=text;return e};
@@ -958,14 +999,15 @@ function failArrival(a){if(!a||!a.ent)return;clearTimeout(a.stallT);const ent=a.
 // provisional text, as it stands when the frame comes up, cut to the frame), the latest twelve characters of it when
 // there are more, so a short message ends up whole on the row and stays there to the last frame. Letters read as
 // themselves, anything else as the spacer. The Heard and Key rows stay each frame's own ciphertext and keystream.
-const TEXT_FROM=68,utf8=new TextEncoder(),unutf8=new TextDecoder('utf-8');
-function plainRow(text,through){const b=utf8.encode(text||''),n=Math.max(0,Math.min(b.length,through-TEXT_FROM));
+const utf8=new TextEncoder(),unutf8=new TextDecoder('utf-8');
+function plainRow(text,through){const b=utf8.encode(text||''),n=Math.max(0,Math.min(b.length,through-TEXT_AT));
   const t=unutf8.decode(b.slice(0,n)).replace(/\uFFFD+$/,'');
   return pad([...t].slice(-W).map(ch=>/[a-z]/i.test(ch)?ch.toUpperCase():'X').join(''))}
 // each landed chunk onto the drums, twelve letters a frame, after what is already waiting to show
 function toDrums(c,a){const v=c.view,fpc=Math.max(1,Math.ceil(v.plain.length/W));if(!a.fpc||c.index===0)a.fpc=fpc;
-  // every chunk but the last is full: where this one starts in the sealed message
-  if(c.index<c.of-1)a.csize=v.plain.length;const at=c.index*(a.csize||v.plain.length);
+  // every chunk but the last is full (the node's chunk size): where this one starts in the sealed message, even for a
+  // last chunk that comes first, the others missed and still to come again
+  const at=c.index*CHUNK;
   // the text known so far for this message: it only grows, chunk by chunk
   if(c.index===0||!a.said||(c.text||'').length>=a.said.length)a.said=c.text||'';
   const base=c.index*a.fpc,total=c.index===c.of-1?base+fpc:c.of*a.fpc;
@@ -1272,6 +1314,13 @@ sndLever.addEventListener('click',()=>{const v=sndLever.getAttribute('aria-press
   const was=KEPT.machine;KEPT.machine=v?1:0;Promise.resolve(bridge.setSetting('machine',KEPT.machine)).catch(()=>{KEPT.machine=was;machineSound()})});
 
 /* ---------- settings: turn the machine round ---------- */
+// the still of the back for this window: the size it was rendered at nearest this window's, in proportion (each
+// is the settings page at that size, so at those sizes the turn lands on exactly what it showed)
+const BACKS=[[1024,768],[1280,800],[1440,900],[1512,982],[1728,1117]];
+function backStill(){const W=innerWidth,H=innerHeight;let best=BACKS[0],far=Infinity;
+  for(const b of BACKS){const d=Math.abs(Math.log(W/b[0]))+Math.abs(Math.log(H/b[1]));if(d<far){far=d;best=b}}
+  const url=`img/back-${best[0]}x${best[1]}.webp`,el=document.getElementById('back');if(el.dataset.still!==url){el.dataset.still=url;el.style.backgroundImage=`url("${url}")`}}
+backStill();addEventListener('resize',backStill);
 document.getElementById('settings').addEventListener('click',e=>{
   if(e.metaKey||e.ctrlKey||e.shiftKey||e.button!==0)return;e.preventDefault();const href=e.currentTarget.href;
   try{sessionStorage.setItem('bombechat-turn','front-to-back')}catch(_){}
@@ -1314,7 +1363,7 @@ function boxIn(el,ref){
 /* ---------- tests ---------- */
 const mirror={plain:document.getElementById('mirror-plain'),heard:document.getElementById('mirror-heard'),key:document.getElementById('mirror-key')};
 const rowText=r=>cells.slice(r*12,r*12+12).map(c=>c.wl.textContent).join('');
-window.__bank={rails:()=>({between:document.querySelectorAll('#drums .bar').length,axles:0}),rows:()=>({plain:rowText(0),heard:rowText(1),key:rowText(2)}),frame:()=>current&&{plain:current.plain,heard:current.heard,key:current.key,no:current.no},cells,ready:false,gl:false};
+window.__bank={rails:()=>({between:document.querySelectorAll('#drums .bar').length,axles:0}),rows:()=>({plain:rowText(0),heard:rowText(1),key:rowText(2)}),frame:()=>current&&{plain:current.plain,heard:current.heard,key:current.key,no:current.no,through:current.through},cells,ready:false,gl:false};
 window.__drum={spin:(n,p)=>Drum.spin(n,p),get on(){return Drum.on},get gain(){return Drum.gain},get receiving(){return Drum.receiving},get running(){return Drum.running},get calls(){return Drum.calls},get sounds(){return Drum.sounds}};
 function syncMirror(){const r=window.__bank.rows();if(mirror.plain.textContent!==r.plain)mirror.plain.textContent=r.plain.replace(/X/g,' ');mirror.heard.textContent=r.heard;mirror.key.textContent=r.key}
 
@@ -1542,6 +1591,10 @@ function lampPlace(){const a=sheetEl.getBoundingClientRect(),m=document.querySel
   const reach=Math.min(innerWidth-16,Math.round(bk.right)),depth=Math.round((bk.bottom+pn.top)/2-top);
   const band=reach>left+col&&depth>0&&depth<h;
   lampEl.style.left=left+'px';lampEl.style.width=(band?reach-left:col)+'px';lampEl.classList.toggle('banded',band);
+  // room in the band for the lamp's instruments on a tile of their own
+  // (the head keeps the height it has with the readouts in it, so the code's size is the same either way)
+  if(!lampEl.classList.contains('roomy'))lampEl.style.setProperty('--head-h',lampEl.querySelector('.lamp-head').getBoundingClientRect().height+'px');
+  lampEl.classList.toggle('roomy',band&&reach-left-col>=400&&depth>=300);
   lampEl.style.setProperty('--nx',col+'px');lampEl.style.setProperty('--ny',(band?depth:h)+'px')}
 function lampFit(){if(lampEl.hidden)return;
   lampPlace();

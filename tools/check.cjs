@@ -287,6 +287,28 @@ function measureText() {
         return { n: B.length, bad }; });
       if (ring) { r.ringBolts = ring.n; if (ring.n < 12 || ring.bad.length) problems.push(`${w}x${h}: the front's bolt ring: ${ring.n} bolts; ${ring.bad.slice(0, 4).join('; ')}`); }
     }
+    // the outbox tray, on either build: a well the size of the slips in it (no more than about 24 px of bare floor under
+    // the last), with the slip and with nothing waiting, its words then engraved in its floor. And the panel's column
+    // in proportion: on a wide window the meter's row stands in the middle of the room between the switches and the
+    // stations; on a narrow one the panel ends about where the sheet beside it does
+    if (APP) {
+      const tray = async () => { await p.waitForFunction(() => { const t = __bank.trayWell && __bank.trayWell(), s = [...document.querySelectorAll('.row2 .slip:not(.gone)')].filter(e => e.offsetParent);
+        return t && s.length && Math.abs(t.y + t.h - 6 - Math.max(...s.map(e => e.getBoundingClientRect().bottom + scrollY))) < 30; }, null, { timeout: 8000 }).catch(() => {});
+        return p.evaluate(() => { const t = __bank.trayWell(), col = document.querySelector('.row2 > .col.tray') || document.querySelector('.outbox');
+          const s = [...document.querySelectorAll('.row2 .slip:not(.gone)')].filter(e => e.offsetParent).map(e => e.getBoundingClientRect());
+          const box = s => { const r = document.querySelector(s).getBoundingClientRect(); return { t: r.top + scrollY, b: r.bottom + scrollY }; };
+          const vu = box('.vu'), mods = box('.mods'), row3 = box('.row3'), sheet = box('.sheet'), panel = box('.panel');
+          const top = Math.min(vu.t, ...s.map(r => r.top + scrollY)), foot = Math.max(vu.b, ...s.map(r => r.bottom + scrollY));
+          return { bare: t ? Math.round(t.y + t.h - 6 - Math.max(...s.map(r => r.bottom + scrollY))) : null, scrolls: /auto|scroll/.test(getComputedStyle(col).overflowY) && col.scrollHeight > col.clientHeight + 4,
+            above: Math.round(top - mods.b), below: Math.round(row3.t - foot), past: Math.round(panel.b - sheet.b) }; }); };
+      const rest = await tray();
+      await p.evaluate(() => { document.getElementById('outbox').innerHTML = '<div class="slip empty">Nothing waiting to send.</div>'; });
+      const empty = await tray();
+      r.tray = { rest, empty }; report.viewports[`${w}x${h}`].tray = r.tray;
+      for (const [k, t] of Object.entries(r.tray)) if (t.bare === null || (!t.scrolls && t.bare > 24)) problems.push(`${w}x${h}: the outbox tray ${k} is not sized to its slips: ${JSON.stringify(t)}`);
+      if (w >= 1400 && Math.abs(rest.above - rest.below) > 8) problems.push(`${w}x${h}: the meter's row is not in the middle of the panel's room: ${JSON.stringify(rest)}`);
+      if (w < 1400 && rest.past > 32) problems.push(`${w}x${h}: the panel runs ${rest.past}px past the sheet beside it`);
+    }
     await p.screenshot({ path: path.join(out, `vp-${w}x${h}.png`) });
     if (r.pageHeight > h) await p.screenshot({ path: path.join(out, `vp-${w}x${h}-full.png`), fullPage: true });
     await p.close();
@@ -490,27 +512,50 @@ function measureText() {
   if (rmSpin) problems.push('reduced motion still turns the 3D drums');
   await rm.close();
 
-  // 6a. the turn to the back panel: its second half shows the still of the real back (tools/media.cjs backstill),
-  // there and within its budget
+  // 6a. the turn to the back panel: its second half shows a still of the settings page as it opens (tools/media.cjs
+  // backstill), each within its budget, fixed to the window, and framed as the page it lands on: at each window size the
+  // panel in the still (laid as the front lays it) stands where settings.html's opening view has it, to a few pixels
   if (APP) {
-    const still = path.join(path.dirname(page), 'img', 'back.webp');
-    const bytes = fs.existsSync(still) ? fs.statSync(still).size : 0;
-    if (!bytes) problems.push(`the turn: no still of the back at ${path.relative(ROOTDIR, still)}`);
-    else if (bytes > 400 * 1024) problems.push(`the turn: the back's still is ${bytes} bytes, over its 400 KB`);
-    const tp = await browser.newPage({ viewport: { width: 1440, height: 900 } });
-    watch(tp, 'turn');
-    await tp.goto(url('still'));
-    await tp.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
-    const turn = await tp.evaluate(async () => {
-      document.body.classList.add('turning'); document.getElementById('app').classList.add('turning');
-      await new Promise(r => setTimeout(r, 900));
-      const b = document.getElementById('back'), cs = getComputedStyle(b), src = (cs.backgroundImage.match(/url\("?([^")]+)"?\)/) || [])[1];
-      const img = src && await new Promise(r => { const i = new Image(); i.onload = () => r(i.naturalWidth); i.onerror = () => r(0); i.src = src; });
-      return { visible: cs.visibility, src: src || '', width: img || 0, rect: b.getBoundingClientRect().width };
-    });
-    if (turn.visible !== 'visible' || !/img\/back\.webp$/.test(turn.src) || turn.width < 1440 || turn.rect !== 1440) problems.push(`the turn's second half does not show the back's still: ${JSON.stringify(turn)}`);
-    await tp.screenshot({ path: path.join(out, 'turn-back.png') });
-    await tp.close();
+    const dir = path.join(path.dirname(page), 'img'), indexFile = path.join(dir, 'back.json');
+    const index = fs.existsSync(indexFile) ? JSON.parse(fs.readFileSync(indexFile, 'utf8')) : { sizes: [] };
+    if (!index.sizes.length) problems.push(`the turn: no stills of the back listed in ${path.relative(ROOTDIR, indexFile)}`);
+    for (const st of index.sizes) {
+      const bytes = fs.existsSync(path.join(dir, st.file)) ? fs.statSync(path.join(dir, st.file)).size : 0;
+      if (!bytes) problems.push(`the turn: no still of the back at ${st.file}`);
+      else if (bytes > 400 * 1024) problems.push(`the turn: the back's still ${st.file} is ${bytes} bytes, over its 400 KB`);
+    }
+    report.turn = {};
+    for (const [w, h] of VIEWPORTS) {
+      const tp = await browser.newPage({ viewport: { width: w, height: h } });
+      watch(tp, `turn ${w}x${h}`);
+      await tp.goto(url('still'));
+      await tp.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
+      await tp.evaluate(() => { scrollTo(0, 0); document.body.classList.add('turning'); document.getElementById('app').classList.add('turning'); });
+      // the turn's second half over: the back shown and still
+      await tp.waitForFunction(() => { const b = document.getElementById('back'); return getComputedStyle(b).visibility === 'visible' && !b.getAnimations().length; }, null, { timeout: 8000 }).catch(() => {});
+      const shown = await tp.evaluate(async () => {
+        const b = document.getElementById('back'), cs = getComputedStyle(b), src = (cs.backgroundImage.match(/url\("?([^")]+)"?\)/) || [])[1] || '', r = b.getBoundingClientRect();
+        const img = src && await new Promise(res => { const i = new Image(); i.onload = () => res([i.naturalWidth, i.naturalHeight]); i.onerror = () => res(null); i.src = src; });
+        return { visible: cs.visibility, file: src.split('/').pop(), img, rect: [r.left, r.top, r.width, r.height].map(Math.round), size: cs.backgroundSize, at: cs.backgroundPosition, view: [innerWidth, innerHeight] };
+      });
+      await tp.screenshot({ path: path.join(out, `turn-back-${w}x${h}.png`) });
+      await tp.close();
+      const st = index.sizes.find(s => s.file === shown.file);
+      // where the settings page, opened at this size, has its panel once its camera has settled
+      const sp = await browser.newPage({ viewport: { width: w, height: h } });
+      watch(sp, `turn ${w}x${h}: settings`);
+      await sp.goto(url('still').replace('bombechat.html', 'settings.html'));
+      await sp.waitForFunction(() => { if (!window.__ready) return false; const r = JSON.stringify(__bc.panel());
+        window.__still = r === window.__panelWas ? (window.__still || 0) + 1 : 0; window.__panelWas = r; return window.__still > 10; }, null, { timeout: 60000, polling: 'raf' });
+      const real = await sp.evaluate(() => __bc.panel());
+      await sp.close();
+      const t = report.turn[`${w}x${h}`] = { shown, real };
+      if (shown.visible !== 'visible' || !st || !shown.img || shown.size !== 'cover' || shown.at !== '0% 0%' || shown.rect.join() !== [0, 0, w, h].join()) { problems.push(`the turn at ${w}x${h} does not show a still of the back fixed to the window: ${JSON.stringify(shown)}`); continue; }
+      const k = Math.max(w / st.w, h / st.h), placed = Object.fromEntries(Object.entries(st.panel).map(([e, v]) => [e, v * k]));
+      t.placed = placed;
+      const off = Math.max(...['left', 'top', 'right', 'bottom'].map(e => Math.abs(placed[e] - real[e])));
+      if (off > 3) problems.push(`the turn at ${w}x${h} shows the back's panel ${off.toFixed(1)}px from where settings.html opens it: ${JSON.stringify({ file: st.file, placed, real })}`);
+    }
   }
 
   // 6b. the drums follow the bridge: a known chunk injected through the simulator
@@ -551,6 +596,19 @@ function measureText() {
     if (!bridged.audio) problems.push('audio never started, so muting could not be tested');
     else if (!(bridged.after > 0)) problems.push('Drum.spin stayed silent after reception ended');
     await br.close();
+
+    // a message's last chunk heard first, the ones before it missed: its frames still stand where it ends in the sealed
+    // message (the node's chunk size, not the short last chunk's), so its last frame runs through the whole message
+    const lc = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    watch(lc, 'last chunk first');
+    await lc.goto(url());
+    await lc.waitForFunction(() => window.__bank && __bank.ready && window.__sim, null, { timeout: 60000 });
+    const LONG = 'Water and blankets at the church on Fifth. The clinic has a radio and the generator runs until Sunday night.!';
+    const sealed = await lc.evaluate(t => window.__sim.inject(t, { only: [Math.ceil((68 + new TextEncoder().encode(t).length + 64) / 48) - 1] }), LONG);
+    await lc.waitForFunction(n => { const f = __bank.frame(); return f && f.through === n; }, sealed, { timeout: 10000 }).catch(() => {});
+    report.lastChunkFirst = { sealed, through: await lc.evaluate(() => (__bank.frame() || {}).through) };
+    if (report.lastChunkFirst.through !== sealed) problems.push(`a last chunk heard first stands at the wrong place in its message: ${JSON.stringify(report.lastChunkFirst)}`);
+    await lc.close();
 
     // provisional tape: chunks type onto the sheet in grey, not yet checked; the message
     // from this sheet's contact replaces it, another contact's takes it away, and one

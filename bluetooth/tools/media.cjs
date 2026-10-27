@@ -6,10 +6,10 @@
 // tree (bluetooth/, through its own copy of serve.cjs) instead of the root's, still writing to the root's docs/media/;
 // the bluetooth target always renders from that tree, since the Bluetooth switch is only there. Run
 // tools/sync-bluetooth.sh first so the edition shows what the root does.
-// backstill is not a README picture: it is the still of the back panel the front shows for the second half of its turn
-// to the settings page (app/ui/img/back.webp, and the standard edition's own, with its live Bluetooth row, at
-// bluetooth/edition/files/app/ui/img/back.webp). Regenerate it whenever the back's geometry changes, then run
-// tools/sync-bluetooth.sh.
+// backstill is not a README picture: it is the stills of the settings page the front shows for the second half of its
+// turn to it, one for each size of window (app/ui/img/back-<w>x<h>.webp and back.json, and the standard edition's own,
+// with its live Bluetooth row, in bluetooth/edition/files/app/ui/img/). Regenerate them whenever the back or its card
+// changes, then git add them and run tools/sync-bluetooth.sh.
 // Needs Google Chrome (Playwright's channel 'chrome', for Metal) and ffmpeg for the GIFs, and gifsicle to make
 // the clips small enough. The icon needs python3 with Pillow, and macOS's iconutil for icon.icns.
 const path = require('path');
@@ -20,6 +20,10 @@ const { start } = require('./serve.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const OUT = path.join(ROOT, 'docs', 'media');
+// the commit the pictures are made from, as the app's build plate names it (app/src-tauri/build.rs): the short hash,
+// with a + when the tree has changes not yet committed. Read once, before any picture is written
+const COMMIT = (() => { try { const git = (...a) => execFileSync('git', a, { cwd: ROOT, encoding: 'utf8' }).trim();
+  const hash = git('rev-parse', '--short', 'HEAD'); return hash + (git('status', '--porcelain') ? '+' : ''); } catch (e) { return 'unknown'; } })();
 const PORT = 4814;
 const at = p => `http://127.0.0.1:${PORT}/${p}`;
 const args = process.argv.slice(2);
@@ -35,14 +39,14 @@ const doing = k => !want.size || want.has(k);
 fs.mkdirSync(OUT, { recursive: true });
 
 // the first run as the app shows it: no store yet, so the page asks for a name and a passphrase
-function firstRun() {
+function firstRun(COMMIT) {
   const listeners = {};
   window.__TAURI__ = {
     event: { listen: (n, f) => { (listeners[n] = listeners[n] || []).push(f); return Promise.resolve(() => {}); } },
     core: { invoke: cmd => {
       switch (cmd) {
         case 'contacts': return Promise.reject('no store yet');
-        case 'machine': return Promise.resolve({ name: 'Machine No. 1', key: 'a3f09c1e'.repeat(16), you: '', held: 0, version: '0.5.0', commit: 'a1b2c3d', broadcast_max: 3939 });
+        case 'machine': return Promise.resolve({ name: 'Machine No. 1', key: 'a3f09c1e'.repeat(16), you: '', held: 0, version: '0.5.0', commit: COMMIT, broadcast_max: 3939 });
         case 'settings': return Promise.resolve({ sound: 2, volume: 2, band: 0, light: 0, flash: 1, machine: 1, machvol: 2, carry: 1, hops: 3, hold: 2, quiet: 2, repeats: 2, lock: 1, expire: 0, inperson: 1 });
         case 'setting_notes': return Promise.resolve({});
         default: return new Promise(() => {});
@@ -119,34 +123,49 @@ function virtualClock() {
     if (btServer) btServer.close();
   }
 
-  // The back panel as the settings page opens on it, without its card: the machine's top strip (its maker's plate
-  // only) and the panel's overview filling the window below it, rendered in each tree (the airgapped build's back has
-  // Bluetooth blanked off, the standard edition's a live row) and written as WebP, 1.5 times a 1440 by 900 window
+  // The back as the settings page opens on it, card and all, at each size of window the front chooses a still for
+  // (bombechat.html's BACKS): the page's opening framing, the turn's second half. Rendered in each tree (the airgapped
+  // build's back has Bluetooth blanked off, the standard edition's a live row) as WebP, at twice the window where that
+  // fits the budget and less where it doesn't, with img/back.json saying where the panel stands in each (for the check
+  // that the still is what the turn lands on). The top bar's build plate is left out: it says what this browser is,
+  // not the app.
   async function backStill() {
-    const BUDGET = 400 * 1024;
-    for (const [tree, port, dest] of [[null, PORT + 2, path.join(ROOT, 'app', 'ui', 'img', 'back.webp')],
-      ['bluetooth', PORT + 3, path.join(EDITION_ROOT, 'edition', 'files', 'app', 'ui', 'img', 'back.webp')]]) {
+    const BUDGET = 400 * 1024, SIZES = [[1024, 768], [1280, 800], [1440, 900], [1512, 982], [1728, 1117]];
+    for (const [tree, port, dir] of [[null, PORT + 2, path.join(ROOT, 'app', 'ui', 'img')],
+      ['bluetooth', PORT + 3, path.join(EDITION_ROOT, 'edition', 'files', 'app', 'ui', 'img')]]) {
       const srv = await serverFor(tree)(port);
+      const index = { sizes: [] };
       try {
-        const c = await ctx(1440, 900, 1.5);
-        await c.addInitScript(() => { try { localStorage.clear(); sessionStorage.clear(); } catch (e) {} });
-        const p = await c.newPage(); errors(p);
-        await p.goto(`http://127.0.0.1:${port}/app/ui/settings.html?still`);
-        await p.waitForFunction(() => window.__ready, null, { timeout: 60000 });
-        await p.evaluate(() => document.fonts.ready);
-        await p.addStyleTag({ content: '.cardwrap,.top .rt,.top #back,#loading,#tag,#fullview,#hint{display:none!important}.stage{grid-template-columns:minmax(0,1fr)!important}' });
-        // the view grows to the window; let the panel fit itself to it and settle
-        await p.evaluate(() => new Promise(r => { dispatchEvent(new Event('resize')); let n = 0; const f = () => ++n > 40 ? r() : requestAnimationFrame(f); requestAnimationFrame(f); }));
-        await p.waitForTimeout(800);
-        const png = await p.screenshot({ type: 'png' });
-        const webp = await p.evaluate(async b64 => { const i = new Image(); i.src = 'data:image/png;base64,' + b64; await i.decode();
-          const cv = document.createElement('canvas'); cv.width = i.naturalWidth; cv.height = i.naturalHeight; cv.getContext('2d').drawImage(i, 0, 0);
-          return cv.toDataURL('image/webp', .8).split(',')[1]; }, png.toString('base64'));
-        const buf = Buffer.from(webp, 'base64');
-        if (buf.length > BUDGET) throw new Error(`the back's still is ${buf.length} bytes, over its ${BUDGET}`);
-        fs.mkdirSync(path.dirname(dest), { recursive: true }); fs.writeFileSync(dest, buf);
-        console.log(path.relative(ROOT, dest), `${Math.round(buf.length / 1024)} KB`);
-        await c.close();
+        fs.mkdirSync(dir, { recursive: true });
+        for (const f of fs.readdirSync(dir)) if (/^back(-\d+x\d+)?\.webp$/.test(f)) fs.rmSync(path.join(dir, f));
+        for (const [w, h] of SIZES) {
+          let buf = null, at = 0, panel = null;
+          for (const [scale, q] of [[2, .8], [2, .72], [2, .64], [1.75, .7], [1.5, .7], [1.5, .6]]) {
+            const c = await ctx(w, h, scale);
+            await c.addInitScript(() => { try { localStorage.clear(); sessionStorage.clear(); } catch (e) {} });
+            const p = await c.newPage(); errors(p);
+            await p.goto(`http://127.0.0.1:${port}/app/ui/settings.html?still`);
+            await p.waitForFunction(() => window.__ready, null, { timeout: 60000 });
+            await p.evaluate(() => document.fonts.ready);
+            await p.addStyleTag({ content: '.top .build,.top .saved,#loading,#tag,#fullview{visibility:hidden!important}' });
+            // settled: the camera at its opening framing, the loading veil gone
+            await p.evaluate(() => new Promise(r => { let n = 0; const f = () => ++n > 40 ? r() : requestAnimationFrame(f); requestAnimationFrame(f); }));
+            panel = await p.evaluate(() => { const r = __bc.panel(); return Object.fromEntries(Object.entries(r).map(([k, v]) => [k, Math.round(v * 10) / 10])); });
+            const png = await p.screenshot({ type: 'png' });
+            const webp = await p.evaluate(async ([b64, q]) => { const i = new Image(); i.src = 'data:image/png;base64,' + b64; await i.decode();
+              const cv = document.createElement('canvas'); cv.width = i.naturalWidth; cv.height = i.naturalHeight; cv.getContext('2d').drawImage(i, 0, 0);
+              return cv.toDataURL('image/webp', q).split(',')[1]; }, [png.toString('base64'), q]);
+            await c.close();
+            buf = Buffer.from(webp, 'base64'); at = scale;
+            if (buf.length <= BUDGET) break;
+          }
+          if (buf.length > BUDGET) throw new Error(`the back's still at ${w}x${h} is ${buf.length} bytes, over its ${BUDGET}`);
+          const file = `back-${w}x${h}.webp`;
+          fs.writeFileSync(path.join(dir, file), buf);
+          index.sizes.push({ w, h, file, scale: at, panel });
+          console.log(path.relative(ROOT, path.join(dir, file)), `${Math.round(buf.length / 1024)} KB at ${at}x`);
+        }
+        fs.writeFileSync(path.join(dir, 'back.json'), JSON.stringify(index, null, 1) + '\n');
       } finally { srv.close(); }
     }
   }
@@ -351,7 +370,7 @@ for px, cut, out in json.loads(sys.argv[2]):
     // the first run, as the app shows it before there is a store
     {
       const c = await ctx(1440, 900, 2);
-      await c.addInitScript(firstRun);
+      await c.addInitScript(firstRun, COMMIT);
       const p = await c.newPage(); errors(p);
       await p.goto(at('app/ui/bombechat.html?still'));
       await p.waitForSelector('.unlock input[name=who]');
@@ -719,7 +738,7 @@ for px, cut, out in json.loads(sys.argv[2]):
     const c = await ctx(1280, 800, 1.5);
     await c.addInitScript(() => { try { localStorage.clear(); sessionStorage.clear(); } catch (e) {} });
     await c.addInitScript(virtualClock);
-    await c.addInitScript(() => {
+    await c.addInitScript(COMMIT => {
       // the morning the other pictures are set on, whenever the clip is made
       const RealDate = Date, off = new RealDate(2026, 9, 24, 9, 16).getTime() - RealDate.now();
       window.Date = class extends RealDate { constructor(...a) { super(...(a.length ? a : [RealDate.now() + off])); } static now() { return RealDate.now() + off; } };
@@ -753,7 +772,7 @@ for px, cut, out in json.loads(sys.argv[2]):
         core: { invoke: (cmd, args) => {
           switch (cmd) {
             case 'contacts': return Promise.resolve([{ id: 1, name: 'Marisol Ortega', checked: true, safety: '' }]);
-            case 'machine': return Promise.resolve({ name: 'Machine No. 1', key: 'a3f09c1e'.repeat(16), you: 'Ana Lima', held: 0, version: '0.5.0', commit: 'a1b2c3d', broadcast_max: 3939, reply_max: 2814 });
+            case 'machine': return Promise.resolve({ name: 'Machine No. 1', key: 'a3f09c1e'.repeat(16), you: 'Ana Lima', held: 0, version: '0.5.0', commit: COMMIT, broadcast_max: 3939, reply_max: 2814 });
             case 'conversation': case 'broadcasts': return Promise.resolve([]);
             case 'settings': return Promise.resolve(settings);
             case 'setting_notes': return Promise.resolve({ carry: { note: 'comes with relay' }, hops: { note: 'comes with relay' }, hold: { note: 'comes with relay' }, inperson: { note: 'always, on this build', value: 1 } });
@@ -769,7 +788,7 @@ for px, cut, out in json.loads(sys.argv[2]):
           }
         } },
       };
-    });
+    }, COMMIT);
     const p = await c.newPage(); errors(p);
     await p.goto(at('app/ui/bombechat.html'));
     await p.waitForFunction(() => window.__bank && window.__bank.ready && !document.getElementById('emptyline').hidden, null, { timeout: 30000 });

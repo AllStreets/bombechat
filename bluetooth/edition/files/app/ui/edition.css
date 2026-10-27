@@ -14,7 +14,12 @@
 .app .deck{grid-template-columns:minmax(470px,1.55fr) minmax(286px,322px) minmax(410px,1fr)}
 @media (max-width:1399px){.app .deck{grid-template-columns:minmax(0,1fr) 410px}
   /* the sheet gives the panel its room from its foot's two fields, so the test stamps stay on the sheet */
-  .sheet .sh-foot{grid-template-columns:128px 128px 1fr}}
+  .sheet .sh-foot{grid-template-columns:128px 128px 1fr}
+  /* the bank's foot keeps a line for who is near, so the sheet starts lower than on the airgapped build and ends at the
+     same place, inside the first screen: the panel beside it closes up to end where it does, as the airgapped one
+     does, rather than run on past it into the card's row */
+  .app .panel{gap:10px}
+  .panel .row2{grid-template-columns:minmax(0,176px) minmax(0,1fr)}}
 .panel .mods{grid-template-columns:repeat(3,minmax(0,1fr))}
 /* what the radio can't do, typed on tape under its switch as the camera's is under Light's: no wider than the switch,
    running to more lines when the reason is long, over the tray's top as Light's runs over the meter's */
@@ -35,6 +40,8 @@
 .col.tray .slip{position:relative;z-index:1}
 .col.tray .slip.edge{color:transparent;text-shadow:none;z-index:0;translate:0 calc(-1 * var(--lift,0px));box-shadow:0 1px 2px rgba(0,0,0,.45)}
 .col.tray .slip.edge *{visibility:hidden}
+/* (and cut to its edge: edition.js sets the cut, so none of it shows in the gap past the slip it is under) */
+.col.tray .slip.edge{clip-path:inset(var(--cut,0px))}
 .intray{display:flex;flex-direction:column;gap:8px;min-width:0}
 /* the slips' shadow is the tray's to throw (each slip's torn ends are a mask, which would cut its own shadow off): the
    whole column throws it, so a slip tucked under its neighbour stays under it */
@@ -56,7 +63,12 @@
   /* the row takes the room left between the switches and the stations, and more only for what the machine itself has
      to send (as on the airgapped build); while Bluetooth has slips in it, its columns take that room and no more */
   .app .panel{grid-template-rows:auto minmax(auto,1fr) auto}
-  .panel .row2{align-items:stretch}
+  /* inside that room, the meter and the slips stand as high as the taller of them and no higher, in its middle, as the
+     airgapped build's row stands between the switches and the stations; the tray's well is drawn round its slips. Once
+     the slips need more than the room, the row is the room and the tray scrolls */
+  .panel .row2{align-items:stretch;grid-template-rows:fit-content(100%);align-content:safe center;margin-bottom:0;padding-bottom:16px}
+  /* (a request or the strangers have the whole room) */
+  .panel .row2:has(.intray:not(:empty)){padding-bottom:0;grid-template-rows:minmax(0,1fr)}
   .row2>.col.meter{align-self:stretch}
   /* the meter's column holds the meter and, behind a request, the strangers' line; it too takes only the row's room */
   .row2:has(.intray:not(:empty))>.col{contain:size}

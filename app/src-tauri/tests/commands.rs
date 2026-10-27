@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use bombechat_app::commands::{self, bridge_event, Lock, Machine, Opened, Shared, Unlocking};
 use bombechat_app::edition;
-use bombechat_core::{safety_number, ChunkView, PublicIdentity};
+use bombechat_core::{safety_number, ChunkView, PublicIdentity, CHUNK, TEXT_AT};
 use bombechat_node::{
     max_private_text, NodeEvent, OutboxState, RequestState, WaitingRequest, MAX_BROADCAST,
     MEET_FIRST, NOT_IN_RANGE, NOT_SENT, NOT_STORED, REQUEST_GONE,
@@ -1527,6 +1527,27 @@ fn the_simulator_knows_the_longest_reply_as_the_node_does() {
     );
     let check = include_str!("../../../tools/check.cjs");
     assert!(check.contains(&format!("reply_max: {}", max_private_text(1))));
+}
+
+#[test]
+fn the_bridge_lays_the_text_where_the_node_does() {
+    // the page lays the drums' plain row, and the bridge cuts the provisional text, from where the text starts in what
+    // the chunks carry and how much each chunk carries: the node's, never the page's own
+    let bridge = include_str!("../../ui/bridge.js");
+    assert!(
+        bridge.lines().any(|l| l == format!("export const TEXT_AT = {TEXT_AT}, CHUNK = {CHUNK};")),
+        "bridge.js TEXT_AT, CHUNK"
+    );
+    let sim = include_str!("../../ui/simulator.js");
+    assert!(
+        sim.lines().any(|l| l == format!("const CHUNK = {CHUNK};")),
+        "simulator.js CHUNK"
+    );
+    let page = include_str!("../../ui/bombechat.html");
+    assert!(
+        page.contains("import { bridge, buildPlate, TEXT_AT, CHUNK } from './bridge.js';") && !page.contains("=68"),
+        "bombechat.html takes TEXT_AT and CHUNK from the bridge"
+    );
 }
 
 #[test]
