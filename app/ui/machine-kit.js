@@ -111,7 +111,7 @@ export function createMachine(container, { still = false, background = '#0d0d0c'
     setEngraving(k, size); k.fillStyle = red ? '#f2e7da' : '#e9e2cf'; k.textBaseline = 'middle'; k.textAlign = 'center'; engraveText(k, text, c.width / 2, c.height * .54, size, .045);
     const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8;
     const pw = w || h * c.width / c.height;
-    const m = new THREE.Mesh(new THREE.BoxGeometry(pw, h, .025), [M.bakelite, M.bakelite, M.bakelite, M.bakelite, new THREE.MeshStandardMaterial({ map: t, roughness: .55 }), M.bakelite]);
+    const m = new THREE.Mesh(new THREE.BoxGeometry(pw, h, .025), [M.bakelite, M.bakelite, M.bakelite, M.bakelite, new THREE.MeshPhysicalMaterial({ map: t, roughness: .5, specularIntensity: .35 }), M.bakelite]);
     m.position.set(align === 'left' ? x + pw / 2 : x, y, z); m.castShadow = true; m.receiveShadow = true; parent.add(m);
     return m;
   }
@@ -192,12 +192,13 @@ export function createMachine(container, { still = false, background = '#0d0d0c'
 
   // a blanking plate: wrinkle-finish steel over a hole where nothing is fitted, a slotted bolt in each corner and what it
   // covers engraved across it. Centred on the group's origin, its face at z .05
-  const blankMat = new THREE.MeshStandardMaterial({ color: '#262724', roughness: .45, metalness: .6, bumpMap: tex.wrinkle, bumpScale: .4 });
+  const blankMat = M.cover = new THREE.MeshStandardMaterial({ color: '#262724', roughness: .45, metalness: .6, bumpMap: tex.wrinkle, bumpScale: .4 });
   function blank(w, h, text, { size = .15, bolts = 1, parent = scene } = {}) {
     const g = new THREE.Group(); parent.add(g);
     const cov = new THREE.Mesh(new THREE.BoxGeometry(w, h, .05), blankMat); cov.position.z = .025; cov.castShadow = true; cov.receiveShadow = true; g.add(cov);
     const dx = w / 2 - .15 * bolts, dy = h / 2 - .12 * bolts;
-    [[-dx, dy], [dx, dy], [-dx, -dy], [dx, -dy]].forEach(([x, y]) => bolt(x, y, { scale: bolts, parent: g }));
+    // (each bolt's head standing proud of the plate by as much as the back's always have, for its size)
+    [[-dx, dy], [dx, dy], [-dx, -dy], [dx, -dy]].forEach(([x, y]) => bolt(x, y, { scale: bolts, z: .05 - .02 * bolts, parent: g }));
     const e = text ? engrave(text, 0, 0, size, '#6f6a5e', { parent: g }) : null; if (e) e.position.z = .055;
     return { group: g, cover: cov, text: e };
   }
@@ -225,9 +226,8 @@ export function createMachine(container, { still = false, background = '#0d0d0c'
     const g = new THREE.Group(); parent.add(g);
     const rot = new THREE.Group(); g.add(rot);
     const body = new THREE.Mesh(knobGeo, M.bakelite); body.castShadow = true; body.receiveShadow = true; rot.add(body);
-    // the pointer: an enamel line across the cap from near its middle to its edge, and on across the skirt
-    const capLine = new THREE.Mesh(new THREE.BoxGeometry(.075, .5, .012), cream); capLine.position.set(0, .34, .5); rot.add(capLine);
-    const skirtLine = new THREE.Mesh(new THREE.BoxGeometry(.075, .25, .012), cream); skirtLine.position.set(0, .845, .166); rot.add(skirtLine);
+    // the pointer: an enamel line inlaid in the skirt, from the grip to the edge
+    const skirtLine = new THREE.Mesh(new THREE.BoxGeometry(.085, .22, .01), cream); skirtLine.position.set(0, .83, .174); rot.add(skirtLine);
     // the stops: a tick and the words engraved on the enamel, the chosen stop's lighter
     const stops = labels.map((t, i) => {
       const a = angles[i] * Math.PI / 180, sx = Math.sin(a), sy = Math.cos(a);
@@ -252,9 +252,10 @@ export function createMachine(container, { still = false, background = '#0d0d0c'
     const light = i => stops.forEach((s, j) => { const c = j === i ? '#f1ebd9' : '#8a8476'; s.tick.material.color.set(j === i ? '#e8e1cf' : '#6d685c'); s.words.forEach(w => w.material.color.set(c)); });
     let lit = -1;
     function set(i, animate = false) {
-      if (i === lit && !animate) return; lit = i; light(i);
+      if (i === lit) return false; lit = i; light(i);
       to = -(angles[i] || 0) * Math.PI / 180;
       if (animate) { from = rot.rotation.z; t0 = performance.now(); } else { from = to; rot.rotation.z = to; t0 = 0; }
+      return true;
     }
     // turns it on toward where it was set; true while it is still moving
     function tick(now = performance.now()) {
@@ -294,9 +295,11 @@ export function createMachine(container, { still = false, background = '#0d0d0c'
       if (lamp) lamp.intensity = v ? .7 * radius * radius : 0;
       return true;
     }
-    g.scale.setScalar(radius);
+    // drawn at another size: its light reaches only as far as its own lip
+    function size(r) { radius = r; g.scale.setScalar(r); if (lamp) { lamp.distance = 1.35 * r; if (on) lamp.intensity = .7 * r * r; } }
+    size(radius);
     set(false);
-    return { group: g, set, get on() { return on; } };
+    return { group: g, set, size, get on() { return on; } };
   }
 
   // a part drawn on its own, in this machine's lights and room, into a picture with a clear background: for hardware that

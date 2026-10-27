@@ -10,10 +10,65 @@
 .app.gl::before{display:none}
 
 /* the drum bank: its bay is the scene's; the SVG drums stay, unseen, as the model */
-.bank.gl{background:transparent;box-shadow:none}
+/* (its column numbers stand clear of the shade under the bay's top lip) */
+.bank.gl{background:transparent;box-shadow:none;padding-top:15px}
 .bank.gl .grid{position:relative;z-index:1;opacity:0}
 .bank.gl .bankfoot{position:relative;z-index:2;border-top-color:transparent;box-shadow:none}
 /* the readouts' bezels, wheels and lamps are the scene's; the digits stay */
 .app.gl .bank .odo,.app.gl .counter .odo{background:transparent;box-shadow:none}
 .app.gl .bank .odo i,.app.gl .counter .odo i{background:transparent;text-shadow:0 1px 0 rgba(0,0,0,.65)}
 .app.gl .lampset i{background:transparent;box-shadow:none}
+
+/* the switch tiles: escutcheon, knob, jewel and blanking plate are the scene's; the buttons stay, unseen but for their
+   focus ring, where the knobs are drawn */
+.app.gl .mod{background:transparent;box-shadow:none}
+.app.gl .mod .knob svg{visibility:hidden}
+.app.gl .mod .jewel,.app.gl .stn .jewel{visibility:hidden}
+.app.gl .blank{background:transparent;box-shadow:none}
+.app.gl .blank *{visibility:hidden}
+/* Light's eyepiece: the scene turns its brass ring, lens and shutter; the camera's picture stays */
+.app.gl .eyepiece{background:transparent;box-shadow:none}
+.app.gl .eyepiece::after{box-shadow:inset 0 1px 2px rgba(0,0,0,.7)}
+.app.gl .eyepiece canvas{background:transparent}
+.app.gl .eyepiece .shutter{display:none}
+.app.gl .eyepiece:hover{filter:none}
+
+/* the room meter: its case and bezel are the scene's, its dial and needle its own canvas; the SVG stays as the
+   picture a screen reader is told of */
+.vu.gl{position:relative;background:transparent;box-shadow:none}
+.vu.gl svg{opacity:0}
+.vu3d{position:absolute;pointer-events:none}
+.vu3d canvas{display:block;width:100%;height:100%}
+
+/* the outbox's tray and the stations' holders are the scene's brass; what waits is etched in the tray's floor */
+.app.gl .row3 .holder{background:transparent;box-shadow:none}
+.app.gl .slip.empty{background:transparent;box-shadow:none;color:#4a3a1f;text-shadow:0 1px 0 rgba(255,236,196,.35)}
+
+/* the plates: traffolyte as the kit's plate() cuts it, lit as the scene lights it. A face of warm black, lighter where
+   the key light falls from the upper left, a bevelled edge catching it on top and falling away below, the plate
+   standing a hair off the enamel; the letters cut through to cream at the kit's weight */
+.app.gl .pl{background:linear-gradient(170deg,#36332e,#2a2824 55%,#22201d);color:#e9e2cf;-webkit-text-stroke:.3px currentColor;
+  box-shadow:inset 0 1px 0 rgba(255,246,226,.13),inset 1px 0 0 rgba(255,246,226,.05),inset 0 -1px 0 rgba(0,0,0,.55),inset -1px 0 0 rgba(0,0,0,.3),0 1px 1.5px rgba(0,0,0,.6),0 0 0 .5px rgba(0,0,0,.7)}
+.app.gl .pl.red{background:linear-gradient(170deg,#93322a,#80271f 55%,#6c1e18);color:#f2e7da}
+.app.gl .pb:hover{box-shadow:inset 0 1px 0 rgba(255,246,226,.13),inset 0 0 0 1px rgba(231,166,60,.45),inset 0 -1px 0 rgba(0,0,0,.55),0 1px 1.5px rgba(0,0,0,.6),0 0 0 .5px rgba(0,0,0,.7)}
+.app.gl .pb:active{box-shadow:inset 0 1px 3px rgba(0,0,0,.8),inset 0 0 0 1px rgba(231,166,60,.4),0 0 0 .5px rgba(0,0,0,.7)}
+/* its screws: the kit's steel, baked in the scene's light (front-panel.js), each slot left where it was tightened */
+.baked .app.gl .pl.screw::before,.baked .app.gl .pl.screw::after{width:10px;height:10px;margin:-2px;border-radius:0;box-shadow:none;background:var(--screw-a) center/contain no-repeat}
+.baked .app.gl .pl.screw::after{background-image:var(--screw-b)}
+
+/* jewels the scene can't reach (the top bar's, the keys'): the kit's glass in its brass bezel, baked lit and dark */
+.baked .app.gl .jewel{position:relative;background:none;box-shadow:none}
+.baked .app.gl .jewel::after{content:"";position:absolute;inset:-4.3px;background:var(--jewel-on) center/contain no-repeat}
+.baked .app.gl .jewel.off::after{background-image:var(--jewel-off)}
+.baked .app.gl .key .jewel::after{inset:-3.2px}
+
+/* the keys: bakelite bars, baked, stretched to each key's words */
+.baked .app.gl .key{background:var(--key-l) left/auto 100% no-repeat,var(--key-r) right/auto 100% no-repeat,var(--key-m) center/calc(100% - 22px) 100% no-repeat;
+  box-shadow:0 1.5px 1px rgba(0,0,0,.45),0 3px 5px rgba(0,0,0,.25)}
+.baked .app.gl .key:hover{box-shadow:inset 0 0 0 1px rgba(231,166,60,.55),0 1.5px 1px rgba(0,0,0,.45),0 3px 5px rgba(0,0,0,.25)}
+.baked .app.gl .key:active{box-shadow:0 .5px .5px rgba(0,0,0,.45)}
+.baked .app.gl .key[aria-disabled="true"]{color:#8a8476}
+.baked .app.gl .key[aria-disabled="true"]:hover{box-shadow:0 1.5px 1px rgba(0,0,0,.45),0 3px 5px rgba(0,0,0,.25)}
+/* the Reply and Public toggle's plate, the same bakelite with square corners */
+.baked .app.gl .mode{background:var(--toggle-l) left/auto 100% no-repeat,var(--toggle-r) right/auto 100% no-repeat,var(--toggle-m) center/calc(100% - 10px) 100% no-repeat;
+  box-shadow:0 1.5px 1px rgba(0,0,0,.4),0 2px 4px rgba(0,0,0,.2)}

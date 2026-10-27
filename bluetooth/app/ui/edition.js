@@ -246,14 +246,26 @@ export function front(bridge, kit) {
   row2.insertBefore(left, vu); left.append(vu);
   // a slip the tray's room doesn't show whole shows only its paper's edge, as a slip further down a pile does: never
   // a line of type cut through. Scrolled into view, it reads again
+  const EDGE = 7;// how much of a tucked slip shows
   const fade = () => {
     right.classList.toggle('more', right.scrollHeight - right.scrollTop - right.clientHeight > 2);
     const room = right.getBoundingClientRect(), pad = parseFloat(getComputedStyle(right).paddingBottom) || 0, foot = room.bottom - pad;
-    for (const s of right.querySelectorAll('.slip')) {
-      const r = s.getBoundingClientRect();
+    const list = [...right.querySelectorAll('.slip')];
+    // where each slip is laid out, without the tuck below
+    const at = s => { const r = s.getBoundingClientRect(), l = +s.dataset.lift || 0; return { top: r.top + l, bottom: r.bottom + l, height: r.height }; };
+    const rects = list.map(at);
+    list.forEach((s, i) => {
+      const r = rects[i];
       // (a few pixels' grace for the slips' tilt; never the slip being worked in)
-      s.classList.toggle('edge', right.scrollHeight > right.clientHeight + 1 && (r.bottom > foot + 3 || r.top < room.top - 3) && r.height < foot - room.top && !s.contains(document.activeElement));
-    }
+      const edge = right.scrollHeight > right.clientHeight + 1 && (r.bottom > foot + 3 || r.top < room.top - 3) && r.height < foot - room.top && !s.contains(document.activeElement);
+      s.classList.toggle('edge', edge);
+      // a slip shown only by its edge is tucked under its neighbour in the pile, a few pixels of it showing past that
+      // slip's foot (or head), as the next slip in a tray does: never a whole sheet of blank paper
+      let lift = 0;
+      if (edge && r.bottom > foot + 3 && i > 0) lift = Math.max(0, r.top - rects[i - 1].bottom + r.height - EDGE);
+      else if (edge && i < list.length - 1) lift = -Math.max(0, rects[i + 1].top - r.bottom + r.height - EDGE);
+      if (lift) { s.dataset.lift = lift; s.style.setProperty('--lift', lift + 'px'); } else if (s.dataset.lift) { delete s.dataset.lift; s.style.removeProperty('--lift'); }
+    });
   };
   right.addEventListener('scroll', fade);
   new ResizeObserver(fade).observe(right);

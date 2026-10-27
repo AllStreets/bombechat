@@ -595,7 +595,7 @@ body:has(.lamp:not([hidden])){perspective:none}
         <div class="mod"><span class="jewel off" id="j2" aria-hidden="true"></span><button class="knob" id="k2" role="slider" aria-label="Light" aria-valuemin="0" aria-valuemax="2"></button><span class="pl screw">Light</span>
           <button type="button" class="eyepiece dark" id="eyepiece" role="switch" aria-checked="true" aria-label="Camera eyepiece"><canvas width="64" height="48"></canvas><span class="shutter" aria-hidden="true"></span></button>
           <span class="lightnote" id="lightnote" role="status" aria-live="polite"><b></b></span></div>
-        <div class="mod" title="The airgapped build ships without Bluetooth. Nothing here can be switched on."><span class="jewel off" style="opacity:.25" aria-hidden="true"></span><div class="blank"><b>Bluetooth</b><i style="left:6px;top:6px"></i><i style="right:6px;top:6px"></i><i style="left:6px;bottom:6px"></i><i style="right:6px;bottom:6px"></i></div><span class="pl red">Not fitted</span></div>
+        <div class="mod" title="The airgapped build ships without Bluetooth. Nothing here can be switched on."><span class="jewel off" style="opacity:.25" aria-hidden="true"></span><div class="blank"><b>Not fitted</b><i style="left:6px;top:6px"></i><i style="right:6px;top:6px"></i><i style="left:6px;bottom:6px"></i><i style="right:6px;bottom:6px"></i></div><span class="pl red">Bluetooth</span></div>
       </div>
       <div class="row2">
         <div class="vu" title="Loudness of the room. Messages wait to play until it drops under 40 dB."><svg id="vusvg" viewBox="0 0 200 104" role="img" aria-label="Room loudness meter"></svg></div>
@@ -697,6 +697,8 @@ function nameTheSheet(c){const at=s=>document.querySelector(s);
   at('.row3 .stn .holder > span').firstChild.nodeValue=c.name}
 const Q=new URLSearchParams(location.search);
 const STILL=Q.has('still');
+// the front panel in 3D, once it is up (front-panel.js, at the foot of this script)
+let FP=null;
 const RM=matchMedia('(prefers-reduced-motion: reduce)');
 const A='ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 const RIMS=['#7a2a22','#2c4a3a','#a5822e','#33465b','#b4a789','#5a3a24','#6e2a3c','#2c4a3a','#a5822e','#7a2a22','#33465b','#5a3a24'];
@@ -942,7 +944,7 @@ function turnKnob(id,pos,again){const k=KNOBS[id];if(k.held)return Promise.resol
   testSays('');
   // turned back to Read and flash: what Escape stopped may show again
   if(id==='k2'&&pos===2)Lamp.stopped=false;
-  const cap=document.querySelector(`#${id} .cap`);cap.style.transform=`rotate(${ANG[pos]}deg)`;setTimeout(()=>drawKnob(id),RM.matches?0:330);
+  const cap=document.querySelector(`#${id} .cap`);cap.style.transform=`rotate(${ANG[pos]}deg)`;if(FP)FP.knob(id,pos);setTimeout(()=>drawKnob(id),RM.matches?0:330);
   Drum.spin(2,0.7);
   // Light taken off Read and flash: the machine ends a pairing by light, and so does the card
   // refused: back to where the machine keeps it. Light turned down is the exception the machine makes: it stays down
@@ -985,7 +987,8 @@ const vuNeedle=(()=>{const g=document.getElementById('vusvg');const cx=100,cy=96
   h+=`<text x="10" y="84" font-family="${ENGR}" font-size="14.5" fill="#5b5141" stroke="#5b5141" stroke-width=".3">dB</text>`;
   h+=`<line id="needle" x1="${cx}" y1="${cy}" x2="${cx}" y2="${cy-R+2}" stroke="#15130f" stroke-width="1.3"/><rect x="0" y="88" width="200" height="16" fill="#0d0d0c"/><circle cx="${cx}" cy="${cy}" r="6" fill="#2b2a26" stroke="#000"/>`;
   g.innerHTML=h;const n=document.getElementById('needle');
-  return v=>n.setAttribute('transform',`rotate(${-48+(Math.max(28,Math.min(62,v))-30)/30*96} ${cx} ${cy})`)})();
+  // the front panel's meter (vu.js) is told the same angle
+  return v=>{const a=-48+(Math.max(28,Math.min(62,v))-30)/30*96;vuNeedle.at=a;n.setAttribute('transform',`rotate(${a} ${cx} ${cy})`);if(FP&&FP.vu)FP.vu.set(a)}})();
 vuNeedle(room??30);
 bridge.on('roomDb',db=>{room=db;vuNeedle(room);testWaiting()});
 
@@ -1712,11 +1715,11 @@ try{if(sessionStorage.getItem('bombechat-turn')==='back-to-front'&&!RM.matches){
    the model and the fallback: setLetter() records each turn (from, to, start time) and the window letters, every control
    stays HTML, and the scene draws the machine behind them. */
 const bank=document.getElementById('bank');
-let FP=null;
 try{const {mountFrontPanel}=await import('./front-panel.js');
   FP=await mountFrontPanel({app:document.getElementById('app'),bank,deck:document.querySelector('.deck'),cells,still:STILL,rims:RIMS,knobs:KNOBS,place:PLACE,line:LINE,angles:ANG,
     api:window.__bank,boxIn,turnedAbove,rm:RM,noao:Q.has('noao'),onFrame:syncMirror})}
 catch(e){console.warn('the front stays flat:',e.message);window.__bank.ready=true}
+if(FP&&FP.vu){FP.vu.set(vuNeedle.at);window.__vu={renders:FP.vu.renders,set:v=>vuNeedle(v)}}
 </script>
 </body>
 </html>

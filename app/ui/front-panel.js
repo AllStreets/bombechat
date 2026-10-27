@@ -6,6 +6,7 @@
 // stands for, read on each layout, and the HTML draws whatever is read or typed (paper, plates, digits). The scene
 // draws only when something changed: a drum or a knob turning, a jewel, a layout.
 import { createMachine, engravingFace, engravingFont, engraveText } from './machine-kit.js';
+import { mountVu } from './vu.js';
 
 // mountFrontPanel({app, bank, deck, cells, still, ...}) -> {ready, layout(), knob(id, pos), jewel(id, on), dirty(), renders()}
 //   cells: the drum cells as the page keeps them ({el, wl, angle, from, t0, snap})
@@ -25,7 +26,7 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
 
   /* ---------- the drums (as they were in bombechat.html) ---------- */
   // the drums' bay is let into the panel this deep: the plates, numbers, axles and pointers stand on its floor
-  const BAY = .14;
+  const BAY = .1;
   const R = .46;// drum radius in world units; one unit = drum width / 0.92
   const ringTex = K.canvasTex(1024, 1024, (k, w) => { const c = w / 2;
     const g = k.createRadialGradient(c * .8, c * .6, c * .1, c, c, c); g.addColorStop(0, '#2e2a26'); g.addColorStop(.65, '#161412'); g.addColorStop(1, '#0a0908'); k.fillStyle = g; k.fillRect(0, 0, w, w);
@@ -101,7 +102,9 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
     g.translate(0, 0, b); return g;
   }
   const footParts = new THREE.Group(); scene.add(footParts);
-  const wheelGeo = (() => { const g = new THREE.CylinderGeometry(1, 1, 1, 32, 1, false, -Math.PI * .32, Math.PI * .64); g.rotateZ(Math.PI / 2); g.rotateX(-Math.PI / 2); return g; })();
+  const wheelGeo = (() => { const g = new THREE.CylinderGeometry(1, 1, 1, 32, 1, false, -Math.PI * .32, Math.PI * .64); g.rotateZ(Math.PI / 2); g.rotateX(-Math.PI / 2); g.userData.keep = true; return g; })();
+  // lamps, jewels and knobs keep their state: they live here and are only moved by a layout
+  const kept = new THREE.Group(); scene.add(kept);
   const lamps = new Map();// HTML lamp (or jewel) -> {j, el, color()}
 
   function clear(g) { for (const o of [...g.children]) { g.remove(o); o.traverse(m => { if (m.isMesh && m.geometry && !m.geometry.userData.keep) m.geometry.dispose(); }); } }
@@ -116,6 +119,8 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
   // middle by as much as the lens pushes them out, so each sits exactly over the HTML it stands for
   const at = (px, py, z = 0) => { const s = (D - z) / D; return new THREE.Vector3((px - W / 2) / U * s, -(py - H / 2) / U * s, z); };
   const shown = el => !!el && el.isConnected && el.offsetParent !== null && getComputedStyle(el).visibility !== 'hidden';
+  // laid out, though the scene's own rules may hide its CSS drawing
+  const placed = el => !!el && el.isConnected && el.offsetParent !== null;
 
   function layoutFoot() {
     clear(footParts);
@@ -139,30 +144,181 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
       if (!shown(i)) continue; seen.add(i);
       const b = box(i), r = (b.w / 2 + 1.5) / U;
       let L = lamps.get(i);
-      if (!L) { const j = K.jewel('#f0b64c', { radius: r, light: false, parent: footParts }); L = { j, el: i, kind: 'lamp' }; lamps.set(i, L); }
-      else footParts.add(L.j.group);
-      L.j.group.scale.setScalar(r); L.j.group.position.copy(at(b.x + b.w / 2, b.y + b.h / 2, -BAY));
+      if (!L) { const j = K.jewel('#f0b64c', { radius: r, light: false, parent: kept }); L = { j, el: i, kind: 'lamp' }; lamps.set(i, L); }
+      L.j.size(r); L.j.group.position.copy(at(b.x + b.w / 2, b.y + b.h / 2, -BAY));
       syncLamp(L);
     }
-    for (const [el, L] of lamps) if (L.kind === 'lamp' && !seen.has(el)) lamps.delete(el);
+    for (const [el, L] of lamps) if (L.kind === 'lamp' && !seen.has(el)) { kept.remove(L.j.group); lamps.delete(el); }
   }
   // a lamp's state, as its HTML has it: n now (amber), d done (warm white), otherwise dark
-  function syncLamp(L) { const c = L.el.classList; return L.j.set(c.contains('n') || c.contains('d'), c.contains('d') ? '#f4ecd6' : '#f0b64c'); }
+  function syncLamp(L) { const c = L.el.classList; if (L.kind !== 'lamp') return L.j.set(!c.contains('off')); return L.j.set(c.contains('n') || c.contains('d'), c.contains('d') ? '#f4ecd6' : '#f0b64c'); }
+
+  /* ---------- the lower deck: switch tiles, eyepiece, meter case, outbox tray, card holders ---------- */
+  const deckParts = new THREE.Group(); scene.add(deckParts);
+  // a rounded rectangle w by h, r its corners, as a shape or a hole
+  const rrect = (p, x, y, w, h, r) => { r = Math.min(r, w / 2, h / 2); p.moveTo(x + r, y); p.lineTo(x + w - r, y); p.quadraticCurveTo(x + w, y, x + w, y + r); p.lineTo(x + w, y + h - r); p.quadraticCurveTo(x + w, y + h, x + w - r, y + h); p.lineTo(x + r, y + h); p.quadraticCurveTo(x, y + h, x, y + h - r); p.lineTo(x, y + r); p.quadraticCurveTo(x, y, x + r, y); return p; };
+  // a slab w by h, d deep, its face at z d, its edges rounded over by b; holes in it as [{x, y, w, h, r}] (centred)
+  function slab(w, h, d, { r = .02, b = .012, holes = [] } = {}) {
+    const s = rrect(new THREE.Shape(), -w / 2, -h / 2, w, h, r);
+    for (const o of holes) s.holes.push(rrect(new THREE.Path(), o.x - o.w / 2, o.y - o.h / 2, o.w, o.h, o.r || 0));
+    b = Math.min(b, d * .45);
+    const g = new THREE.ExtrudeGeometry(s, { depth: Math.max(.0005, d - 2 * b), bevelEnabled: b > 0, bevelThickness: b, bevelSize: b * .9, bevelSegments: 3, curveSegments: 8 });
+    g.translate(0, 0, b); return g;
+  }
+  const SVGU = 25.5;// the knob's radius in its SVG's units
+  const knobParts = new Map();// knob button -> the kit's knob
+  function knobFor(btn) {
+    let k = knobParts.get(btn);
+    if (!k) {
+      const spec = knobs[btn.id] || {};
+      k = K.knob({ labels: spec.labels || [], angles, place: place.map(P => ({ ...P, x: P.x / SVGU, y: P.y / SVGU })), line: line / SVGU, size: 13.6 / SVGU, parent: kept });
+      k.set(+btn.getAttribute('aria-valuenow') || 0); knobParts.set(btn, k); ticking.push(now => k.tick(now));
+    }
+    return k;
+  }
+  const JEWEL = { j1: '#f0b64c', j2: '#f4ecd6' };
+  function jewelFor(el, radius) {
+    let L = lamps.get(el);
+    if (!L) { const j = K.jewel(JEWEL[el.id] || '#f0b64c', { light: true, parent: kept }); L = { j, el, kind: 'jewel' }; lamps.set(el, L); syncLamp(L); }
+    L.j.size(radius);
+    return L;
+  }
+  const brass = M.brassDull;
+  const trayMat = new THREE.MeshStandardMaterial({ color: '#8f7144', roughness: .5, metalness: 1, bumpMap: tex.panelRough, bumpScale: .08 });
+  const lensMat = new THREE.MeshPhysicalMaterial({ color: '#050607', roughness: .05, metalness: 0, clearcoat: 1, clearcoatRoughness: .03 });
+  const eyeGeo = (() => { const p = [[.74, 0], [1, 0], [1, .1], [.97, .2], [.9, .25], [.82, .25], [.77, .2], [.76, .12], [.74, .1]].map(([r, y]) => new THREE.Vector2(r, y)); const g = new THREE.LatheGeometry(p, 64); g.rotateX(Math.PI / 2); g.userData.keep = true; return g; })();
+  const bossGeo = (() => { const p = [[0, 0], [1, 0], [1, .35], [.9, .55], [.6, .66], [0, .7]].map(([r, y]) => new THREE.Vector2(r, y)); const g = new THREE.LatheGeometry(p, 32); g.rotateX(Math.PI / 2); g.userData.keep = true; return g; })();
+  let shutter = null, eyeEl = null;
+  // parts sitting at the given boxes; z the face of the deck under them
+  function layoutDeck(holes) {
+    clear(deckParts);
+    const bs = 4.2 / U / .09;// the bolt ring's bolts, here too
+    // each switch tile: a pressed steel escutcheon let into the enamel, a slotted bolt in each corner
+    for (const mod of deck.querySelectorAll('.mods .mod')) {
+      if (!shown(mod)) continue;
+      const b = box(mod), c = at(b.x + b.w / 2, b.y + b.h / 2, -.012);
+      const esc = new THREE.Mesh(slab(b.w / U, b.h / U, .03, { r: 2.5 / U, b: .01 }), M.cover); esc.position.set(c.x, c.y, -.042); esc.castShadow = true; esc.receiveShadow = true; deckParts.add(esc);
+      holes.push({ x: c.x, y: c.y, w: b.w / U, h: b.h / U, r: 2.5 / U });
+      const eye = mod.querySelector('.eyepiece'), eb = eye && box(eye);
+      const k = 6.5;
+      [[k, k], [b.w - k, k], [k, b.h - k], [b.w - k, b.h - k]].forEach(([x, y], i) => {
+        if (eb && x > eb.x - b.x - 6 && y < eb.y - b.y + eb.h + 6) return;// under the eyepiece's ring
+        const p = at(b.x + x, b.y + y, 0); K.bolt(p.x, p.y, { scale: bs * .85, z: .006, parent: deckParts, slot: (i * 1.7 + b.x * .01) % 3 });
+      });
+      // its switch
+      const btn = mod.querySelector('.knob');
+      if (btn && placed(btn)) { const kb = box(btn), s = kb.w / 138, kn = knobFor(btn);
+        kn.group.position.copy(at(kb.x + 69 * s, kb.y + 51 * s, 0)); kn.group.scale.setScalar(SVGU * s / U); }
+      // its jewel
+      const je = mod.querySelector('.jewel');
+      if (je && placed(je)) { const jb = box(je), L = jewelFor(je, (jb.w / 2 + 2.6) / U); L.j.group.position.copy(at(jb.x + jb.w / 2, jb.y + jb.h / 2, 0)); }
+      // a switch not fitted: the kit's blanking plate, the one the back carries for its Bluetooth group
+      const bl = mod.querySelector('.blank');
+      if (bl && placed(bl)) { const bb = box(bl), p = at(bb.x + bb.w / 2, bb.y + bb.h / 2, 0);
+        const plate = K.blank(bb.w / U, bb.h / U, 'NOT FITTED', { size: 13.5 / U, bolts: bs * .85, parent: deckParts }); plate.group.position.copy(p); }
+      // Light's eyepiece: a turned brass ring and a dark lens round the camera's picture, and its shutter
+      if (eye && placed(eye)) {
+        eyeEl = eye; const r = eb.w / 2 / U, p = at(eb.x + eb.w / 2, eb.y + eb.h / 2, .02);
+        const ring = new THREE.Mesh(eyeGeo, M.brass); ring.scale.set(r, r, r * .7); ring.position.set(p.x, p.y, 0); ring.castShadow = true; ring.receiveShadow = true; deckParts.add(ring);
+        // the lens: a shallow dome of dark glass, the room in it
+        const lens = new THREE.Mesh(new THREE.SphereGeometry(r * 1.6, 48, 12, 0, Math.PI * 2, 0, Math.asin(.78 / 1.6)).rotateX(Math.PI / 2), lensMat); lens.position.set(p.x, p.y, .012 - r * 1.6 * Math.cos(Math.asin(.78 / 1.6))); deckParts.add(lens);
+        shutter = new THREE.Group(); shutter.position.set(p.x, p.y, .03); deckParts.add(shutter);
+        const disc = new THREE.Mesh(new THREE.CylinderGeometry(r * .76, r * .76, .012, 48).rotateX(Math.PI / 2), M.steel); disc.castShadow = true; shutter.add(disc);
+        const slot = new THREE.Mesh(new THREE.BoxGeometry(r * 1.1, r * .09, .01), M.hole); slot.rotation.z = Math.PI / 4; slot.position.z = .006; shutter.add(slot);
+        shutter.visible = eye.classList.contains('shut');
+      }
+    }
+    // the room meter's case: bakelite, a brass bezel round its dial and a boss for the needle's pivot
+    const vu = deck.querySelector('.vu'), svg = vu && vu.querySelector('svg');
+    if (vu && placed(vu)) {
+      const b = box(vu), sv = box(svg), s = sv.w / 200, c = at(b.x + b.w / 2, b.y + b.h / 2, 0);
+      const cs = new THREE.Mesh(slab(b.w / U, b.h / U, .07, { r: 3 / U, b: .022 }), M.bakelite); cs.position.set(c.x, c.y, 0); cs.castShadow = true; cs.receiveShadow = true; deckParts.add(cs);
+      const win = { x: sv.x, y: sv.y, w: 200 * s, h: 92 * s }, wc = at(win.x + win.w / 2, win.y + win.h / 2, .07), t = 3 / U;
+      const bz = new THREE.Mesh(frameGeo(win.w / U, win.h / U, t, .025, 1.5 / U), M.brass); bz.position.set(wc.x, wc.y, .07); bz.castShadow = true; bz.receiveShadow = true; deckParts.add(bz);
+      const pv = at(sv.x + 100 * s, sv.y + 97.5 * s, .07), pr = 6 * s / U;
+      const boss = new THREE.Mesh(bossGeo, M.bakelite); boss.scale.set(pr, pr, pr); boss.position.set(pv.x, pv.y, .07); boss.castShadow = true; deckParts.add(boss);
+      const cap = new THREE.Mesh(new THREE.CircleGeometry(pr * .35, 24), M.brass); cap.position.set(pv.x, pv.y, .07 + pr * .705); deckParts.add(cap);
+      if (self.vu) self.vu.layout();
+    }
+    // the outbox: a shallow brass letter tray under the slips' column
+    const col = deck.querySelector('.row2 > .col.tray') || deck.querySelector('.outbox');
+    if (col && shown(col)) {
+      // round the column's content (the standard build's tray column reaches past it into its margins to scroll)
+      const b = box(col), cs = getComputedStyle(col), pl = parseFloat(cs.paddingLeft), pr = parseFloat(cs.paddingRight), pt = parseFloat(cs.paddingTop), pbm = parseFloat(cs.paddingBottom);
+      const pad = 6, x = b.x + pl - pad, y = b.y + pt - pad, w = b.w - pl - pr + 2 * pad, h = b.h - pt - pbm + 2 * pad, c = at(x + w / 2, y + h / 2, 0), rim = 4 / U;
+      const fl = new THREE.Mesh(slab(w / U, h / U, .012, { r: 2 / U, b: .004 }), trayMat); fl.position.set(c.x, c.y, 0); fl.receiveShadow = true; fl.castShadow = true; deckParts.add(fl);
+      const lip = new THREE.Mesh(frameGeo(w / U - 2 * rim, h / U - 2 * rim, rim, .045, 1 / U), trayMat); lip.position.set(c.x, c.y, .004); lip.castShadow = true; lip.receiveShadow = true; deckParts.add(lip);
+    }
+    // the stations: each card slid into a brass holder, its jewel beside it
+    for (const stn of deck.querySelectorAll('.row3 .stn')) {
+      if (!shown(stn)) continue;
+      const hd = stn.querySelector('.holder'), sp = hd && hd.querySelector(':scope > span');
+      if (hd && sp) { const hb = box(hd), sb = box(sp), c = at(hb.x + hb.w / 2, hb.y + hb.h / 2, 0), ic = at(sb.x + sb.w / 2, sb.y + sb.h / 2, 0);
+        const fr = new THREE.Mesh(slab(hb.w / U, hb.h / U, .028, { r: 2 / U, b: .009, holes: [{ x: ic.x - c.x, y: ic.y - c.y, w: sb.w / U, h: sb.h / U, r: .5 / U }] }), brass);
+        fr.position.set(c.x, c.y, 0); fr.castShadow = true; fr.receiveShadow = true; deckParts.add(fr);
+        const back = new THREE.Mesh(new THREE.PlaneGeometry(sb.w / U, sb.h / U), M.hole); back.position.set(ic.x, ic.y, .002); deckParts.add(back); }
+      const je = stn.querySelector('.jewel');
+      if (je && placed(je)) { const jb = box(je), L = jewelFor(je, (jb.w / 2 + 2.6) / U); L.j.group.position.copy(at(jb.x + jb.w / 2, jb.y + jb.h / 2, 0)); }
+    }
+    // jewels whose HTML has gone
+    for (const [el, L] of lamps) if (L.kind === 'jewel' && !el.isConnected) { kept.remove(L.j.group); lamps.delete(el); }
+    for (const [el, k] of knobParts) k.group.visible = placed(el);
+  }
+
+  /* ---------- hardware on paper and on the bars: baked in this scene's light ---------- */
+  // Small parts the scene can't reach (they sit on the HTML: plate screws, the jewels of the top bar and the keys, the
+  // keys' bakelite) are drawn once from the kit in the same lights and room and handed to the CSS as pictures
+  async function bakeSprites() {
+    const root = document.documentElement, set = (k, v) => root.style.setProperty(k, `url("${v}")`);
+    const load = url => new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; });
+    // a plate's slotted screw: a cheese head, its slot turned as it was left
+    const headGeo = (() => { const p = [[0, 0], [1, 0], [1, .3], [.9, .58], [.6, .74], [0, .78]].map(([r, y]) => new THREE.Vector2(r, y)); const g = new THREE.LatheGeometry(p, 40); g.rotateX(Math.PI / 2); return g; })();
+    for (const [name, turn] of [['--screw-a', .62], ['--screw-b', -.48]]) {
+      const g = new THREE.Group(); const h = new THREE.Mesh(headGeo, M.steel); g.add(h);
+      const s = new THREE.Mesh(new THREE.BoxGeometry(1.5, .2, .3), M.hole); s.position.z = .7; s.rotation.z = turn; g.add(s);
+      set(name, K.bake(g, { px: 40, shadow: true, margin: .3 }));
+    }
+    // jewels, lit and dark
+    const jw = K.jewel('#f0b64c', { parent: new THREE.Group() });
+    set('--jewel-off', K.bake(jw.group, { px: 48, shadow: true, margin: .2 }));
+    jw.set(true); set('--jewel-on', K.bake(jw.group, { px: 48, shadow: true, margin: .2 }));
+    // a key's bakelite: a rounded bar, cut into its two ends and its middle so it stretches to any key
+    const pill = (w, h, r, depth, bevel) => { const s = new THREE.Shape(); const x = -w / 2, y = -h / 2;
+      // (each arc runs on from the last point by itself; no point twice, or the face triangulates with a hole)
+      s.moveTo(x + r, y); s.absarc(x + w - r, y + r, r, -Math.PI / 2, 0); s.absarc(x + w - r, y + h - r, r, 0, Math.PI / 2); s.absarc(x + r, y + h - r, r, Math.PI / 2, Math.PI); s.absarc(x + r, y + r, r, Math.PI, Math.PI * 1.5, false);
+      return new THREE.Mesh(new THREE.ExtrudeGeometry(s, { depth, bevelEnabled: true, bevelThickness: bevel, bevelSize: bevel, bevelSegments: 6, curveSegments: 24 }), keyMat); };
+    // (the knobs' bakelite, its broad face taking less of the room than a knob's curves do)
+    const keyMat = M.bakelite.clone(); keyMat.envMapIntensity = .45; keyMat.specularIntensity = .5;
+    async function sliced(mesh, px, cap, prefix) {
+      const img = await load(K.bake(mesh, { px, margin: 0 }));
+      const cut = (x, w) => { const c = document.createElement('canvas'); c.width = w; c.height = img.height; c.getContext('2d').drawImage(img, x, 0, w, img.height, 0, 0, w, img.height); return c.toDataURL('image/png'); };
+      const capPx = Math.round(img.width * cap);
+      set(prefix + '-l', cut(0, capPx)); set(prefix + '-m', cut(capPx, img.width - 2 * capPx)); set(prefix + '-r', cut(img.width - capPx, capPx));
+    }
+    // the keys: 25 px tall, round-ended; the toggle's plate: square-cornered
+    await sliced(pill(5, 1.6, .78, .12, .12), 200, (.8 + .12) / (5 + .24), '--key');
+    await sliced(pill(3.4, 2, .16, .1, .1), 160, .12, '--toggle');
+    K.bakeDone();
+    root.classList.add('baked');
+  }
 
   function layout() {
     laidTurned = false; W = css(host, 'width'); H = css(host, 'height'); if (!W || !H) return;
     const dr = box(cells[0].el).w; U = dr / .92;
     renderer.setSize(W, H, false); camera.aspect = W / H;
     const bk = box(bank);
-    // the lens as the bank always had it (its depth from the bank's height), now looking at the whole panel
-    D = Math.max((bk.h / U / 2) / Math.tan(19 * Math.PI / 360), (H / U / 2) / Math.tan(13 * Math.PI / 180));
+    // the lens: the whole panel in a 22 degree view, so its top and foot are seen no more steeply than the bank's
+    // rows always were, and the bay's lip hides nothing engraved on its floor
+    D = (H / U / 2) / Math.tan(11 * Math.PI / 180);
     camera.fov = 2 * Math.atan((H / U / 2) / D) * 180 / Math.PI; camera.position.set(0, 0, D); camera.lookAt(0, 0, 0); camera.updateProjectionMatrix(); composer.setSize(W, H);
     // the panel: one sheet of enamel, the bay let into it, bolted all round at the window's edge
     if (front) { scene.remove(front.group); front.panel.geometry.dispose(); front.frame.geometry.dispose(); }
     const fg = new THREE.Group(); scene.add(fg);
     const bc = at(bk.x + bk.w / 2, bk.y + bk.h / 2, 0);
     const edge = 8 / U, bs = 4.2 / U / .09;
-    const per = K.perimeter(W / U, H / U, 0, { across: 13, down: Math.max(3, Math.round(H / W * 13 * .78)), inset: edge, scale: bs, z: .006, holes: [{ x: bc.x, y: bc.y, w: bk.w / U, h: bk.h / U, r: 3 / U }], grain: GRAIN, parent: fg });
+    const holes = [{ x: bc.x, y: bc.y, w: bk.w / U, h: bk.h / U, r: 3 / U }];
+    layoutDeck(holes);
+    const per = K.perimeter(W / U, H / U, 0, { across: 13, down: Math.max(3, Math.round(H / W * 13 * .78)), inset: edge, scale: bs, z: .006, holes, grain: GRAIN, parent: fg });
     per.frame.visible = false;
     front = { group: fg, ...per };
     floorTo(at(bk.x + bk.w / 2, bk.y + bk.h / 2, -BAY), bk.w / U + .3, bk.h / U + .3);
@@ -199,9 +355,20 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
   app.addEventListener('transitionend', e => { if (e.target === e.currentTarget) layout(); });
   addEventListener('pageshow', layout); document.body.getAnimations().forEach(a => a.finished.then(layout, () => {}));
   // what the HTML shows changing: a lamp, a readout appearing, a station or a slip added
-  const mo = new MutationObserver(list => { for (const m of list) { if (m.type === 'attributes' && m.attributeName === 'class') { const L = lamps.get(m.target); if (L) { if (syncLamp(L)) dirty = true; continue; } } relay = true; } });
+  // (a jewel lit, a knob's stop, the eyepiece's shutter are drawn as they are; anything else lays out again)
+  const mo = new MutationObserver(list => { for (const m of list) {
+    if (m.type === 'attributes') {
+      const t = m.target;
+      if (m.attributeName === 'aria-valuenow') { const k = knobParts.get(t); if (k && k.set(+t.getAttribute('aria-valuenow') || 0, !rm.matches && !still)) dirty = true; continue; }
+      if (m.attributeName === 'class') {
+        const L = lamps.get(t); if (L) { if (syncLamp(L)) dirty = true; continue; }
+        if (t === eyeEl) { if (shutter) shutter.visible = t.classList.contains('shut'); dirty = true; continue; }
+        if (t.matches('.knob, .holder, .holder *, .slip, .slip *, .rs, .stamps *, .odo i, .ent, .pl')) continue;
+      }
+    }
+    relay = true; } });
   mo.observe(bank.querySelector('.bankfoot'), { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'style', 'hidden'] });
-  mo.observe(deck.querySelector('.panel') || deck, { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'style', 'hidden'] });
+  mo.observe(deck.querySelector('.panel') || deck, { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'style', 'hidden', 'aria-valuenow'] });
 
   // for checks: where the scene draws each part and where its HTML stands, in bank pixels, at rest. Each drum's centre
   // (and its axle's height), each row plate's left end (its label's left plus 4 px) and each column number's middle
@@ -221,7 +388,10 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
     for (let i = 0; i < 6; i++) { const fx = ((ax * t + bx) * t + cx) * t - x, d = (3 * ax * t + 2 * bx) * t + cx; if (Math.abs(fx) < 1e-5) break; t -= fx / d; } return ((ay * t + by) * t + cy) * t; }
   const DUR = 950; let frames = 0;
   const ticking = [];// parts that animate on their own (knobs): tick(now) true while moving
-  const self = { ready: false, layout, dirty() { dirty = true; }, renders: () => renders, knob() {}, jewel() {}, K, scene, at, box: el => box(el), later, ticking, lamps, syncLamp, soon, host, get U() { return U; }, get D() { return D; } };
+  const self = { ready: false, layout, dirty() { dirty = true; }, renders: () => renders,
+    // a switch turned: its knob turns to the stop now, before the HTML redraws
+    knob(id, pos) { const k = knobParts.get(document.getElementById(id)); if (k && k.set(pos, !rm.matches && !still)) dirty = true; },
+    jewel(id, on) { const L = lamps.get(document.getElementById(id)); if (L && L.j.set(on)) dirty = true; }, K, scene, at, box: el => box(el), later, ticking, lamps, syncLamp, soon, host, get U() { return U; }, get D() { return D; } };
   function frame(now) {
     let moving = false;
     if (relay || (laidTurned && !turnedAbove(host))) { relay = false; layout(); }
@@ -235,6 +405,10 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
     if (++frames === 3) { self.ready = true; api.ready = true; }
     onFrame(); requestAnimationFrame(frame); }
   api.renders = () => renders;
+  // the room meter behind its glass, on its own canvas
+  const vuEl = deck.querySelector('.vu');
+  if (vuEl) try { vuEl.classList.add('gl'); self.vu = await mountVu(vuEl, { still }); } catch (e) { vuEl.classList.remove('gl'); console.warn('the meter stays flat:', e.message); }
   layout(); requestAnimationFrame(frame);
+  bakeSprites().catch(e => console.warn('the plates keep their CSS screws:', e.message));
   return self;
 }
