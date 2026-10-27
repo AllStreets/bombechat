@@ -305,7 +305,7 @@ function measureText() {
       await p.evaluate(() => { document.getElementById('outbox').innerHTML = '<div class="slip empty">Nothing waiting to send.</div>'; });
       const empty = await tray();
       r.tray = { rest, empty }; report.viewports[`${w}x${h}`].tray = r.tray;
-      for (const [k, t] of Object.entries(r.tray)) if (t.bare === null || (!t.scrolls && t.bare > 24)) problems.push(`${w}x${h}: the outbox tray ${k} is not sized to its slips: ${JSON.stringify(t)}`);
+      for (const [k, t] of Object.entries(r.tray)) if (t.bare === null || t.bare > 24) problems.push(`${w}x${h}: the outbox tray ${k} is not sized to its slips: ${JSON.stringify(t)}`);
       if (w >= 1400 && Math.abs(rest.above - rest.below) > 8) problems.push(`${w}x${h}: the meter's row is not in the middle of the panel's room: ${JSON.stringify(rest)}`);
       if (w < 1400 && rest.past > 32) problems.push(`${w}x${h}: the panel runs ${rest.past}px past the sheet beside it`);
     }

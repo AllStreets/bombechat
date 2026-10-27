@@ -268,14 +268,12 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
     const col = deck.querySelector('.row2 > .col.tray') || deck.querySelector('.outbox');
     if (col && shown(col)) {
       // round the column's content (the standard build's tray column reaches past it into its margins to scroll), and
-      // only as deep as the slips in it: a tray the size of what it holds, on either build. When they fill the column's
-      // room (they scroll in it), the tray is the room
+      // only as deep as the slips in it as they lie (a tucked slip where it is tucked, the tray scrolled as it is): a
+      // tray the size of what it holds, on either build, never deeper than the column's room
       const b = box(col), cs = getComputedStyle(col), pl = parseFloat(cs.paddingLeft), pr = parseFloat(cs.paddingRight), pt = parseFloat(cs.paddingTop), pbm = parseFloat(cs.paddingBottom);
       let top = b.y + pt, foot = b.y + b.h - pbm;
-      if (!/auto|scroll/.test(cs.overflowY) || col.scrollHeight <= col.clientHeight + 4) {
-        const held = [...col.querySelectorAll('.slip:not(.gone)')].filter(placed).map(box);
-        if (held.length) { top = Math.max(top, Math.min(...held.map(r => r.y))); foot = Math.min(foot, Math.max(...held.map(r => r.y + r.h))); }
-      }
+      const held = [...col.querySelectorAll('.slip:not(.gone)')].filter(placed).map(box);
+      if (held.length) { top = Math.max(top, Math.min(...held.map(r => r.y))); foot = Math.max(top + 1, Math.min(foot, Math.max(...held.map(r => r.y + r.h)))); }
       const pad = 6, x = b.x + pl - pad, y = top - pad, w = b.w - pl - pr + 2 * pad, h = foot - top + 2 * pad, c = at(x + w / 2, y + h / 2, 0), rim = 4 / U;
       trayWell = { x, y, w, h };
       // its floor the switches' pressed steel, inside a brass rim
@@ -426,6 +424,8 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
   for (const el of [bank, deck, ...deck.querySelectorAll('.panel, .mods, .row2, .row3, .outbox, .bankfoot')]) new ResizeObserver(soon).observe(el);
   new ResizeObserver(soon).observe(bank.querySelector('.bankfoot'));
   addEventListener('resize', soon);
+  // the outbox tray scrolled: its well follows the slips (scroll doesn't bubble, so caught on its way down)
+  deck.addEventListener('scroll', e => { if (e.target.matches && e.target.matches('.row2 > .col.tray')) soon(); }, true);
   // and once a turn ends, though nothing changed size: back from the settings page, by history or on load
   app.addEventListener('transitionend', e => { if (e.target === e.currentTarget) layout(); });
   addEventListener('pageshow', layout); document.body.getAnimations().forEach(a => a.finished.then(layout, () => {}));

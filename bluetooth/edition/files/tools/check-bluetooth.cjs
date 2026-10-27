@@ -507,6 +507,16 @@ const GROUP_NOTE = 'Anyone in Bluetooth range can read this Mac\'s name. Give it
           if (shown > 14) out.push(`${s.textContent.trim().slice(0, 24)}: ${Math.round(shown)}px`); }
         return out; });
       if (blank.length) fail(`${name} ${w}: a tucked slip shows blank paper: ${blank.join('; ')}`);
+      // the tray's well is drawn round the slips as they lie, as the airgapped build's is: no more than about 24 px of
+      // bare floor under the last of them that shows
+      const bare = () => { const t = window.__bank.trayWell && __bank.trayWell(), col = document.querySelector('.col.tray'), c = col.getBoundingClientRect();
+        const s = [...col.querySelectorAll('.slip:not(.gone)')].filter(e => e.offsetParent).map(e => e.getBoundingClientRect());
+        return t && s.length ? Math.round(t.y + t.h - 6 - (Math.min(c.bottom, Math.max(...s.map(r => r.bottom))) + scrollY)) : null; };
+      if (await p.evaluate(() => !!(window.__bank && __bank.gl))) {
+        await p.waitForFunction(f => { const b = eval(f)(); return b !== null && b <= 24; }, `(${bare})`, { timeout: 5000 }).catch(() => {});
+        const left = await p.evaluate(f => eval(f)(), `(${bare})`);
+        if (left === null || left > 24) fail(`${name} ${w}: the tray's well runs ${left}px past its slips`);
+      }
       const over = await overlaps(p);
       if (over.length) fail(`${name} ${w}: ${over.join('; ')}`);
       if (name === 'off') atOff = m;
