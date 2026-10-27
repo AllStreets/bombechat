@@ -529,7 +529,8 @@ for px, cut, out in json.loads(sys.argv[2]):
   // Bluetooth, on the standard edition's front (bluetooth/app/ui, its own simulator): the switch turned from Contacts to
   // Open, its jewel lit and the Near readout counting the strangers in range; Ines Duarte asking to connect, on a slip in
   // the tray; Accept stamped, and her station added as not confirmed; a reply to Marisol sent by Bluetooth and stamped
-  // heard; then Marisol's answer coming in by Bluetooth, the drums turning to it. The page can't take Ines off again, so
+  // heard; then Marisol's answer coming in by Bluetooth, the drums turning to it (the frames before her words come in
+// at twice the speed) until the plain row rests on the end of her words. The page can't take Ines off again, so
   // the clip's last frames dissolve into its first. Stepped on the page's clock, as the light clip is. Also
   // bluetooth.png, the panel's column with the request waiting, at 2x.
   //
@@ -597,7 +598,8 @@ for px, cut, out in json.loads(sys.argv[2]):
     await p.evaluate(() => window.__clock.freeze());
     for (let i = 0; i < 2 * FPS; i++) await p.evaluate(dt => window.__clock.step(dt), DT);
     let n = 0;
-    const frame = async () => { await p.evaluate(dt => window.__clock.step(dt), DT); await p.screenshot({ path: path.join(tmp, `f${String(n++).padStart(4, '0')}.jpg`), type: 'jpeg', quality: 94 }); };
+    let lapse = 1, tick = 0;
+    const frame = async () => { await p.evaluate(dt => window.__clock.step(dt), DT); if (tick++ % lapse) return; await p.screenshot({ path: path.join(tmp, `f${String(n++).padStart(4, '0')}.jpg`), type: 'jpeg', quality: 94 }); };
     const hold = async s => { for (let i = Math.round(s * FPS); i > 0; i--) await frame(); };
     const ease = k => k < .5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2;
     const glide = async (to, s) => { const from = { ...cur }, N = Math.round(s * FPS);
@@ -642,7 +644,14 @@ for px, cut, out in json.loads(sys.argv[2]):
     }, ANSWER);
     await glide(rest, 1.2);
     await p.evaluate(() => window.__btEmit('channel', { channel: 'Bluetooth', state: 'open to requests' }));
-    await hold(1.3);
+    // the drums keep their own pace through the envelope: its first frames (her keys and the time, no text yet) twice
+    // as fast, then the plain row turning to the end of her words and resting there
+    const row = [...ANSWER.slice(-12)].map(ch => /[a-z]/i.test(ch) ? ch.toUpperCase() : 'X').join('').padEnd(12, 'X');
+    lapse = 2; tick = 0;
+    for (let i = 0; i < 30 * FPS && !await p.evaluate(r => window.__bank.frame() && window.__bank.frame().plain === r, row); i++) await frame();
+    lapse = 1;
+    for (let i = 0; i < 6 * FPS && await p.evaluate(r => window.__bank.rows().plain !== r, row); i++) await frame();
+    await hold(2);
     // and back to the opening frame
     const FADE = Math.round(.7 * FPS);
     await hold(FADE / FPS);
@@ -697,13 +706,13 @@ for px, cut, out in json.loads(sys.argv[2]):
   }
   // Testing the machine with your own words, on a new machine's empty sheet (the app's path, its store open and
   // Marisol paired, nothing said yet): "hello world" typed in the reply line, Test the machine stamped, the entry
-  // waiting while the room meter falls quiet, then playing, and the machine's own microphone hearing it back: the drums
-  // turn to each frame as it lands (the words come round on the plain row as HELL, then O WORLD, after the sender's
-  // keys and time) and the read-back tape types into the entry until it is heard and stamped. The machine side is a
-  // stand-in for the node played through the app's own events, sealed and timed as the node does it (16.1 bytes a
-  // second, 48-byte chunks); only the stretch where it plays before the first chunk can land is shown four times as
-  // fast. Stepped on the page's clock; the last frames dissolve into the first, since the page can't take the test
-  // off the sheet again.
+  // waiting while the room meter falls quiet, then playing, and the machine's own microphone hearing it back: the
+  // drums turn to each frame as it lands, the plain row turning to HELLO WORLD once the words are in, as the read-back
+  // tape types them into the entry, and staying there while the rest lands; the entry is heard and stamped. The
+  // machine side is a stand-in for the node played through the app's own events, sealed and timed as the node does it
+  // (16.1 bytes a second, 48-byte chunks); the stretch where it plays before the first chunk can land is shown four
+  // times as fast, and the frames before the words come in twice as fast. Stepped on the page's clock; the last
+  // frames dissolve into the first, since the page can't take the test off the sheet again.
   async function selfTestClip() {
     const FPS = 20, DT = 1000 / FPS, WORDS = 'hello world', LAPSE = 4;
     const tmp = path.join(ROOT, 'checks', 'media', 'selftest'); fs.rmSync(tmp, { recursive: true, force: true }); fs.mkdirSync(tmp, { recursive: true });
@@ -799,20 +808,20 @@ for px, cut, out in json.loads(sys.argv[2]):
     await p.evaluate(() => window.__quiet());
     for (let i = 0; i < 5 * FPS && !await p.evaluate(() => window.__playing); i++) await frame();
     await hold(1.4);
-    // playing, before anything can come back: four times as fast
+    // playing, before anything can come back: four times as fast; then the first frames, all the sender's keys and
+    // time with no text yet (the drums turn, the plain row stays spacers), twice as fast
     lapse = LAPSE; tick = 0;
     for (let i = 0; i < 30 * FPS && !await p.evaluate(() => window.__arriving); i++) await frame();
+    lapse = 2; tick = 0;
+    const row = WORDS.toUpperCase().replace(/[^A-Z]/g, 'X').padEnd(12, 'X');// HELLOXWORLDX
+    for (let i = 0; i < 40 * FPS && !await p.evaluate(r => window.__bank.frame() && window.__bank.frame().plain === r, row); i++) await frame();
+    // at its own pace from the frame the words come in: the plain row turns to HELLO WORLD as the tape types it, the
+    // test is stamped heard, and the words stay on the row while the last frames (the signature) turn the rows below
     lapse = 1;
-    // the frames come round on the drums and the tape types in, until it is heard and stamped
-    for (let i = 0; i < 40 * FPS && !await p.evaluate(() => { const e = [...document.querySelectorAll('#log .ent.selftest')].pop(), s = e && e.querySelector('.stamp'); return !!s && s.getAnimations().every(a => a.playState === 'finished'); }); i++) await frame();
-    // on until the frame with the end of the words has come round, the plain row reading O WORLD; then the clip holds
-    // that frame (the page's clock stopped) before it dissolves
-    for (let i = 0; i < 20 * FPS && await p.evaluate(() => +document.getElementById('fno').textContent < 7); i++) await frame();
-    const words = WORDS.toUpperCase().replace(/[^A-Z]/g, 'X'), tail = words.slice(-7);// frame 7's first seven letters, OXWORLD
-    for (let i = 0; i < 4 * FPS && await p.evaluate(t => !window.__bank.rows().plain.startsWith(t), tail); i++) await frame();
-    await hold(.6);
+    for (let i = 0; i < 40 * FPS && !await p.evaluate(r => { const e = [...document.querySelectorAll('#log .ent.selftest')].pop(), s = e && e.querySelector('.stamp');
+      return !!s && s.getAnimations().every(a => a.playState === 'finished') && document.getElementById('fno').textContent === document.getElementById('fnt').textContent && window.__bank.rows().plain === r; }, row); i++) await frame();
+    await hold(3.4);
     const still = async s => { for (let i = Math.round(s * FPS); i > 0; i--) await p.screenshot({ path: path.join(tmp, `f${String(n++).padStart(4, '0')}.jpg`), type: 'jpeg', quality: 94 }); };
-    await still(2.2);
     const FADE = Math.round(.8 * FPS);
     await still(FADE / FPS);
     await c.close();
