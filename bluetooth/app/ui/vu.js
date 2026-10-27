@@ -62,7 +62,7 @@ export async function mountVu(vu, { still = false } = {}) {
   const glass = new THREE.Mesh(new THREE.PlaneGeometry(WW + 8, WH + 8), new THREE.MeshPhysicalMaterial({ color: '#ffffff', roughness: .02, metalness: 0, transparent: true, opacity: .03, clearcoat: .6, clearcoatRoughness: .04, envMapIntensity: .5, depthWrite: false }));
   glass.position.z = 6; scene.add(glass);
   const streak = new THREE.Mesh(new THREE.PlaneGeometry(WW * 1.4, 26), new THREE.MeshBasicMaterial({ map: K.canvasTex(256, 8, (k, w, h) => { const g = k.createLinearGradient(0, 0, w, 0);
-    g.addColorStop(0, 'rgba(255,250,240,0)'); g.addColorStop(.4, 'rgba(255,250,240,.025)'); g.addColorStop(.5, 'rgba(255,250,240,.05)'); g.addColorStop(.6, 'rgba(255,250,240,.025)'); g.addColorStop(1, 'rgba(255,250,240,0)'); k.fillStyle = g; k.fillRect(0, 0, w, h); }), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+    g.addColorStop(0, 'rgba(255,250,240,0)'); g.addColorStop(.35, 'rgba(255,250,240,.04)'); g.addColorStop(.5, 'rgba(255,250,240,.12)'); g.addColorStop(.65, 'rgba(255,250,240,.04)'); g.addColorStop(1, 'rgba(255,250,240,0)'); k.fillStyle = g; k.fillRect(0, 0, w, h); }), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
   streak.material.map.wrapS = streak.material.map.wrapT = THREE.ClampToEdgeWrapping; streak.material.map.colorSpace = THREE.SRGBColorSpace;
   streak.rotation.z = -.48; streak.position.set(-18, 10, 6.2); scene.add(streak);
 

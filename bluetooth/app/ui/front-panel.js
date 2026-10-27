@@ -99,8 +99,8 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
 
   /* ---------- the bank's foot: odometer bezels, wheels and lamp sockets ---------- */
   const bezelMat = new THREE.MeshStandardMaterial({ color: '#2a2a27', roughness: .38, metalness: .9 });
-  const wheelMat = new THREE.MeshPhysicalMaterial({ color: '#141311', roughness: .38, metalness: 0, clearcoat: .5, clearcoatRoughness: .3 });
   const windowMat = new THREE.MeshStandardMaterial({ color: '#030303', roughness: .9 });
+  bezelMat.userData.keep = windowMat.userData.keep = true;
   // a rounded frame round a window w by h (units), r its corner, t its width, d its depth
   function frameGeo(w, h, t, d, r = .02) {
     const rr = (p, w, h, r, hole) => { const x = -w / 2, y = -h / 2; p.moveTo(x + r, y); p.lineTo(x + w - r, y); p.quadraticCurveTo(x + w, y, x + w, y + r); p.lineTo(x + w, y + h - r); p.quadraticCurveTo(x + w, y + h, x + w - r, y + h); p.lineTo(x + r, y + h); p.quadraticCurveTo(x, y + h, x, y + h - r); p.lineTo(x, y + r); p.quadraticCurveTo(x, y, x + r, y); return p; };
@@ -110,15 +110,24 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
     g.translate(0, 0, b); return g;
   }
   const footParts = new THREE.Group(); scene.add(footParts);
-  const wheelGeo = (() => { const g = new THREE.CylinderGeometry(1, 1, 1, 32, 1, false, -Math.PI * .32, Math.PI * .64); g.rotateZ(Math.PI / 2); g.rotateX(-Math.PI / 2); g.userData.keep = true; return g; })();
   // lamps, jewels and knobs keep their state: they live here and are only moved by a layout
   const kept = new THREE.Group(); scene.add(kept);
   const lamps = new Map();// HTML lamp (or jewel) -> {j, el, color()}
 
-  function clear(g) { for (const o of [...g.children]) { g.remove(o); o.traverse(m => { if (m.isMesh && m.geometry && !m.geometry.userData.keep) m.geometry.dispose(); }); } }
+  // take a group's parts away and free what is theirs alone: geometry, materials and their pictures, never what is
+  // shared (userData.keep: the kit's materials and the geometry every bolt or knob uses)
+  function clear(g) { for (const o of [...g.children]) { g.remove(o); o.traverse(m => { if (!m.isMesh) return;
+    if (m.geometry && !m.geometry.userData.keep) m.geometry.dispose();
+    for (const mt of [].concat(m.material || [])) if (!mt.userData.keep) { if (mt.map) mt.map.dispose(); mt.dispose(); } }); } }
 
   /* ---------- where things go ---------- */
   let U = 1, W = 1, H = 1, D = 10;
+  // the frame showing round the panel, the ring bolts' distance in from the window's edge and their radius, in px
+  // (a narrow window, as front-panel.css lays it out, has the ring 12 px in and its frame 4 px)
+  const NARROW = matchMedia('(max-width:1239px)'), BOLT = 4.2;
+  let FRAME = 6, RING = 16;
+  // the parts no ring bolt may meet
+  const PARTS = '.bank, .sheet, .menu, .mods .mod, .vu, .row2 > .col, .outbox, .row3 .stn, .counter, .lamp:not([hidden])';
   const css = (el, k) => parseFloat(getComputedStyle(el)[k]) || 0;
   // laid out mid-turn, to the pixel: laid out again from the rects once the turn is over (frame)
   let laidTurned = false;
@@ -139,12 +148,7 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
       const c = at(b.x + b.w / 2, b.y + b.h / 2, z0); g.position.copy(c);
       const fr = new THREE.Mesh(frameGeo(b.w / U, b.h / U, t, d, 1.5 / U), bezelMat); fr.castShadow = true; fr.receiveShadow = true; g.add(fr);
       const win = new THREE.Mesh(new THREE.PlaneGeometry(b.w / U + .01, b.h / U + .01), windowMat); win.position.z = .001; g.add(win);
-      // a wheel behind each digit, its face curving away top and bottom
-      for (const i of odo.querySelectorAll('i')) {
-        const r = box(i), wr = r.h / U * .62;
-        const m = new THREE.Mesh(wheelGeo, wheelMat); m.scale.set(r.w / U * .96, wr, wr);
-        const p = at(r.x + r.w / 2, r.y + r.h / 2, z0); m.position.set(p.x - c.x, p.y - c.y, .02 - wr * .25); m.receiveShadow = true; g.add(m);
-      }
+      // (the wheels are the HTML's own, shaded as they always were, turning in this bezel's window)
     }
     // the frames-checked lamps: a jewel in a socket for each, lit as the HTML lamp is
     const seen = new Set();
@@ -191,16 +195,21 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
     L.j.size(radius);
     return L;
   }
-  // the holders and the tray: the same aged brass, its grain catching the light
-  const trayMat = new THREE.MeshStandardMaterial({ color: '#9a7c4a', roughness: .48, metalness: 1, bumpMap: tex.panelRough, bumpScale: .08 });
-  const lensMat = new THREE.MeshPhysicalMaterial({ color: '#050607', roughness: .05, metalness: 0, clearcoat: 1, clearcoatRoughness: .03 });
+  // the holders and the tray's rim: the kit's dull brass, as the back's jack nuts and maker's plate are (bright brass is
+  // for small turned parts: bezels, rings)
+  const trayMat = M.brassDull;
+  const lensMat = new THREE.MeshPhysicalMaterial({ color: '#050607', roughness: .08, metalness: 0, clearcoat: 1, clearcoatRoughness: .12 });
+  const ringMat = new THREE.MeshStandardMaterial({ color: '#0d0d0c', roughness: .45, metalness: .8 });
+  const eyeMat = M.brass.clone();// its own, so a pointer over it can catch it
+  for (const m of [lensMat, ringMat, eyeMat]) m.userData.keep = true;
+
   const eyeGeo = (() => { const p = [[.74, 0], [1, 0], [1, .1], [.97, .2], [.9, .25], [.82, .25], [.77, .2], [.76, .12], [.74, .1]].map(([r, y]) => new THREE.Vector2(r, y)); const g = new THREE.LatheGeometry(p, 64); g.rotateX(Math.PI / 2); g.userData.keep = true; return g; })();
   const bossGeo = (() => { const p = [[0, 0], [1, 0], [1, .35], [.9, .55], [.6, .66], [0, .7]].map(([r, y]) => new THREE.Vector2(r, y)); const g = new THREE.LatheGeometry(p, 32); g.rotateX(Math.PI / 2); g.userData.keep = true; return g; })();
   let shutter = null, eyeEl = null;
   // parts sitting at the given boxes; z the face of the deck under them
   function layoutDeck(holes) {
     clear(deckParts);
-    const bs = 4.2 / U / .09;// the bolt ring's bolts, here too
+    const bs = BOLT / U / .09;// the bolt ring's bolts, here too
     // each switch tile: a pressed steel escutcheon let into the enamel, a slotted bolt in each corner
     for (const mod of deck.querySelectorAll('.mods .mod')) {
       if (!shown(mod)) continue;
@@ -218,18 +227,22 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
       if (btn && placed(btn)) { const kb = box(btn), s = kb.w / 138, kn = knobFor(btn);
         kn.group.position.copy(at(kb.x + 69 * s, kb.y + 51 * s, 0)); kn.group.scale.setScalar(SVGU * s / U); }
       // its jewel
-      const je = mod.querySelector('.jewel');
-      if (je && placed(je)) { const jb = box(je), L = jewelFor(je, (jb.w / 2 + 2.6) / U); L.j.group.position.copy(at(jb.x + jb.w / 2, jb.y + jb.h / 2, 0)); }
+      // (a tile with nothing fitted has an empty socket where its lamp would be)
+      const je = mod.querySelector('.jewel'), bl = mod.querySelector('.blank');
+      if (je && placed(je)) { const jb = box(je), p = at(jb.x + jb.w / 2, jb.y + jb.h / 2, 0), r = (jb.w / 2 + 2.6) / U;
+        if (bl) { const sk = K.jewel('#000', { empty: true, radius: r, parent: deckParts }); sk.group.position.copy(p); }
+        else { const L = jewelFor(je, r); L.j.group.position.copy(p); } }
       // a switch not fitted: the kit's blanking plate, the one the back carries for its Bluetooth group
-      const bl = mod.querySelector('.blank');
       if (bl && placed(bl)) { const bb = box(bl), p = at(bb.x + bb.w / 2, bb.y + bb.h / 2, 0);
         const plate = K.blank(bb.w / U, bb.h / U, 'NOT FITTED', { size: 12.5 / .86 / U, bolts: bs * .85, parent: deckParts }); plate.group.position.copy(p); }
       // Light's eyepiece: a turned brass ring and a dark lens round the camera's picture, and its shutter
       if (eye && placed(eye)) {
         eyeEl = eye; const r = eb.w / 2 / U, p = at(eb.x + eb.w / 2, eb.y + eb.h / 2, .02);
-        const ring = new THREE.Mesh(eyeGeo, M.brass); ring.scale.set(r, r, r * .7); ring.position.set(p.x, p.y, 0); ring.castShadow = true; ring.receiveShadow = true; deckParts.add(ring);
-        // the lens: a shallow dome of dark glass, the room in it
-        const lens = new THREE.Mesh(new THREE.SphereGeometry(r * 1.6, 48, 12, 0, Math.PI * 2, 0, Math.asin(.78 / 1.6)).rotateX(Math.PI / 2), lensMat); lens.position.set(p.x, p.y, .012 - r * 1.6 * Math.cos(Math.asin(.78 / 1.6))); deckParts.add(lens);
+        const ring = new THREE.Mesh(eyeGeo, eyeMat); ring.scale.set(r, r, r * .7); ring.position.set(p.x, p.y, 0); ring.castShadow = true; ring.receiveShadow = true; deckParts.add(ring);
+        // the lens: a shallow dome of dark glass, the room in it, held by a dark retaining ring inside the brass
+        const LR = 3.2, la = Math.asin(.74 / LR);
+        const lens = new THREE.Mesh(new THREE.SphereGeometry(r * LR, 48, 8, 0, Math.PI * 2, 0, la).rotateX(Math.PI / 2), lensMat); lens.position.set(p.x, p.y, .012 - r * LR * Math.cos(la)); deckParts.add(lens);
+        const hold = new THREE.Mesh(new THREE.TorusGeometry(r * .75, r * .035, 8, 48), ringMat); hold.position.set(p.x, p.y, .014); deckParts.add(hold);
         shutter = new THREE.Group(); shutter.position.set(p.x, p.y, .03); deckParts.add(shutter);
         const disc = new THREE.Mesh(new THREE.CylinderGeometry(r * .76, r * .76, .012, 48).rotateX(Math.PI / 2), M.steel); disc.castShadow = true; shutter.add(disc);
         const slot = new THREE.Mesh(new THREE.BoxGeometry(r * 1.1, r * .09, .01), M.hole); slot.rotation.z = Math.PI / 4; slot.position.z = .006; shutter.add(slot);
@@ -254,7 +267,13 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
       // round the column's content (the standard build's tray column reaches past it into its margins to scroll)
       const b = box(col), cs = getComputedStyle(col), pl = parseFloat(cs.paddingLeft), pr = parseFloat(cs.paddingRight), pt = parseFloat(cs.paddingTop), pbm = parseFloat(cs.paddingBottom);
       const pad = 6, x = b.x + pl - pad, y = b.y + pt - pad, w = b.w - pl - pr + 2 * pad, h = b.h - pt - pbm + 2 * pad, c = at(x + w / 2, y + h / 2, 0), rim = 4 / U;
-      const fl = new THREE.Mesh(slab(w / U, h / U, .012, { r: 2 / U, b: .004 }), M.cover);// (its floor the switches' pressed steel, inside a brass rim) fl.position.set(c.x, c.y, 0); fl.receiveShadow = true; fl.castShadow = true; deckParts.add(fl);
+      // its floor the switches' pressed steel, inside a brass rim
+      const fl = new THREE.Mesh(slab(w / U, h / U, .012, { r: 2 / U, b: .004 }), M.cover); fl.position.set(c.x, c.y, 0); fl.receiveShadow = true; fl.castShadow = true; deckParts.add(fl);
+      // nothing waiting: the words engraved in the floor where the slip would lie (the HTML keeps them, unseen, for
+      // a screen reader)
+      const none = col.querySelector('.outbox > .slip.empty:only-child');
+      if (none && placed(none)) { const nb = box(none), e = K.engrave(none.textContent.trim().replace(/\.$/, ''), 0, 0, 13 / .86 / U, '#8f897a', { parent: deckParts });// (in the engraving face's small capitals, as every word cut in this machine's metal)
+        const p = at(nb.x + nb.w / 2, nb.y + nb.h / 2, .012); e.position.set(p.x, p.y, .0125); }
       const lip = new THREE.Mesh(frameGeo(w / U - 2 * rim, h / U - 2 * rim, rim, .045, 1 / U), trayMat); lip.position.set(c.x, c.y, .004); lip.castShadow = true; lip.receiveShadow = true; deckParts.add(lip);
     }
     // the stations: each card slid into a brass holder, its jewel beside it
@@ -284,7 +303,8 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
     for (const [name, turn] of [['--screw-a', .62], ['--screw-b', -.48]]) {
       const g = new THREE.Group(); const h = new THREE.Mesh(headGeo, M.steel); g.add(h);
       const s = new THREE.Mesh(new THREE.BoxGeometry(1.5, .2, .3), M.hole); s.position.z = .7; s.rotation.z = turn; g.add(s);
-      set(name, K.bake(g, { px: 40, shadow: true, margin: .3 }));
+      // (seen a little from above and the left, as the key light falls, so its steel takes the light the ring bolts do)
+      set(name, K.bake(g, { px: 40, view: 'tilt', shadow: true, margin: .3 }));
     }
     // jewels, lit and dark
     const jw = K.jewel('#f0b64c', { parent: new THREE.Group() });
@@ -311,7 +331,7 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
   }
 
   function layout() {
-    laidTurned = false; W = css(host, 'width'); H = css(host, 'height'); if (!W || !H) return;
+    laidTurned = false; laidSig = signature(); W = css(host, 'width'); H = css(host, 'height'); if (!W || !H) return;
     const dr = box(cells[0].el).w; U = dr / .92;
     renderer.setSize(W, H, false); camera.aspect = W / H;
     const bk = box(bank);
@@ -323,11 +343,17 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
     if (front) { scene.remove(front.group); front.panel.geometry.dispose(); front.frame.geometry.dispose(); }
     const fg = new THREE.Group(); scene.add(fg);
     const bc = at(bk.x + bk.w / 2, bk.y + bk.h / 2, 0);
-    const edge = 8 / U, bs = 4.2 / U / .09;
+    // as the back has it: the panel inside a dark frame (FRAME px of it showing at the window's edge), its bolt ring RING
+    // px in from the window's edge. A ring bolt that would meet any part of the front is left out
+    const bs = BOLT / U / .09;
     const holes = [{ x: bc.x, y: bc.y, w: bk.w / U, h: bk.h / U, r: 3 / U }];
     layoutDeck(holes);
-    const per = K.perimeter(W / U, H / U, 0, { across: 13, down: Math.max(3, Math.round(H / W * 13 * .78)), inset: edge, scale: bs, z: .006, holes, grain: GRAIN, parent: fg });
-    per.frame.visible = false;
+    FRAME = NARROW.matches ? 4 : 6; RING = NARROW.matches ? 12 : 16;
+    const parts = [...app.querySelectorAll(PARTS)].filter(placed).map(box);
+    const clearOf = (x, y) => { const px = x * U + W / 2, py = H / 2 - y * U, r = BOLT + 1.5;
+      return !parts.some(b => px + r > b.x && px - r < b.x + b.w && py + r > b.y && py - r < b.y + b.h); };
+    const pw = (W - 2 * FRAME) / U, ph = (H - 2 * FRAME) / U;
+    const per = K.perimeter(pw, ph, 0, { across: 13, down: Math.max(3, Math.round(ph / pw * 13 * .78)), inset: (RING - FRAME) / U, scale: bs, z: .006, holes, grain: GRAIN, clear: clearOf, parent: fg });
     front = { group: fg, ...per };
     floorTo(at(bk.x + bk.w / 2, bk.y + bk.h / 2, -BAY), bk.w / U + .3, bk.h / U + .3);
     drums.forEach(d => { const r = box(d.cell.el); d.g.position.copy(at(r.x + r.w / 2, r.y + r.w * .08 + r.w / 2, 0)); });
@@ -351,7 +377,13 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
   // parts 6.3 adds lay themselves out with the rest
   const later = [];
 
-  let dirty = true, renders = 0;
+  let dirty = true, renders = 0, laidSig = '';
+  // what the scene was laid out from: every box it reads. A change in the HTML lays it out again only if one moved
+  const WATCHED = '.bank, .colno, .rowlab, .bankfoot .rd, .bankfoot .odo, .lampset i, .mods .mod, .mod .knob, .mod .jewel, .mod .blank, .eyepiece, .vu, .vu svg, .row2 > .col.tray, .outbox, .outbox > .slip.empty, .row3 .stn, .row3 .holder, .row3 .holder > span, .stn .jewel, .counter .odo, .sheet, .menu';
+  function signature() { const hr = host.getBoundingClientRect(); let s = `${hr.width}x${hr.height}`;
+    for (const el of app.querySelectorAll(WATCHED)) { const r = el.getBoundingClientRect(); s += `|${Math.round(r.left - hr.left)},${Math.round(r.top - hr.top)},${Math.round(r.width)},${Math.round(r.height)},${el.offsetParent ? 1 : 0}`; }
+    for (const el of app.querySelectorAll('.bankfoot .rd')) s += getComputedStyle(el).visibility[0];
+    return s; }
   const composer = K.makeComposer({ ao: !noao });
   // laid out again on the next frame, once whatever changed has settled
   let relay = false; const soon = () => { relay = true; };
@@ -376,6 +408,14 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
     }
     relay = true; } });
   mo.observe(bank.querySelector('.bankfoot'), { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'style', 'hidden'] });
+  // a pointer over a knob or the eyepiece: its bakelite or brass catches a little more of the room (no glow)
+  const eyeBase = eyeMat.color.clone(), eyeOver = eyeBase.clone().lerp(new THREE.Color('#f3dfb4'), .3);
+  function hover(el, on) {
+    const k = knobParts.get(el); if (k) { if (k.hover(on)) dirty = true; return; }
+    if (el === eyeEl) { eyeMat.color.copy(on ? eyeOver : eyeBase); eyeMat.roughness = on ? .26 : M.brass.roughness; dirty = true; }
+  }
+  deck.addEventListener('pointerover', e => { const t = e.target.closest('.knob, .eyepiece'); if (t && !t.contains(e.relatedTarget)) hover(t, true); });
+  deck.addEventListener('pointerout', e => { const t = e.target.closest('.knob, .eyepiece'); if (t && !t.contains(e.relatedTarget)) hover(t, false); });
   mo.observe(deck.querySelector('.panel') || deck, { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'style', 'hidden', 'aria-valuenow'] });
 
   // for checks: where the scene draws each part and where its HTML stands, in bank pixels, at rest. Each drum's centre
@@ -404,7 +444,8 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
     jewel(id, on) { const L = lamps.get(document.getElementById(id)); if (L && L.j.set(on)) dirty = true; }, K, scene, at, box: el => box(el), later, ticking, lamps, syncLamp, soon, host, get U() { return U; }, get D() { return D; } };
   function frame(now) {
     let moving = false;
-    if (relay || (laidTurned && !turnedAbove(host))) { relay = false; layout(); }
+    if (laidTurned && !turnedAbove(host)) { relay = false; layout(); }
+    else if (relay) { relay = false; if (signature() !== laidSig) layout(); }
     for (const d of drums) { const c = d.cell; let ang = c.angle;
       if (!c.snap) { const k = (now - c.t0) / DUR; if (k < 1) { ang = c.from + (c.angle - c.from) * bez(Math.max(0, k)); moving = true; } }
       const z = -ang * Math.PI / 180; if (d.rot.rotation.z !== z) { d.rot.rotation.z = z; dirty = true; }
@@ -415,6 +456,10 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
     if (++frames === 3) { self.ready = true; api.ready = true; }
     onFrame(); requestAnimationFrame(frame); }
   api.renders = () => renders;
+  // for checks: every ring bolt as drawn, a disc in page pixels, and the parts it must clear
+  api.ringBolts = () => { const hr = host.getBoundingClientRect();
+    return Object.values(front.bolts).flat().map(m => ({ x: m.position.x * U + W / 2 + hr.left + scrollX, y: H / 2 - m.position.y * U + hr.top + scrollY, r: .09 * m.scale.x * U })); };
+  api.ringParts = PARTS;
   // the room meter behind its glass, on its own canvas
   const vuEl = deck.querySelector('.vu');
   if (vuEl) try { vuEl.classList.add('gl'); self.vu = await mountVu(vuEl, { still }); } catch (e) { vuEl.classList.remove('gl'); console.warn('the meter stays flat:', e.message); }

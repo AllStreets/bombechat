@@ -338,7 +338,7 @@ const GROUP_NOTE = 'Anyone in Bluetooth range can read this Mac\'s name. Give it
     await wait(p, 'the slip', () => !!document.querySelector('#intray .slip.ask'));
     let f = await face(p);
     if (!f.request || f.request.accept || !f.request.decline || f.request.rule !== MEET_FIRST) fail(`held: the slip shows ${JSON.stringify(f.request)}`);
-    const folded = await p.evaluate(() => { const s = document.querySelector('#neartray .slip.near.folded'); return s && { text: s.textContent, title: s.title, under: !!s.closest('.col.meter') }; });
+    const folded = await p.evaluate(() => { const s = document.querySelector('#neartray .slip.near.folded'); return s && { text: s.textContent, title: s.title, under: !!s.closest('.col.tray') }; });
     if (!folded || folded.text !== 'K7MX near, not asked' || !/Not asked while new contacts need a key check\.$/.test(folded.title) || !folded.under) fail(`held: the strangers' line ${JSON.stringify(folded)}`);
     const whole = await slipWhole(p);
     if (whole) fail(`held: ${whole}`);

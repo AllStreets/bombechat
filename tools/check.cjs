@@ -250,6 +250,20 @@ function measureText() {
       if (b.moved) problems.push(`${w}x${h}: the build plate's longest form moves the plates beside it`);
       if (b.over > 0) problems.push(`${w}x${h}: the top bar overflows by ${b.over}px`);
     }
+    // the front panel's bolt ring, as the back's: every ring bolt whole inside the page, clear of the top bar, and
+    // meeting no part of the front (the bank, the sheet, the card, the switch tiles, the meter, the tray, the stations)
+    if (APP) {
+      const ring = await p.evaluate(() => { if (!window.__bank.ringBolts) return null;
+        const B = __bank.ringBolts(), W = document.documentElement.scrollWidth, H = document.documentElement.scrollHeight, top = document.querySelector('.top').getBoundingClientRect().bottom + scrollY;
+        const parts = [...document.querySelectorAll(__bank.ringParts)].filter(e => e.offsetParent).map(e => { const r = e.getBoundingClientRect(); return { l: r.left + scrollX, t: r.top + scrollY, r: r.right + scrollX, b: r.bottom + scrollY, n: e.className }; });
+        const bad = [];
+        for (const b of B) {
+          if (b.x - b.r < 4 || b.x + b.r > W - 4 || b.y - b.r < top + 4 || b.y + b.r > H - 4) bad.push(`bolt at ${Math.round(b.x)},${Math.round(b.y)} outside the page`);
+          for (const q of parts) if (b.x + b.r > q.l && b.x - b.r < q.r && b.y + b.r > q.t && b.y - b.r < q.b) bad.push(`bolt at ${Math.round(b.x)},${Math.round(b.y)} meets ${q.n}`);
+        }
+        return { n: B.length, bad }; });
+      if (ring) { r.ringBolts = ring.n; if (ring.n < 12 || ring.bad.length) problems.push(`${w}x${h}: the front's bolt ring: ${ring.n} bolts; ${ring.bad.slice(0, 4).join('; ')}`); }
+    }
     await p.screenshot({ path: path.join(out, `vp-${w}x${h}.png`) });
     if (r.pageHeight > h) await p.screenshot({ path: path.join(out, `vp-${w}x${h}-full.png`), fullPage: true });
     await p.close();
@@ -338,8 +352,10 @@ function measureText() {
     const frames = n => idle.evaluate(n => new Promise(r => { const n0 = __bank.renders(); const f = () => --n ? requestAnimationFrame(f) : r(__bank.renders() - n0); requestAnimationFrame(f); }), n);
     await frames(30);
     const r = { idle: await frames(120) };
-    await idle.click('#k1');
-    r.knob = await frames(90);
+    // (counted from before the click: the turn's first frame may be drawn before a count started after it)
+    const k0 = await idle.evaluate(() => __bank.renders());
+    await idle.click('#k1'); await frames(90);
+    r.knob = await idle.evaluate(n => __bank.renders() - n, k0);
     r.after = await frames(120);
     if (await idle.evaluate(() => !!window.__vu)) {
       const vu0 = await idle.evaluate(() => __vu.renders());
@@ -351,6 +367,21 @@ function measureText() {
     if (r.idle !== 0 || r.after !== 0) problems.push(`the front panel draws while nothing changes: ${JSON.stringify(r)}`);
     if (r.knob < 1 || r.knob > 45) problems.push(`a knob turn draws ${r.knob} frames of the front panel (1 to 45 expected)`);
     await idle.close();
+    // and in motion (not held still): once the message has landed the panel goes quiet, a knob turned springs to its
+    // stop over a few frames, then the panel is quiet again
+    const live2 = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    watch(live2, 'idle, live');
+    await live2.goto(url('f=99'));
+    await live2.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
+    const lframes = n => live2.evaluate(n => new Promise(r => { const n0 = __bank.renders(); const f = () => --n ? requestAnimationFrame(f) : r(__bank.renders() - n0); requestAnimationFrame(f); }), n);
+    let quiet = -1; for (let i = 0; i < 12 && quiet !== 0; i++) quiet = await lframes(120);
+    const lr = { quiet };
+    const l0 = await live2.evaluate(() => __bank.renders());
+    await live2.click('#k1'); await lframes(60);
+    lr.knob = await live2.evaluate(n => __bank.renders() - n, l0); lr.after = await lframes(120);
+    report.renders.live = lr;
+    if (lr.quiet !== 0 || lr.knob < 4 || lr.knob > 45 || lr.after !== 0) problems.push(`the front panel in motion: ${JSON.stringify(lr)} (quiet, a knob springing over 4 to 45 frames, quiet again)`);
+    await live2.close();
   }
   report.fps = await live.evaluate(() => new Promise(r => { let n = 0; const t0 = performance.now(); const f = () => { n++; performance.now() - t0 < 2000 ? requestAnimationFrame(f) : r(Math.round(n / 2)); }; requestAnimationFrame(f); }));
   if (report.fps < 50) problems.push('front frame rate ' + report.fps);

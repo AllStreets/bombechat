@@ -97,6 +97,9 @@ export function createMachine(container, { still = false, background = '#0d0d0c'
 
   const boltGeo = new THREE.CylinderGeometry(.09, .09, .06, 20); boltGeo.rotateX(Math.PI / 2);
   const slotGeo = new THREE.BoxGeometry(.13, .022, .02);
+  // shared by every bolt: a page that clears and redraws its parts keeps these (userData.keep), as it keeps M's materials
+  boltGeo.userData.keep = slotGeo.userData.keep = true;
+  for (const m of Object.values(M)) m.userData.keep = true;
   function bolt(x, y, { scale = 1, z = .03, parent = scene, slot = Math.random() * 3 } = {}) {
     const b = new THREE.Mesh(boltGeo, M.steel); b.scale.setScalar(scale); b.position.set(x, y, z); b.castShadow = true; parent.add(b);
     const s = new THREE.Mesh(slotGeo, M.hole); s.scale.setScalar(scale); s.position.set(x, y, z + .032 * scale); s.rotation.z = slot; parent.add(s);
@@ -153,10 +156,11 @@ export function createMachine(container, { still = false, background = '#0d0d0c'
   // along each edge (across along the top and the foot, about every two units down the sides unless down says)
   // holes: bays let into the panel ([{x, y, w, h, r}], centred, in panel units), each with a bevelled lip in the frame's
   // finish running back the panel's depth; grain: the wrinkle's tile size in units across and down, for a panel with bays
-  function perimeter(w, h, cy, { across = 13, down = null, inset = .35, scale = 1, z = .03, holes = null, grain = null, parent = scene } = {}) {
+  // clear(x, y, r): whether a bolt may go there (a bolt that would meet a part is left out)
+  function perimeter(w, h, cy, { across = 13, down = null, inset = .35, scale = 1, z = .03, holes = null, grain = null, clear = null, parent = scene } = {}) {
     let panel;
     if (holes && holes.length) {
-      const s = new THREE.Shape(); s.moveTo(-w / 2 - .1, cy - h / 2 - .1); s.lineTo(w / 2 + .1, cy - h / 2 - .1); s.lineTo(w / 2 + .1, cy + h / 2 + .1); s.lineTo(-w / 2 - .1, cy + h / 2 + .1); s.closePath();
+      const s = new THREE.Shape(); s.moveTo(-w / 2, cy - h / 2); s.lineTo(w / 2, cy - h / 2); s.lineTo(w / 2, cy + h / 2); s.lineTo(-w / 2, cy + h / 2); s.closePath();
       const lip = .028;
       for (const o of holes) {
         // (the bevel rounds the lip inward from the hole's edge, so the front face's edge is the bay's edge)
@@ -178,21 +182,22 @@ export function createMachine(container, { still = false, background = '#0d0d0c'
     const bolts = { top: [], bottom: [], left: [], right: [] };
     // each bolt's slot where it was left when it was tightened: the same every time the ring is drawn
     let n = 0; const slot = () => ((++n * 2.399) % Math.PI);
+    const put = (list, x, y) => { const sl = slot(); if (!clear || clear(x, y, .09 * scale)) list.push(bolt(x, y, { scale, z, parent, slot: sl })); };
     for (let i = 0; i < across; i++) {
       const x = -w / 2 + inset + i * (w - 2 * inset) / (across - 1);
-      bolts.top.push(bolt(x, cy + h / 2 - inset, { scale, z, parent, slot: slot() })); bolts.bottom.push(bolt(x, cy - h / 2 + inset, { scale, z, parent, slot: slot() }));
+      put(bolts.top, x, cy + h / 2 - inset); put(bolts.bottom, x, cy - h / 2 + inset);
     }
     const side = down || Math.round((h - 2 * inset) / 2);
     for (let i = 1; i < side; i++) {
       const y = cy - h / 2 + inset + i * (h - 2 * inset) / side;
-      bolts.left.push(bolt(-w / 2 + inset, y, { scale, z, parent, slot: slot() })); bolts.right.push(bolt(w / 2 - inset, y, { scale, z, parent, slot: slot() }));
+      put(bolts.left, -w / 2 + inset, y); put(bolts.right, w / 2 - inset, y);
     }
     return { panel, frame, bolts };
   }
 
   // a blanking plate: wrinkle-finish steel over a hole where nothing is fitted, a slotted bolt in each corner and what it
   // covers engraved across it. Centred on the group's origin, its face at z .05
-  const blankMat = M.cover = new THREE.MeshStandardMaterial({ color: '#262724', roughness: .45, metalness: .6, bumpMap: tex.wrinkle, bumpScale: .4 });
+  const blankMat = M.cover = new THREE.MeshStandardMaterial({ color: '#262724', roughness: .45, metalness: .6, bumpMap: tex.wrinkle, bumpScale: .4 }); blankMat.userData.keep = true;
   function blank(w, h, text, { size = .15, bolts = 1, parent = scene } = {}) {
     const g = new THREE.Group(); parent.add(g);
     const cov = new THREE.Mesh(new THREE.BoxGeometry(w, h, .05), blankMat); cov.position.z = .025; cov.castShadow = true; cov.receiveShadow = true; g.add(cov);
@@ -218,16 +223,25 @@ export function createMachine(container, { still = false, background = '#0d0d0c'
       const a = Math.atan2(z, x), f = Math.pow(Math.max(0, Math.cos(a * 24)), 2), k = y > .41 ? 1 - (y - .41) / .06 : 1;
       const s = 1 - .055 * f * k; pos.setX(i, x * s); pos.setZ(i, z * s);
     }
-    g.computeVertexNormals(); g.rotateX(Math.PI / 2);
+    g.computeVertexNormals(); g.rotateX(Math.PI / 2); g.userData.keep = true;
     return g;
   })();
-  const cream = new THREE.MeshStandardMaterial({ color: '#e9e3d2', roughness: .4, metalness: 0 });
+  const cream = new THREE.MeshStandardMaterial({ color: '#e9e3d2', roughness: .4, metalness: 0, side: THREE.DoubleSide }); cream.userData.keep = true;
+  // the pointer's line: a ribbon .085 wide lying on the knob's turned profile, a hair proud of it, from r .14 to .97
+  const pointerRibbon = (() => {
+    const prof = [[.14, .5], [.52, .5], [.6, .485], [.64, .455], [.66, .41], [.66, .2], [.7, .175], [.93, .165], [.97, .148]];
+    const pos = [], idx = [], hw = .0425, up = .005;
+    prof.forEach(([r, h], i) => { pos.push(-hw, r, h + up, hw, r, h + up); if (i) { const a = 2 * i - 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); } });
+    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setIndex(idx); g.computeVertexNormals(); g.userData.keep = true; return g;
+  })();
   function knob({ labels = [], angles = [-120, 0, 120], place = [], line = .5, size = .53, radius = 1, parent = scene } = {}) {
     const g = new THREE.Group(); parent.add(g);
     const rot = new THREE.Group(); g.add(rot);
-    const body = new THREE.Mesh(knobGeo, M.bakelite); body.castShadow = true; body.receiveShadow = true; rot.add(body);
-    // the pointer: an enamel line inlaid in the skirt, from the grip to the edge
-    const skirtLine = new THREE.Mesh(new THREE.BoxGeometry(.085, .22, .01), cream); skirtLine.position.set(0, .83, .174); rot.add(skirtLine);
+    // its own bakelite, so a pointer over it can lighten its rim
+    const mat = M.bakelite.clone(); mat.userData.keep = false;
+    const body = new THREE.Mesh(knobGeo, mat); body.castShadow = true; body.receiveShadow = true; rot.add(body);
+    // the pointer: an enamel line inlaid from near the cap's middle, over its shoulder and down the grip, across the skirt
+    rot.add(new THREE.Mesh(pointerRibbon, cream));
     // the stops: a tick and the words engraved on the enamel, the chosen stop's lighter
     const stops = labels.map((t, i) => {
       const a = angles[i] * Math.PI / 180, sx = Math.sin(a), sy = Math.cos(a);
@@ -264,9 +278,12 @@ export function createMachine(container, { still = false, background = '#0d0d0c'
       if (k >= 1) { t0 = 0; rot.rotation.z = to; }
       return true;
     }
+    // a pointer over it: the cap's rim a shade lighter, as bakelite catches more of the room when it is leaned toward
+    const base = mat.color.clone(), over = base.clone().lerp(new THREE.Color('#5a4c3e'), .35);
+    function hover(on) { const c = on ? over : base; if (mat.color.equals(c)) return false; mat.color.copy(c); mat.clearcoatRoughness = on ? .25 : .35; return true; }
     g.scale.setScalar(radius);
     set(0);
-    return { group: g, rot, stops, set, tick };
+    return { group: g, rot, stops, set, tick, hover };
   }
 
   // a jewel lamp: a glass cabochon in a turned brass bezel. Lit, its core glows in the glass and a small light, too short
@@ -276,10 +293,14 @@ export function createMachine(container, { still = false, background = '#0d0d0c'
   const domeGeo = (() => { const g = new THREE.SphereGeometry(.7, 48, 24, 0, Math.PI * 2, 0, Math.PI / 2.6); g.rotateX(Math.PI / 2); g.translate(0, 0, -.27); return g; })();
   const coreGeo = new THREE.SphereGeometry(.38, 24, 16);
   const seatMat = new THREE.MeshStandardMaterial({ color: '#0c0b09', roughness: .5, metalness: .2 });
-  function jewel(color = '#f0b64c', { radius = 1, light = true, parent = scene } = {}) {
+  // empty: the bezel and its dark seat only, a socket with no lamp fitted
+  const seatGeo = new THREE.CircleGeometry(.64, 32);
+  for (const k of [bezelGeo, domeGeo, coreGeo, seatGeo]) k.userData.keep = true; seatMat.userData.keep = true;
+  function jewel(color = '#f0b64c', { radius = 1, light = true, empty = false, parent = scene } = {}) {
     const g = new THREE.Group(); parent.add(g);
     const bezel = new THREE.Mesh(bezelGeo, M.brass); bezel.castShadow = true; bezel.receiveShadow = true; g.add(bezel);
-    const seat = new THREE.Mesh(new THREE.CircleGeometry(.64, 32), seatMat); seat.position.z = .02; g.add(seat);
+    const seat = new THREE.Mesh(seatGeo, seatMat); seat.position.z = empty ? -.02 : .02; g.add(seat);
+    if (empty) { g.scale.setScalar(radius); return { group: g, set: () => false, size: r => g.scale.setScalar(r), on: false }; }
     const glass = new THREE.MeshPhysicalMaterial({ color, roughness: .06, metalness: 0, transmission: .9, ior: 1.5, thickness: .35, clearcoat: 1, clearcoatRoughness: .04, attenuationColor: new THREE.Color(color), attenuationDistance: .6, emissive: new THREE.Color(color), emissiveIntensity: 0 });
     const dome = new THREE.Mesh(domeGeo, glass); dome.position.z = .02; g.add(dome);
     const coreMat = new THREE.MeshStandardMaterial({ color: '#000000', emissive: new THREE.Color(color), emissiveIntensity: 0, roughness: 1 });
@@ -291,7 +312,8 @@ export function createMachine(container, { still = false, background = '#0d0d0c'
       v = !!v; if (v === on && c === lit) return false; on = v; lit = c;
       coreMat.emissive.set(c); glass.emissive.set(c); if (lamp) lamp.color.set(c);
       coreMat.emissiveIntensity = v ? 1.6 : 0; glass.emissiveIntensity = v ? .22 : 0;
-      glass.color.set(v ? c : '#3a2c18'); glass.transmission = v ? .9 : .55; glass.attenuationColor.set(v ? c : '#20160a');
+      // dark, the glass is near black: only the room's reflection shows in it
+      glass.color.set(v ? c : '#0c0b09'); glass.transmission = v ? .9 : .12; glass.attenuationColor.set(v ? c : '#050403');
       if (lamp) lamp.intensity = v ? .7 * radius * radius : 0;
       return true;
     }

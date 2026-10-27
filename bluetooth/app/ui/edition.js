@@ -430,9 +430,9 @@ export function front(bridge, kit) {
     // only while there is someone to show: a stranger who accepted and left the list takes the slip with them
     nearSlip = atOpen() && listed().length ? strangersSlip() : null;
     nearTray.replaceChildren(...(nearSlip ? [nearSlip] : []));
-    // folded behind a request, the strangers' line waits under the room meter; open, it heads the tray's column
-    if (nearSlip && nearSlip.classList.contains('folded')) { if (nearTray.parentElement !== left) left.append(nearTray); }
-    else if (nearTray.parentElement !== right) right.insertBefore(nearTray, outboxEl);
+    // folded behind a request, the strangers' line lies in the tray under it; open, it heads the tray's column. Either
+    // way it is in the tray, never loose on the panel
+    if (nearTray.parentElement !== right) right.insertBefore(nearTray, outboxEl);
     nodes.forEach((n, i) => { if (tray.children[i] !== n) tray.insertBefore(n, tray.children[i] || null); });
     while (tray.children.length > nodes.length) tray.lastChild.remove();
     for (const [id, s] of slips) if (!waiting.has(id) && !leaving.includes(s)) slips.delete(id);

@@ -493,6 +493,7 @@ body:has(.lamp:not([hidden])){perspective:none}
 }
 </style>
 <script>/* in the app, the panel stays hidden until it shows this machine rather than the mockups' story */if(window.__TAURI__)document.documentElement.classList.add('in-app')</script>
+<script>/* WebGL here: the front panel will draw the machine in 3D, so the page is laid out for its bolt ring from the first paint */try{if(document.createElement('canvas').getContext('webgl2'))document.documentElement.classList.add('glable')}catch(e){}</script>
 <link rel="stylesheet" href="front-panel.css">
 <script type="importmap">
 { "imports": {

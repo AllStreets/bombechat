@@ -13,9 +13,8 @@
 .bank.gl{background:transparent;box-shadow:none}
 .bank.gl .grid{position:relative;z-index:1;opacity:0}
 .bank.gl .bankfoot{position:relative;z-index:2;border-top-color:transparent;box-shadow:none}
-/* the readouts' bezels, wheels and lamps are the scene's; the digits stay */
+/* the readouts' bezels and lamps are the scene's; the digits stay on their own wheels, turning in its window */
 .app.gl .bank .odo,.app.gl .counter .odo{background:transparent;box-shadow:none}
-.app.gl .bank .odo i,.app.gl .counter .odo i{background:transparent;text-shadow:0 1px 0 rgba(0,0,0,.65)}
 .app.gl .lampset i{background:transparent;box-shadow:none}
 
 /* the switch tiles: escutcheon, knob, jewel and blanking plate are the scene's; the buttons stay, unseen but for their
@@ -42,6 +41,8 @@
 /* the outbox's tray and the stations' holders are the scene's brass; what waits is engraved in the tray's floor */
 .app.gl .row3 .holder{background:transparent;box-shadow:none}
 .app.gl .slip.empty{background:transparent;box-shadow:none;color:#8a8476;text-shadow:0 -1px 0 rgba(0,0,0,.75),0 1px 0 rgba(255,255,255,.06)}
+/* (the outbox's own: the scene engraves its words in the tray's floor; kept here, unseen, for a screen reader) */
+.app.gl .outbox>.slip.empty:only-child{color:transparent;text-shadow:none}
 
 /* the plates: traffolyte as the kit's plate() cuts it, lit as the scene lights it. A face of warm black, lighter where
    the key light falls from the upper left, a bevelled edge catching it on top and falling away below, the plate
@@ -52,7 +53,7 @@
 .app.gl .pb:hover{box-shadow:inset 0 1px 0 rgba(255,246,226,.13),inset 0 0 0 1px rgba(231,166,60,.45),inset 0 -1px 0 rgba(0,0,0,.55),0 1px 1.5px rgba(0,0,0,.6),0 0 0 .5px rgba(0,0,0,.7)}
 .app.gl .pb:active{box-shadow:inset 0 1px 3px rgba(0,0,0,.8),inset 0 0 0 1px rgba(231,166,60,.4),0 0 0 .5px rgba(0,0,0,.7)}
 /* its screws: the kit's steel, baked in the scene's light (front-panel.js), each slot left where it was tightened */
-.baked .app.gl .pl.screw::before,.baked .app.gl .pl.screw::after{width:10px;height:10px;margin:-2px;border-radius:0;box-shadow:none;background:var(--screw-a) center/contain no-repeat;filter:brightness(1.3) contrast(1.1)}
+.baked .app.gl .pl.screw::before,.baked .app.gl .pl.screw::after{width:10px;height:10px;margin:-2px;border-radius:0;box-shadow:none;background:var(--screw-a) center/contain no-repeat}
 .baked .app.gl .pl.screw::after{background-image:var(--screw-b)}
 
 /* jewels the scene can't reach (the top bar's, the keys'): the kit's glass in its brass bezel, baked lit and dark */
@@ -71,3 +72,12 @@
 /* the Reply and Public toggle's plate, the same bakelite with square corners */
 .baked .app.gl .mode{background:var(--toggle-l) left/auto 100% no-repeat,var(--toggle-r) right/auto 100% no-repeat,var(--toggle-m) center/calc(100% - 10px) 100% no-repeat;
   box-shadow:0 1.5px 1px rgba(0,0,0,.4),0 2px 4px rgba(0,0,0,.2)}
+
+/* room for the bolt ring: where WebGL is there to draw the front, the bank and the deck stand far enough in from the
+   window's edge that the ring (16 px in, its bolts 4 px across) meets none of them. Set before the first paint
+   (the head's script marks the page .glable), so nothing moves when the scene arrives */
+.glable .bank{margin:26px 26px 0;--dr:clamp(66px,min((100vw - 180px) / 12 - 8px,(100vh - 640px) / 3.24),128px)}
+.glable .deck{padding:14px 26px 26px}
+/* a narrow window keeps its sheet's width (its foot's line runs up to the stamp): the ring closer in, 12 px, and the
+   parts 18 px in */
+@media (max-width:1239px){.glable .bank{margin:18px 18px 0;--dr:clamp(66px,(100vw - 164px) / 12 - 8px,112px)}.glable .deck{padding:14px 18px 18px}}
