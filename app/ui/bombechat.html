@@ -1204,6 +1204,19 @@ if(Q.has('audiotest'))(async()=>{
   document.body.setAttribute('data-audiotest',JSON.stringify(r));
 })();
 
+/* ---------- measuring through a turn ----------
+   The page turns round to and from the back (#app's rotateY, the body's turn on arriving), and a rect measured
+   mid-turn comes back projected. What is placed from the layout measures with boxIn: from the rects, to the sub-pixel,
+   while nothing above is turned; from the offsets, to the pixel and untouched by any transform, while something is,
+   saying so (turned), so the caller places it again from the rects once the turn is over. */
+// whether anything above el is turned now
+function turnedAbove(el){for(let e=el.parentElement;e;e=e.parentElement)if(getComputedStyle(e).transform!=='none')return true;return false}
+const laidAt=e=>{let x=0,y=0;for(let n=e;n;n=n.offsetParent){x+=n.offsetLeft+(n===e?0:n.clientLeft);y+=n.offsetTop+(n===e?0:n.clientTop)}return [x,y]};
+// el's box relative to ref, as laid out
+function boxIn(el,ref){
+  if(!turnedAbove(ref)){const a=el.getBoundingClientRect(),b=ref.getBoundingClientRect();return {x:a.left-b.left,y:a.top-b.top,w:a.width,h:a.height,turned:false}}
+  const [ax,ay]=laidAt(el),[bx,by]=laidAt(ref),cs=getComputedStyle(el);return {x:ax-bx,y:ay-by,w:parseFloat(cs.width)||0,h:parseFloat(cs.height)||0,turned:true}}
+
 /* ---------- tests ---------- */
 const mirror={plain:document.getElementById('mirror-plain'),heard:document.getElementById('mirror-heard'),key:document.getElementById('mirror-key')};
 const rowText=r=>cells.slice(r*12,r*12+12).map(c=>c.wl.textContent).join('');
@@ -1524,6 +1537,8 @@ const SELF_TEST_TEXT='The machine hears itself.';
 const SELF_TEST_MAX_BYTES=100,SELF_TEST_TOO_LONG='not sent: too long for a test';
 // own words this long on air or more are said to take that long while it waits
 const SAY_AIR_MS=25000;
+// the line's words for a test, trimmed as the node trims them: white space (with U+0085) and byte order marks
+const testWords=s=>s.replace(/^[\s\u0085]+|[\s\u0085]+$/g,'');
 // the switches' own refusals, as the node words them: anything else is said as it is
 const SWITCH_REFUSALS=['not sent: sound is off','not sent: sound is set to listen only','not sent: light is off','not sent: light is set to read only'];
 const NOTHING_TO_TEST={sound:'This Mac has no sound to test with.',light:'This Mac has no camera to test by light with.'};
@@ -1538,10 +1553,12 @@ let soundBand=null;
 // with the index mark beside the stamp pointing at it. It goes the moment anything lands, and comes back if the sheet
 // is emptied (an arrival found to be for someone else is taken off it).
 const emptyLine=document.getElementById('emptyline');
-function setEmptyMark(){if(emptyLine.hidden)return;const f=emptyLine.parentElement.getBoundingClientRect(),b=testBtn.getBoundingClientRect();
+function setEmptyMark(){if(emptyLine.hidden)return;const foot=emptyLine.parentElement,f=boxIn(foot,foot),b=boxIn(testBtn,foot);
   // the line runs up to the mark, and the mark sits level with the stamp's middle, its point 6px short of its left edge
-  emptyLine.style.setProperty('--line-pad',Math.round(f.right-b.left+22)+'px');
-  emptyLine.style.setProperty('--mark-x',Math.round(b.left-f.left-13)+'px');emptyLine.style.setProperty('--mark-y',Math.round(b.top+b.height/2-f.top-4.5)+'px')}
+  emptyLine.style.setProperty('--line-pad',Math.round(f.w-b.x+22)+'px');
+  emptyLine.style.setProperty('--mark-x',Math.round(b.x-13)+'px');emptyLine.style.setProperty('--mark-y',Math.round(b.y+b.h/2-4.5)+'px');
+  // placed mid-turn (arriving from the settings page): placed again from the rects once the page has come round
+  if(b.turned)requestAnimationFrame(setEmptyMark)}
 function showEmptyLine(){const empty=!log.querySelector('.ent');if(emptyLine.hidden!==empty)return;emptyLine.hidden=!empty;setEmptyMark()}
 function watchEmptySheet(){new MutationObserver(showEmptyLine).observe(log,{childList:true});addEventListener('resize',setEmptyMark);showEmptyLine()}
 function testSays(text){testNote.textContent=text||''}
@@ -1571,7 +1588,7 @@ async function startTest(channel){
   const k=channel==='light'?KNOBS.k2:KNOBS.k1,btn=testStampFor(channel);
   if(!(k.read&&k.pos===2)){refuseTest(channel);return}
   // the reply line's words, if any, are what it sends
-  const words=reply.value.trim(),n=new TextEncoder().encode(words).length;
+  const words=testWords(reply.value),n=new TextEncoder().encode(words).length;
   if(n>SELF_TEST_MAX_BYTES){testSays(tooLongToTest(n));nudge(btn);return}
   const t=Test={channel,words,airMs:0,tags:new Set(),ent:null,arr:null,state:'asking'};
   btn.disabled=true;testSays('');
@@ -1580,7 +1597,7 @@ async function startTest(channel){
   btn.disabled=false;
   if(Test!==t)return;// it ended before the machine's answer came
   // gone from the line once it is under way, as a send's words are
-  if(words&&reply.value.trim()===words){reply.value='';fit();if(pubnote.classList.contains('refused'))pinned(()=>pubnote.classList.remove('refused'))}
+  if(words&&testWords(reply.value)===words){reply.value='';fit();if(pubnote.classList.contains('refused'))pinned(()=>pubnote.classList.remove('refused'))}
   if(channel==='light'){Lamp.stopped=false;Lamp.gone=null}
   // the machine's own entry: no typed line of its own words, which on a contact's sheet would read as written to them;
   // words typed for it are shown as typed, under the margin's self-test
@@ -1778,10 +1795,11 @@ async function build(){
   // where an element sits in the bank as laid out, ignoring any transform on the way: the page turns round (#app's
   // rotateY to and from the back, the body's turn on arriving) and a rect measured mid-turn comes back projected
   const css=(el,k)=>parseFloat(getComputedStyle(el)[k])||0;
-  function box(el){let x=0,y=0;for(let e=el;e&&e!==bank;e=e.offsetParent){x+=e.offsetLeft+(e===el?0:e.clientLeft);y+=e.offsetTop+(e===el?0:e.clientTop)}
-    return {x,y,w:css(el,'width'),h:css(el,'height')}}
-  function layout(){BW=css(bank,'width');BH=css(bank,'height');if(!BW||!BH)return;
-    const dr=css(cells[0].el,'width');U=dr/.92;
+  // laid out mid-turn, to the pixel: laid out again from the rects once the turn is over (frame)
+  let laidTurned=false;
+  const box=el=>{const b=boxIn(el,bank);if(b.turned)laidTurned=true;return b};
+  function layout(){laidTurned=false;BW=css(bank,'width');BH=css(bank,'height');if(!BW||!BH)return;
+    const dr=box(cells[0].el).w;U=dr/.92;
     renderer.setSize(BW,BH,false);camera.aspect=BW/BH;
     const D=(BH/U/2)/Math.tan(camera.fov*Math.PI/360);baseD=D;camera.updateProjectionMatrix();composer.setSize(BW,BH);
     panel.scale.set(BW/U+.4,BH/U+.4,1);
@@ -1802,11 +1820,17 @@ async function build(){
   // and again once a turn ends, though nothing changed size: back from the settings page, by history or on load
   document.getElementById('app').addEventListener('transitionend',e=>{if(e.target===e.currentTarget)layout()});
   addEventListener('pageshow',layout);document.body.getAnimations().forEach(a=>a.finished.then(layout,()=>{}));
-  // for checks: each drum's centre, where the scene draws it and where its cell is, and its axle's height, in bank pixels
+  // for checks: where the scene draws each part and where its HTML stands, in bank pixels, at rest. Each drum's centre
+  // (and its axle's height), each row plate's left end (its label's left plus 4 px) and each column number's middle
+  // (drawn .07 up, by design)
   window.__bank.placement=()=>{camera.updateMatrixWorld();const br=bank.getBoundingClientRect();
-    const px=v=>{const q=v.clone().project(camera);return {x:(q.x+1)/2*BW,y:(1-q.y)/2*BH}};
-    return drums.map(d=>{const r=d.cell.el.getBoundingClientRect();return {r:d.r,c:d.c,drawn:px(d.g.position),cell:{x:r.left-br.left+r.width/2,y:r.top-br.top+r.width*.08+r.width/2},
-      axle:(BH/2-rails[d.r].position.y*U),centre:(BH/2-d.g.position.y*U)}})};
+    const px=(x,y)=>{const q=new THREE.Vector3(x,y,0).project(camera);return {x:(q.x+1)/2*BW,y:(1-q.y)/2*BH}};
+    const rel=el=>{const r=el.getBoundingClientRect();return {l:r.left-br.left,t:r.top-br.top,w:r.width,h:r.height}};
+    const lab=[...document.querySelectorAll('.rowlab')],cn=[...document.querySelectorAll('.colno')];
+    return {drums:drums.map(d=>{const r=rel(d.cell.el);return {at:`drum ${d.r+1}.${d.c+1}`,drawn:px(d.g.position.x,d.g.position.y),html:{x:r.l+r.w/2,y:r.t+r.w*.08+r.w/2},
+        axle:(BH/2-rails[d.r].position.y*U),centre:(BH/2-d.g.position.y*U)}}),
+      plates:plates.map((p,r)=>{const w=p.geometry.parameters.width*p.scale.x;return {at:`plate ${r+1}`,drawn:{x:px(p.position.x-w/2,0).x},html:{x:rel(lab[r]).l+4}}}),
+      numbers:nums.map((n,i)=>{const r=rel(cn[i]);return {at:`number ${i+1}`,drawn:px(n.position.x,n.position.y-.07),html:{x:r.l+r.w/2,y:r.t+r.h/2}}})}};
   document.fonts&&document.fonts.ready.then(()=>{drums.forEach(d=>d.last='');layout()});
   let par={x:0,y:0},parT={x:0,y:0};
   bank.addEventListener('pointermove',e=>{if(RM.matches||STILL)return;const r=bank.getBoundingClientRect();parT.x=(e.clientX-r.left)/r.width-.5;parT.y=(e.clientY-r.top)/r.height-.5});
@@ -1817,6 +1841,7 @@ async function build(){
     for(let i=0;i<6;i++){const fx=((ax*t+bx)*t+cx)*t-x,d=(3*ax*t+2*bx)*t+cx;if(Math.abs(fx)<1e-5)break;t-=fx/d}return((ay*t+by)*t+cy)*t}
   const DUR=950;let last=performance.now(),frames=0;
   function frame(now){const dt=Math.min(.05,(now-last)/1000);last=now;let moving=false;
+    if(laidTurned&&!turnedAbove(bank))layout();
     for(const d of drums){const c=d.cell;let ang=c.angle;
       if(!c.snap){const k=(now-c.t0)/DUR;if(k<1){ang=c.from+(c.angle-c.from)*bez(Math.max(0,k));moving=true}}
       const z=-ang*Math.PI/180;if(d.rot.rotation.z!==z){d.rot.rotation.z=z;dirty=true}

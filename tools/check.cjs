@@ -122,7 +122,7 @@ function tauriStub({ hello, safety, pairOfferMs = 1200, people, talk, afterUnloc
           if (args.channel === 'sound' && s.sound < 2) return Promise.reject(s.sound === 0 ? 'not sent: sound is off' : 'not sent: sound is set to listen only');
           if (args.channel === 'light' && s.light < 2) return Promise.reject(s.light === 0 ? 'not sent: light is off' : 'not sent: light is set to read only');
           // the reply line's words, or the machine's own; refused over 100 bytes, as the node refuses them
-          const words = (args.text || '').trim(), said = words || 'The machine hears itself.', n = new TextEncoder().encode(said).length;
+          const words = (args.text || '').replace(/^[\s\u0085]+|[\s\u0085]+$/g, ''), said = words || 'The machine hears itself.', n = new TextEncoder().encode(said).length;
           if (new TextEncoder().encode(words).length > 100) return Promise.reject('not sent: too long for a test');
           const tag = 0x7e00 + (window.__calls.length & 255), channel = args.channel === 'light' ? 'Light' : 'Sound';
           const says = (state, extra) => () => window.__emit('selfTest', { tag, channel, state, ...extra });
@@ -296,17 +296,35 @@ function measureText() {
     report.rails = await live.evaluate(() => ({ ...__bank.rails(), bars: document.querySelectorAll('#drums .bar').length, drums: document.querySelectorAll('#drums .drum').length }));
     if (report.rails.between !== 0 || report.rails.axles !== 3 || report.rails.bars !== 0 || report.rails.drums !== 36) problems.push(`the drum bank is not three rows with nothing between them: ${JSON.stringify(report.rails)}`);
     // the drums stay on their axles after a turn: lay the bank out while #app is mid-turn (as it is coming back from
-    // the settings page), end the turn, and every drum must be drawn on its cell and its row's axle
-    report.afterTurn = await live.evaluate(async () => {
+    // the settings page), end the turn, and every drum must be drawn on its cell and its row's axle, every row plate at
+    // its label and every column number on its own, to a quarter of a pixel, at 1440 and at 1512 (the commissioner's)
+    const afterTurn = pg => pg.evaluate(async () => {
       const app = document.getElementById('app'), frames = n => new Promise(r => { const f = () => --n ? requestAnimationFrame(f) : r(); requestAnimationFrame(f); });
       app.style.transition = 'none'; app.style.transform = 'rotateY(55deg)'; app.getBoundingClientRect();
       dispatchEvent(new Event('resize')); await frames(2);
-      app.style.transform = ''; app.getBoundingClientRect(); await frames(4); app.style.transition = '';
-      const off = __bank.placement().map(d => ({ at: `${d.r + 1}.${d.c + 1}`, cell: Math.hypot(d.drawn.x - d.cell.x, d.drawn.y - d.cell.y), axle: Math.abs(d.centre - d.axle) }));
-      const worst = k => off.reduce((a, b) => (b[k] > a[k] ? b : a));
-      return { cell: worst('cell'), axle: worst('axle') };
+      const worst = () => { const P = __bank.placement(), off = [...P.drums, ...P.plates, ...P.numbers].map(p => ({ at: p.at, off: Math.hypot(p.drawn.x - p.html.x, (p.drawn.y ?? 0) - (p.html.y ?? 0)) }));
+        P.drums.forEach(d => off.push({ at: d.at + ' axle', off: Math.abs(d.centre - d.axle) }));
+        return off.reduce((a, b) => (b.off > a.off ? b : a)); };
+      // as laid out mid-turn, from the offsets, before the next frame lays it out again: to the pixel
+      app.style.transform = ''; app.getBoundingClientRect();
+      const midTurn = worst();
+      // and once a frame has seen the turn over, from the rects: to the sub-pixel
+      await frames(4); app.style.transition = '';
+      return { midTurn, settled: worst() };
     });
-    if (report.afterTurn.cell.cell > 1 || report.afterTurn.axle.axle > 1) problems.push(`after a turn the drums are off their cells or axles: ${JSON.stringify(report.afterTurn)}`);
+    report.afterTurn = { 1440: await afterTurn(live) };
+    {
+      const wide = await browser.newPage({ viewport: { width: 1512, height: 982 } });
+      watch(wide, 'after a turn 1512');
+      await wide.goto(url());
+      await wide.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
+      report.afterTurn[1512] = await afterTurn(wide);
+      await wide.close();
+    }
+    for (const [w, { midTurn, settled }] of Object.entries(report.afterTurn)) {
+      if (midTurn.off > 1) problems.push(`laid out mid-turn at ${w}, the bank is off its HTML: ${midTurn.at} by ${midTurn.off.toFixed(2)} px`);
+      if (settled.off > .25) problems.push(`after a turn at ${w} the bank is off its HTML: ${settled.at} by ${settled.off.toFixed(2)} px`);
+    }
   }
   report.fps = await live.evaluate(() => new Promise(r => { let n = 0; const t0 = performance.now(); const f = () => { n++; performance.now() - t0 < 2000 ? requestAnimationFrame(f) : r(Math.round(n / 2)); }; requestAnimationFrame(f); }));
   if (report.fps < 50) problems.push('front frame rate ' + report.fps);
@@ -1158,6 +1176,21 @@ function measureText() {
         }
         return r;
       });
+      // the index mark placed mid-turn (arriving from the settings page) comes to the same place as at rest once the
+      // page has come round
+      if (where === 'app' && w === 1512) {
+        const mark = await tp.evaluate(async () => {
+          const l = document.getElementById('emptyline'), app = document.getElementById('app'), vars = () => ['--line-pad', '--mark-x', '--mark-y'].map(k => l.style.getPropertyValue(k));
+          const frames = n => new Promise(r => { const f = () => --n ? requestAnimationFrame(f) : r(); requestAnimationFrame(f); });
+          const rest = vars();
+          app.style.transition = 'none'; app.style.transform = 'rotateY(55deg)'; dispatchEvent(new Event('resize'));
+          const turned = vars();
+          app.style.transform = ''; await frames(3); app.style.transition = '';
+          return { rest, turned, after: vars() };
+        });
+        if (JSON.stringify(mark.after) !== JSON.stringify(mark.rest) || Math.max(...mark.turned.map((t, i) => Math.abs(parseFloat(t) - parseFloat(mark.rest[i])))) > 1) problems.push(`${tag}: the empty sheet's mark moves through a turn: ${JSON.stringify(mark)}`);
+        report.emptySheet[`${tag} through a turn`] = mark;
+      }
       const [x0, y0, x1, y1] = v.stamp;
       if (v.scrolled || x0 < 0 || y0 < 0 || x1 > v.view[0] || y1 > v.view[1]) problems.push(`${tag}: Test the machine is not in the first screen: ${JSON.stringify(v)}`);
       if (v.headGaps.some(g => g < 12)) problems.push(`${tag}: the sheet's head runs together: gaps ${v.headGaps.join(', ')}`);
@@ -1278,6 +1311,12 @@ function measureText() {
         await op.click('#testbtn');
         const air = await until(op, tag, 'the long test saying its time on air', testState, '^sealed to this machine, about \\d+ s on air, (waiting for quiet|playing next)');
         if (!air) problems.push(`${tag}: a long test does not say its time on air`);
+        await op.keyboard.press('Escape');
+        // trimmed as the node trims it: 100 bytes inside a byte order mark and a next line are not too long
+        await until(op, tag, 'the long test stopped', () => document.getElementById('testbtn').textContent === 'Test the machine');
+        await op.fill('#reply', '\ufeff' + 'c'.repeat(100) + '\u0085');
+        await op.click('#testbtn');
+        if (!await until(op, tag, 'a 100-byte test inside marks starting', testState, '^sealed to this machine')) problems.push(`${tag}: a line trimmed to 100 bytes was refused: ${await op.evaluate(() => document.getElementById('testnote').textContent)}`);
         await op.keyboard.press('Escape');
         report.selfTest[`${tag} own words`] = { begun, heard: own.state, tape: own.tape };
         await op.close();
