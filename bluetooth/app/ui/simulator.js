@@ -30,7 +30,8 @@
 // moment, then displayStopped, then sent. At Read or Off it is refused as the node refuses it. Turning Light down mid-flash clears the screen and the
 // send waits; turning it back to Read and flash carries on.
 //
-// The self-test: selfTest() seals SELF_TEST_TEXT to this machine's own key, as the node does, and hears it back: by
+// The self-test: selfTest(channel, text) seals text (the fixed SELF_TEST_TEXT when it is blank) to this machine's own
+// key, as the node does, answers its time on air, and hears it back: by
 // sound it waits for a quiet spell in the room (held still, one comes at once), plays, and its chunks land at the
 // modem's rate; by light it shows on screen (display frames that say test) until its camera reads it in a mirror, 2.4 s
 // in. It never reaches the sheet as a message, the outbox or a receipt. ?selftest=deaf hears nothing, so it is given up
@@ -115,9 +116,11 @@ const MAX_BROADCAST = 3939;
 // the longest reply, in UTF-8 bytes of text, as the node's max_private_text(1)
 const REPLY_MAX = 2814;
 const PAIR_MS = 2400;
-// the self-test, as the node's SELF_TEST_TEXT and SELF_TEST_MS
+// the self-test, as the node's SELF_TEST_TEXT, SELF_TEST_MS, SELF_TEST_MAX_BYTES and SELF_TEST_TOO_LONG
 const SELF_TEST_TEXT = 'The machine hears itself.';
 const SELF_TEST_MS = 30000;
+const SELF_TEST_MAX_BYTES = 100;
+const SELF_TEST_TOO_LONG = 'not sent: too long for a test';
 // a private envelope's header, the private header and one key wrap before its chunks, and each chunk's tag, in bytes,
 // as crates/core lays them out
 const SEALED_HEAD = 25 + 21 + 112, CHUNK_TAG = 16;
@@ -308,7 +311,7 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
   }
   const eyeWake = () => { if (!eyeT) eyeT = later(eyeTick, 0); };
 
-  // the self-test in progress: { tag, channel, timers, at (when it began to play), flash (by light) }
+  // the self-test in progress: { tag, channel, text, timers, at (when it began to play), flash (by light) }
   let selfTest = null;
   const testSays = (t, state, extra = {}) => emit('selfTest', { tag: t.tag, channel: t.channel === 'light' ? 'Light' : 'Sound', state, ...extra });
   // whether a test is what holds the scripted conversation still
@@ -324,7 +327,7 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
   // a quiet spell, as the meter shows it, and a test by sound waiting for one plays
   function quietSpell() { room = 36.5; emit('roomDb', room); testQuiet(); }
   // its envelope, sealed as the node seals it, and how long it takes over sound
-  const testParts = t => chunked(sealedInner(SELF_TEST_TEXT, Math.floor(clock / 60000), t.tag), t.tag);
+  const testParts = t => t.parts || (t.parts = chunked(sealedInner(t.text, Math.floor(clock / 60000), t.tag), t.tag));
   const testBytes = parts => SEALED_HEAD + parts.reduce((n, p) => n + p.plain.length + CHUNK_TAG, 0);
   // it went out: given up SELF_TEST_MS after it should have finished, unless heard first
   function testPlaying(t, airMs) {
@@ -340,7 +343,7 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
       emit('chunk', { tag: t.tag, index, of: parts.length, view, channel: Channel });
       if (index < parts.length - 1) return;
       const bytes = testBytes(parts), ms = Math.max(1, Math.round(performance.now() - t.at));
-      endTest('heard', { text: SELF_TEST_TEXT, bytes, ms, rate: Math.round(bytes * 10000 / ms) / 10, ...(t.channel === 'sound' ? { band: settings.band ? 'audible' : 'near silent' } : {}) });
+      endTest('heard', { text: t.text, bytes, ms, rate: Math.round(bytes * 10000 / ms) / 10, ...(t.channel === 'sound' ? { band: settings.band ? 'audible' : 'near silent' } : {}) });
       by(t.channel === 'light' ? lightAt() : 'listening');
     }, at(index))));
   }
@@ -382,13 +385,16 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
   const test = {
     // number of chunks in the scripted incoming message
     chunks: NC,
-    // one chunk whose plain bytes are exactly this text; stops the scripted conversation first
-    inject(text, { end = false } = {}) {
+    // this text sealed as a message, its chunks all at once with no message after them; stops the scripted
+    // conversation first. `only`: the indexes of the chunks that are heard (the others missed); it returns how many
+    // bytes the sealed message's chunks carry
+    inject(text, { end = false, only = null } = {}) {
       paused = true;
-      const plain = utf8(text), r = seeded(77), key = plain.map(() => r());
+      const tag = ++testTag, inner = sealedInner(text, Math.floor(clock / 60000), tag), parts = chunked(inner, tag);
       sound('receiving');
-      emit('chunk', { tag: ++testTag, index: 0, of: 1, view: { plain, key, heard: plain.map((p, i) => p ^ key[i]) }, channel: 'Sound' });
+      parts.forEach((view, index) => { if (!only || only.includes(index)) emit('chunk', { tag, index, of: parts.length, view, channel: 'Sound' }); });
       if (end) sound('listening');
+      return inner.length;
     },
     // a whole sealed message from Marisol, chunk by chunk at once; `complete` false leaves it hanging. By light it
     // arrives as the light transport hands one over: whole, so every chunk at once
@@ -458,7 +464,7 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
       return Promise.resolve();
     },
     stopPairing() { endHello(); return Promise.resolve(); },
-    selfTest(channel = 'sound') {
+    selfTest(channel = 'sound', text = null) {
       if (channel !== 'sound' && channel !== 'light') return Promise.reject(`no such channel: ${channel}`);
       const say = channel === 'light' ? light : sound;
       const at = channel === 'light' ? settings.light : settings.sound;
@@ -467,9 +473,12 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
         later(() => { say(why); say(channel === 'light' ? lightAt() : at === 0 ? 'off' : 'listening'); });
         return Promise.reject(why);
       }
+      // after the switch, as the node checks it, and trimmed as it trims: white space (with U+0085) and byte order marks
+      const words = (text || '').replace(/^[\s\u0085]+|[\s\u0085]+$/g, '');
+      if (new TextEncoder().encode(words).length > SELF_TEST_MAX_BYTES) return Promise.reject(SELF_TEST_TOO_LONG);
       endTest('stopped');
       if (!paused) { paused = true; heldForTest = true; }
-      const t = selfTest = { tag: Math.floor(Math.random() * 65536), channel, timers: [], at: 0 };
+      const t = selfTest = { tag: Math.floor(Math.random() * 65536), channel, text: words || SELF_TEST_TEXT, timers: [], at: 0 };
       later(() => {
         if (selfTest !== t) return;
         testSays(t, 'waiting');
@@ -485,7 +494,8 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
           t.timers.push(later(() => { if (selfTest === t) quietSpell(); }, testPace ?? 600));
         } else testQuiet();
       });
-      return Promise.resolve();
+      // its time on air, as the node answers it
+      return Promise.resolve(Math.ceil(testBytes(testParts(t)) / (RATE / 1000)));
     },
     stopSelfTest() { endTest('stopped'); return Promise.resolve(); },
     // their hello is in: the one on show finishes its window (the whole first one if it has not started), then clears
@@ -525,7 +535,7 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
     // this machine's own notices, kept across reloads; the heard ones arrive as history, as the mockups showed them
     broadcasts: () => Promise.resolve(keptNotices()),
     // you are Teodor here: his key signs your broadcasts
-    machine: () => Promise.resolve({ name: 'Machine No. 1', key: SELF_KEY, you: 'Teodor Vance', held: 6, version: '0.4', broadcast_max: MAX_BROADCAST, reply_max: REPLY_MAX }),
+    machine: () => Promise.resolve({ name: 'Machine No. 1', key: SELF_KEY, you: 'Teodor Vance', held: 6, version: '0.5.0', commit: 'browser', broadcast_max: MAX_BROADCAST, reply_max: REPLY_MAX }),
     channels: () => Promise.resolve([{ channel: 'Sound', state: soundState || 'listening', rate: RATE, band: settings.band ? 'audible' : 'near silent' },
       { channel: 'Light', state: lightState || lightAt(), rate: LIGHT_RATES[settings.flash] }, ...(fit.channels ? fit.channels() : [])]),
     // requests to connect, as the device answers with no carrier that brings them, unless this build fits one

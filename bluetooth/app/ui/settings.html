@@ -16,6 +16,13 @@
 <style>
 :root{
   --enamel:#1b1c1a; --plate-ink:#ece6d6;
+  /* paper lit by the machine's key light, as the front's (bombechat.html has the why): the light's direction on the
+     screen, the way shadows fall, the paper's fibre and its tooth, and how it lies on the enamel */
+  --lx:-.555; --ly:-.832; --la:146.3deg;
+  --fibre:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='300' height='300'><filter id='p'><feTurbulence type='fractalNoise' baseFrequency='.55' numOctaves='4' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .45  0 0 0 0 .38  0 0 0 0 .25  0 0 0 .09 0'/></filter><rect width='300' height='300' filter='url(%23p)'/></svg>");
+  --tooth:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='t' x='0' y='0' width='100%25' height='100%25'><feTurbulence type='fractalNoise' baseFrequency='1.6' numOctaves='2' seed='3' stitchTiles='stitch'/><feDiffuseLighting surfaceScale='1.1' diffuseConstant='1' lighting-color='%23fff'><feDistantLight azimuth='236' elevation='64'/></feDiffuseLighting><feColorMatrix values='0 0 0 0 .2  0 0 0 0 .14  0 0 0 0 .05  -.32 0 0 0 .29'/></filter><rect width='220' height='220' filter='url(%23t)'/></svg>");
+  --paper-edge:inset calc(var(--lx) * -1px) calc(var(--ly) * -1px) 0 rgba(255,251,240,.6),inset 0 0 0 .5px rgba(96,74,40,.38);
+  --paper-lie:0 0 0 .5px rgba(0,0,0,.4),calc(var(--lx) * -1px) calc(var(--ly) * -1px) 1.5px rgba(0,0,0,.55),calc(var(--lx) * -4px) calc(var(--ly) * -4px) 9px rgba(0,0,0,.38);
   --buff:#eadfc4; --green-ink:#2f5a4b; --type-ink:#25211b; --muted:#6b6150;
   --brass:#b8955c; --amber:#e7a63c;
   --engr:'Bombechat Engraving',Georgia,serif;
@@ -39,24 +46,31 @@ a.pl:hover,button.pl:hover{box-shadow:inset 0 0 0 1px rgba(231,166,60,.5),0 1px 
 a.pl:active,button.pl:active{transform:translateY(1px);box-shadow:inset 0 0 0 1px rgba(231,166,60,.5),0 1px 0 #000}
 a.pl:focus-visible,button.pl:focus-visible{outline:1px solid var(--amber);outline-offset:3px}
 a.pl svg{display:block}
-.top .rt{margin-left:auto;display:flex;gap:10px;align-items:center}
+.top .rt{margin-left:auto;display:flex;gap:10px;align-items:center;min-width:0}
 .maker,.pl,a.pl,button.pl{-webkit-text-stroke:.25px currentColor}
+/* the build plate is cut for its longest form (a commit built from uncommitted changes, +), so nothing beside it moves */
+.top .build{min-width:168px;justify-content:center}
+.top .build:empty{visibility:hidden}
 .saved{font-family:var(--type);font-size:12.5px;color:#9d978a;min-width:150px;text-align:right;transition:opacity .4s}
 
 .stage{display:grid;grid-template-columns:minmax(380px,440px) minmax(0,1fr);min-height:0;background:var(--enamel)}
 
 /* wiring schedule card */
 .cardwrap{min-height:0;padding:16px 0 16px 16px;display:flex}
-.card{position:relative;flex:1;min-height:0;display:flex;flex-direction:column;background:var(--buff);color:var(--type-ink);border-radius:1px;
-  box-shadow:0 10px 24px rgba(0,0,0,.55),0 2px 3px rgba(0,0,0,.5);
-  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='300' height='300'><filter id='p'><feTurbulence type='fractalNoise' baseFrequency='.55' numOctaves='4' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .45  0 0 0 0 .38  0 0 0 0 .25  0 0 0 .09 0'/></filter><rect width='300' height='300' filter='url(%23p)'/></svg>")}
+.card{position:relative;flex:1;min-height:0;display:flex;flex-direction:column;background-color:var(--buff);color:var(--type-ink);border-radius:1px;
+  /* the same paper as the front's message sheet, lit the same way */
+  box-shadow:var(--paper-edge),var(--paper-lie);
+  background-image:radial-gradient(120% 95% at 0 0,rgba(255,249,232,.13),rgba(255,249,232,0) 62%),linear-gradient(var(--la),rgba(80,58,24,0) 40%,rgba(80,58,24,.075)),var(--tooth),var(--fibre)}
 .card-h{padding:16px 22px 8px;border-bottom:1.5px solid var(--green-ink);display:flex;justify-content:space-between;align-items:flex-end;color:var(--green-ink)}
 .card-h h1{font-family:var(--print);font-weight:400;font-size:21px}
 .card-h span{font-family:var(--print);font-size:12px}
 .card-h span b{font-family:var(--type);font-weight:400;font-size:14px;color:var(--type-ink);margin-left:4px}
 .sched{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:0 22px 24px;scrollbar-width:thin;scrollbar-color:rgba(75,74,71,.55) transparent}
 .sched::-webkit-scrollbar{width:8px}.sched::-webkit-scrollbar-thumb{background:rgba(75,74,71,.45);border-radius:4px;border:2px solid var(--buff)}
-.grp{position:sticky;top:0;z-index:2;background:var(--buff);box-shadow:-8px 0 0 var(--buff),8px 0 0 var(--buff);font-family:var(--print);font-size:13px;color:var(--green-ink);padding:14px 0 5px;border-bottom:1px solid var(--green-ink);display:flex;justify-content:space-between}
+.grp{position:sticky;top:0;z-index:2;font-family:var(--print);font-size:13px;color:var(--green-ink);padding:14px 0 5px;border-bottom:1px solid var(--green-ink);display:flex;justify-content:space-between}
+/* a group's heading is printed on the card; only while it stands stuck at the top, over the rows scrolling under it, is it
+   a strip of the same paper laid over them (stuckHeads) */
+.grp.stuck{background:linear-gradient(rgba(80,58,24,.035),rgba(80,58,24,.035)),var(--tooth),var(--buff);box-shadow:-8px 0 0 color-mix(in srgb,var(--buff),#50381a 3.5%),8px 0 0 color-mix(in srgb,var(--buff),#50381a 3.5%),0 1px 2px rgba(60,40,10,.12)}
 .grp small{font-family:var(--type);font-size:12px;color:var(--muted)}
 .row{position:relative;padding:10px 8px 11px;margin:0 -8px;border-bottom:1px solid rgba(47,90,75,.3);border-radius:1px;transition:background .2s}
 .row:hover,.row.focus{background:rgba(47,90,75,.06)}
@@ -110,12 +124,15 @@ a.pl svg{display:block}
 .fullview[hidden]{display:none!important}
 .fullview{position:absolute!important;left:16px;top:12px;z-index:3}
 .fullview .kb{font-family:var(--type);font-size:12px;letter-spacing:0;color:#9d978a;border:1px solid rgba(236,230,214,.25);padding:0 4px;border-radius:2px;margin-left:2px}
-.hint{position:absolute;right:16px;top:12px;background:rgba(11,11,10,.72);padding:4px 9px;border-radius:2px;font-family:var(--type);font-size:12.5px;color:#8d887a;pointer-events:none;transition:opacity .6s}
+/* what the machine answers to, typed in the top bar where it never covers the panel */
+.hint{font-family:var(--type);font-size:12.5px;color:#8d887a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:0 1 auto}
+.hint[hidden]{display:none}
 .fallback{position:absolute;inset:0;display:none;place-items:center;font-family:var(--type);color:#9d978a;padding:40px;text-align:center}
 .loading{position:absolute;inset:0;display:grid;place-items:center;font-family:var(--type);font-size:13px;color:#8d887a;transition:opacity .6s;pointer-events:none}
 
 @media (max-width:980px){
   body{height:auto;overflow:auto}
+  .top .hint{display:none}
   .stage{grid-template-columns:1fr;grid-template-rows:56vh auto}
   .view{order:-1;position:sticky;top:0;height:56vh;z-index:1}
   .cardwrap{padding:12px}
@@ -128,7 +145,7 @@ a.pl svg{display:block}
 <div class="top">
   <a class="pl" href="bombechat.html" id="back" aria-label="Back to the front of the machine"><svg width="11" height="9" viewBox="0 0 11 9" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M4.5 1 1 4.5 4.5 8M1 4.5h9.5"/></svg>Front of the machine</a>
   <span class="maker">Bombechat<small></small></span>
-  <div class="rt"><span class="saved" id="saved" aria-live="polite"></span><span class="pl">Build 0.4</span></div>
+  <div class="rt"><span class="hint" id="hint">drag a plug to another jack</span><span class="saved" id="saved" aria-live="polite"></span><span class="pl build" id="build"></span></div>
 </div>
 
 <div class="stage">
@@ -142,7 +159,6 @@ a.pl svg{display:block}
   <div class="view" id="view">
     <div class="loading" id="loading">warming up the machine</div>
     <div class="tag" id="tag"></div>
-    <div class="hint" id="hint">drag a plug to another jack</div>
     <button class="pl fullview" id="fullview" hidden>Full view<span class="kb">Esc</span></button>
     <div class="fallback" id="fallback">This view needs WebGL. Every setting still works from the wiring schedule.</div>
   </div>
@@ -150,7 +166,7 @@ a.pl svg{display:block}
 
 <script type="module">
 import { createMachine, engravingFace } from './machine-kit.js';
-import { bridge } from './bridge.js';
+import { bridge, buildPlate } from './bridge.js';
 import { SETTING_ROWS, ONLY_IN_PERSON, GROUP_NOTES } from './edition.js';
 
 const Q=new URLSearchParams(location.search);
@@ -187,6 +203,8 @@ const byId=Object.fromEntries(SETTINGS.map(s=>[s.id,s]));
 // not read, with Sound and Light at Off rather than their most permissive positions.
 function takeKept(kept){const changed=[];for(const s of SETTINGS){if(s.held)continue;const v=kept[s.id];if(Number.isInteger(v)&&v>=0&&v<s.values.length&&(v!==s.v||!s.read)){s.v=v;s.read=true;changed.push(s.id)}}return changed}
 SETTINGS.forEach(s=>s.read=true);
+// the top plate names the build and the commit it was made from, as the machine says, as the front's does
+bridge.machine().then(m=>{if(m&&m.version)document.getElementById('build').textContent=buildPlate(m)},()=>{});
 try{takeKept(await bridge.settings())}catch(e){SETTINGS.forEach(s=>s.read=false);byId.sound.v=0;byId.light.v=0}
 try{localStorage.removeItem('bombechat.settings')}catch(e){}
 // the settings this machine can't change, as it says: one waiting for a feature ('comes with relay') has no value and
@@ -200,6 +218,9 @@ const seatedAt=s=>s.parked?-1:s.v;
 
 /* ---------- schedule card ---------- */
 const sched=document.getElementById('sched');
+// the group heading stuck at the top of the card, over the rows scrolling under it
+function stuckHeads(){const top=sched.getBoundingClientRect().top;for(const g of sched.querySelectorAll('.grp'))g.classList.toggle('stuck',sched.scrollTop>0&&g.getBoundingClientRect().top<=top+.5)}
+sched.addEventListener('scroll',stuckHeads,{passive:true});
 const rows={};
 for(const g of GROUPS){
   const items=SETTINGS.filter(s=>s.g===g);
@@ -276,7 +297,7 @@ addEventListener('pointerdown',()=>Snd.arm(),{once:true});addEventListener('keyd
 /* ---------- the machine ---------- */
 const view=document.getElementById('view');
 let machine=null;
-try{machine=await build()}catch(err){console.error(err);document.getElementById('fallback').style.display='grid';document.getElementById('loading').style.opacity=0}
+try{machine=await build()}catch(err){console.warn('the back stays flat:',err.message);document.getElementById('fallback').style.display='grid';document.getElementById('loading').style.opacity=0;document.getElementById('hint').hidden=true}
 
 async function build(){
   await engravingFace();
@@ -287,23 +308,35 @@ async function build(){
   const lamp=new THREE.SpotLight('#ffe2b8',0,12,Math.PI/6,.85,1.4);lamp.castShadow=false;scene.add(lamp);scene.add(lamp.target);
 
   /* the back panel */
-  const PW=19.6,PH=20.2,CY=.9;// the panel runs from y -9.2 up to 11
-  const panel=new THREE.Mesh(new THREE.BoxGeometry(PW,PH,.3),M.panel);panel.position.set(0,CY,-.15);panel.receiveShadow=true;scene.add(panel);
-  const rimFrame=new THREE.Mesh(new THREE.BoxGeometry(PW+.5,PH+.5,.2),new THREE.MeshStandardMaterial({color:'#121311',roughness:.6,metalness:.5}));rimFrame.position.set(0,CY,-.32);scene.add(rimFrame);
-  for(let i=0;i<=12;i++){bolt(-PW/2+.35+i*(PW-.7)/12,CY+PH/2-.35);bolt(-PW/2+.35+i*(PW-.7)/12,CY-PH/2+.35)}
-  for(let i=1;i<10;i++){bolt(-PW/2+.35,CY-PH/2+.35+i*(PH-.7)/10);bolt(PW/2-.35,CY-PH/2+.35+i*(PH-.7)/10)}
+  // three rows of twelve drum connectors, one behind each drum of the front's bank: seen from behind, the front's
+  // drum 1 (front left) is at the right, so the columns run 12 on the left to 1 on the right. Rows are not mirrored:
+  // Row 1, the Plain row, is the top row on both sides. The pitches keep the front's proportions (at 1440 its row
+  // pitch is .98 of its column pitch), so these read as the same drums seen from behind.
+  const CROWS=3,CCOLS=12,CPX=1.4,CPY=1.38,CY0=3.42+(CROWS-1)*CPY;// Row 3 sits where the plate's gap above it has always been
+  const conX=c=>(c-(CCOLS-1)/2)*CPX,conY=r=>CY0-r*CPY;
+  const PTOP=CY0+2.65,PBOT=-9.2;
+  const PW=19.6,PH=PTOP-PBOT,CY=(PTOP+PBOT)/2;// the panel runs from y -9.2 up to its top bolt row, above the trunks' duct
+  // the panel, its frame and bolt ring, drawn by the kit as the front's are: 13 across, the sides' bolts about two units apart
+  const {bolts:{top:topBolts}}=K.perimeter(PW,PH,CY,{across:13});
 
   /* ---------- upper field: the drum wiring, 12 by 3 big connectors ---------- */
   const conGeo=(()=>{const pts=[[0,0],[.42,0],[.42,.05],[.36,.08],[.36,.34],[.32,.38],[.3,.62],[.22,.7],[.16,.78],[.16,.95],[0,.95]].map(([r,y])=>new THREE.Vector2(r,y));const g=new THREE.LatheGeometry(pts,48);g.rotateX(Math.PI/2);return g})();
   const ringGeo=new THREE.TorusGeometry(.43,.035,12,48);
-  const bigCons=[];
-  const CROWS=5,CY0=9.1;for(let r=0;r<CROWS;r++)for(let c=0;c<12;c++){const x=-7.9+c*1.436,y=CY0-r*1.42;
+  const bigCons=[],conMeshes=[];
+  for(let r=0;r<CROWS;r++)for(let c=0;c<CCOLS;c++){const x=conX(c),y=conY(r);
     const ring=new THREE.Mesh(ringGeo,M.brassDull);ring.position.set(x,y,.03);scene.add(ring);
     const body=new THREE.Mesh(conGeo,M.bakelite);body.position.set(x,y,0);body.castShadow=true;body.receiveShadow=true;scene.add(body);
     const k=new THREE.Mesh(new THREE.CylinderGeometry(.305,.305,.1,48,1,true),new THREE.MeshStandardMaterial({color:'#2a2a28',roughness:.4,metalness:.8,bumpMap:knurl,bumpScale:2}));k.rotation.x=Math.PI/2;k.position.set(x,y,.5);scene.add(k);
-    bigCons.push(new THREE.Vector3(x,y,.95))}
-  for(let c=0;c<12;c++)engrave(String(c+1),-7.9+c*1.436,CY0+.92,.17);
-  for(let r=0;r<CROWS;r++)engrave('ROW '+(r+1),-9.1,CY0-r*1.42,.12);
+    bigCons.push(new THREE.Vector3(x,y,.95));conMeshes.push({row:r+1,col:CCOLS-c,ring,label:'Row '+(r+1)})}
+  const colNums=[...Array(CCOLS)].map((_,c)=>engrave(String(CCOLS-c),conX(c),CY0+.92,.17));
+  // each row signed on a traffolyte plate at its left, screwed on at both ends, as the front's Plain, Heard and Key are,
+  // and the size they are beside their drums: the front's plates stand 21 px against a 112.7 px drum pitch at 1512
+  const SIGN_H=CPX*21/112.7;
+  const rowSigns=[...Array(CROWS)].map((_,r)=>{const text='Row '+(r+1);
+    const m=plate(text.toUpperCase(),0,conY(r),{h:SIGN_H,size:56,pad:.7});const w=m.geometry.parameters.width;
+    m.position.x=conX(0)-.5-w/2;
+    [-1,1].forEach(sx=>bolt(m.position.x+sx*(w/2-SIGN_H*.4),conY(r),{scale:SIGN_H*1.6,z:.04}));
+    return {text,mesh:m}});
 
   /* cable builder: a hanging curve that leaves each end straight out of its socket */
   function hangPoints(a,b,{sag=.6,out=.55,bulge=.25,droop=0}={}){
@@ -313,22 +346,65 @@ async function build(){
     pts.push(B1,b.clone().add(new THREE.Vector3(0,0,out*.45)),b.clone());return pts}
   function tube(points,radius,mat,seg=120){const curve=new THREE.CatmullRomCurve3(points,false,'centripetal');const g=new THREE.TubeGeometry(curve,seg,radius,12,false);const m=new THREE.Mesh(g,mat);m.castShadow=true;m.receiveShadow=true;return m}
 
-  // decorative drum-to-drum looms: seeded so the tangle is the same every visit
+  // decorative drum-to-drum looms: seeded so the tangle is the same every visit. Each joins a connector to its
+  // neighbours, to a neighbour's in the row below, or to one two to five columns away in any row: never straight
+  // down (a cord hung plumb reads as a rod), never off the field
   let seed=1931;const rnd=()=>{seed=(seed*16807)%2147483647;return seed/2147483647};
   const decor=[];
-  const NC=CROWS*12;for(let i=0;i<NC;i++){const a=bigCons[i];const n=1+(rnd()<.55?1:0);
-    for(let k=0;k<n;k++){let j;const roll=rnd();if(roll<.45)j=i+(rnd()<.5?1:2);else if(roll<.8)j=i+12+Math.floor(rnd()*3)-1;else j=Math.floor(rnd()*NC);
-      if(j<0||j>=NC||j===i)continue;const b=bigCons[j];
+  const NC=CROWS*CCOLS,looms=[];for(let i=0;i<NC;i++){const a=bigCons[i],r=Math.floor(i/CCOLS),c=i%CCOLS;const n=1+(rnd()<.6?1:0)+(rnd()<.25?1:0);
+    for(let k=0;k<n;k++){let r2=r,c2;const roll=rnd();if(roll<.45)c2=c+(rnd()<.5?1:2);else if(roll<.8){r2=r+1;c2=c+(rnd()<.5?-1:1)}else{r2=Math.floor(rnd()*CROWS);c2=c+(2+Math.floor(rnd()*4))*(rnd()<.5?-1:1)}
+      if(c2<0||c2>=CCOLS||r2>=CROWS)continue;const j=r2*CCOLS+c2;const b=bigCons[j];
       const pts=hangPoints(a,b,{sag:.25+rnd()*.4,out:.3,bulge:.15+rnd()*.55,droop:.25});
-      const m=tube(pts,.085+rnd()*.03,cableMat(CABLE_COLORS[Math.floor(rnd()*CABLE_COLORS.length)]),90);scene.add(m);decor.push(m)}}
+      const m=tube(pts,.085+rnd()*.03,cableMat(CABLE_COLORS[Math.floor(rnd()*CABLE_COLORS.length)]),90);scene.add(m);decor.push(m);looms.push(m)}}
   // a few heavy looms that hang lower, the way the real back looked
   for(let i=0;i<14;i++){const a=bigCons[NC-12+Math.floor(rnd()*12)],b=bigCons[NC-12+Math.floor(rnd()*12)];if(a===b)continue;
-    const m=tube(hangPoints(a,b,{sag:.4+rnd()*.25,out:.35,bulge:.5+rnd()*.5,droop:.3}),.1,cableMat(CABLE_COLORS[i%CABLE_COLORS.length]),110);scene.add(m);decor.push(m)}
+    const m=tube(hangPoints(a,b,{sag:.4+rnd()*.25,out:.35,bulge:.5+rnd()*.5,droop:.3}),.1,cableMat(CABLE_COLORS[i%CABLE_COLORS.length]),110);scene.add(m);decor.push(m);looms.push(m)}
 
-  // trunks: heavy cables from the top row rising out of view, toward the rest of the machine
-  for(let c=0;c<12;c++){const a=bigCons[c];const n=c%3===1?2:1;for(let k=0;k<n;k++){const x2=a.x+(rnd()-.5)*1.4;
-    const pts=[a.clone(),a.clone().add(new THREE.Vector3(0,.1,.35)),new THREE.Vector3(a.x+(x2-a.x)*.3,a.y+.75,1.0+rnd()*.3),new THREE.Vector3(x2,a.y+1.7,.9+rnd()*.4),new THREE.Vector3(x2+(rnd()-.5)*.4,CY+PH/2+1.5,.7+rnd()*.5)];
-    const m=tube(pts,.1+rnd()*.03,cableMat(CABLE_COLORS[(c*5+k)%CABLE_COLORS.length]),80);scene.add(m);decor.push(m)}}
+  // trunks: heavy cables from the top row to the rest of the machine. The cords of neighbouring connectors are gathered
+  // into five bundles of two or three, one in the gap between two column numbers, and each bundle goes up into the duct
+  const GROUPS=[[0,1],[2,3,4],[5,6],[7,8,9],[10,11]],GAPS=[0,3,5,7,10];
+  const HB=CY0+1.38,HT=CY0+1.92;// the duct's open underside and its top
+  const trunkCords=[],ductParts=[];
+  GROUPS.forEach((grp,gi)=>{const gb=GAPS[gi],xb=conX(gb)+CPX/2;
+    const cords=[];grp.forEach(c=>{const n=rnd()<.3?2:1;for(let k=0;k<n;k++)cords.push(c)});
+    while(cords.length>3)cords.splice(Math.floor(rnd()*cords.length),1);
+    cords.sort((p,q)=>p-q);
+    cords.forEach((c,k)=>{const a=bigCons[c],off=(k-(cords.length-1)/2)*.2;
+      trunkCords.push({c,a,off,xb,gi,k,n:cords.length,r:.095+rnd()*.025,lay:rnd(),col:CABLE_COLORS[(c*5+k*3+gi)%CABLE_COLORS.length]})})});
+  // each cord crosses over its neighbours' tops below the numbers, so it passes the numbers at its bundle's own gap
+  function rise(t){const {a}=t,ex=t.xb+t.off,z=.85+t.lay*.3;
+    return [a.clone(),a.clone().add(new THREE.Vector3(0,.12,.32)),new THREE.Vector3(a.x*.25+ex*.75,a.y+.45,z),new THREE.Vector3(ex,CY0+.72,z*.85),new THREE.Vector3(ex,CY0+1.05,z*.7)]}
+  const addCord=(pts,t,seg=120)=>{const m=tube(pts,t.r,cableMat(t.col),seg);scene.add(m);decor.push(m);return m};
+  {
+    // a duct along the top in the panel's own enamel, screwed to it and open underneath: each bundle is held by a
+    // brass clamp under the duct's lip, and goes up into it
+    const W=PW-1.5,H=HT-HB,D=.72,yc=(HB+HT)/2;
+    const hoodMat=new THREE.MeshStandardMaterial({color:'#232420',roughness:.6,metalness:.5,bumpMap:wrinkle,bumpScale:.5});
+    const part=(w,h,d,x,y,z)=>{const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),hoodMat);m.position.set(x,y,z);m.castShadow=true;m.receiveShadow=true;scene.add(m);return m};
+    part(W,H,.05,0,yc,D);part(W,.05,D,0,HT-.025,D/2);[-1,1].forEach(sx=>part(.05,H,D,sx*W/2,yc,D/2));
+    part(W+.04,.06,.12,0,HB+.03,D+.01);// the rolled lip
+    for(let i=0;i<7;i++)bolt(-W/2+.35+i*(W-.7)/6,yc+.06,{z:D+.03,scale:.75});
+    // each bundle rests on a steel hanger plate that drops from inside the duct, and a brass saddle strap wraps its
+    // front and sides and is screwed to the plate through its ears: the strap stands in front of every cord, and the
+    // cords go on up behind the duct's lip and end inside it
+    const CH=.11,CT=.03,ZM=.34,yC=HB-.1;// strap height and thickness, the hanger plate's face, the strap's middle
+    for(const t of trunkCords){const ex=t.xb+t.off,zc=ZM+t.r;
+      t.mesh=addCord([...rise(t).slice(0,4),new THREE.Vector3(ex,HB-.36,zc+.12),new THREE.Vector3(ex,yC-.1,zc+.01),new THREE.Vector3(ex,yC,zc),new THREE.Vector3(ex,HB+.12,zc),new THREE.Vector3(ex,HT-.15,zc)],t,160)}
+    GROUPS.forEach((g,gi)=>{const ts=trunkCords.filter(t=>t.gi===gi);if(!ts.length)return;
+      const x0=Math.min(...ts.map(t=>t.xb+t.off-t.r)),x1=Math.max(...ts.map(t=>t.xb+t.off+t.r)),x=(x0+x1)/2,hw=(x1-x0)/2+.02;
+      const zf=ZM+2*Math.max(...ts.map(t=>t.r))+.02+CT/2;// the strap's middle line at its front
+      // the strap's middle line across x: flat ears on the plate, then a rounded box over the bundle
+      const line=[],E=hw+.2,N=64;for(let i=0;i<=N;i++){const u=-E+2*E*i/N,q=Math.abs(u)/(hw+CT);
+        line.push([u,q>=1?ZM+CT/2:ZM+CT/2+(zf-ZM-CT/2)*Math.pow(1-Math.pow(q,5),1/5)])}
+      const outer=[],inner=[];line.forEach(([u,z],i)=>{const [pu,pz]=line[Math.max(0,i-1)],[nu,nz]=line[Math.min(N,i+1)];let tx=nu-pu,tz=nz-pz;const l=Math.hypot(tx,tz);tx/=l;tz/=l;
+        outer.push([u-tz*CT/2,z+tx*CT/2]);inner.push([u+tz*CT/2,z-tx*CT/2])});
+      const sh=new THREE.Shape();[...outer,...inner.reverse()].forEach(([u,z],i)=>i?sh.lineTo(u,-z):sh.moveTo(u,-z));
+      const geo=new THREE.ExtrudeGeometry(sh,{depth:CH,bevelEnabled:false});geo.rotateX(-Math.PI/2);
+      const strap=new THREE.Mesh(geo,M.brassDull);strap.position.set(x,yC-CH/2,0);strap.castShadow=true;strap.receiveShadow=true;scene.add(strap);
+      const hang=new THREE.Mesh(new THREE.BoxGeometry(2*E+.12,HT-.03-(yC-CH/2-.04),.04),hoodMat);hang.position.set(x,(HT-.03+yC-CH/2-.04)/2,ZM-.02);hang.receiveShadow=true;scene.add(hang);
+      [-1,1].forEach(sx=>bolt(x+sx*(hw+CT+.1),yC,{z:ZM+CT,scale:.4}));
+      ductParts.push({gi,x0:x-hw,x1:x+hw,y0:yC-CH/2,y1:yC+CH/2,innerZ:zf-CT/2})})
+    ductParts.lip={HB,HT,back:D+.01-.06,front:D}}
 
   // the cable trough along the bottom: an open steel channel with a bundle running sideways through it
   {const TY=-8.05;const chMat=new THREE.MeshStandardMaterial({color:'#2b2c29',roughness:.42,metalness:.85,bumpMap:wrinkle,bumpScale:.25});
@@ -340,7 +416,7 @@ async function build(){
      const m=tube(pts,.085+rnd()*.025,cableMat(CABLE_COLORS[(i*3+1)%CABLE_COLORS.length]),160);scene.add(m);decor.push(m)}
    for(let i=0;i<7;i++){const strap=new THREE.Mesh(new THREE.BoxGeometry(.09,1.02,.06),M.brassDull);strap.position.set(-8+i*2.67,TY,.66);strap.castShadow=true;scene.add(strap)}}
 
-  K.makersPlate(-.35,1.45);
+  const makers=K.makersPlate(-.35,1.45);
 
   /* ---------- lower field: one plug per setting ---------- */
   const jackGeo=new THREE.TorusGeometry(.105,.03,12,32);const nutGeo=new THREE.CylinderGeometry(.15,.15,.04,6);nutGeo.rotateX(Math.PI/2);
@@ -367,15 +443,15 @@ async function build(){
     const t=new THREE.CanvasTexture(c);t.colorSpace=THREE.SRGBColorSpace;t.anisotropy=8;
     const m=new THREE.Mesh(new THREE.PlaneGeometry(w,TAPE_H),new THREE.MeshStandardMaterial({map:t,transparent:true,roughness:.92,metalness:0,alphaTest:.5}));
     m.position.set(x,y,.105);m.rotation.z=(r()-.5)*.03;m.castShadow=true;m.receiveShadow=true;m.userData={id};scene.add(m);tapes.push(m);return m}
-  const tapes=[];
+  const tapes=[],groupPlates=[];
   const LAYOUT={left:{x:-8.9,groups:['Sound','Light','Bluetooth','Machine']},right:{x:.55,groups:['Passing on','Quiet sending','Privacy']}};
   const ROWH=.74,TOP=.75;
   const plugs={};const jackMeshes=[];
   const valueWidth=t=>{const m=engrave(t,0,0,.1);m.geometry.computeBoundingBox();const b=m.geometry.boundingBox;scene.remove(m);m.geometry.dispose();m.material.map.dispose();m.material.dispose();return b.max.x-b.min.x};
       for(const side of Object.values(LAYOUT)){let y=TOP;
-    for(const g of side.groups){plate(g.toUpperCase(),side.x,y,{h:.24,red:!fitted(g),align:'left'});y-=.42;
-      if(!fitted(g)){const cov=new THREE.Mesh(new THREE.BoxGeometry(5.6,.9,.05),new THREE.MeshStandardMaterial({color:'#262724',roughness:.45,metalness:.6,bumpMap:wrinkle,bumpScale:.4}));cov.position.set(side.x+2.8,y-.3,.025);cov.castShadow=true;cov.receiveShadow=true;scene.add(cov);
-        [[-2.65,.33],[2.65,.33],[-2.65,-.33],[2.65,-.33]].forEach(([dx,dy])=>bolt(side.x+2.8+dx,y-.3+dy));const e=engrave('NOT FITTED TO THIS BUILD',side.x+2.8,y-.3,.15,'#6f6a5e');e.position.z=.055;y-=1.12;continue}
+    for(const g of side.groups){const gp=plate(g.toUpperCase(),side.x,y,{h:.24,red:!fitted(g),align:'left'});groupPlates.push(gp);y-=.42;
+      // the kit's blanking plate, the one the front carries where its Bluetooth switch would be
+      if(!fitted(g)){K.blank(5.6,.9,'NOT FITTED TO THIS BUILD').group.position.set(side.x+2.8,y-.3,0);y-=1.12;continue}
       for(const s of SETTINGS.filter(q=>q.g===g)){
         {const e=engrave(s.name.toUpperCase(),0,y-.01,.12,'#ddd5c0');e.geometry.computeBoundingBox();const w=e.geometry.boundingBox.max.x-e.geometry.boundingBox.min.x;e.position.x=side.x+w/2+.02}
         // jacks sit .74 apart, or as far apart as their longest engraved value needs
@@ -415,7 +491,16 @@ async function build(){
   /* ---------- camera framing ---------- */
   const look=new THREE.Vector3(),lookT=new THREE.Vector3(0,0,0),pos=new THREE.Vector3(),posT=new THREE.Vector3();let par={x:0,y:0},parT={x:0,y:0};
   function fitDist(w,h){const fov=camera.fov*Math.PI/180;return Math.max(h/2/Math.tan(fov/2),w/2/Math.tan(fov/2)/camera.aspect)}
-  function overview(){const d=fitDist(PW-.3,12.5);lookT.set(0,-.4,0);posT.set(.7,-1.0,d)}
+  // the first view: the whole panel, its top bolt row to the cable trough with a little margin. A window
+  // too wide and short for all of it at a size the plates still read (no smaller than nine tenths of the width-filling
+  // view the back always opened on) keeps that size and hangs the view from the panel's top edge: the bolts, the column
+  // numbers and Row 1 always show, and the rest is a row's focus away.
+  const VIEW_TOP=PTOP+.3,VIEW_BOT=-8.65-.3,SMALLEST=.9;
+  function overview(){const fov=camera.fov*Math.PI/180,h=VIEW_TOP-VIEW_BOT,cap=fitDist(PW-.3,12.5)/SMALLEST;let d=fitDist(PW-.3,h),cy=(VIEW_TOP+VIEW_BOT)/2;
+    // too wide and short: hang it from the top. Room to spare above and below: a third of it above, the rest below,
+    // so the panel's top stays near the top of the window
+    if(d>cap){d=cap;cy=VIEW_TOP-d*Math.tan(fov/2)}else{const spare=d*Math.tan(fov/2)*2-h;cy-=spare/6}
+    lookT.set(0,cy,0);posT.set(.7,cy-.6,d)}
   // the row from its name to its last jack, or to the end of the tape beside it
   // a focused row is framed with the rows of its group beside it in full: the view reaches as far right as any of them
   function frameRow(id){const P=plugs[id];const a=P.src;
@@ -505,7 +590,24 @@ async function build(){
   const rowBand=id=>{const P=plugs[id],a=toPx(new THREE.Vector3(P.jacks[0].x,P.jacks[0].y+.135,.05)),b=toPx(new THREE.Vector3(P.jacks[0].x,P.jacks[0].y-.135,.05));const r=renderer.domElement.getBoundingClientRect();return {top:r.top+a.y,bottom:r.top+b.y}};
   // for the README's clip: where a point of the panel lands on the screen, and where a row's parts are on the panel
   const at=(x,y,z)=>toScreen(new THREE.Vector3(x,y,z)),row=id=>{const P=plugs[id];return {name:P.nameX,y:P.src.y,jacks:P.jacks.map(j=>j.x)}};
-  return {focus,move,seat,plugs,camera,screen,at,row,rowBand,get ready(){return frames>2},endOf:id=>{const P=plugs[id];return {x:P.end.x,jack:P.jacks.findIndex(j=>Math.abs(j.x-P.end.x)<1e-3&&Math.abs(j.y-P.end.y)<1e-3),lift:P.lift,parked:!!P.park&&P.end.distanceTo(P.park)<1e-3,dim:P.dim}}};
+  // for checks: where the back's parts land on the screen, as boxes in page pixels
+  const box3=new THREE.Box3();
+  function screenBox(o){box3.setFromObject(o);const r=renderer.domElement.getBoundingClientRect();let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;
+    for(let i=0;i<8;i++){const v=new THREE.Vector3(i&1?box3.max.x:box3.min.x,i&2?box3.max.y:box3.min.y,i&4?box3.max.z:box3.min.z).project(camera);
+      const x=r.left+(v.x*.5+.5)*r.width,y=r.top+(-v.y*.5+.5)*r.height;x0=Math.min(x0,x);y0=Math.min(y0,y);x1=Math.max(x1,x);y1=Math.max(y1,y)}
+    return {left:x0,top:y0,right:x1,bottom:y1}}
+  const connectors=()=>conMeshes.map(m=>{const b=screenBox(m.ring);return {row:m.row,col:m.col,x:(b.left+b.right)/2,y:(b.top+b.bottom)/2,label:m.label}});
+  const parts=()=>({view:(r=>({left:r.left,top:r.top,right:r.right,bottom:r.bottom}))(renderer.domElement.getBoundingClientRect()),
+    topBolts:topBolts.map(screenBox),colNums:colNums.map(screenBox),rowSigns:rowSigns.map(s=>screenBox(s.mesh)),connectors:conMeshes.map(m=>screenBox(m.ring)),
+    looms:looms.map(screenBox),makersPlate:screenBox(makers),groupPlates:groupPlates.map(screenBox)});
+  // for checks: each trunk cord sampled along its length against the duct's clamps and lip, in panel units
+  const duct=()=>({...ductParts.lip,clamps:ductParts.map(c=>({...c})),cords:trunkCords.map(t=>{const pts=t.mesh.geometry.parameters.path.getSpacedPoints(400),c=ductParts.find(c=>c.gi===t.gi);
+    const at=pts.filter(p=>p.y>=c.y0&&p.y<=c.y1),up=pts.filter(p=>p.y>=ductParts.lip.HB),end=pts[pts.length-1];
+    return {gi:t.gi,r:t.r,end:{y:end.y,z:end.z},atClamp:{front:Math.max(...at.map(p=>p.z))+t.r,x0:Math.min(...at.map(p=>p.x))-t.r,x1:Math.max(...at.map(p=>p.x))+t.r},underLip:Math.max(...up.map(p=>p.z))+t.r,top:Math.max(...pts.map(p=>p.y))+t.r}})});
+  // the panel's face as the camera frames it now, in page pixels: its corners, from its top bolt row to its foot
+  const panelRect=()=>{const c=[[-PW/2,PTOP],[PW/2,PTOP],[-PW/2,PBOT],[PW/2,PBOT]].map(([x,y])=>toScreen(new THREE.Vector3(x,y,0)));
+    const xs=c.map(p=>p.x),ys=c.map(p=>p.y);return {left:Math.min(...xs),top:Math.min(...ys),right:Math.max(...xs),bottom:Math.max(...ys)}};
+  return {focus,move,seat,plugs,camera,screen,at,row,rowBand,connectors,duct,panel:panelRect,rowSigns:()=>rowSigns.map(s=>s.text),parts,get ready(){return frames>2},endOf:id=>{const P=plugs[id];return {x:P.end.x,jack:P.jacks.findIndex(j=>Math.abs(j.x-P.end.x)<1e-3&&Math.abs(j.y-P.end.y)<1e-3),lift:P.lift,parked:!!P.park&&P.end.distanceTo(P.park)<1e-3,dim:P.dim}}};
 }
 
 /* arriving from the front: finish the turn the front started */
@@ -515,7 +617,7 @@ try{if(sessionStorage.getItem('bombechat-turn')==='front-to-back'&&!REDUCED){ses
 // back here by history (bfcache): the settings may have moved on the front, so read them again from the machine
 // and show them, sending nothing
 addEventListener('pageshow',e=>{if(!e.persisted)return;bridge.settings().then(kept=>{for(const id of takeKept(kept)){syncRow(id);machine&&machine.seat(id,byId[id].v)}},()=>{})});
-window.__bc={screen:id=>machine.screen(id),rowBand:id=>machine.rowBand(id),tag:()=>{const r=document.getElementById('tag').getBoundingClientRect();return {top:r.top,bottom:r.bottom,on:document.getElementById('tag').classList.contains('on')}},focused:()=>focusId,get:id=>byId[id].v,held:()=>Object.fromEntries(SETTINGS.filter(s=>s.held).map(s=>[s.id,{note:s.held,parked:!!s.parked}])),set:(id,i)=>setValue(id,i,'test'),focus:id=>focusSetting(id,'pin'),at:(x,y,z)=>machine.at(x,y,z),row:id=>machine.row(id),end:id=>machine&&machine.endOf(id),settings:SETTINGS.map(s=>s.id)};
+window.__bc={screen:id=>machine.screen(id),rowBand:id=>machine.rowBand(id),tag:()=>{const r=document.getElementById('tag').getBoundingClientRect();return {top:r.top,bottom:r.bottom,on:document.getElementById('tag').classList.contains('on')}},focused:()=>focusId,get:id=>byId[id].v,held:()=>Object.fromEntries(SETTINGS.filter(s=>s.held).map(s=>[s.id,{note:s.held,parked:!!s.parked}])),set:(id,i)=>setValue(id,i,'test'),focus:id=>focusSetting(id,'pin'),at:(x,y,z)=>machine.at(x,y,z),row:id=>machine.row(id),connectors:()=>machine.connectors(),rowSigns:()=>machine.rowSigns(),parts:()=>machine.parts(),panel:()=>machine.panel(),duct:()=>machine.duct(),end:id=>machine&&machine.endOf(id),settings:SETTINGS.map(s=>s.id)};
 if(Q.has('focus'))focusSetting(Q.get('focus'),'pin');
 document.getElementById('back').addEventListener('click',e=>{if(REDUCED)return;e.preventDefault();const href=e.currentTarget.href;try{sessionStorage.setItem('bombechat-turn','back-to-front')}catch(_){}document.body.animate([{transform:'perspective(1600px) rotateY(0deg)',opacity:1},{transform:'perspective(1600px) rotateY(-80deg)',opacity:0}],{duration:420,easing:'cubic-bezier(.5,0,.75,0)'}).onfinish=()=>location.href=href});
 </script>

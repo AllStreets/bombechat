@@ -246,14 +246,33 @@ export function front(bridge, kit) {
   row2.insertBefore(left, vu); left.append(vu);
   // a slip the tray's room doesn't show whole shows only its paper's edge, as a slip further down a pile does: never
   // a line of type cut through. Scrolled into view, it reads again
+  const EDGE = 7;// how much of a tucked slip shows
   const fade = () => {
     right.classList.toggle('more', right.scrollHeight - right.scrollTop - right.clientHeight > 2);
     const room = right.getBoundingClientRect(), pad = parseFloat(getComputedStyle(right).paddingBottom) || 0, foot = room.bottom - pad;
-    for (const s of right.querySelectorAll('.slip')) {
-      const r = s.getBoundingClientRect();
-      // (a few pixels' grace for the slips' tilt; never the slip being worked in)
-      s.classList.toggle('edge', right.scrollHeight > right.clientHeight + 1 && (r.bottom > foot + 3 || r.top < room.top - 3) && r.height < foot - room.top && !s.contains(document.activeElement));
-    }
+    const list = [...right.querySelectorAll('.slip')];
+    // where each slip is laid out, without the tuck below
+    const at = s => { const r = s.getBoundingClientRect(), l = +s.dataset.lift || 0; return { top: r.top + l, bottom: r.bottom + l, height: r.height }; };
+    const rects = list.map(at);
+    // (a few pixels' grace for the slips' tilt; never the slip being worked in)
+    const edges = rects.map((r, i) => right.scrollHeight > right.clientHeight + 1 && (r.bottom > foot + 3 || r.top < room.top - 3) && r.height < foot - room.top && !list[i].contains(document.activeElement));
+    // a slip shown only by its edge is tucked under its neighbour in the pile, a few pixels of it showing past that
+    // slip's foot (or head), as the next slip in a tray does: never a whole sheet of blank paper. A neighbour may be
+    // tucked itself, so each is tucked under where its neighbour is seen, not where it is laid out: the slips below
+    // the room in order down the pile, those above it in order up
+    const lifts = rects.map(() => 0), seen = i => ({ top: rects[i].top - lifts[i], bottom: rects[i].bottom - lifts[i] });
+    for (let i = 1; i < list.length; i++) if (edges[i] && rects[i].bottom > foot + 3) lifts[i] = Math.max(0, rects[i].bottom - seen(i - 1).bottom - EDGE);
+    for (let i = list.length - 2; i >= 0; i--) if (edges[i] && !(rects[i].bottom > foot + 3 && i > 0)) lifts[i] = -Math.max(0, seen(i + 1).top - rects[i].top - EDGE);
+    // and only its edge: what of it would stand above the slip it is tucked under (or below, up the pile) is cut away,
+    // so none of it shows in the gap past that slip either
+    const clips = rects.map((r, i) => !edges[i] || !lifts[i] ? 0 : lifts[i] > 0 ? Math.max(0, seen(i - 1).top - (r.top - lifts[i])) : Math.max(0, (r.bottom - lifts[i]) - seen(i + 1).bottom));
+    list.forEach((s, i) => {
+      s.classList.toggle('edge', edges[i]);
+      const lift = lifts[i];
+      if (lift) { s.dataset.lift = lift; s.style.setProperty('--lift', lift + 'px'); } else if (s.dataset.lift) { delete s.dataset.lift; s.style.removeProperty('--lift'); }
+      const cut = Math.floor(clips[i]);
+      if (cut) s.style.setProperty('--cut', lift > 0 ? `${cut}px 0 0 0` : `0 0 ${cut}px 0`); else s.style.removeProperty('--cut');
+    });
   };
   right.addEventListener('scroll', fade);
   new ResizeObserver(fade).observe(right);
@@ -418,9 +437,9 @@ export function front(bridge, kit) {
     // only while there is someone to show: a stranger who accepted and left the list takes the slip with them
     nearSlip = atOpen() && listed().length ? strangersSlip() : null;
     nearTray.replaceChildren(...(nearSlip ? [nearSlip] : []));
-    // folded behind a request, the strangers' line waits under the room meter; open, it heads the tray's column
-    if (nearSlip && nearSlip.classList.contains('folded')) { if (nearTray.parentElement !== left) left.append(nearTray); }
-    else if (nearTray.parentElement !== right) right.insertBefore(nearTray, outboxEl);
+    // folded behind a request, the strangers' line lies in the tray under it; open, it heads the tray's column. Either
+    // way it is in the tray, never loose on the panel
+    if (nearTray.parentElement !== right) right.insertBefore(nearTray, outboxEl);
     nodes.forEach((n, i) => { if (tray.children[i] !== n) tray.insertBefore(n, tray.children[i] || null); });
     while (tray.children.length > nodes.length) tray.lastChild.remove();
     for (const [id, s] of slips) if (!waiting.has(id) && !leaving.includes(s)) slips.delete(id);

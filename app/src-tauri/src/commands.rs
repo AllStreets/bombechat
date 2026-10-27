@@ -249,10 +249,11 @@ pub trait Machine: Send {
     /// Their hello is in: the hello showing by light finishes its sending
     /// window and pairing ends (at once with none showing).
     fn finish_pairing(&mut self);
-    /// Test the machine on `channel`: a message sealed to its own key, sent
-    /// and heard by itself, reported as `NodeEvent::SelfTest`; or say why
-    /// not, as for pairing. No switch is turned for it.
-    fn start_self_test(&mut self, channel: Channel) -> Result<(), String>;
+    /// Test the machine on `channel`: a message sealed to its own key (in
+    /// `text`, or the node's fixed words without), sent and heard by
+    /// itself, reported as `NodeEvent::SelfTest`; or say why not, as for
+    /// pairing. No switch is turned for it. Returns its time on air in ms.
+    fn start_self_test(&mut self, channel: Channel, text: Option<&str>) -> Result<u64, String>;
     /// End the self-test in progress, if any.
     fn stop_self_test(&mut self);
     /// Whether to send the page what the camera sees while it reads (the
@@ -396,7 +397,8 @@ fn band_name(b: Band) -> &'static str {
 
 /// This machine as the page sees it: its plate name, its public identity
 /// (sign key then dh key, as hex), the person's own name, how many
-/// messages it holds for others, the build, and the longest broadcast.
+/// messages it holds for others, the build and the commit it was made
+/// from, and the longest broadcast.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MachineView {
     pub name: &'static str,
@@ -404,6 +406,9 @@ pub struct MachineView {
     pub you: String,
     pub held: usize,
     pub version: &'static str,
+    /// The commit this build was made from: its short hash, with a
+    /// trailing `+` when built from uncommitted changes, or `unknown`.
+    pub commit: &'static str,
     /// The longest broadcast, in UTF-8 bytes of text.
     pub broadcast_max: usize,
     /// The longest reply (a private message to one person), in UTF-8
@@ -545,14 +550,16 @@ pub fn finish_pairing(s: &Shared) {
     s.machine().finish_pairing();
 }
 
-/// `self_test { channel }`: test the machine on `channel` ("sound" or
-/// "light"): it seals a short message to its own key and sends it, by
+/// `self_test { channel, text? }`: test the machine on `channel` ("sound"
+/// or "light"): it seals `text` (the reply line's words, if any; the
+/// node's fixed words without) to its own key and sends it, by
 /// sound once the room is quiet, by light on the screen for a mirror; its
 /// own microphone (or camera) hears it and opens it, and the `selfTest`
 /// event says how it went. Nothing of it is stored. Refused with
 /// "locked", or with the channel's state when its switch does not allow
-/// sending, as `pair` is.
-pub fn self_test(s: &Shared, channel: String) -> Result<(), String> {
+/// sending, as `pair` is, and "not sent: too long for a test" for words
+/// over the node's limit. Answers its time on air, in ms, once it starts.
+pub fn self_test(s: &Shared, channel: String, text: Option<String>) -> Result<u64, String> {
     let channel = parse_channel(&channel)?;
     if channel == Channel::Bluetooth {
         return Err(NOT_IN_THIS_PLAN.to_string());
@@ -561,7 +568,7 @@ pub fn self_test(s: &Shared, channel: String) -> Result<(), String> {
     if machine.lock() != Lock::Unlocked {
         return Err("locked".to_string());
     }
-    machine.start_self_test(channel)
+    machine.start_self_test(channel, text.as_deref())
 }
 
 /// `stop_self_test`: end the self-test in progress, if any (Escape, or
@@ -728,6 +735,7 @@ pub fn machine(s: &Shared) -> Result<MachineView, String> {
             .unwrap_or_else(|| MACHINE_NAME.to_string()),
         held: machine.held_for_others(),
         version: env!("CARGO_PKG_VERSION"),
+        commit: env!("BOMBECHAT_COMMIT"),
         broadcast_max: MAX_BROADCAST,
         reply_max: max_private_text(1),
     })

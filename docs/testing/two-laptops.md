@@ -48,6 +48,8 @@ If a reading is at or above Send under: turn the machine round and raise Send un
 
 Before pairing, check each Mac alone. Unlock it, leave Sound at "Listen and send" and press **Test the machine** at the foot of the message sheet. It seals a short message to its own key, waits for the room to fall under Send under like any send, plays it, and hears it back through its own microphone: the drums turn and the sheet types it under the margin note "self-test", with how long it took, the bytes a second and the band. Nothing of it is kept. If it says "Not heard", raise the output volume (or set Band to Audible in Settings) and test again; a Mac that can't hear itself won't hear the other one either.
 
+While it plays, press **Stop the test** (or Escape): on the built-in speakers the sound stops at once, with no click. Bluetooth headphones and AirPlay speakers hold what they were sent and keep playing a moment after Stop; that is theirs, not the machine's. To test with your own words, type them in the reply line first (up to 100 bytes); the drums spell them as they come back.
+
 | Mac | Self-test result (seconds, bytes a second, band) |
 |---|---|
 | A | |

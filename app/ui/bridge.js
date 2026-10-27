@@ -21,12 +21,14 @@
 //   finishPairing()              [finish_pairing]                   their hello is in: the hello showing by light finishes its
 //                                window (so whoever pressed later still has a whole one to read it), then the screen
 //                                clears (displayStopped) and pairing ends; with none showing it ends at once
-//   selfTest(channel)            [self_test { channel }]            tests the machine on channel, 'sound' (the default) or
-//                                'light': it seals a short message to its own key and sends it, by sound once the room is
-//                                quiet, by light on the screen for a mirror held in front of it, and hears it with its own
-//                                microphone (or camera). How it goes arrives as selfTest. Nothing of it is stored, sent to
+//   selfTest(channel, text)      [self_test { channel, text }]      tests the machine on channel, 'sound' (the default) or
+//                                'light': it seals text (the reply line's words; blank, its own short message) to its own
+//                                key and sends it, by sound once the room is quiet, by light on the screen for a mirror
+//                                held in front of it, and hears it with its own microphone (or camera). Resolves to its
+//                                time on air in ms. How it goes arrives as selfTest. Nothing of it is stored, sent to
 //                                anyone or answered. Rejects as pair does: 'locked', or the channel's state when its switch
-//                                won't send ('not sent: sound is set to listen only'). No switch is turned for it
+//                                won't send ('not sent: sound is set to listen only'), and 'not sent: too long for a
+//                                test' for text over 100 bytes. No switch is turned for it
 //   stopSelfTest()               [stop_self_test]                   ends the self-test in progress: nothing more of it goes
 //                                out, and what is still arriving of it is let go (selfTest 'stopped')
 //   eyepiece(on)                 [eyepiece { on }]                  whether to be sent what the camera sees (the eyepiece
@@ -57,11 +59,12 @@
 //   broadcasts()                 [broadcasts]                       resolves to the broadcasts kept, this machine's own and the
 //                                ones heard, oldest first, each shaped as the broadcast event, with state for its own
 //                                ('waiting' queued again on unlock, 'sent' or 'failed')
-//   machine()                    [machine]                          resolves to { name, key, you, held, version, broadcast_max }:
+//   machine()                    [machine]                          resolves to { name, key, you, held, version, commit, broadcast_max }:
 //                                name is the machine's plate (Machine No. 1), key its public identity as hex (sign key
 //                                first, so its first four digits are the short fingerprint broadcasts are signed with),
-//                                you the person's own name, held the messages it carries for others, broadcast_max the
-//                                longest broadcast in UTF-8 bytes
+//                                you the person's own name, held the messages it carries for others, version and commit
+//                                the build (commit its short hash, + when built from uncommitted changes, 'unknown'
+//                                without git, 'browser' in the simulator), broadcast_max the longest broadcast in UTF-8 bytes
 //   channels()                   [channels]                         resolves to [{ channel, state, rate? }]: the last state each
 //                                channel reported, for a page that opened after the event. None reported: listening.
 //                                rate: the payload bytes a second the channel moves (sound at its band, light at the
@@ -181,7 +184,10 @@ const person = c => ({ id: contactId(c.id), name: String(c.name), short: String(
 // isn't known, but `of` bounds it: every chunk but the last is full, so the
 // whole is at least (of - 1) chunks and one byte, and the text ends no earlier
 // than 64 bytes before that.
-const SENDER_LEN = 68, SIGNATURE_LEN = 64;
+// TEXT_AT and CHUNK are crates/core's (where the text starts, the bytes each chunk but the last carries); the app's
+// tests hold these to the node's. The page lays the drums' plain row from them.
+export const TEXT_AT = 68, CHUNK = 48;
+const SIGNATURE_LEN = 64;
 const arriving = new Map(); // tag -> { bytes so far, chunk size }
 const decoder = new TextDecoder('utf-8');
 function provisional(tag, index, of, plain) {
@@ -193,8 +199,8 @@ function provisional(tag, index, of, plain) {
   a.so.push(...plain); arriving.set(tag, a);
   const last = index === of - 1;
   const end = last ? a.so.length - SIGNATURE_LEN : Math.min(a.so.length, (of - 1) * a.size + 1 - SIGNATURE_LEN);
-  if (end <= SENDER_LEN) return '';
-  return decoder.decode(new Uint8Array(a.so.slice(SENDER_LEN, end))).replace(/\uFFFD+$/, '');
+  if (end <= TEXT_AT) return '';
+  return decoder.decode(new Uint8Array(a.so.slice(TEXT_AT, end))).replace(/\uFFFD+$/, '');
 }
 
 const EVENTS = ['chunk', 'message', 'heard', 'broadcast', 'pairOffer', 'roomDb', 'channel', 'outbox', 'display', 'displayStopped', 'eyepiece', 'selfTest', 'request', 'requestGone', 'requested', 'peers', 'contactConfirmed'];
@@ -252,7 +258,7 @@ function tauriBackend() {
     pair: channel => invoke('pair', { channel }),
     stopPairing: () => invoke('stop_pairing'),
     finishPairing: () => invoke('finish_pairing'),
-    selfTest: channel => invoke('self_test', { channel }),
+    selfTest: (channel, text) => invoke('self_test', { channel, text: text || null }),
     stopSelfTest: () => invoke('stop_self_test'),
     eyepiece: on => invoke('eyepiece', { on: !!on }),
     confirmPair: (peerHex, name) => invoke('confirm_pair', { peerHex, name }).then(contactId),
@@ -286,7 +292,7 @@ function simulatedBackend() {
     pair: channel => sim.pair(channel),
     stopPairing: () => sim.stopPairing(),
     finishPairing: () => sim.finishPairing(),
-    selfTest: channel => sim.selfTest(channel),
+    selfTest: (channel, text) => sim.selfTest(channel, text),
     stopSelfTest: () => sim.stopSelfTest(),
     eyepiece: on => sim.eyepiece(!!on),
     confirmPair: (peerHex, name) => sim.confirmPair(peerHex, name).then(contactId),
@@ -320,7 +326,7 @@ export const bridge = {
   pair: (channel = 'sound') => backend.pair(lower(channel)),
   stopPairing: () => backend.stopPairing(),
   finishPairing: () => backend.finishPairing(),
-  selfTest: (channel = 'sound') => backend.selfTest(lower(channel)),
+  selfTest: (channel = 'sound', text = null) => backend.selfTest(lower(channel), text),
   stopSelfTest: () => backend.stopSelfTest(),
   eyepiece: on => backend.eyepiece(on),
   confirmPair: (peerHex, name) => backend.confirmPair(peerHex, name),
@@ -349,3 +355,6 @@ export const bridge = {
   start: () => { ready(); backend.start(); },
   now: () => backend.now(),
 };
+
+// What the top plates on both pages say of the build, from machine(): its version and the commit it was made from.
+export const buildPlate = m => `Build ${m.version} \u00b7 ${m.commit}`;

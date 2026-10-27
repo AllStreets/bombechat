@@ -6,12 +6,15 @@
 //! with noise mixed in) straight to the other's input sink, for tests
 //! that exercise both ends of the acoustic link without real hardware.
 
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use crate::audio::{AudioError, AudioIo};
 
 type Sink = Box<dyn FnMut(&[f32]) + Send>;
 type NoiseFn = Box<dyn FnMut() -> f32 + Send>;
+/// Runs of samples the speaker holds, by owner, oldest first.
+type Pending = VecDeque<(Option<u16>, usize)>;
 
 #[derive(Clone)]
 enum Mode {
@@ -47,6 +50,10 @@ pub struct FakeAudio {
     starts: Arc<Mutex<u32>>,
     /// Times [`AudioIo::stop_input`] was called.
     stops: Arc<Mutex<u32>>,
+    /// What the speaker has been handed and not yet played, as runs of
+    /// samples by owner ([`AudioIo::play_for`]): it plays only as
+    /// [`FakeAudio::speak`] says time passes.
+    speaker: Arc<Mutex<Pending>>,
 }
 
 impl FakeAudio {
@@ -62,6 +69,7 @@ impl FakeAudio {
             noise: None,
             starts: Arc::new(Mutex::new(0)),
             stops: Arc::new(Mutex::new(0)),
+            speaker: Arc::new(Mutex::new(VecDeque::new())),
         }
     }
 
@@ -77,6 +85,7 @@ impl FakeAudio {
             noise: None,
             starts: Arc::new(Mutex::new(0)),
             stops: Arc::new(Mutex::new(0)),
+            speaker: Arc::new(Mutex::new(VecDeque::new())),
         }
     }
 
@@ -123,6 +132,61 @@ impl FakeAudio {
         *self.stops.lock().unwrap()
     }
 
+    /// Samples handed to the speaker that it has not played yet, of
+    /// everyone's (`None`) or of one owner's.
+    pub fn pending(&self, owner: Option<u16>) -> usize {
+        self.speaker
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(o, _)| owner.is_none() || *o == owner)
+            .map(|(_, n)| n)
+            .sum()
+    }
+
+    /// Let the speaker play `samples` more of what it was handed, in
+    /// order, as the time they take passing would.
+    pub fn speak(&self, mut samples: usize) {
+        let mut sp = self.speaker.lock().unwrap();
+        while samples > 0 {
+            let Some((_, n)) = sp.front_mut() else {
+                break;
+            };
+            let k = samples.min(*n);
+            *n -= k;
+            samples -= k;
+            if *n == 0 {
+                sp.pop_front();
+            }
+        }
+    }
+
+    /// Hands `samples` to the speaker under `owner`: recorded as played,
+    /// held as pending until [`FakeAudio::speak`] plays them, and heard at
+    /// once by whatever microphone this device is wired to.
+    fn hand(&mut self, owner: Option<u16>, samples: Vec<f32>) {
+        self.played.lock().unwrap().extend(&samples);
+        if !samples.is_empty() {
+            self.speaker
+                .lock()
+                .unwrap()
+                .push_back((owner, samples.len()));
+        }
+
+        if let Some(target) = &self.forward_to {
+            let delivered: Vec<f32> = match &self.noise {
+                Some(noise) => {
+                    let mut noise = noise.lock().unwrap();
+                    samples.iter().map(|&s| s + noise()).collect()
+                }
+                None => samples,
+            };
+            if let Some(sink) = target.lock().unwrap().as_mut() {
+                sink(&delivered);
+            }
+        }
+    }
+
     /// Whether a sink is currently registered: true once `start_input`
     /// succeeds, false again once `stop_input` releases it.
     pub fn is_listening(&self) -> bool {
@@ -148,21 +212,25 @@ impl AudioIo for FakeAudio {
     }
 
     fn play(&mut self, samples: Vec<f32>) -> Result<(), AudioError> {
-        self.played.lock().unwrap().extend(&samples);
-
-        if let Some(target) = &self.forward_to {
-            let delivered: Vec<f32> = match &self.noise {
-                Some(noise) => {
-                    let mut noise = noise.lock().unwrap();
-                    samples.iter().map(|&s| s + noise()).collect()
-                }
-                None => samples,
-            };
-            if let Some(sink) = target.lock().unwrap().as_mut() {
-                sink(&delivered);
-            }
-        }
+        self.hand(None, samples);
         Ok(())
+    }
+
+    fn play_for(&mut self, owner: u16, samples: Vec<f32>) -> Result<(), AudioError> {
+        self.hand(Some(owner), samples);
+        Ok(())
+    }
+
+    fn cut(&mut self, owner: u16) -> usize {
+        let mut dropped = 0;
+        self.speaker.lock().unwrap().retain(|(o, n)| {
+            let keep = *o != Some(owner);
+            if !keep {
+                dropped += n;
+            }
+            keep
+        });
+        dropped
     }
 
     fn sample_rate(&self) -> u32 {

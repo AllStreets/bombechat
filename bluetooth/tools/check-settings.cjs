@@ -3,7 +3,10 @@
 //   node tools/check-settings.cjs mockups/settings.html   the frozen design reference
 // Writes checks/<folder>/settings/: overview, focused rows, mid-move frames, narrow layout, 2x details.
 // Fails on page errors, a plug that does not end in the jack its setting names, or a slow frame rate,
-// and for the app's interface on any request that leaves this machine.
+// and for the app's interface on any request that leaves this machine, on a drum connector field that is not
+// three rows of twelve signed Row 1 to Row 3 with columns 12 to 1 clear of the plates below it, and on a first
+// view that does not show the panel's top (bolts, column numbers, Row 1) or puts the hint over the machine at every
+// window size, and on a back without WebGL that is not the wiring schedule alone and working.
 const path = require('path'), fs = require('fs');
 const { chromium } = require('playwright');
 const ROOTDIR = path.resolve(__dirname, '..');
@@ -43,8 +46,87 @@ const url = q => 'http://127.0.0.1:4811/' + path.relative(ROOTDIR, page) + (q ? 
     if (typeof held !== 'boolean') problems.push('the page does not say whether the key check is held (window.__edition)');
     ONLY_IN_PERSON = held !== false;
   }
+  // the top plate names the build as the machine does, as the front's does, cut for its longest form
+  if (APP) {
+    const { workspaceVersion } = require('./versions.cjs');
+    const b = await p.evaluate(() => { const b = document.getElementById('build'), rt = b.parentElement;
+      const at = () => [...rt.children].map(k => Math.round(k.getBoundingClientRect().left)).join();
+      const text = b.textContent, before = at(); b.textContent = text.replace(/[^ ]+$/, 'ddddddd+'); const moved = at() !== before; b.textContent = text; return { text, moved }; });
+    if (b.text !== `Build ${workspaceVersion(ROOTDIR)} \u00b7 browser`) problems.push(`the top plate says ${JSON.stringify(b.text)}`);
+    if (b.moved) problems.push("the build plate's longest form moves what is beside it");
+  }
+  // the kit's shared parts (the front and the back draw their blanking plates, bolt rings, switches and jewels with
+  // them): each builds and renders without an error, and a baked part comes back as a picture with clear corners
+  if (APP) {
+    const kit = await p.evaluate(async () => {
+      const K0 = await import('./machine-kit.js'), host = document.createElement('div');
+      host.style.cssText = 'position:fixed;left:-400px;top:0;width:200px;height:200px'; document.body.appendChild(host);
+      const out = {};
+      try {
+        const K = K0.createMachine(host, { still: true }); K.renderer.setSize(200, 200, false);
+        const per = K.perimeter(6, 4, 0, { across: 13, down: 3 }); out.perimeter = per.bolts.top.length + '/' + per.bolts.left.length;
+        const b = K.blank(2, .8, 'NOT FITTED'); out.blank = b.group.children.length;
+        const kn = K.knob({ labels: ['Off', 'Listen', 'Listen and send'] }); kn.set(2, true); kn.tick(performance.now() + 1000); out.knob = +(kn.rot.rotation.z).toFixed(3);
+        const j = K.jewel('#f0b64c'); out.jewel = [j.set(true), j.on, j.set(true)].join();
+        K.camera.position.set(0, 0, 12); K.renderer.render(K.scene, K.camera);
+        const url = K.bake(K.jewel('#f0b64c', { parent: new K.THREE.Group() }).group, { px: 48, shadow: true });
+        const img = new Image(); img.src = url; await img.decode();
+        const c = document.createElement('canvas'); c.width = img.width; c.height = img.height; const k = c.getContext('2d'); k.drawImage(img, 0, 0);
+        const a = (x, y) => k.getImageData(x, y, 1, 1).data[3], d = k.getImageData(0, 0, c.width, c.height).data;
+        let solid = 0; for (let i = 3; i < d.length; i += 4) if (d[i] > 200) solid++;
+        out.bake = { w: img.width, corners: [a(0, 0), a(c.width - 1, 0), a(0, c.height - 1), a(c.width - 1, c.height - 1)], solid };
+        K.bakeDone(); K.renderer.dispose(); K.renderer.forceContextLoss();
+      } catch (e) { out.error = e.message; }
+      host.remove();
+      return out;
+    });
+    if (kit.error || kit.perimeter !== '13/2' || !(kit.blank >= 9) || kit.knob !== -2.094 || kit.jewel !== 'true,true,false') problems.push(`the kit's shared parts: ${JSON.stringify(kit)}`);
+    else if (!kit.bake || kit.bake.w !== 48 || kit.bake.corners.some(v => v !== 0) || kit.bake.solid < 200) problems.push(`the kit's bake: ${JSON.stringify(kit.bake)}`);
+  }
   if (ONLY_IN_PERSON) NOTES.inperson = { note: 'always, on this build', value: 1 };
   await p.screenshot({ path: path.join(out, 'overview.png') });
+  // the back carries the front's three rows of drums: 36 connectors, Rows 1 to 3 signed on plates, columns 12 to 1
+  // from left to right (each behind its drum, so mirrored about the panel's middle), evenly spaced, and nothing of
+  // the field (a connector or a loom hanging from one) over the maker's plate or a group's plate below it
+  let field = null;
+  if (APP) {
+    field = await p.evaluate(() => ({ connectors: window.__bc.connectors(), signs: window.__bc.rowSigns(), parts: window.__bc.parts(), mid: window.__bc.at(0, 0, .05).x }));
+    const C = field.connectors, why = [];
+    if (C.length !== 36) why.push(`${C.length} connectors`);
+    if (JSON.stringify(field.signs) !== JSON.stringify(['Row 1', 'Row 2', 'Row 3'])) why.push(`row signs ${JSON.stringify(field.signs)}`);
+    for (const r of [1, 2, 3]) {
+      const row = C.filter(c => c.row === r).sort((a, b) => a.x - b.x);
+      if (row.length !== 12) { why.push(`row ${r} has ${row.length}`); continue; }
+      if (row.map(c => c.col).join() !== '12,11,10,9,8,7,6,5,4,3,2,1') why.push(`row ${r} columns run ${row.map(c => c.col).join(' ')}`);
+      if (row.some(c => c.label !== 'Row ' + r)) why.push(`row ${r} labelled ${[...new Set(row.map(c => c.label))].join(', ')}`);
+      const steps = row.slice(1).map((c, i) => c.x - row[i].x);
+      if (Math.max(...steps) - Math.min(...steps) > 2) why.push(`row ${r} unevenly spaced: ${steps.map(Math.round).join(' ')}`);
+      if (Math.abs((row[0].x + row[11].x) / 2 - field.mid) > 3) why.push(`row ${r} is not centred on the panel`);
+      // level, but for the lens: the camera stands a little right of and below the panel's middle
+      const tilt = Math.max(...row.map(c => c.y)) - Math.min(...row.map(c => c.y));
+      if (tilt > steps[0] * .08) why.push(`row ${r} is not level (${tilt.toFixed(1)} px)`);
+    }
+    const rowsY = [1, 2, 3].map(r => C.find(c => c.row === r).y);
+    if (!(rowsY[0] < rowsY[1] && rowsY[1] < rowsY[2])) why.push(`rows out of order top to bottom: ${rowsY.map(Math.round)}`);
+    const overlap = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+    const below = [field.parts.makersPlate, ...field.parts.groupPlates];
+    field.parts.connectors.forEach((c, i) => below.forEach(b => overlap(c, b) && why.push(`connector ${i} over a plate`)));
+    field.parts.looms.forEach((l, i) => below.forEach(b => overlap(l, b) && why.push(`loom ${i} hangs over a plate (to ${Math.round(l.bottom)}, the plate from ${Math.round(b.top)})`)));
+    field.parts.rowSigns.forEach((s, i) => field.parts.connectors.forEach(c => overlap(s, c) && why.push(`Row ${i + 1}'s sign touches a connector`)));
+    if (why.length) problems.push('the back\'s drum connectors: ' + [...new Set(why)].join('; '));
+    // the duct's clamps: every trunk cord passes behind its brass strap and inside its sides, goes up behind the
+    // duct's lip, and ends inside the duct under its top, so no cord shows over a clamp or out of the duct
+    const duct = await p.evaluate(() => window.__bc.duct()), cw = [];
+    duct.cords.forEach((t, i) => { const c = duct.clamps.find(c => c.gi === t.gi);
+      if (!c) { cw.push(`cord ${i} has no clamp`); return; }
+      if (t.atClamp.front >= c.innerZ) cw.push(`cord ${i} stands ${(t.atClamp.front - c.innerZ).toFixed(3)} in front of its clamp`);
+      if (t.atClamp.x0 < c.x0 - 1e-6 || t.atClamp.x1 > c.x1 + 1e-6) cw.push(`cord ${i} runs outside its clamp's sides`);
+      if (t.underLip >= duct.back) cw.push(`cord ${i} comes in front of the duct's lip`);
+      if (!(t.end.y > duct.HB && t.top < duct.HT)) cw.push(`cord ${i} ends at ${t.end.y.toFixed(2)}, reaching ${t.top.toFixed(2)}, not inside the duct (${duct.HB} to ${duct.HT})`); });
+    if (duct.clamps.length !== 5) cw.push(`${duct.clamps.length} clamps`);
+    if (cw.length) problems.push('the duct: ' + cw.join('; '));
+    field = { signs: field.signs, rowsY: rowsY.map(Math.round), pitch: Math.round(C.filter(c => c.row === 1).sort((a, b) => a.x - b.x).slice(0, 2).reduce((a, b) => b.x - a.x)), problems: why.length };
+  }
   // frame rate over 2 s
   const fps = await p.evaluate(() => new Promise(r => { let n = 0; const t0 = performance.now(); const f = () => { n++; performance.now() - t0 < 2000 ? requestAnimationFrame(f) : r(Math.round(n / 2)) }; requestAnimationFrame(f) }));
   if (fps < 30) problems.push('frame rate ' + fps);
@@ -146,8 +228,8 @@ const url = q => 'http://127.0.0.1:4811/' + path.relative(ROOTDIR, page) + (q ? 
   await hi.screenshot({ path: path.join(out, 'detail-card.png'), clip: { x: 0, y: 46, width: 460, height: 854 } });
   await hi.context().close();
   // 2x crops at three widths: the card scrolled to Passing on, the whole back panel, and the waiting rows up close
-  for (const width of [1024, 1440, 1728]) {
-    const height = width === 1024 ? 768 : width === 1440 ? 900 : 1117;
+  for (const width of [1024, 1440, 1512, 1728]) {
+    const height = { 1024: 768, 1440: 900, 1512: 982, 1728: 1117 }[width];
     const w = await open({ width, height }, 'still', 2);
     const cardBox = await w.locator('.cardwrap').boundingBox();
     const viewBox = await w.locator('#view').boundingBox();
@@ -174,6 +256,28 @@ const url = q => 'http://127.0.0.1:4811/' + path.relative(ROOTDIR, page) + (q ? 
       if (!clear.tag.on || clear.tag.top < clear.above.bottom || clear.tag.bottom > clear.row.top) problems.push(`${width}: the Flash speed tag overlaps a row of jacks: ${JSON.stringify(clear)}`);
     }
     await w.context().close();
+  }
+  // the back's first view shows its top at every window: the top bolt row, the column numbers and Row 1's sign all in
+  // the view's top quarter and none of them cut, including the commissioner's 1512 by 982 fullscreen and the narrow
+  // single-column layout. Where the whole panel fits (top bolts to the cable trough), say so.
+  const framing = {};
+  if (APP) for (const [width, height] of [[1024, 768], [1280, 800], [1440, 900], [1512, 982], [1728, 1117], [900, 1000], [720, 900]]) {
+    const f = await open({ width, height }, 'still');
+    const got = await f.evaluate(() => window.__bc.parts());
+    const v = got.view, inside = b => b.left >= v.left && b.right <= v.right && b.top >= v.top && b.bottom <= v.bottom;
+    const quarter = v.top + (v.bottom - v.top) * .25, why = [];
+    for (const [name, list] of [['top bolt', got.topBolts], ['column number', got.colNums], ['Row 1 sign', [got.rowSigns[0]]]])
+      list.forEach((b, i) => { if (!inside(b)) why.push(`${name} ${i} cut`); else if (b.bottom > quarter) why.push(`${name} ${i} below the top quarter (${Math.round(b.bottom - v.top)} of ${Math.round(v.bottom - v.top)})`); });
+    // the hint never lies on the machine: it is in the top bar, or hidden where the bar has no room for it
+    const hint = await f.evaluate(() => { const h = document.getElementById('hint'), r = h.getBoundingClientRect(), v = document.getElementById('view').getBoundingClientRect();
+      return { shown: !!(r.width && r.height), over: r.left < v.right && v.left < r.right && r.top < v.bottom && v.top < r.bottom, cut: h.scrollWidth > h.clientWidth + 1 }; });
+    if (hint.over) why.push('the hint lies over the machine');
+    if (hint.shown && hint.cut) why.push('the hint is cut short');
+    const conRow = got.connectors.slice(0, 12).sort((a, b) => a.left - b.left);
+    framing[`${width}x${height}`] = { whole: inside(got.makersPlate) && got.groupPlates.every(inside), hint: hint.shown, topBolts: Math.round(got.topBolts[0].top - v.top), pitch: +(((conRow[11].left - conRow[0].left) / 11)).toFixed(1), problems: why.length };
+    if (why.length) problems.push(`${width}x${height}: the back's first view does not show its top: ${[...new Set(why)].slice(0, 6).join('; ')}`);
+    if (width === 1512) await f.screenshot({ path: path.join(out, 'overview-1512x982.png') });
+    await f.context().close();
   }
   // narrow
   const nar = await open({ width: 900, height: 1000 });
@@ -379,7 +483,30 @@ const url = q => 'http://127.0.0.1:4811/' + path.relative(ROOTDIR, page) + (q ? 
     await kp.context().close();
   }
   await browser.close();
-  console.log(JSON.stringify({ out, fps, results, keyboard: [before, after], atBoot, history, refused, band, lockNotice, heldPress, problems }, null, 2));
+  // without WebGL the back is the wiring schedule alone: the view says so, no hint about plugs on a machine that is not
+  // drawn, every setting still changes from the card, and nothing goes wrong on the page (three.js saying it found no
+  // WebGL is the fallback being taken)
+  let flat = null;
+  if (APP) {
+    const fb = await chromium.launch({ channel: 'chrome', args: ['--disable-webgl', '--disable-3d-apis'] });
+    const fp = await (await fb.newContext({ viewport: vp, deviceScaleFactor: 2 })).newPage();
+    fp.on('pageerror', e => problems.push('flat: page error: ' + e.message));
+    fp.on('console', m => m.type() === 'error' && !/^THREE\.WebGLRenderer: (A WebGL context could not be created|Error creating WebGL context)/.test(m.text()) && problems.push('flat: console: ' + m.text()));
+    fp.on('request', r => { const u = r.url(); if (!/^(data:|blob:|http:\/\/127\.0\.0\.1:4811\/)/.test(u)) problems.push('flat: asked the network for ' + u); });
+    await fp.goto(url('still'), { waitUntil: 'domcontentloaded', timeout: 120000 });
+    await fp.waitForFunction(() => getComputedStyle(document.getElementById('fallback')).display !== 'none', null, { timeout: 60000 });
+    const was = await fp.evaluate(() => window.__bc.get('volume'));
+    await fp.click(`.row[data-id="volume"] .jk[data-i="${(was + 1) % 5}"]`);
+    // the plug moved, as the card shows it (the check below says if it never did)
+    await fp.waitForFunction(w => window.__bc.get('volume') !== w && document.querySelector('.row[data-id="volume"] .val').textContent === String((w + 1) % 5 + 1), was, { timeout: 5000 }).catch(() => {});
+    flat = await fp.evaluate(() => ({ fallback: getComputedStyle(document.getElementById('fallback')).display, hint: !!document.getElementById('hint').getBoundingClientRect().width,
+      volume: window.__bc.get('volume'), label: document.querySelector('.row[data-id="volume"] .val').textContent }));
+    flat.was = was;
+    if (flat.fallback === 'none' || flat.hint || flat.volume !== (was + 1) % 5 || flat.label !== String((was + 1) % 5 + 1)) problems.push(`flat: the back without WebGL: ${JSON.stringify(flat)}`);
+    await fp.screenshot({ path: path.join(out, 'flat.png') });
+    await fb.close();
+  }
+  console.log(JSON.stringify({ out, fps, field, framing, flat, results, keyboard: [before, after], atBoot, history, refused, band, lockNotice, heldPress, problems }, null, 2));
   server.close();
   process.exit(problems.length ? 1 : 0);
 })();

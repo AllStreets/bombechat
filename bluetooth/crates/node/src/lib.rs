@@ -306,9 +306,18 @@ pub const NOTHING_TO_SEND_ON: &str = "not sent: no sound or light to send on";
 /// does not build.
 pub const NOT_IN_THIS_PLAN: &str = "unavailable: not in this plan";
 
-/// What a self-test seals and sends ([`Node::start_self_test`]): short,
-/// so it plays quickly, and in letters, so the drums spell it.
+/// What a self-test seals and sends ([`Node::start_self_test`]) when it is
+/// given no words of its own: short, so it plays quickly, and in letters,
+/// so the drums spell it.
 pub const SELF_TEST_TEXT: &str = "The machine hears itself.";
+
+/// The most a self-test's own words may be, in bytes of UTF-8: by sound,
+/// about four times the fixed text, half a minute or so on air.
+pub const SELF_TEST_MAX_BYTES: usize = 100;
+
+/// Returned by [`Node::start_self_test`] for words longer than
+/// [`SELF_TEST_MAX_BYTES`].
+pub const SELF_TEST_TOO_LONG: &str = "not sent: too long for a test";
 
 /// A self-test is given up as not heard this long, in ms, after its
 /// envelope should have finished going out: from its first play, the
@@ -1012,19 +1021,29 @@ impl Node {
 
     /// The minute to stamp on a message stored now, by the machine's own
     /// clock: the wall clock as it read the first time this session
-    /// stamped anything, moved on since only by the monotonic `now_ms`.
-    /// A wall clock that jumps forward or back while the app runs moves
-    /// no stamp, so stamps keep the order messages came in, and none
-    /// is lifted by a jump into the next session (each session reads the
-    /// wall clock afresh). It is for showing and ordering only: "Delete
-    /// messages after" never reads it, but the machine's running age
-    /// ([`Node::set_age`]).
+    /// stamped anything, moved on since by the monotonic `now_ms`. The
+    /// monotonic clock stands still while the Mac sleeps, so when the
+    /// wall clock reads later than that, the stamp takes the wall
+    /// clock's minute and counts on from there: a message after a night's
+    /// sleep is stamped that morning, not the evening before. A wall
+    /// clock put back moves no stamp back, so stamps never decrease and
+    /// keep the order messages came in, and none is lifted by a jump into
+    /// the next session (each session reads the wall clock afresh). It is
+    /// for showing and ordering only: "Delete messages after" never reads
+    /// it, but the machine's running age ([`Node::set_age`]).
     fn stamp(&mut self) -> u32 {
         let now_ms = self.now_ms;
-        let wall = self.wall;
-        let (at_ms, at_min) = *self.clock.get_or_insert_with(|| (now_ms, wall()));
+        let wall = (self.wall)();
+        let (at_ms, at_min) = *self.clock.get_or_insert((now_ms, wall));
         let elapsed = (now_ms.saturating_sub(at_ms) / 60_000).min(u64::from(u32::MAX)) as u32;
-        at_min.saturating_add(elapsed)
+        let counted = at_min.saturating_add(elapsed);
+        if wall > counted {
+            // the Mac slept (or the clock was put forward): count on from the wall clock
+            self.clock = Some((now_ms, wall));
+            wall
+        } else {
+            counted
+        }
     }
 
     /// Why nothing may be sent on `channel` right now, if so: the
@@ -1434,8 +1453,9 @@ impl Node {
         id
     }
 
-    /// Test the machine on `channel` (sound or light): seal
-    /// [`SELF_TEST_TEXT`] to this machine's own key and send it, so it is
+    /// Test the machine on `channel` (sound or light): seal `text` (or,
+    /// with none, or only spaces, [`SELF_TEST_TEXT`]) to this machine's
+    /// own key and send it, so it is
     /// heard by this machine's own microphone (or, by light, its camera
     /// reading the screen in a mirror) and opened as any message is. By
     /// sound it waits for a quiet room like any send; by light it is
@@ -1447,10 +1467,20 @@ impl Node {
     /// heard because of it.
     ///
     /// Refused as [`Node::start_pairing`] is: "locked"; the channel's
+    /// [`NOTHING_TO_SEND_ON`] without a transport for it; the channel's
     /// state unless its switch allows sending (no switch is turned for
-    /// it); [`NOTHING_TO_SEND_ON`] without a transport for it. Starting
-    /// again ends the test in progress first.
-    pub fn start_self_test(&mut self, channel: Channel) -> Result<(), &'static str> {
+    /// it); and [`SELF_TEST_TOO_LONG`] for words over
+    /// [`SELF_TEST_MAX_BYTES`] once trimmed of white space and byte order
+    /// marks. The page checks the same, in the same order.
+    /// Starting again ends the test in progress first.
+    ///
+    /// Returns how long it takes to go out once it starts, in ms, at the
+    /// channel's rate (0 when the channel has none).
+    pub fn start_self_test(
+        &mut self,
+        channel: Channel,
+        text: Option<&str>,
+    ) -> Result<u64, &'static str> {
         if self.me.is_none() {
             return Err("locked");
         }
@@ -1463,9 +1493,17 @@ impl Node {
             self.report_refusal(channel, why);
             return Err(why);
         }
+        // trimmed of white space and byte order marks, as the page trims it
+        let text = text
+            .map(|t| t.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}'))
+            .filter(|t| !t.is_empty());
+        if text.is_some_and(|t| t.len() > SELF_TEST_MAX_BYTES) {
+            return Err(SELF_TEST_TOO_LONG);
+        }
         self.stop_self_test();
         let me = self.me.as_ref().expect("checked above");
-        let envelope = seal_private(me, &[me.public()], SELF_TEST_TEXT, now_min(), TTL_MIN);
+        let text = text.unwrap_or(SELF_TEST_TEXT);
+        let envelope = seal_private(me, &[me.public()], text, now_min(), TTL_MIN);
         // the time the envelope takes to go out at the channel's rate
         let bytes = envelope.encode().len();
         let airtime_ms = self
@@ -1491,7 +1529,7 @@ impl Node {
             channel,
             state: SelfTestState::Waiting,
         });
-        Ok(())
+        Ok(airtime_ms)
     }
 
     /// End the self-test in progress, if any, as
@@ -3409,7 +3447,7 @@ mod tests {
     }
 
     #[test]
-    fn a_wall_clock_that_jumps_ahead_and_back_moves_no_stamp() {
+    fn a_wall_clock_put_back_moves_no_stamp_back() {
         let dir = tempfile::TempDir::new().unwrap();
         let (a, b) = (Identity::generate(), Identity::generate());
         let (mut node, _wire, ids) = node(&dir, &b, &[&a]);
@@ -3417,17 +3455,46 @@ mod tests {
         WALL.store(1_000_000, std::sync::atomic::Ordering::SeqCst);
         node.tick(0);
         node.send(&ids, "before", Channel::Sound);
-        // the clock jumps a month ahead
-        WALL.store(1_000_000 + 30 * 1440, std::sync::atomic::Ordering::SeqCst);
+        // the clock is put an hour back
+        WALL.store(1_000_000 - 60, std::sync::atomic::Ordering::SeqCst);
         node.tick(60_000);
         node.send(&ids, "during", Channel::Sound);
-        // and is put right
+        // and forward again
         WALL.store(1_000_002, std::sync::atomic::Ordering::SeqCst);
         node.tick(120_000);
         node.send(&ids, "after", Channel::Sound);
         assert_eq!(
             stamped(&node, ids[0]),
             vec![1_000_000, 1_000_001, 1_000_002]
+        );
+    }
+
+    // a wall clock of its own: tests run at once, and the one above moves WALL
+    static SLEPT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    fn slept_wall() -> u32 {
+        SLEPT.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[test]
+    fn a_stamp_after_the_mac_sleeps_is_the_wall_clocks_minute() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (a, b) = (Identity::generate(), Identity::generate());
+        let (mut node, _wire, ids) = node(&dir, &b, &[&a]);
+        node.wall = slept_wall;
+        SLEPT.store(2_000_000, std::sync::atomic::Ordering::SeqCst);
+        node.tick(0);
+        node.send(&ids, "evening", Channel::Sound);
+        // the Mac sleeps eight hours: the wall clock moves on, the monotonic clock only a minute
+        SLEPT.store(2_000_000 + 8 * 60, std::sync::atomic::Ordering::SeqCst);
+        node.tick(60_000);
+        node.send(&ids, "morning", Channel::Sound);
+        // and the stamps count on from the wall clock, never back
+        SLEPT.store(2_000_000 + 8 * 60 + 1, std::sync::atomic::Ordering::SeqCst);
+        node.tick(60_000 + 3 * 60_000);
+        node.send(&ids, "later", Channel::Sound);
+        assert_eq!(
+            stamped(&node, ids[0]),
+            vec![2_000_000, 2_000_480, 2_000_483]
         );
     }
 
@@ -3949,7 +4016,7 @@ mod tests {
     /// A sound test started, with its tag and the envelope it sent.
     fn testing(me: &Identity, dir: &tempfile::TempDir) -> (Node, Wire, u16, Envelope) {
         let (mut node, wire, _) = node(dir, me, &[]);
-        node.start_self_test(Channel::Sound).unwrap();
+        node.start_self_test(Channel::Sound, None).unwrap();
         // its waiting is reported on the first tick
         assert_eq!(self_tests(&node.tick(0)).len(), 1);
         let tag = wire.last_tag();
@@ -4098,12 +4165,12 @@ mod tests {
         };
         let mut node = Node::new(Some(store), vec![Box::new(wire.clone())]);
         assert_eq!(
-            node.start_self_test(Channel::Light),
+            node.start_self_test(Channel::Light, None),
             Err(LIGHT_OFF),
             "Light starts at Off"
         );
         node.set_light(LightSwitch::ReadAndFlash);
-        node.start_self_test(Channel::Light).unwrap();
+        node.start_self_test(Channel::Light, None).unwrap();
         let first = wire.last_tag();
         wire.news.lock().unwrap().extend([
             TransportEvent::Playing(first),
@@ -4154,7 +4221,7 @@ mod tests {
         assert_eq!(*wire.delivered.lock().unwrap(), vec![again]);
 
         // and Light turned to Read stops one in progress
-        node.start_self_test(Channel::Light).unwrap();
+        node.start_self_test(Channel::Light, None).unwrap();
         node.set_light(LightSwitch::Read);
         let ev = node.tick(50);
         assert_eq!(self_tests(&ev).last().unwrap().1, SelfTestState::Stopped);

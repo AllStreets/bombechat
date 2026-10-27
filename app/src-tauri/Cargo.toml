@@ -1,6 +1,6 @@
 [package]
 name = "bombechat-app"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 description = "Bombechat, airgapped build: the desktop shell around the node."
 

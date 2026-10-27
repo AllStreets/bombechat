@@ -283,7 +283,7 @@ dependencies = [
 
 [[package]]
 name = "bombechat-app"
-version = "0.1.0"
+version = "0.5.0"
 dependencies = [
  "bombechat-core",
  "bombechat-light",
@@ -302,7 +302,7 @@ dependencies = [
 
 [[package]]
 name = "bombechat-core"
-version = "0.1.0"
+version = "0.5.0"
 dependencies = [
  "chacha20poly1305",
  "ed25519-dalek",
@@ -316,7 +316,7 @@ dependencies = [
 
 [[package]]
 name = "bombechat-light"
-version = "0.1.0"
+version = "0.5.0"
 dependencies = [
  "block2 0.6.2",
  "bombechat-core",
@@ -337,7 +337,7 @@ dependencies = [
 
 [[package]]
 name = "bombechat-modem"
-version = "0.1.0"
+version = "0.5.0"
 dependencies = [
  "bombechat-modem",
  "cpal",
@@ -350,7 +350,7 @@ dependencies = [
 
 [[package]]
 name = "bombechat-node"
-version = "0.1.0"
+version = "0.5.0"
 dependencies = [
  "bombechat-core",
  "bombechat-light",
@@ -366,7 +366,7 @@ dependencies = [
 
 [[package]]
 name = "bombechat-store"
-version = "0.1.0"
+version = "0.5.0"
 dependencies = [
  "argon2",
  "bombechat-core",

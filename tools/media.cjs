@@ -1,8 +1,15 @@
 // Renders the README's pictures from the app itself, headless, on the GPU:
-//   node tools/media.cjs [icon] [logo] [banner] [shots] [demo] [settings] [light]     (all of them when none is named)
-// Writes to docs/media/, and the app icon to app/src-tauri/icons/. Every picture is a page of this repository served by
-// tools/serve.cjs (the browser simulator for the front, a stand-in for the
-// Tauri shell for the first run); nothing on the screen is captured.
+//   node tools/media.cjs [icon] [logo] [banner] [shots] [back] [demo] [selftest] [settings] [light] [bluetooth] [backstill] [--edition bluetooth]
+// (all of them when none is named). Writes to docs/media/, and the app icon to app/src-tauri/icons/. Every picture is a
+// page of this repository served by tools/serve.cjs (the browser simulator for the front, a stand-in for the
+// Tauri shell for the first run); nothing on the screen is captured. --edition bluetooth serves the standard edition's
+// tree (bluetooth/, through its own copy of serve.cjs) instead of the root's, still writing to the root's docs/media/;
+// the bluetooth target always renders from that tree, since the Bluetooth switch is only there. Run
+// tools/sync-bluetooth.sh first so the edition shows what the root does.
+// backstill is not a README picture: it is the stills of the settings page the front shows for the second half of its
+// turn to it, one for each size of window (app/ui/img/back-<w>x<h>.webp and back.json, and the standard edition's own,
+// with its live Bluetooth row, in bluetooth/edition/files/app/ui/img/). Regenerate them whenever the back or its card
+// changes, then git add them and run tools/sync-bluetooth.sh.
 // Needs Google Chrome (Playwright's channel 'chrome', for Metal) and ffmpeg for the GIFs, and gifsicle to make
 // the clips small enough. The icon needs python3 with Pillow, and macOS's iconutil for icon.icns.
 const path = require('path');
@@ -13,21 +20,33 @@ const { start } = require('./serve.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const OUT = path.join(ROOT, 'docs', 'media');
+// the commit the pictures are made from, as the app's build plate names it (app/src-tauri/build.rs): the short hash,
+// with a + when the tree has changes not yet committed. Read once, before any picture is written
+const COMMIT = (() => { try { const git = (...a) => execFileSync('git', a, { cwd: ROOT, encoding: 'utf8' }).trim();
+  const hash = git('rev-parse', '--short', 'HEAD'); return hash + (git('status', '--porcelain') ? '+' : ''); } catch (e) { return 'unknown'; } })();
 const PORT = 4814;
 const at = p => `http://127.0.0.1:${PORT}/${p}`;
-const want = new Set(process.argv.slice(2));
+const args = process.argv.slice(2);
+// --edition <name> (or --edition=<name>): serve that edition's tree in place of the root's
+const editionArg = (() => { const i = args.findIndex(a => a === '--edition' || a.startsWith('--edition='));
+  if (i < 0) return null; const v = args[i].includes('=') ? args[i].split('=')[1] : args[i + 1]; args.splice(i, args[i].includes('=') ? 1 : 2); return v; })();
+if (editionArg && editionArg !== 'bluetooth') { console.error(`no such edition: ${editionArg}`); process.exit(2); }
+const EDITION_ROOT = path.join(ROOT, 'bluetooth');
+// the server for a tree: the root's serve.cjs, or the edition's copy of it, which serves bluetooth/
+const serverFor = edition => edition ? require(path.join(EDITION_ROOT, 'tools', 'serve.cjs')).start : start;
+const want = new Set(args);
 const doing = k => !want.size || want.has(k);
 fs.mkdirSync(OUT, { recursive: true });
 
 // the first run as the app shows it: no store yet, so the page asks for a name and a passphrase
-function firstRun() {
+function firstRun(COMMIT) {
   const listeners = {};
   window.__TAURI__ = {
     event: { listen: (n, f) => { (listeners[n] = listeners[n] || []).push(f); return Promise.resolve(() => {}); } },
     core: { invoke: cmd => {
       switch (cmd) {
         case 'contacts': return Promise.reject('no store yet');
-        case 'machine': return Promise.resolve({ name: 'Machine No. 1', key: 'a3f09c1e'.repeat(16), you: '', held: 0, version: '0.1.0', broadcast_max: 3939 });
+        case 'machine': return Promise.resolve({ name: 'Machine No. 1', key: 'a3f09c1e'.repeat(16), you: '', held: 0, version: '0.5.0', commit: COMMIT, broadcast_max: 3939 });
         case 'settings': return Promise.resolve({ sound: 2, volume: 2, band: 0, light: 0, flash: 1, machine: 1, machvol: 2, carry: 1, hops: 3, hold: 2, quiet: 2, repeats: 2, lock: 1, expire: 0, inperson: 1 });
         case 'setting_notes': return Promise.resolve({});
         default: return new Promise(() => {});
@@ -77,7 +96,11 @@ function virtualClock() {
 }
 
 (async () => {
-  const server = await start(PORT);
+  const server = await serverFor(editionArg)(PORT);
+  // the Bluetooth clip's own server, on the edition's tree, unless that is already the one serving
+  const BT_PORT = PORT + 1;
+  const btServer = doing('bluetooth') && !editionArg ? await serverFor('bluetooth')(BT_PORT) : null;
+  const btAt = p => `http://127.0.0.1:${btServer ? BT_PORT : PORT}/${p}`;
   const browser = await chromium.launch({ channel: 'chrome', args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
   const ctx = (w, h, scale = 2) => browser.newContext({ viewport: { width: w, height: h }, deviceScaleFactor: scale, reducedMotion: 'no-preference' });
   const errors = p => p.on('pageerror', e => console.error('page error:', e.message));
@@ -86,19 +109,71 @@ function virtualClock() {
     if (doing('logo')) { await logo(); await logoSvg(); }
     if (doing('banner')) await banner();
     if (doing('shots')) await shots();
+    if (doing('back')) await back();
     if (doing('demo')) await demo();
+    if (doing('selftest')) await selfTestClip();
     if (doing('settings')) await settingsClip();
     if (doing('light')) await lightClip();
+    if (doing('bluetooth')) await bluetoothClip();
+    if (doing('backstill')) await backStill();
     shrink();
   } finally {
     await browser.close();
     server.close();
+    if (btServer) btServer.close();
+  }
+
+  // The back as the settings page opens on it, card and all, at each size of window the front chooses a still for
+  // (bombechat.html's BACKS): the page's opening framing, the turn's second half. Rendered in each tree (the airgapped
+  // build's back has Bluetooth blanked off, the standard edition's a live row) as WebP, at twice the window where that
+  // fits the budget and less where it doesn't, with img/back.json saying where the panel stands in each (for the check
+  // that the still is what the turn lands on). The top bar's build plate is left out: it says what this browser is,
+  // not the app.
+  async function backStill() {
+    const BUDGET = 400 * 1024, SIZES = [[1024, 768], [1280, 800], [1440, 900], [1512, 982], [1728, 1117]];
+    for (const [tree, port, dir] of [[null, PORT + 2, path.join(ROOT, 'app', 'ui', 'img')],
+      ['bluetooth', PORT + 3, path.join(EDITION_ROOT, 'edition', 'files', 'app', 'ui', 'img')]]) {
+      const srv = await serverFor(tree)(port);
+      const index = { sizes: [] };
+      try {
+        fs.mkdirSync(dir, { recursive: true });
+        for (const f of fs.readdirSync(dir)) if (/^back(-\d+x\d+)?\.webp$/.test(f)) fs.rmSync(path.join(dir, f));
+        for (const [w, h] of SIZES) {
+          let buf = null, at = 0, panel = null;
+          for (const [scale, q] of [[2, .8], [2, .72], [2, .64], [1.75, .7], [1.5, .7], [1.5, .6]]) {
+            const c = await ctx(w, h, scale);
+            await c.addInitScript(() => { try { localStorage.clear(); sessionStorage.clear(); } catch (e) {} });
+            const p = await c.newPage(); errors(p);
+            await p.goto(`http://127.0.0.1:${port}/app/ui/settings.html?still`);
+            await p.waitForFunction(() => window.__ready, null, { timeout: 60000 });
+            await p.evaluate(() => document.fonts.ready);
+            await p.addStyleTag({ content: '.top .build,.top .saved,#loading,#tag,#fullview{visibility:hidden!important}' });
+            // settled: the camera at its opening framing, the loading veil gone
+            await p.evaluate(() => new Promise(r => { let n = 0; const f = () => ++n > 40 ? r() : requestAnimationFrame(f); requestAnimationFrame(f); }));
+            panel = await p.evaluate(() => { const r = __bc.panel(); return Object.fromEntries(Object.entries(r).map(([k, v]) => [k, Math.round(v * 10) / 10])); });
+            const png = await p.screenshot({ type: 'png' });
+            const webp = await p.evaluate(async ([b64, q]) => { const i = new Image(); i.src = 'data:image/png;base64,' + b64; await i.decode();
+              const cv = document.createElement('canvas'); cv.width = i.naturalWidth; cv.height = i.naturalHeight; cv.getContext('2d').drawImage(i, 0, 0);
+              return cv.toDataURL('image/webp', q).split(',')[1]; }, [png.toString('base64'), q]);
+            await c.close();
+            buf = Buffer.from(webp, 'base64'); at = scale;
+            if (buf.length <= BUDGET) break;
+          }
+          if (buf.length > BUDGET) throw new Error(`the back's still at ${w}x${h} is ${buf.length} bytes, over its ${BUDGET}`);
+          const file = `back-${w}x${h}.webp`;
+          fs.writeFileSync(path.join(dir, file), buf);
+          index.sizes.push({ w, h, file, scale: at, panel });
+          console.log(path.relative(ROOT, path.join(dir, file)), `${Math.round(buf.length / 1024)} KB at ${at}x`);
+        }
+        fs.writeFileSync(path.join(dir, 'back.json'), JSON.stringify(index, null, 1) + '\n');
+      } finally { srv.close(); }
+    }
   }
 
   // Shrink the PNGs: full-window shots down to 1.5x, then everything but the logo to 256 colours (Pillow,
   // when python3 has it; the pictures are left as rendered otherwise).
   function shrink() {
-    const full = ['front.png', 'light.png'];
+    const full = ['front.png', 'light.png', 'back.png'];
     const py = `
 import sys
 from PIL import Image
@@ -239,8 +314,9 @@ for px, cut, out in json.loads(sys.argv[2]):
     const c = await ctx(1440, 900, 3);
     const p = await front(c);
     const b = await p.locator('.bank').boundingBox();
-    const d = await p.locator('.drum').nth(5).boundingBox();
-    await p.screenshot({ path: path.join(tmp, 'bank.png'), clip: { x: b.x, y: b.y, width: d.x + d.width + 22 - b.x, height: 335 } });
+    const d = await p.locator('.drum').nth(5).boundingBox(), low = await p.locator('.drum').nth(29).boundingBox();
+    // the first six drums of the three rows, down to just under the third row, above the counters
+    await p.screenshot({ path: path.join(tmp, 'bank.png'), clip: { x: b.x, y: b.y, width: d.x + d.width + 22 - b.x, height: low.y + low.height + 14 - b.y } });
     await c.close();
     const bc = await ctx(1200, 480, 2);
     const bp = await bc.newPage(); errors(bp);
@@ -294,7 +370,7 @@ for px, cut, out in json.loads(sys.argv[2]):
     // the first run, as the app shows it before there is a store
     {
       const c = await ctx(1440, 900, 2);
-      await c.addInitScript(firstRun);
+      await c.addInitScript(firstRun, COMMIT);
       const p = await c.newPage(); errors(p);
       await p.goto(at('app/ui/bombechat.html?still'));
       await p.waitForSelector('.unlock input[name=who]');
@@ -469,18 +545,154 @@ for px, cut, out in json.loads(sys.argv[2]):
     await c.close();
     encode(tmp, n, FPS, { W: 960, H: 600, name: 'light.gif', playFps: PLAY });
   }
+  // Bluetooth, on the standard edition's front (bluetooth/app/ui, its own simulator): the switch turned from Contacts to
+  // Open, its jewel lit and the Near readout counting the strangers in range; Ines Duarte asking to connect, on a slip in
+  // the tray; Accept stamped, and her station added as not confirmed; a reply to Marisol sent by Bluetooth and stamped
+  // heard; then Marisol's answer coming in by Bluetooth, the drums turning to it (the frames before her words come in
+// at twice the speed) until the plain row rests on the end of her words. The page can't take Ines off again, so
+  // the clip's last frames dissolve into its first. Stepped on the page's clock, as the light clip is. Also
+  // bluetooth.png, the panel's column with the request waiting, at 2x.
+  //
+  // The edition's simulator plays the room's side through the node's own events; its emit is kept on window.__btEmit
+  // (and its sealing on window.__btSeal) by the copy this page is served, so Marisol's answer arrives as the node hands
+  // over a Bluetooth envelope: every chunk at once, then the message. The file on disk is not changed.
+  async function bluetoothClip() {
+    const FPS = 20, DT = 1000 / FPS;
+    const SIM = path.join(EDITION_ROOT, 'app', 'ui', 'simulator.js');
+    if (!fs.existsSync(SIM)) throw new Error('bluetooth/ has no simulator: run tools/sync-bluetooth.sh');
+    const kept = { sound: 2, volume: 2, band: 0, light: 2, flash: 1, machine: 1, machvol: 2, carry: 1, hops: 3, hold: 2, quiet: 2, repeats: 2, lock: 1, expire: 0, inperson: 0, bluetooth: 1 };
+    const setUp = kept => { try { localStorage.clear(); sessionStorage.clear(); sessionStorage.setItem('bombechat.simulated-machine', JSON.stringify(kept)); } catch (e) {} };
+    const REPLY = 'On my way. Ines is with me, she has a radio.';
+    const ANSWER = 'Good. Come up the back stairs.';
+    const hooked = () => {
+      let src = fs.readFileSync(SIM, 'utf8');
+      const open = /(export function createSimulator\(emit\b[^\n]*\{\n)/;
+      if (!open.test(src)) throw new Error('simulator.js: createSimulator(emit, ...) not found; update the bluetooth clip');
+      src = src.replace(open, '$1  window.__btEmit = emit;\n');
+      if (!/\bfunction chunked\(/.test(src) || !/\bfunction sealedInner\(/.test(src)) throw new Error('simulator.js: chunked or sealedInner not found; update the bluetooth clip');
+      return src + '\nwindow.__btSeal = (text, minute, seed) => chunked(sealedInner(text, minute, seed), seed);\n';
+    };
+    // the front as it opens: the incoming message whole (?f past its end), the room held still, two more strangers in
+    // range for Open to show
+    async function open(c) {
+      await c.addInitScript(setUp, kept);
+      await c.route('**/app/ui/simulator.js', r => r.fulfill({ body: hooked(), contentType: 'text/javascript', headers: { 'Cache-Control': 'no-store' } }));
+      const p = await c.newPage(); errors(p);
+      await p.goto(btAt('app/ui/bombechat.html?still&f=99'));
+      await p.waitForFunction(() => window.__bank && window.__bank.ready && window.__btEmit && document.getElementById('k3'), null, { timeout: 30000 });
+      await p.evaluate(() => document.fonts.ready);
+      await p.evaluate(() => window.__sim.bluetoothStrangers(['R2QD', 'T8WN']));
+      return p;
+    }
+    const tmp = path.join(ROOT, 'checks', 'media', 'bluetooth'); fs.rmSync(tmp, { recursive: true, force: true }); fs.mkdirSync(tmp, { recursive: true });
+
+    // the still: the switch at Open, the request waiting in the tray, the strangers folded under the meter
+    {
+      const c = await ctx(1440, 900, 2);
+      const p = await open(c);
+      await p.waitForTimeout(1500);
+      await p.click('#k3');
+      await p.waitForTimeout(900);
+      await p.evaluate(() => window.__sim.bluetoothAsk());
+      await p.waitForSelector('.slip.ask .rs.ok');
+      await p.mouse.move(0, 0);
+      await p.waitForTimeout(3200);// the top bar's line has faded
+      // the panel: the three switches, the meter and the tray, the stations
+      const b = await p.locator('.panel').boundingBox();
+      await p.screenshot({ path: path.join(OUT, 'bluetooth.png'), clip: { x: b.x - 12, y: b.y - 12, width: b.width + 24, height: Math.min(900 - b.y + 12, b.height + 24) } });
+      await c.close();
+      console.log('bluetooth.png');
+    }
+
+    const c = await ctx(1440, 900, 1.5);
+    await c.addInitScript(virtualClock);
+    const p = await open(c);
+    const centre = async sel => { const b = await p.locator(sel).first().boundingBox(); return { x: b.x + b.width / 2, y: b.y + b.height / 2 }; };
+    // where the cursor rests: on the panel's dark face beside the room meter, clear of every control
+    const vu = await p.locator('.vu').boundingBox();
+    const rest = { x: vu.x + vu.width * .7, y: vu.y - 22 };
+    let cur = { ...rest };
+    await p.mouse.move(cur.x, cur.y);
+    await p.waitForTimeout(2500);
+    await p.evaluate(() => window.__clock.freeze());
+    for (let i = 0; i < 2 * FPS; i++) await p.evaluate(dt => window.__clock.step(dt), DT);
+    let n = 0;
+    let lapse = 1, tick = 0;
+    const frame = async () => { await p.evaluate(dt => window.__clock.step(dt), DT); if (tick++ % lapse) return; await p.screenshot({ path: path.join(tmp, `f${String(n++).padStart(4, '0')}.jpg`), type: 'jpeg', quality: 94 }); };
+    const hold = async s => { for (let i = Math.round(s * FPS); i > 0; i--) await frame(); };
+    const ease = k => k < .5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2;
+    const glide = async (to, s) => { const from = { ...cur }, N = Math.round(s * FPS);
+      for (let i = 1; i <= N; i++) { const e = ease(i / N); cur = { x: from.x + (to.x - from.x) * e, y: from.y + (to.y - from.y) * e }; await p.mouse.move(cur.x, cur.y); await frame(); } };
+    const click = async () => { await p.mouse.down(); await p.mouse.up(); await p.evaluate(() => window.__press(true)); await frame(); await frame(); await p.evaluate(() => window.__press(false)); };
+
+    await hold(.7);
+    // the switch, Contacts to Open
+    await glide(await centre('#k3'), .8);
+    await hold(.15);
+    await click();
+    await hold(.5);
+    // the cursor off the switch, so the jewel and the Near readout are seen
+    await glide({ x: cur.x - 30, y: cur.y + 70 }, .5);
+    await hold(.6);
+    // Ines asks
+    await p.evaluate(() => window.__sim.bluetoothAsk());
+    await hold(1.1);
+    await glide(await centre('.slip.ask .rs.ok'), .8);
+    await hold(.25);
+    await click();
+    // her station: not confirmed, until her machine shows it holds this one too
+    await glide({ x: cur.x - 10, y: cur.y + 50 }, .5);
+    await hold(.6);
+    // a reply to Marisol, typed and sent by Bluetooth
+    const r = await p.locator('#reply').boundingBox();
+    await glide({ x: r.x + 120, y: r.y + r.height / 2 }, 1.0);
+    await click();
+    for (let i = 0; i < REPLY.length; i += 2) { await p.keyboard.type(REPLY.slice(i, i + 2)); await frame(); }
+    await hold(.25);
+    await glide(await centre('#sendbluetooth'), .7);
+    await hold(.15);
+    await click();
+    await hold(1.4);
+    // Marisol's answer, by Bluetooth: the envelope whole, so every chunk lands at once and the drums turn to it
+    await p.evaluate(text => {
+      const e = window.__btEmit, ents = document.querySelectorAll('.ent.mine'), minute = Math.floor(+ents[ents.length - 1].dataset.at / 60000) + 1;
+      e('channel', { channel: 'Bluetooth', state: 'receiving' });
+      const parts = window.__btSeal(text, minute, 2718);
+      parts.forEach((view, index) => e('chunk', { tag: 0x2718, index, of: parts.length, view, channel: 'Bluetooth' }));
+      e('message', { id: Array.from({ length: 16 }, (_, i) => 0x40 + i), contact: 1, outgoing: false, text, channel: 'Bluetooth', at_min: minute, heard: false });
+    }, ANSWER);
+    await glide(rest, 1.2);
+    await p.evaluate(() => window.__btEmit('channel', { channel: 'Bluetooth', state: 'open to requests' }));
+    // the drums keep their own pace through the envelope: its first frames (her keys and the time, no text yet) twice
+    // as fast, then the plain row turning to the end of her words and resting there
+    const row = [...ANSWER.slice(-12)].map(ch => /[a-z]/i.test(ch) ? ch.toUpperCase() : 'X').join('').padEnd(12, 'X');
+    lapse = 2; tick = 0;
+    for (let i = 0; i < 30 * FPS && !await p.evaluate(r => window.__bank.frame() && window.__bank.frame().plain === r, row); i++) await frame();
+    lapse = 1;
+    for (let i = 0; i < 6 * FPS && await p.evaluate(r => window.__bank.rows().plain !== r, row); i++) await frame();
+    await hold(2);
+    // and back to the opening frame
+    const FADE = Math.round(.7 * FPS);
+    await hold(FADE / FPS);
+    await c.close();
+    encode(tmp, n, FPS, { W: 960, H: 600, name: 'bluetooth.gif', fade: FADE });
+  }
   // A GIF of a photoreal scene in motion: scaled down, softened a touch (the enamel's grain is what costs the most),
   // then held still wherever a pixel moved less than the eye can see, so the frames carry only what changed. One
   // palette for the whole clip, no dithering, then gifsicle's lossy pass when it is installed.
-  function encode(dir, n, FPS, { W = 800, H = 500, name = 'settings.gif', playFps = FPS } = {}) {
+  // fade: that many last frames dissolve into the first, for a clip whose last state can't be undone on the page.
+  function encode(dir, n, FPS, { W = 800, H = 500, name = 'settings.gif', playFps = FPS, fade = 0 } = {}) {
     const T = 8, size = W * H * 3;
     const raw = path.join(dir, 'frames.rgb'), held = path.join(dir, 'held.rgb'), gif = path.join(dir, 'clip.gif'), out = path.join(OUT, name);
     execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-framerate', String(FPS), '-i', path.join(dir, 'f%04d.jpg'), '-vf', `scale=${W}:${H}:flags=lanczos,gblur=sigma=.6`, '-f', 'rawvideo', '-pix_fmt', 'rgb24', raw]);
     // once a move has come to rest (a frame where nothing passes the threshold), the whole frame is brought up to
     // date, so what the threshold held back never lingers; the last frame is too, so the loop meets its first
     const fin = fs.openSync(raw, 'r'), fout = fs.openSync(held, 'w'), prev = Buffer.alloc(size), cur = Buffer.alloc(size);
+    const first = Buffer.alloc(size);
     let settled = true;
     for (let f = 0; f < n && fs.readSync(fin, cur, 0, size, f * size) === size; f++) {
+      if (f === 0) cur.copy(first);
+      if (fade && f >= n - fade) { const a = (f - (n - fade) + 1) / (fade + 1); for (let i = 0; i < size; i++) cur[i] = Math.round(cur[i] + (first[i] - cur[i]) * a); }
       let moved = 0;
       if (f > 0) for (let i = 0; i < size; i += 3) {
         if (Math.abs(cur[i] - prev[i]) > T || Math.abs(cur[i + 1] - prev[i + 1]) > T || Math.abs(cur[i + 2] - prev[i + 2]) > T) { prev[i] = cur[i]; prev[i + 1] = cur[i + 1]; prev[i + 2] = cur[i + 2]; moved++; }
@@ -496,12 +708,150 @@ for px, cut, out in json.loads(sys.argv[2]):
     fs.rmSync(raw); fs.rmSync(held);
     console.log(name, n, 'frames,', (n / playFps).toFixed(2), 's,', (fs.statSync(out).size / 1e6).toFixed(2), 'MB');
   }
+  // the back of the machine as the settings page opens on it: the wiring schedule card, and the rear panel from its
+  // top, the duct, down through its three rows of drum connectors, Row 1 to Row 3, one behind each row of drums
+  async function back() {
+    const c = await ctx(1440, 900, 2);
+    await c.addInitScript(() => { try { localStorage.clear(); sessionStorage.clear(); } catch (e) {} });
+    const p = await c.newPage(); errors(p);
+    await p.goto(at('app/ui/settings.html'));
+    await p.waitForFunction(() => window.__ready, null, { timeout: 60000 });
+    await p.evaluate(() => document.fonts.ready);
+    await p.mouse.move(0, 0);
+    await p.waitForTimeout(3500);// the camera settles on its opening view and the hint fades
+    await p.screenshot({ path: path.join(OUT, 'back.png') });
+    await c.close();
+    console.log('back.png');
+  }
+  // Testing the machine with your own words, on a new machine's empty sheet (the app's path, its store open and
+  // Marisol paired, nothing said yet): "hello world" typed in the reply line, Test the machine stamped, the entry
+  // waiting while the room meter falls quiet, then playing, and the machine's own microphone hearing it back: the
+  // drums turn to each frame as it lands, the plain row turning to HELLO WORLD once the words are in, as the read-back
+  // tape types them into the entry, and staying there while the rest lands; the entry is heard and stamped. The
+  // machine side is a stand-in for the node played through the app's own events, sealed and timed as the node does it
+  // (16.1 bytes a second, 48-byte chunks); the stretch where it plays before the first chunk can land is shown four
+  // times as fast, and the frames before the words come in twice as fast. Stepped on the page's clock; the last
+  // frames dissolve into the first, since the page can't take the test off the sheet again.
+  async function selfTestClip() {
+    const FPS = 20, DT = 1000 / FPS, WORDS = 'hello world', LAPSE = 4;
+    const tmp = path.join(ROOT, 'checks', 'media', 'selftest'); fs.rmSync(tmp, { recursive: true, force: true }); fs.mkdirSync(tmp, { recursive: true });
+    const c = await ctx(1280, 800, 1.5);
+    await c.addInitScript(() => { try { localStorage.clear(); sessionStorage.clear(); } catch (e) {} });
+    await c.addInitScript(virtualClock);
+    await c.addInitScript(COMMIT => {
+      // the morning the other pictures are set on, whenever the clip is made
+      const RealDate = Date, off = new RealDate(2026, 9, 24, 9, 16).getTime() - RealDate.now();
+      window.Date = class extends RealDate { constructor(...a) { super(...(a.length ? a : [RealDate.now() + off])); } static now() { return RealDate.now() + off; } };
+      const listeners = {}, emit = (n, payload) => (listeners[n] || []).forEach(f => f({ payload }));
+      const settings = { sound: 2, volume: 2, band: 0, light: 0, flash: 1, machine: 1, machvol: 2, carry: 1, hops: 3, hold: 2, quiet: 2, repeats: 2, lock: 1, expire: 0, inperson: 1 };
+      // a room a little too loud to send in, wandering, until window.__quiet() lets it fall below 40 dB
+      let db = 47.5, quiet = false, run = null, k = 0;
+      const tick = () => { k++; db = quiet ? Math.max(35.5, db - 1.4) + Math.sin(k * 1.7) * .25 : 47 + Math.sin(k * .9) * 1.2 + Math.sin(k * 2.3) * .6; emit('roomDb', db);
+        if (run && quiet && db < 38 && !run.playing) play(run); setTimeout(tick, 170); };
+      window.__quiet = () => { quiet = true; };
+      // sealed as the node seals it: sender sign and dh keys, the minute, the text, a signature; in 48-byte chunks,
+      // each with its keystream and what is heard (plain XOR key); seeded so every run is the same
+      const seeded = seed => { let a = seed >>> 0; return () => { a = (a + 0x6d2b79f5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) & 255; }; };
+      function play(r) {
+        r.playing = true; const say = (state, extra) => emit('selfTest', { tag: r.tag, channel: 'Sound', state, ...extra });
+        const rnd = seeded(4242), n = k => Array.from({ length: k }, rnd), min = 29348735;
+        const inner = [...n(64), min >>> 24 & 255, min >>> 16 & 255, min >>> 8 & 255, min & 255, ...new TextEncoder().encode(r.text), ...n(64)];
+        const parts = []; for (let s = 0; s < inner.length; s += 48) { const plain = inner.slice(s, s + 48), key = plain.map(() => rnd()); parts.push({ plain, key, heard: plain.map((b, i) => b ^ key[i]) }); }
+        const HEAD = 158, RATE = .0161, bytes = HEAD + parts.reduce((t, p) => t + p.plain.length + 16, 0);
+        say('playing'); window.__playing = true;
+        let through = HEAD;
+        parts.forEach((view, index) => { through += view.plain.length + 16; setTimeout(() => {
+          if (run !== r) return;
+          if (!index) { emit('channel', { channel: 'Sound', state: 'receiving' }); window.__arriving = true; }
+          emit('chunk', { tag: r.tag, index, of: parts.length, view, channel: 'Sound' });
+          if (index === parts.length - 1) { run = null; say('heard', { text: r.text, bytes, ms: Math.round(bytes / RATE), rate: 16.1, band: 'near silent' }); emit('channel', { channel: 'Sound', state: 'listening' }); }
+        }, Math.round(through / RATE)); });
+      }
+      window.__TAURI__ = {
+        event: { listen: (name, f) => { (listeners[name] = listeners[name] || []).push(f); return Promise.resolve(() => {}); } },
+        core: { invoke: (cmd, args) => {
+          switch (cmd) {
+            case 'contacts': return Promise.resolve([{ id: 1, name: 'Marisol Ortega', checked: true, safety: '' }]);
+            case 'machine': return Promise.resolve({ name: 'Machine No. 1', key: 'a3f09c1e'.repeat(16), you: 'Ana Lima', held: 0, version: '0.5.0', commit: COMMIT, broadcast_max: 3939, reply_max: 2814 });
+            case 'conversation': case 'broadcasts': return Promise.resolve([]);
+            case 'settings': return Promise.resolve(settings);
+            case 'setting_notes': return Promise.resolve({ carry: { note: 'comes with relay' }, hops: { note: 'comes with relay' }, hold: { note: 'comes with relay' }, inperson: { note: 'always, on this build', value: 1 } });
+            case 'channels': setTimeout(tick, 0); return Promise.resolve([{ channel: 'sound', state: 'listening', rate: 16.1 }, { channel: 'light', state: 'off', rate: 2290 }]);
+            case 'self_test': {
+              const text = (args.text || '').trim() || 'The machine hears itself.';
+              run = { tag: 0x7e21, text };
+              setTimeout(() => emit('selfTest', { tag: run.tag, channel: 'Sound', state: 'waiting' }), 0);
+              return Promise.resolve(Math.ceil((158 + 68 + text.length + 64 + 48) / .0161));
+            }
+            case 'stop_self_test': { const r = run; run = null; if (r) emit('selfTest', { tag: r.tag, channel: 'Sound', state: 'stopped' }); return Promise.resolve(null); }
+            default: return Promise.resolve(null);
+          }
+        } },
+      };
+    }, COMMIT);
+    const p = await c.newPage(); errors(p);
+    await p.goto(at('app/ui/bombechat.html'));
+    await p.waitForFunction(() => window.__bank && window.__bank.ready && !document.getElementById('emptyline').hidden, null, { timeout: 30000 });
+    await p.evaluate(() => document.fonts.ready);
+    const centre = async sel => { const b = await p.locator(sel).first().boundingBox(); return { x: b.x + b.width / 2, y: b.y + b.height / 2 }; };
+    const r = await p.locator('#reply').boundingBox();
+    // where the cursor rests: on the sheet's foot, left of the stamps
+    const tb = await p.locator('#testbtn').boundingBox();
+    const rest = { x: tb.x - 110, y: tb.y + tb.height / 2 };
+    let cur = { ...rest };
+    await p.mouse.move(cur.x, cur.y);
+    await p.waitForTimeout(2500);
+    await p.evaluate(() => window.__clock.freeze());
+    for (let i = 0; i < 2 * FPS; i++) await p.evaluate(dt => window.__clock.step(dt), DT);
+    let n = 0, lapse = 1, tick = 0;
+    const frame = async () => { await p.evaluate(dt => window.__clock.step(dt), DT); if (tick++ % lapse) return; await p.screenshot({ path: path.join(tmp, `f${String(n++).padStart(4, '0')}.jpg`), type: 'jpeg', quality: 94 }); };
+    const hold = async s => { for (let i = Math.round(s * FPS); i > 0; i--) await frame(); };
+    const ease = k => k < .5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2;
+    const glide = async (to, s) => { const from = { ...cur }, N = Math.round(s * FPS);
+      for (let i = 1; i <= N; i++) { const e = ease(i / N); cur = { x: from.x + (to.x - from.x) * e, y: from.y + (to.y - from.y) * e }; await p.mouse.move(cur.x, cur.y); await frame(); } };
+    const click = async () => { await p.mouse.down(); await p.mouse.up(); await p.evaluate(() => window.__press(true)); await frame(); await frame(); await p.evaluate(() => window.__press(false)); };
+
+    await hold(1.6);
+    // the reply line, and the words typed into it
+    await glide({ x: r.x + 90, y: r.y + r.height / 2 }, .9);
+    await click();
+    for (const ch of WORDS) { await p.keyboard.type(ch); await frame(); await frame(); }
+    await hold(.4);
+    // Test the machine
+    await glide(await centre('#testbtn'), .8);
+    await hold(.15);
+    await click();
+    await glide({ x: cur.x - 170, y: cur.y - 4 }, .5);
+    // waiting for quiet, the meter wandering over 40 dB; then the room falls quiet and it plays
+    await hold(2.2);
+    await p.evaluate(() => window.__quiet());
+    for (let i = 0; i < 5 * FPS && !await p.evaluate(() => window.__playing); i++) await frame();
+    await hold(1.4);
+    // playing, before anything can come back: four times as fast; then the first frames, all the sender's keys and
+    // time with no text yet (the drums turn, the plain row stays spacers), twice as fast
+    lapse = LAPSE; tick = 0;
+    for (let i = 0; i < 30 * FPS && !await p.evaluate(() => window.__arriving); i++) await frame();
+    lapse = 2; tick = 0;
+    const row = WORDS.toUpperCase().replace(/[^A-Z]/g, 'X').padEnd(12, 'X');// HELLOXWORLDX
+    for (let i = 0; i < 40 * FPS && !await p.evaluate(r => window.__bank.frame() && window.__bank.frame().plain === r, row); i++) await frame();
+    // at its own pace from the frame the words come in: the plain row turns to HELLO WORLD as the tape types it, the
+    // test is stamped heard, and the words stay on the row while the last frames (the signature) turn the rows below
+    lapse = 1;
+    for (let i = 0; i < 40 * FPS && !await p.evaluate(r => { const e = [...document.querySelectorAll('#log .ent.selftest')].pop(), s = e && e.querySelector('.stamp');
+      return !!s && s.getAnimations().every(a => a.playState === 'finished') && document.getElementById('fno').textContent === document.getElementById('fnt').textContent && window.__bank.rows().plain === r; }, row); i++) await frame();
+    await hold(3.4);
+    const still = async s => { for (let i = Math.round(s * FPS); i > 0; i--) await p.screenshot({ path: path.join(tmp, `f${String(n++).padStart(4, '0')}.jpg`), type: 'jpeg', quality: 94 }); };
+    const FADE = Math.round(.8 * FPS);
+    await still(FADE / FPS);
+    await c.close();
+    encode(tmp, n, FPS, { W: 960, H: 600, name: 'selftest.gif', fade: FADE });
+  }
   // a message arriving: the drums turn, the tape types in, the sheet stamps it.
   // Frames come from Chrome's screencast (what the page painted, with their times), then ffmpeg
   // makes one palette for the whole clip and dithers to it.
   async function demo() {
     const tmp = path.join(ROOT, 'checks', 'media', 'frames'); fs.rmSync(tmp, { recursive: true, force: true }); fs.mkdirSync(tmp, { recursive: true });
-    const from = +(process.env.FROM || 0), to = +(process.env.TO || 24);
+    const from = +(process.env.FROM || 0), to = +(process.env.TO || 12);
     const c = await ctx(1440, 900, 1);
     const p = await c.newPage(); errors(p);
     const cdp = await c.newCDPSession(p);

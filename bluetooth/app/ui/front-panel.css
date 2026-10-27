@@ -1,0 +1,110 @@
+/* The front panel in 3D (front-panel.js) draws the enamel, the drum bank's bay and the hardware below the drums behind
+   the HTML. These rules land only with it (.gl, set once the scene is up): they take away the CSS drawing of what the
+   scene now draws, and leave every control, its box, its label and its focus ring where it was. Without WebGL none of
+   this applies and the CSS machine shows as it always has. */
+
+/* the canvas under everything below the top bar */
+.front3d{position:absolute;left:0;right:0;top:46px;bottom:0;z-index:0;overflow:hidden;pointer-events:none}
+.front3d canvas{display:block;width:100%;height:100%}
+.app.gl{background:#151614}
+.app.gl::before{display:none}
+
+/* the drum bank: its bay is the scene's; the SVG drums stay, unseen, as the model */
+.bank.gl{background:transparent;box-shadow:none}
+.bank.gl .grid{position:relative;z-index:1;opacity:0}
+.bank.gl .bankfoot{position:relative;z-index:2;border-top-color:transparent;box-shadow:none}
+/* the readouts' bezels and lamps are the scene's; the digits stay on their own wheels, turning in its window */
+.app.gl .bank .odo,.app.gl .counter .odo{background:transparent;box-shadow:none}
+.app.gl .lampset i{background:transparent;box-shadow:none}
+
+/* the switch tiles: escutcheon, knob, jewel and blanking plate are the scene's; the buttons stay, unseen but for their
+   focus ring, where the knobs are drawn */
+.app.gl .mod{background:transparent;box-shadow:none}
+.app.gl .mod .knob svg{visibility:hidden}
+.app.gl .mod .jewel,.app.gl .stn .jewel{visibility:hidden}
+.app.gl .blank{background:transparent;box-shadow:none}
+.app.gl .blank *{visibility:hidden}
+/* Light's eyepiece: the scene turns its brass ring, lens and shutter; the camera's picture stays */
+.app.gl .eyepiece{background:transparent;box-shadow:none}
+.app.gl .eyepiece::after{box-shadow:inset 0 1px 2px rgba(0,0,0,.7)}
+.app.gl .eyepiece canvas{background:transparent}
+.app.gl .eyepiece .shutter{display:none}
+.app.gl .eyepiece:hover{filter:none}
+
+/* the room meter: its case and bezel are the scene's, its dial and needle its own canvas; the SVG stays as the
+   picture a screen reader is told of */
+.vu.gl{position:relative;background:transparent;box-shadow:none}
+.vu.gl svg{opacity:0}
+.vu3d{position:absolute;pointer-events:none}
+.vu3d canvas{display:block;width:100%;height:100%}
+
+/* the outbox's tray and the stations' holders are the scene's brass; what waits is engraved in the tray's floor */
+.app.gl .row3 .holder{background:transparent;box-shadow:none}
+.app.gl .slip.empty{background:transparent;box-shadow:none;color:#8a8476;text-shadow:0 -1px 0 rgba(0,0,0,.75),0 1px 0 rgba(255,255,255,.06)}
+/* (the outbox's own: the scene engraves its words in the tray's floor; kept here, unseen, for a screen reader) */
+.app.gl .outbox>.slip.empty:only-child{color:transparent;text-shadow:none}
+
+/* the plates: traffolyte as the kit's plate() cuts it, lit as the scene lights it. A face of warm black, lighter where
+   the key light falls from the upper left, a bevelled edge catching it on top and falling away below, the plate
+   standing a hair off the enamel; the letters cut through to cream at the kit's weight */
+.app.gl .pl{background:linear-gradient(170deg,#36332e,#2a2824 55%,#22201d);color:#ebe4d1;-webkit-text-stroke:.36px currentColor;
+  box-shadow:inset 0 1px 0 rgba(255,246,226,.13),inset 1px 0 0 rgba(255,246,226,.05),inset 0 -1px 0 rgba(0,0,0,.55),inset -1px 0 0 rgba(0,0,0,.3),0 1px 1.5px rgba(0,0,0,.6),0 0 0 .5px rgba(0,0,0,.7)}
+.app.gl .pl.red{background:linear-gradient(170deg,#93322a,#80271f 55%,#6c1e18);color:#f2e7da}
+.app.gl .pb:hover{box-shadow:inset 0 1px 0 rgba(255,246,226,.13),inset 0 0 0 1px rgba(231,166,60,.45),inset 0 -1px 0 rgba(0,0,0,.55),0 1px 1.5px rgba(0,0,0,.6),0 0 0 .5px rgba(0,0,0,.7)}
+.app.gl .pb:active{box-shadow:inset 0 1px 3px rgba(0,0,0,.8),inset 0 0 0 1px rgba(231,166,60,.4),0 0 0 .5px rgba(0,0,0,.7)}
+/* its screws: the kit's steel, baked in the scene's light (front-panel.js), each slot left where it was tightened */
+.baked .app.gl .pl.screw::before,.baked .app.gl .pl.screw::after{width:10px;height:10px;margin:-2px;border-radius:0;box-shadow:none;background:var(--screw-a) center/contain no-repeat}
+.baked .app.gl .pl.screw::after{background-image:var(--screw-b)}
+
+/* jewels the scene can't reach (the top bar's, the keys'): the kit's glass in its brass bezel, baked lit and dark */
+.baked .app.gl .jewel{position:relative;background:none;box-shadow:none}
+.baked .app.gl .jewel::after{content:"";position:absolute;inset:-4.3px;background:var(--jewel-on) center/contain no-repeat}
+.baked .app.gl .jewel.off::after{background-image:var(--jewel-off)}
+.baked .app.gl .key .jewel::after{inset:-3.2px}
+
+/* the keys: bakelite bars, baked, stretched to each key's words */
+.baked .app.gl .key{background:var(--key-l) left/auto 100% no-repeat,var(--key-r) right/auto 100% no-repeat,var(--key-m) center/calc(100% - 22px) 100% no-repeat;
+  box-shadow:0 1.5px 1px rgba(0,0,0,.45),0 3px 5px rgba(0,0,0,.25)}
+.baked .app.gl .key:hover{box-shadow:inset 0 0 0 1px rgba(231,166,60,.55),0 1.5px 1px rgba(0,0,0,.45),0 3px 5px rgba(0,0,0,.25)}
+.baked .app.gl .key:active{box-shadow:0 .5px .5px rgba(0,0,0,.45)}
+.baked .app.gl .key[aria-disabled="true"]{color:#8a8476}
+.baked .app.gl .key[aria-disabled="true"]:hover{box-shadow:0 1.5px 1px rgba(0,0,0,.45),0 3px 5px rgba(0,0,0,.25)}
+/* the Reply and Public toggle's plate, the same bakelite with square corners */
+.baked .app.gl .mode{background:var(--toggle-l) left/auto 100% no-repeat,var(--toggle-r) right/auto 100% no-repeat,var(--toggle-m) center/calc(100% - 10px) 100% no-repeat;
+  box-shadow:0 1.5px 1px rgba(0,0,0,.4),0 2px 4px rgba(0,0,0,.2)}
+
+/* room for the bolt ring: where WebGL is there to draw the front, the bank and the deck stand far enough in from the
+   window's edge that the ring (16 px in, its bolts 4 px across) meets none of them. Set before the first paint
+   (the head's script marks the page .glable), so nothing moves when the scene arrives */
+.glable .bank{margin:26px 26px 0;--dr:clamp(66px,min((100vw - 180px) / 12 - 8px,(100vh - 640px) / 3.24),128px)}
+.glable .deck{padding:14px 26px 26px}
+/* a narrow window keeps its sheet's width (its foot's line runs up to the stamp): the ring closer in, 12 px, and the
+   parts 18 px in */
+@media (max-width:1239px){.glable .bank{margin:18px 18px 0;--dr:clamp(66px,(100vw - 164px) / 12 - 8px,112px)}.glable .deck{padding:14px 18px 18px}}
+
+/* the top bar's Machine sound switch: the deck's bakelite knob, small, baked thrown on and off in the scene's light; the
+   button stays where it was, with its focus ring */
+.baked .app.gl .bat{background:none;box-shadow:none}
+.baked .app.gl .bat .lever{display:none}
+.baked .app.gl .bat::before{content:"";position:absolute;inset:-10px;background:var(--bat-on) center/contain no-repeat}
+.baked .app.gl .bat[aria-pressed="false"]::before{background-image:var(--bat-off)}
+.baked .app.gl .bat:hover::before{filter:brightness(1.12)}
+
+/* the flashing view in the machine's metal. Its surround stays the mid-grey it always was and never changes while the
+   code flashes (the photosensitivity rule): only its finish is the escutcheons' (lit from the key light's side, a
+   bevel catching the light on top and falling away below, bolted at its corners), its bezel the scene's bright brass
+   and its card holder the stations' dull brass, both baked */
+.baked .app.gl .lamp{filter:drop-shadow(calc(var(--lx) * -1.5px) calc(var(--ly) * -1.5px) 1.5px rgba(0,0,0,.55)) drop-shadow(calc(var(--lx) * -7px) calc(var(--ly) * -7px) 9px rgba(0,0,0,.4))}
+.baked .app.gl .lamp::before{background:var(--screw-a) 3px 3px/12px no-repeat,var(--screw-b) calc(100% - 3px) 3px/12px no-repeat,var(--screw-b) 3px calc(100% - 3px)/12px no-repeat,
+    var(--screw-a) calc(var(--nx,100%) - 15px) calc(100% - 3px)/12px no-repeat,var(--screw-a) calc(100% - 3px) calc(var(--ny,100%) - 15px)/12px no-repeat,
+    /* the edges of the corner the shape leaves, in the shade as the plate's lower and right edges are */
+    linear-gradient(rgba(0,0,0,.4),rgba(0,0,0,.4)) var(--nx,100%) calc(var(--ny,100%) - 1px)/100% 1px no-repeat,linear-gradient(rgba(0,0,0,.4),rgba(0,0,0,.4)) calc(var(--nx,100%) - 1px) var(--ny,100%)/1px 100% no-repeat,
+    linear-gradient(var(--la),#918d82,#8b8679);
+  box-shadow:inset calc(var(--lx) * -1px) calc(var(--ly) * -1px) 0 rgba(255,255,255,.2),inset calc(var(--lx) * 1px) calc(var(--ly) * 1px) 0 rgba(0,0,0,.35),inset 0 0 0 1px rgba(0,0,0,.45)}
+.baked .app.gl .bezel{background:none;box-shadow:calc(var(--lx) * -2px) calc(var(--ly) * -2px) 4px rgba(0,0,0,.4)}
+.baked .app.gl .bezel::before{inset:0;border-radius:0;border:14px solid transparent;border-image:var(--bezel) var(--bezel-cut) / 14px stretch;box-shadow:none}
+.baked .app.gl .bezel::after{content:"";position:absolute;inset:13px;pointer-events:none;box-shadow:0 0 0 1px rgba(0,0,0,.55),inset calc(var(--lx) * -1px) calc(var(--ly) * -1px) 1.5px rgba(0,0,0,.35)}
+.baked .app.gl .bezel>i{z-index:1;width:12px;height:12px;margin:-3px;border-radius:0;box-shadow:none;transform:none;background:var(--screw-a) center/contain no-repeat}
+.baked .app.gl .bezel>i:nth-of-type(2n){background-image:var(--screw-b)}
+.baked .app.gl .lamp-foot .holder{background:#151413;background-clip:padding-box;box-shadow:calc(var(--lx) * -1px) calc(var(--ly) * -1px) 1.5px rgba(0,0,0,.5);
+  padding:0 3px;border:5px solid transparent;border-radius:0;border-image:var(--holder) var(--holder-cut) / 5px stretch}

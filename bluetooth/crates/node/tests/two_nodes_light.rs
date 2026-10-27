@@ -658,7 +658,10 @@ fn a_machine_reads_its_own_self_test_in_a_mirror() {
     let dir = TempDir::new().unwrap();
     let a = Peer::new(&dir, "ann", FakeCamera::new(Vec::new()));
     let mut room = Room::new(vec![a], vec![in_a_mirror(0)]);
-    room.peers[0].node.start_self_test(Channel::Light).unwrap();
+    room.peers[0]
+        .node
+        .start_self_test(Channel::Light, None)
+        .unwrap();
     let heard = |log: &[NodeEvent]| {
         log.iter().find_map(|e| match e {
             NodeEvent::SelfTest {

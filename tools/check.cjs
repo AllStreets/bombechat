@@ -13,6 +13,7 @@
 //   unlock-<w>-<state>.png  2x crops of the passphrase form on the app path at 1024, 1440 and 1728
 //   broadcast-<path>-<w>-<state>.png  2x crops of the message sheet writing a public notice
 //                         (idle, composing, sent; refused at 1440), browser and app path
+//   empty-<w>.png         2x crops of the empty sheet saying how to test the machine (app path)
 //   selftest-<path>-<w>-<state>.png  2x crops of the sheet testing the machine (rest, refused, waiting,
 //                         heard, stopped; not heard at 1440), browser and app path, and its stamps beside
 //                         the key check card's (selftest-<path>-<w>-stamps-foot.png, -stamps-card.png);
@@ -29,8 +30,11 @@
 // a held hello lapsing), when testing the machine doesn't run in the browser or on the app path (its stamps
 // not cut as Pair by sound's are, refused at Off and Listen in sentence case with nothing asked of the machine, the
 // run waiting for quiet, the drums not spelling it, its entry not under the margin note self-test with what came
-// back, the rate and band and the stamp, anything of it in the outbox, Escape not stopping it, a test nobody hears
-// not saying what to try, Test by light not on the lamp for a mirror, the first run's typed line missing), when writing a public notice doesn't work in the browser or on the app
+// back, the rate and band and the stamp, a drum left partly under the lamp while it flashes, tests or pairs at any
+// window size (or the page not held at its top under it, or not put back where it was), anything of it in the outbox, Escape not stopping it, a test nobody hears
+// not saying what to try, Test by light not on the lamp for a mirror, an empty sheet's typed line missing or its
+// mark not pointing at the stamp, or at any window size, empty or full, Test the machine outside the first screen, the
+// sheet's head running together or its foot running past the sheet), when writing a public notice doesn't work in the browser or on the app
 // path (the Reply/Public toggle, the line saying who can read it and the key that signs it,
 // empty, too long and Sound at Listen refused in sentence case with nothing sent, a sent
 // notice on the sheet as a signed public entry with its outbox status, the toggle springing
@@ -52,11 +56,12 @@ fs.rmSync(out, { recursive: true, force: true });
 fs.mkdirSync(out, { recursive: true });
 const { start } = require('./serve.cjs');
 const { externalUrls } = require('./offline.cjs');
+const { versionProblems, workspaceVersion } = require('./versions.cjs');
 const url = q => 'http://127.0.0.1:4812/' + path.relative(ROOTDIR, page) + (q ? '?' + q : '');
 // held still on a frame of the incoming message: the app's ?f counts chunks (chunk 1 ends on
 // a frame of the text), the mockup's counts frames
 const HELD = APP ? 'f=1&still' : 'f=3&still';
-const VIEWPORTS = [[1024, 768], [1280, 800], [1440, 900], [1728, 1117]];
+const VIEWPORTS = [[1024, 768], [1280, 800], [1440, 900], [1512, 982], [1728, 1117]];
 const PARTS = { top: '.top', bank: '.bank', sheet: '.sheet', compose: '.compose', menu: '.menu', panel: '.panel' };
 
 // The app's side of the bridge, for checking the app path in a plain browser: a first-run machine
@@ -75,6 +80,10 @@ const PARTS = { top: '.top', bank: '.bank', sheet: '.sheet', compose: '.compose'
 // sends its next report (playing, each chunk, then heard; or with `selfTest` 'unheard', playing then unheard), and
 // __selfTestGo() sends the rest in turn. `noSound`: the machine has no sound to test with. stop_self_test reports it
 // stopped.
+// what the plain row shows once a message's text is in: its last twelve characters from drum 1, letters as themselves,
+// anything else as the spacer X
+const plainRowOf = t => [...t].slice(-12).map(ch => /[a-z]/i.test(ch) ? ch.toUpperCase() : 'X').join('').padEnd(12, 'X');
+
 function tauriStub({ hello, safety, pairOfferMs = 1200, people, talk, afterUnlock, settings, broadcastMax = 3939, kept = [], refuseBroadcast, keychain, unlockMs = 0, wrong = 0, wrongWhy = 'wrong passphrase', refuseSetting, sendId, selfTest = 'heard', noSound }) {
   let unlocked = !!keychain, refusals = wrong;
   const KEPT = 'stub.notices';
@@ -94,7 +103,7 @@ function tauriStub({ hello, safety, pairOfferMs = 1200, people, talk, afterUnloc
         case 'unlock': return new Promise(r => setTimeout(r, unlockMs)).then(() => {
           if (refusals > 0) { refusals--; return Promise.reject(wrongWhy); }
           unlocked = true; for (const [name, payload] of afterUnlock || []) window.__emit(name, payload); return null; });
-        case 'machine': return Promise.resolve({ name: 'Machine No. 1', key: 'a3f09c1e'.repeat(16), you: 'Ana Lima', held: 0, version: '0.1.0', broadcast_max: broadcastMax, reply_max: 2814 });
+        case 'machine': return Promise.resolve({ name: 'Machine No. 1', key: 'a3f09c1e'.repeat(16), you: 'Ana Lima', held: 0, version: '0.5.0', commit: 'a1b2c3d', broadcast_max: broadcastMax, reply_max: 2814 });
         case 'conversation': return Promise.resolve((talk || {})[args.contactId] || []);
         case 'settings': return settings === 'unread' ? Promise.reject('the machine did not answer') : Promise.resolve(settings || { sound: 2, volume: 2, band: 0, light: 0, flash: 1, machine: 1, machvol: 2, carry: 1, hops: 3, hold: 2, quiet: 2, repeats: 2, lock: 1, expire: 0, inperson: 1 });
         // as the device answers on this build: relay waits for its feature, the key check is always on
@@ -117,20 +126,24 @@ function tauriStub({ hello, safety, pairOfferMs = 1200, people, talk, afterUnloc
           if (noSound) return Promise.reject('not sent: no sound or light to send on');
           if (args.channel === 'sound' && s.sound < 2) return Promise.reject(s.sound === 0 ? 'not sent: sound is off' : 'not sent: sound is set to listen only');
           if (args.channel === 'light' && s.light < 2) return Promise.reject(s.light === 0 ? 'not sent: light is off' : 'not sent: light is set to read only');
+          // the reply line's words, or the machine's own; refused over 100 bytes, as the node refuses them
+          const words = (args.text || '').replace(/^[\s\u0085]+|[\s\u0085]+$/g, ''), said = words || 'The machine hears itself.', n = new TextEncoder().encode(said).length;
+          if (new TextEncoder().encode(words).length > 100) return Promise.reject('not sent: too long for a test');
           const tag = 0x7e00 + (window.__calls.length & 255), channel = args.channel === 'light' ? 'Light' : 'Sound';
           const says = (state, extra) => () => window.__emit('selfTest', { tag, channel, state, ...extra });
           const steps = [says('playing')];
           if (selfTest === 'heard') {
             // sealed as the node seals it: sender keys and time, the text, a signature, in 48-byte chunks
-            const inner = [...Array(68).fill(0x51), ...new TextEncoder().encode('The machine hears itself.'), ...Array(64).fill(0x52)], of = Math.ceil(inner.length / 48);
+            const inner = [...Array(68).fill(0x51), ...new TextEncoder().encode(said), ...Array(64).fill(0x52)], of = Math.ceil(inner.length / 48);
             for (let i = 0; i < of; i++) steps.push(() => { const plain = inner.slice(i * 48, i * 48 + 48); window.__emit('chunk', { tag, index: i, of, channel, view: { plain, heard: plain.map(b => b ^ 9), key: plain.map(() => 9) } }); });
-            steps.push(says('heard', { text: 'The machine hears itself.', bytes: 379, ms: 23510, rate: 16.1, band: 'near silent' }));
+            steps.push(says('heard', { text: said, bytes: 354 + n, ms: Math.ceil((354 + n) / 0.0161), rate: 16.1, band: 'near silent' }));
           } else steps.push(says('unheard'));
           const run = window.__selfTest = { tag, channel, steps };
           window.__selfTestStep = () => { if (window.__selfTest !== run || !run.steps.length) return false; run.steps.shift()(); if (!run.steps.length) window.__selfTest = null; return true; };
           window.__selfTestGo = () => { const next = () => { if (window.__selfTestStep()) setTimeout(next, 0); }; next(); };
           setTimeout(says('waiting'), 0);
-          return Promise.resolve(null);
+          // its time on air, at 16.1 bytes a second
+          return Promise.resolve(Math.ceil((354 + n) / 0.0161));
         }
         case 'stop_self_test': { const run = window.__selfTest; window.__selfTest = null;
           if (run) window.__emit('selfTest', { tag: run.tag, channel: run.channel, state: 'stopped' }); return Promise.resolve(null); }
@@ -161,6 +174,24 @@ function tauriStub({ hello, safety, pairOfferMs = 1200, people, talk, afterUnloc
 
 // every visible piece of text, HTML or SVG, with the size it is actually drawn at.
 // Decorative scales (the 26 letters round each drum) are marked data-decor and skipped.
+// The drums the flashing view covers only in part: the lamp's shape is its column (--nx wide) and, when it reaches over
+// the drum bay, the band over it (--ny deep). Each drum on the screen lies wholly under it or wholly clear of it; any
+// partly covered is returned, with how much of it shows
+function lampCuts() {
+  const l = document.getElementById('lamp'); if (l.hidden) return ['the lamp is not open'];
+  const r = l.getBoundingClientRect(), cs = getComputedStyle(l), nx = parseFloat(cs.getPropertyValue('--nx')) || r.width, ny = parseFloat(cs.getPropertyValue('--ny')) || r.height;
+  const parts = [{ l: r.left, t: r.top, r: r.left + nx, b: r.bottom }, { l: r.left, t: r.top, r: r.right, b: r.top + ny }];
+  const meet = (a, b) => ({ l: Math.max(a.l, b.l), t: Math.max(a.t, b.t), r: Math.min(a.r, b.r), b: Math.min(a.b, b.b) });
+  const area = a => Math.max(0, a.r - a.l) * Math.max(0, a.b - a.t);
+  const view = { l: 0, t: 0, r: innerWidth, b: innerHeight }, out = [];
+  document.querySelectorAll('#drums .drum').forEach((d, i) => {
+    const q = d.getBoundingClientRect(), box = meet({ l: q.left, t: q.top, r: q.right, b: q.bottom }, view), all = area(box); if (all < 1) return;
+    const under = area(meet(box, parts[0])) + area(meet(box, parts[1])) - area(meet(meet(box, parts[0]), parts[1]));
+    if (under > 1 && under < all - 1) out.push(`drum ${Math.floor(i / 12) + 1}.${i % 12 + 1} ${Math.round(100 * under / all)}% under the lamp`);
+  });
+  return out;
+}
+
 function measureText() {
   const small = [];
   const seen = new Set();
@@ -199,6 +230,8 @@ function measureText() {
   };
   // the app's files carry no web addresses
   if (APP) { report.externalUrls = externalUrls(path.dirname(page)); for (const u of report.externalUrls) problems.push(`external URL in ${u}`); }
+  // one version everywhere it is written: the Cargo workspace, tauri.conf.json, package.json and the simulator
+  if (APP) for (const v of versionProblems(ROOTDIR)) problems.push(v);
 
   // 1. each laptop size: overflow, small text, layout shift while fonts arrive
   report.viewports = {};
@@ -225,6 +258,57 @@ function measureText() {
     if (r.overflowX > 0) problems.push(`${w}x${h}: page scrolls sideways by ${r.overflowX}px`);
     if (r.smallText.length) problems.push(`${w}x${h}: text under 12px: ${r.smallText.slice(0, 6).join('; ')}`);
     if (r.cls > 0.02) problems.push(`${w}x${h}: layout shift on load ${r.cls}`);
+    if (APP) {
+      // the top plate names the build as the machine does, and is cut for its longest form: a commit of the widest
+      // digits built from uncommitted changes moves nothing beside it, and the bar holds every plate
+      const b = await p.evaluate(() => {
+        const b = document.getElementById('build'), top = document.querySelector('.top'), rt = b.parentElement;
+        const at = () => [...rt.children].map(k => Math.round(k.getBoundingClientRect().left)).join();
+        const text = b.textContent, before = at();
+        b.textContent = text.replace(/[^ ]+$/, 'ddddddd+');
+        const r = { text, moved: at() !== before, over: Math.max(top.scrollWidth - top.clientWidth, rt.scrollWidth - rt.clientWidth) };
+        b.textContent = text; return r;
+      });
+      if (b.text !== `Build ${workspaceVersion(ROOTDIR)} \u00b7 browser`) problems.push(`${w}x${h}: the top plate says ${JSON.stringify(b.text)}`);
+      if (b.moved) problems.push(`${w}x${h}: the build plate's longest form moves the plates beside it`);
+      if (b.over > 0) problems.push(`${w}x${h}: the top bar overflows by ${b.over}px`);
+    }
+    // the front panel's bolt ring, as the back's: every ring bolt whole inside the page, clear of the top bar, and
+    // meeting no part of the front (the bank, the sheet, the card, the switch tiles, the meter, the tray, the stations)
+    if (APP) {
+      const ring = await p.evaluate(() => { if (!window.__bank.ringBolts) return null;
+        const B = __bank.ringBolts(), W = document.documentElement.scrollWidth, H = document.documentElement.scrollHeight, top = document.querySelector('.top').getBoundingClientRect().bottom + scrollY;
+        const parts = [...document.querySelectorAll(__bank.ringParts)].filter(e => e.offsetParent).map(e => { const r = e.getBoundingClientRect(); return { l: r.left + scrollX, t: r.top + scrollY, r: r.right + scrollX, b: r.bottom + scrollY, n: e.className }; });
+        const bad = [];
+        for (const b of B) {
+          if (b.x - b.r < 4 || b.x + b.r > W - 4 || b.y - b.r < top + 4 || b.y + b.r > H - 4) bad.push(`bolt at ${Math.round(b.x)},${Math.round(b.y)} outside the page`);
+          for (const q of parts) if (b.x + b.r > q.l && b.x - b.r < q.r && b.y + b.r > q.t && b.y - b.r < q.b) bad.push(`bolt at ${Math.round(b.x)},${Math.round(b.y)} meets ${q.n}`);
+        }
+        return { n: B.length, bad }; });
+      if (ring) { r.ringBolts = ring.n; if (ring.n < 12 || ring.bad.length) problems.push(`${w}x${h}: the front's bolt ring: ${ring.n} bolts; ${ring.bad.slice(0, 4).join('; ')}`); }
+    }
+    // the outbox tray, on either build: a well the size of the slips in it (no more than about 24 px of bare floor under
+    // the last), with the slip and with nothing waiting, its words then engraved in its floor. And the panel's column
+    // in proportion: on a wide window the meter's row stands in the middle of the room between the switches and the
+    // stations; on a narrow one the panel ends about where the sheet beside it does
+    if (APP) {
+      const tray = async () => { await p.waitForFunction(() => { const t = __bank.trayWell && __bank.trayWell(), s = [...document.querySelectorAll('.row2 .slip:not(.gone)')].filter(e => e.offsetParent);
+        return t && s.length && Math.abs(t.y + t.h - 6 - Math.max(...s.map(e => e.getBoundingClientRect().bottom + scrollY))) < 30; }, null, { timeout: 8000 }).catch(() => {});
+        return p.evaluate(() => { const t = __bank.trayWell(), col = document.querySelector('.row2 > .col.tray') || document.querySelector('.outbox');
+          const s = [...document.querySelectorAll('.row2 .slip:not(.gone)')].filter(e => e.offsetParent).map(e => e.getBoundingClientRect());
+          const box = s => { const r = document.querySelector(s).getBoundingClientRect(); return { t: r.top + scrollY, b: r.bottom + scrollY }; };
+          const vu = box('.vu'), mods = box('.mods'), row3 = box('.row3'), sheet = box('.sheet'), panel = box('.panel');
+          const top = Math.min(vu.t, ...s.map(r => r.top + scrollY)), foot = Math.max(vu.b, ...s.map(r => r.bottom + scrollY));
+          return { bare: t ? Math.round(t.y + t.h - 6 - Math.max(...s.map(r => r.bottom + scrollY))) : null, scrolls: /auto|scroll/.test(getComputedStyle(col).overflowY) && col.scrollHeight > col.clientHeight + 4,
+            above: Math.round(top - mods.b), below: Math.round(row3.t - foot), past: Math.round(panel.b - sheet.b) }; }); };
+      const rest = await tray();
+      await p.evaluate(() => { document.getElementById('outbox').innerHTML = '<div class="slip empty">Nothing waiting to send.</div>'; });
+      const empty = await tray();
+      r.tray = { rest, empty }; report.viewports[`${w}x${h}`].tray = r.tray;
+      for (const [k, t] of Object.entries(r.tray)) if (t.bare === null || t.bare > 24) problems.push(`${w}x${h}: the outbox tray ${k} is not sized to its slips: ${JSON.stringify(t)}`);
+      if (w >= 1400 && Math.abs(rest.above - rest.below) > 8) problems.push(`${w}x${h}: the meter's row is not in the middle of the panel's room: ${JSON.stringify(rest)}`);
+      if (w < 1400 && rest.past > 32) problems.push(`${w}x${h}: the panel runs ${rest.past}px past the sheet beside it`);
+    }
     await p.screenshot({ path: path.join(out, `vp-${w}x${h}.png`) });
     if (r.pageHeight > h) await p.screenshot({ path: path.join(out, `vp-${w}x${h}-full.png`), fullPage: true });
     await p.close();
@@ -266,6 +350,84 @@ function measureText() {
   await live.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
   report.gl = await live.evaluate(() => __bank.gl);
   if (!report.gl) problems.push('drum bank fell back to flat drums (no WebGL)');
+  // three rows of drums with nothing between them: an axle behind each row, no rail between rows, no bar in the grid
+  if (APP) {
+    report.rails = await live.evaluate(() => ({ ...__bank.rails(), bars: document.querySelectorAll('#drums .bar').length, drums: document.querySelectorAll('#drums .drum').length }));
+    if (report.rails.between !== 0 || report.rails.axles !== 3 || report.rails.bars !== 0 || report.rails.drums !== 36) problems.push(`the drum bank is not three rows with nothing between them: ${JSON.stringify(report.rails)}`);
+    // the drums stay on their axles after a turn: lay the bank out while #app is mid-turn (as it is coming back from
+    // the settings page), end the turn, and every drum must be drawn on its cell and its row's axle, every row plate at
+    // its label and every column number on its own, to a quarter of a pixel, at 1440 and at 1512 (the commissioner's)
+    const afterTurn = pg => pg.evaluate(async () => {
+      const app = document.getElementById('app'), frames = n => new Promise(r => { const f = () => --n ? requestAnimationFrame(f) : r(); requestAnimationFrame(f); });
+      app.style.transition = 'none'; app.style.transform = 'rotateY(55deg)'; app.getBoundingClientRect();
+      dispatchEvent(new Event('resize')); await frames(2);
+      const worst = () => { const P = __bank.placement(), off = [...P.drums, ...P.plates, ...P.numbers].map(p => ({ at: p.at, off: Math.hypot(p.drawn.x - p.html.x, (p.drawn.y ?? 0) - (p.html.y ?? 0)) }));
+        P.drums.forEach(d => off.push({ at: d.at + ' axle', off: Math.abs(d.centre - d.axle) }));
+        return off.reduce((a, b) => (b.off > a.off ? b : a)); };
+      // as laid out mid-turn, from the offsets, before the next frame lays it out again: to the pixel
+      app.style.transform = ''; app.getBoundingClientRect();
+      const midTurn = worst();
+      // and once a frame has seen the turn over, from the rects: to the sub-pixel
+      await frames(4); app.style.transition = '';
+      return { midTurn, settled: worst() };
+    });
+    report.afterTurn = { 1440: await afterTurn(live) };
+    {
+      const wide = await browser.newPage({ viewport: { width: 1512, height: 982 } });
+      watch(wide, 'after a turn 1512');
+      await wide.goto(url());
+      await wide.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
+      report.afterTurn[1512] = await afterTurn(wide);
+      await wide.close();
+    }
+    for (const [w, { midTurn, settled }] of Object.entries(report.afterTurn)) {
+      if (midTurn.off > 1) problems.push(`laid out mid-turn at ${w}, the bank is off its HTML: ${midTurn.at} by ${midTurn.off.toFixed(2)} px`);
+      if (settled.off > .25) problems.push(`after a turn at ${w} the bank is off its HTML: ${settled.at} by ${settled.off.toFixed(2)} px`);
+    }
+  }
+  // the front panel costs nothing while idle: one canvas under the whole front, drawn only when something changed. Held
+  // still, 120 frames draw nothing; a knob turned draws a few frames and stops; the room meter's needle moving draws
+  // only the meter's own canvas
+  if (APP) {
+    const idle = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    watch(idle, 'idle');
+    await idle.goto(url(HELD));
+    await idle.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
+    await idle.evaluate(() => document.fonts.ready);
+    const frames = n => idle.evaluate(n => new Promise(r => { const n0 = __bank.renders(); const f = () => --n ? requestAnimationFrame(f) : r(__bank.renders() - n0); requestAnimationFrame(f); }), n);
+    await frames(30);
+    const r = { idle: await frames(120) };
+    // (counted from before the click: the turn's first frame may be drawn before a count started after it)
+    const k0 = await idle.evaluate(() => __bank.renders());
+    await idle.click('#k1'); await frames(90);
+    r.knob = await idle.evaluate(n => __bank.renders() - n, k0);
+    r.after = await frames(120);
+    if (await idle.evaluate(() => !!window.__vu)) {
+      const vu0 = await idle.evaluate(() => __vu.renders());
+      await idle.evaluate(() => window.__sim && __sim.room ? __sim.room(55) : __vu.set(55));
+      r.needle = await frames(40); r.vu = await idle.evaluate(n => __vu.renders() - n, vu0);
+      if (r.needle !== 0 || r.vu < 1) problems.push(`the room meter's needle moving redraws more than its own canvas: ${JSON.stringify(r)}`);
+    }
+    report.renders = r;
+    if (r.idle !== 0 || r.after !== 0) problems.push(`the front panel draws while nothing changes: ${JSON.stringify(r)}`);
+    if (r.knob < 1 || r.knob > 45) problems.push(`a knob turn draws ${r.knob} frames of the front panel (1 to 45 expected)`);
+    await idle.close();
+    // and in motion (not held still): once the message has landed the panel goes quiet, a knob turned springs to its
+    // stop over a few frames, then the panel is quiet again
+    const live2 = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    watch(live2, 'idle, live');
+    await live2.goto(url('f=99'));
+    await live2.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
+    const lframes = n => live2.evaluate(n => new Promise(r => { const n0 = __bank.renders(); const f = () => --n ? requestAnimationFrame(f) : r(__bank.renders() - n0); requestAnimationFrame(f); }), n);
+    let quiet = -1; for (let i = 0; i < 12 && quiet !== 0; i++) quiet = await lframes(120);
+    const lr = { quiet };
+    const l0 = await live2.evaluate(() => __bank.renders());
+    await live2.click('#k1'); await lframes(60);
+    lr.knob = await live2.evaluate(n => __bank.renders() - n, l0); lr.after = await lframes(120);
+    report.renders.live = lr;
+    if (lr.quiet !== 0 || lr.knob < 4 || lr.knob > 45 || lr.after !== 0) problems.push(`the front panel in motion: ${JSON.stringify(lr)} (quiet, a knob springing over 4 to 45 frames, quiet again)`);
+    await live2.close();
+  }
   report.fps = await live.evaluate(() => new Promise(r => { let n = 0; const t0 = performance.now(); const f = () => { n++; performance.now() - t0 < 2000 ? requestAnimationFrame(f) : r(Math.round(n / 2)); }; requestAnimationFrame(f); }));
   if (report.fps < 50) problems.push('front frame rate ' + report.fps);
   await live.waitForTimeout(1750);
@@ -350,6 +512,52 @@ function measureText() {
   if (rmSpin) problems.push('reduced motion still turns the 3D drums');
   await rm.close();
 
+  // 6a. the turn to the back panel: its second half shows a still of the settings page as it opens (tools/media.cjs
+  // backstill), each within its budget, fixed to the window, and framed as the page it lands on: at each window size the
+  // panel in the still (laid as the front lays it) stands where settings.html's opening view has it, to a few pixels
+  if (APP) {
+    const dir = path.join(path.dirname(page), 'img'), indexFile = path.join(dir, 'back.json');
+    const index = fs.existsSync(indexFile) ? JSON.parse(fs.readFileSync(indexFile, 'utf8')) : { sizes: [] };
+    if (!index.sizes.length) problems.push(`the turn: no stills of the back listed in ${path.relative(ROOTDIR, indexFile)}`);
+    for (const st of index.sizes) {
+      const bytes = fs.existsSync(path.join(dir, st.file)) ? fs.statSync(path.join(dir, st.file)).size : 0;
+      if (!bytes) problems.push(`the turn: no still of the back at ${st.file}`);
+      else if (bytes > 400 * 1024) problems.push(`the turn: the back's still ${st.file} is ${bytes} bytes, over its 400 KB`);
+    }
+    report.turn = {};
+    for (const [w, h] of VIEWPORTS) {
+      const tp = await browser.newPage({ viewport: { width: w, height: h } });
+      watch(tp, `turn ${w}x${h}`);
+      await tp.goto(url('still'));
+      await tp.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
+      await tp.evaluate(() => { scrollTo(0, 0); document.body.classList.add('turning'); document.getElementById('app').classList.add('turning'); });
+      // the turn's second half over: the back shown and still
+      await tp.waitForFunction(() => { const b = document.getElementById('back'); return getComputedStyle(b).visibility === 'visible' && !b.getAnimations().length; }, null, { timeout: 8000 }).catch(() => {});
+      const shown = await tp.evaluate(async () => {
+        const b = document.getElementById('back'), cs = getComputedStyle(b), src = (cs.backgroundImage.match(/url\("?([^")]+)"?\)/) || [])[1] || '', r = b.getBoundingClientRect();
+        const img = src && await new Promise(res => { const i = new Image(); i.onload = () => res([i.naturalWidth, i.naturalHeight]); i.onerror = () => res(null); i.src = src; });
+        return { visible: cs.visibility, file: src.split('/').pop(), img, rect: [r.left, r.top, r.width, r.height].map(Math.round), size: cs.backgroundSize, at: cs.backgroundPosition, view: [innerWidth, innerHeight] };
+      });
+      await tp.screenshot({ path: path.join(out, `turn-back-${w}x${h}.png`) });
+      await tp.close();
+      const st = index.sizes.find(s => s.file === shown.file);
+      // where the settings page, opened at this size, has its panel once its camera has settled
+      const sp = await browser.newPage({ viewport: { width: w, height: h } });
+      watch(sp, `turn ${w}x${h}: settings`);
+      await sp.goto(url('still').replace('bombechat.html', 'settings.html'));
+      await sp.waitForFunction(() => { if (!window.__ready) return false; const r = JSON.stringify(__bc.panel());
+        window.__still = r === window.__panelWas ? (window.__still || 0) + 1 : 0; window.__panelWas = r; return window.__still > 10; }, null, { timeout: 60000, polling: 'raf' });
+      const real = await sp.evaluate(() => __bc.panel());
+      await sp.close();
+      const t = report.turn[`${w}x${h}`] = { shown, real };
+      if (shown.visible !== 'visible' || !st || !shown.img || shown.size !== 'cover' || shown.at !== '0% 0%' || shown.rect.join() !== [0, 0, w, h].join()) { problems.push(`the turn at ${w}x${h} does not show a still of the back fixed to the window: ${JSON.stringify(shown)}`); continue; }
+      const k = Math.max(w / st.w, h / st.h), placed = Object.fromEntries(Object.entries(st.panel).map(([e, v]) => [e, v * k]));
+      t.placed = placed;
+      const off = Math.max(...['left', 'top', 'right', 'bottom'].map(e => Math.abs(placed[e] - real[e])));
+      if (off > 3) problems.push(`the turn at ${w}x${h} shows the back's panel ${off.toFixed(1)}px from where settings.html opens it: ${JSON.stringify({ file: st.file, placed, real })}`);
+    }
+  }
+
   // 6b. the drums follow the bridge: a known chunk injected through the simulator
   // lands on the plain row, and nothing clicks while it arrives by sound
   if (APP) {
@@ -359,9 +567,10 @@ function measureText() {
     await br.mouse.click(5, 5);
     await br.waitForFunction(() => window.__bank && __bank.ready && window.__sim, null, { timeout: 60000 });
     await br.waitForFunction(() => __drum.running, null, { timeout: 5000 }).catch(() => {});
-    // a chunk of real text: letters read as themselves on the plain row, anything else as X
+    // a sealed message of real text: the plain row ends on its last twelve characters, letters as themselves and
+    // anything else as X, never the sender's keys or the signature
     const KNOWN = 'Look under the blue stairs for the radio.';
-    const WANT = [...KNOWN.slice(0, 12)].map(ch => /[a-z]/i.test(ch) ? ch.toUpperCase() : 'X').join('');
+    const WANT = [...KNOWN.slice(-12)].map(ch => /[a-z]/i.test(ch) ? ch.toUpperCase() : 'X').join('');
     const bridged = await br.evaluate(async ([known, want]) => {
       const audio = __drum.running;
       __sim.inject(known);
@@ -387,6 +596,19 @@ function measureText() {
     if (!bridged.audio) problems.push('audio never started, so muting could not be tested');
     else if (!(bridged.after > 0)) problems.push('Drum.spin stayed silent after reception ended');
     await br.close();
+
+    // a message's last chunk heard first, the ones before it missed: its frames still stand where it ends in the sealed
+    // message (the node's chunk size, not the short last chunk's), so its last frame runs through the whole message
+    const lc = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    watch(lc, 'last chunk first');
+    await lc.goto(url());
+    await lc.waitForFunction(() => window.__bank && __bank.ready && window.__sim, null, { timeout: 60000 });
+    const LONG = 'Water and blankets at the church on Fifth. The clinic has a radio and the generator runs until Sunday night.!';
+    const sealed = await lc.evaluate(t => window.__sim.inject(t, { only: [Math.ceil((68 + new TextEncoder().encode(t).length + 64) / 48) - 1] }), LONG);
+    await lc.waitForFunction(n => { const f = __bank.frame(); return f && f.through === n; }, sealed, { timeout: 10000 }).catch(() => {});
+    report.lastChunkFirst = { sealed, through: await lc.evaluate(() => (__bank.frame() || {}).through) };
+    if (report.lastChunkFirst.through !== sealed) problems.push(`a last chunk heard first stands at the wrong place in its message: ${JSON.stringify(report.lastChunkFirst)}`);
+    await lc.close();
 
     // provisional tape: chunks type onto the sheet in grey, not yet checked; the message
     // from this sheet's contact replaces it, another contact's takes it away, and one
@@ -1045,13 +1267,14 @@ function measureText() {
     // mirror. Every wait is for a state on the page, never a time.
     report.selfTest = {};
     const TESTED = 'The machine hears itself.';
+    const EMPTY_LINE = 'On your own? Type something and press Test the machine.';
     const testView = () => { const ents = [...document.querySelectorAll('#log .ent.selftest')], e = ents[ents.length - 1], q = s => e && e.querySelector(s);
       return { entries: ents.length, how: q('.when span') ? q('.when span').textContent : '', typed: !!q('.typed'), mine: !!e && e.classList.contains('mine'),
         tape: e ? [...e.querySelectorAll('.strip')].map(s => s.textContent).join(' ') : '', state: q('.state') ? q('.state').textContent : '', failed: !!e && e.classList.contains('failed'),
         stamp: q('.stamp') ? q('.stamp').textContent : '', note: document.getElementById('testnote').textContent,
         fields: [...document.querySelectorAll('.sh-foot .fld')].map(f => getComputedStyle(f).visibility),
         button: document.getElementById('testbtn').textContent, lightHidden: document.getElementById('testlight').hidden,
-        firstRun: [...document.querySelectorAll('#log .ent.firstrun')].map(f => ({ how: f.querySelector('.when span').textContent, typed: (f.querySelector('.typed') || {}).textContent })),
+        emptyLine: (l => l.hidden ? null : l.textContent)(document.getElementById('emptyline')),
         calls: window.__TAURI__ ? __calls.filter(c => /self_test/.test(c[0])).map(c => c[0] + (c[1] ? ':' + c[1].channel : '')) : null,
         sent: window.__TAURI__ ? __calls.filter(c => c[0] === 'send' || c[0] === 'broadcast').length : 0,
         slips: [...document.querySelectorAll('#outbox .slip:not(.empty)')].map(s => s.textContent),
@@ -1087,15 +1310,76 @@ function measureText() {
     // the log's height with the stamps in place, against the same sheet without them: they must take none of it
     const logWithout = tp => tp.evaluate(() => { const r = document.querySelector('.teststamps'), n = document.getElementById('testnote'), h0 = document.getElementById('log').clientHeight;
       r.style.display = 'none'; n.style.display = 'none'; const h1 = document.getElementById('log').clientHeight; r.style.display = ''; n.style.display = ''; return { with: h0, without: h1 }; });
+    // the stamp is found from the first moment: at every window size, with the sheet empty (the app, first run) and full
+    // (the simulator's conversation), Test the machine is inside the first screen with nothing scrolled, the sheet's head
+    // keeps its spacing (12px at least between its parts) and nothing in its foot runs past the sheet. On the empty sheet
+    // one typed line in the foot says to press it, in the sheet's own face and ink, set against the index mark, which
+    // stands level with the stamp just short of its left edge and points at it, with no key in the way
+    report.emptySheet = {};
+    for (const [w, h] of VIEWPORTS) for (const where of ['app', 'browser']) {
+      const tag = `stamp in view ${where} ${w}x${h}`;
+      const tp = await testPage(where, w, h, { query: '' });
+      const v = await tp.evaluate(() => {
+        const box = e => { const r = e.getBoundingClientRect(); return { l: r.left, r: r.right, t: r.top, b: r.bottom }; };
+        const s = box(document.getElementById('testbtn')), l = document.getElementById('emptyline'), log = document.getElementById('log'), sheet = box(document.querySelector('.sheet'));
+        const head = [...document.querySelector('.sh-head').children].filter(e => e.getClientRects().length).map(box);
+        const foot = [...document.querySelectorAll('.sh-foot *')].filter(e => e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden').map(box);
+        const r = { stamp: [s.l, s.t, s.r, s.b].map(Math.round), view: [innerWidth, innerHeight], scrolled: scrollY, entries: log.querySelectorAll('.ent').length, line: l.hidden ? null : l.textContent,
+          headGaps: head.slice(1).map((b, i) => Math.round(b.l - head[i].r)), footOut: Math.round(Math.max(0, ...foot.map(b => b.r - sheet.r), ...foot.map(b => sheet.l - b.l))) };
+        if (!l.hidden) {
+          const f = box(l.parentElement), m = getComputedStyle(l, '::after'), c = getComputedStyle(l);
+          const mk = { l: f.l + parseFloat(m.left), t: f.t + parseFloat(m.top) }; mk.r = mk.l + parseFloat(m.borderLeftWidth); mk.b = mk.t + parseFloat(m.borderTopWidth) + parseFloat(m.borderBottomWidth);
+          const range = document.createRange(); range.selectNodeContents(l); const text = [...range.getClientRects()];
+          const keys = [...document.querySelectorAll('.compose .key')].map(box).filter(k => k.r > mk.l && k.l < mk.r && k.b > mk.t && k.t < mk.b);
+          r.mark = { at: [mk.l, mk.t, mk.r, mk.b].map(Math.round), right: parseFloat(m.borderLeftWidth) > 0 && m.borderTopColor === 'rgba(0, 0, 0, 0)' && m.borderBottomColor === 'rgba(0, 0, 0, 0)', ink: m.borderLeftColor, keys: keys.length };
+          r.textEnd = Math.round(Math.max(...text.map(t => t.right)));
+          r.face = c.fontFamily.split(',')[0] + ' ' + c.color;
+          r.inFoot = text.every(t => t.top >= f.t && t.bottom <= f.b && t.left >= sheet.l);
+        }
+        return r;
+      });
+      // the index mark placed mid-turn (arriving from the settings page) comes to the same place as at rest once the
+      // page has come round
+      if (where === 'app' && w === 1512) {
+        const mark = await tp.evaluate(async () => {
+          const l = document.getElementById('emptyline'), app = document.getElementById('app'), vars = () => ['--line-pad', '--mark-x', '--mark-y'].map(k => l.style.getPropertyValue(k));
+          const frames = n => new Promise(r => { const f = () => --n ? requestAnimationFrame(f) : r(); requestAnimationFrame(f); });
+          const rest = vars();
+          app.style.transition = 'none'; app.style.transform = 'rotateY(55deg)'; dispatchEvent(new Event('resize'));
+          const turned = vars();
+          app.style.transform = ''; await frames(3); app.style.transition = '';
+          return { rest, turned, after: vars() };
+        });
+        if (JSON.stringify(mark.after) !== JSON.stringify(mark.rest) || Math.max(...mark.turned.map((t, i) => Math.abs(parseFloat(t) - parseFloat(mark.rest[i])))) > 1) problems.push(`${tag}: the empty sheet's mark moves through a turn: ${JSON.stringify(mark)}`);
+        report.emptySheet[`${tag} through a turn`] = mark;
+      }
+      const [x0, y0, x1, y1] = v.stamp;
+      if (v.scrolled || x0 < 0 || y0 < 0 || x1 > v.view[0] || y1 > v.view[1]) problems.push(`${tag}: Test the machine is not in the first screen: ${JSON.stringify(v)}`);
+      if (v.headGaps.some(g => g < 12)) problems.push(`${tag}: the sheet's head runs together: gaps ${v.headGaps.join(', ')}`);
+      if (v.footOut > 0) problems.push(`${tag}: the sheet's foot runs ${v.footOut}px past the sheet`);
+      if (where === 'app') {
+        const typed = await tp.evaluate(() => { const t = document.createElement('div'); t.className = 'typed'; document.body.append(t); const c = getComputedStyle(t), f = c.fontFamily.split(',')[0] + ' ' + c.color; t.remove(); return f; });
+        const ink = await tp.evaluate(() => getComputedStyle(document.querySelector('.sh-head')).color);
+        if (v.entries || v.line !== EMPTY_LINE) problems.push(`${tag}: the empty sheet does not say how to test the machine: ${JSON.stringify(v)}`);
+        else {
+          const [ml, mt, mr, mb] = v.mark.at, mid = (mt + mb) / 2;
+          if (v.face !== typed || !v.inFoot) problems.push(`${tag}: the empty sheet's line is not typed as the sheet is, in its foot: ${JSON.stringify(v)} (typed ${typed})`);
+          if (!v.mark.right || v.mark.ink !== ink || mr > x0 || x0 - mr > 10 || mid < y0 || mid > y1 || v.mark.keys || v.textEnd > ml) problems.push(`${tag}: the index mark does not point at the stamp: ${JSON.stringify(v)} (ink ${ink})`);
+        }
+        if (w === 1440 || w === 1024 || w === 1728) await tp.locator('.sheet').screenshot({ path: path.join(out, `empty-${w}.png`) });
+      } else if (!v.entries || v.line !== null) problems.push(`${tag}: a sheet with messages on it still says how to test the machine: ${JSON.stringify(v)}`);
+      report.emptySheet[tag] = { stamp: v.stamp, line: !!v.line, mark: v.mark && v.mark.at, headGaps: v.headGaps };
+      await tp.close();
+    }
     for (const where of ['browser', 'app']) for (const [w, h] of [[1024, 768], [1440, 900], [1728, 1117]]) {
       const tag = `self-test ${where} ${w}`;
       const tp = await testPage(where, w, h);
       const shot = st => tp.locator('.sheet').screenshot({ path: path.join(out, `selftest-${where}-${w}-${st}.png`) });
       const rest = await tp.evaluate(testView);
       if (rest.button !== 'Test the machine' || rest.lightHidden || rest.entries || rest.note) problems.push(`${tag}: the stamps are not at rest: ${JSON.stringify(rest)}`);
-      // the first run, and only the first run, suggests it: one line on the empty sheet, typed as the sheet is
-      const wantFirst = where === 'app' ? [{ how: 'first run', typed: 'On your own? Press Test the machine to hear it work.' }] : [];
-      if (JSON.stringify(rest.firstRun) !== JSON.stringify(wantFirst)) problems.push(`${tag}: the first run's line reads ${JSON.stringify(rest.firstRun)}`);
+      // an empty sheet (the app's, from first run) suggests it: one typed line; the simulator's sheet has its conversation
+      const wantEmpty = where === 'app' ? EMPTY_LINE : null;
+      if (rest.emptyLine !== wantEmpty) problems.push(`${tag}: the empty sheet's line reads ${JSON.stringify(rest.emptyLine)}`);
       const stamps = await tp.evaluate(cut);
       if (stamps.some(s => JSON.stringify(s) !== JSON.stringify(stamps[2]))) problems.push(`${tag}: the test stamps are not cut as Pair by sound's: ${JSON.stringify(stamps)}`);
       const placed = await tp.evaluate(() => { const s = document.querySelector('.sheet').getBoundingClientRect(), f = document.querySelector('.sh-foot').getBoundingClientRect();
@@ -1118,7 +1402,8 @@ function measureText() {
       }
       await turn(tp, tag, 'k1', 2);
       const cleared = await tp.evaluate(testView);
-      if (cleared.note || cleared.fields.some(v => v !== 'visible')) problems.push(`${tag}: turning Sound did not clear the refusal: ${JSON.stringify(cleared)}`);
+      // the foot's fields come back, unless the empty sheet's line stands in their place
+      if (cleared.note || cleared.fields.some(v => v !== (cleared.emptyLine ? 'hidden' : 'visible'))) problems.push(`${tag}: turning Sound did not clear the refusal: ${JSON.stringify(cleared)}`);
       // a run: held waiting for quiet, then the drums spelling it, then on the sheet as heard
       await tp.click('#testbtn');
       await until(tp, tag, 'the test waiting for quiet', testState, '^sealed to this machine, waiting for quiet');
@@ -1128,14 +1413,15 @@ function measureText() {
       if (waiting.how !== 'self-test' || waiting.typed || waiting.mine || waiting.button !== 'Stop the test' || !waiting.lightHidden || waiting.note) problems.push(`${tag}: the test did not start as this machine's own, waiting for quiet: ${JSON.stringify(waiting)}`);
       await shot('waiting');
       await release(tp, where);
-      const spelled = await until(tp, tag, 'the drums spelling the test', () => /MACHINE/.test(__bank.rows().plain));
+      // the plain row spells the test's text (its last twelve characters, it being longer), never the sender's keys
+      const spelled = await until(tp, tag, 'the drums spelling the test', want => __bank.rows().plain === want, plainRowOf(TESTED));
       await until(tp, tag, 'the test ending', () => { const e = [...document.querySelectorAll('#log .ent.selftest')].pop(); return !!e && (!!e.querySelector('.stamp') || e.classList.contains('failed')); });
       await until(tp, tag, 'the stamp coming to rest', stamped);
       const heard = await tp.evaluate(testView);
       if (!spelled || heard.tape.toLowerCase() !== TESTED.toLowerCase() || heard.failed || heard.typed || heard.mine || !/^Heard back after \d+ s: \d+\.\d bytes a second on the near silent band\.$/.test(heard.state)
         || !/^heard by this machine, \d\d\.\d\d$/.test(heard.stamp) || heard.button !== 'Test the machine' || heard.lightHidden) problems.push(`${tag}: the test did not land on the sheet as heard: ${JSON.stringify(heard)}`);
       if (heard.slips.some(s => s.includes(TESTED)) || heard.sent || (heard.calls && JSON.stringify(heard.calls) !== '["self_test:sound"]')) problems.push(`${tag}: the test went further than itself: ${JSON.stringify(heard)}`);
-      if (heard.firstRun.length) problems.push(`${tag}: the first run's line stayed after a test: ${JSON.stringify(heard.firstRun)}`);
+      if (heard.emptyLine !== null) problems.push(`${tag}: the empty sheet's line stayed after a test landed: ${JSON.stringify(heard.emptyLine)}`);
       await shot('heard');
       // Escape stops one
       await tp.click('#testbtn');
@@ -1145,7 +1431,7 @@ function measureText() {
       const stopped = await tp.evaluate(testView);
       if (stopped.failed || stopped.button !== 'Test the machine' || stopped.entries !== 2 || (stopped.calls && !stopped.calls.includes('stop_self_test'))) problems.push(`${tag}: Escape did not stop the test: ${JSON.stringify(stopped)}`);
       await shot('stopped');
-      report.selfTest[tag] = { firstRun: rest.firstRun, waiting: waiting.state, heard: heard.state, stamp: heard.stamp, stopped: stopped.state, log: room };
+      report.selfTest[tag] = { emptyLine: rest.emptyLine, waiting: waiting.state, heard: heard.state, stamp: heard.stamp, stopped: stopped.state, log: room };
       await tp.close();
       if (w !== 1440) continue;
       // nobody hears it: given up, saying what to try
@@ -1159,6 +1445,48 @@ function measureText() {
         await dp.locator('.sheet').screenshot({ path: path.join(out, `selftest-${where}-${w}-unheard.png`) });
         report.selfTest[`${tag} unheard`] = deaf.state;
         await dp.close();
+      }
+      // in its own words: typed in the reply line they go out as the test (the machine asked with them), typed in its
+      // entry, spelled on the drums and read back on its tape, and the line clears as a send clears it. Over 100 bytes
+      // it is refused in place with the words kept; long enough to take a while, its line says about how long on air
+      {
+        const op = await testPage(where, w, h), WORDS = 'hello world';
+        await op.fill('#reply', WORDS);
+        await op.click('#testbtn');
+        await until(op, tag, 'the own-words test waiting', testState, '^sealed to this machine, waiting for quiet');
+        const begun = await op.evaluate(() => ({ reply: document.getElementById('reply').value, typed: ([...document.querySelectorAll('#log .ent.selftest')].pop().querySelector('.typed') || {}).textContent,
+          asked: window.__TAURI__ ? __calls.filter(c => c[0] === 'self_test').map(c => c[1].text) : null }));
+        if (begun.reply || begun.typed !== WORDS || (begun.asked && JSON.stringify(begun.asked) !== JSON.stringify([WORDS]))) problems.push(`${tag}: own words did not go out as the test: ${JSON.stringify(begun)}`);
+        await release(op, where);
+        // the words whole on the plain row, laid from drum 1, and still there once the test is heard and stamped
+        const spelledOwn = await until(op, tag, 'the drums spelling the own words', want => __bank.rows().plain === want, plainRowOf(WORDS));
+        await until(op, tag, 'the own-words test heard', stamped);
+        // to the last frame on the drums (the signature's), with the row at rest
+        await until(op, tag, 'the own-words test on its last frame', () => { const f = __bank.frame(); return !!f && document.getElementById('fno').textContent === document.getElementById('fnt').textContent && __bank.rows().plain === f.plain; });
+        const ownRow = await op.evaluate(() => __bank.rows().plain);
+        if (ownRow !== 'HELLOXWORLDX') problems.push(`${tag}: own words: the plain row reads ${ownRow} once heard, not HELLOXWORLDX`);
+        const own = await op.evaluate(testView);
+        if (!spelledOwn || own.tape.toLowerCase() !== WORDS || !/^Heard back/.test(own.state) || own.failed) problems.push(`${tag}: own words did not come back on the sheet: ${JSON.stringify(own)}`);
+        await op.locator('.sheet').screenshot({ path: path.join(out, `selftest-${where}-${w}-own-words.png`) });
+        const LONG = 'a'.repeat(101);
+        await op.fill('#reply', LONG);
+        await op.click('#testbtn');
+        await until(op, tag, 'the too-long refusal', () => /^Too long to test with: 101 bytes, at most 100\./.test(document.getElementById('testnote').textContent));
+        const refused = await op.evaluate(() => ({ reply: document.getElementById('reply').value, tests: document.querySelectorAll('#log .ent.selftest').length, button: document.getElementById('testbtn').textContent }));
+        if (refused.reply !== LONG || refused.tests !== 1 || refused.button !== 'Test the machine') problems.push(`${tag}: too long a test was not refused in place: ${JSON.stringify(refused)}`);
+        await op.fill('#reply', 'b'.repeat(90));
+        await op.click('#testbtn');
+        const air = await until(op, tag, 'the long test saying its time on air', testState, '^sealed to this machine, about \\d+ s on air, (waiting for quiet|playing next)');
+        if (!air) problems.push(`${tag}: a long test does not say its time on air`);
+        await op.keyboard.press('Escape');
+        // trimmed as the node trims it: 100 bytes inside a byte order mark and a next line are not too long
+        await until(op, tag, 'the long test stopped', () => document.getElementById('testbtn').textContent === 'Test the machine');
+        await op.fill('#reply', '\ufeff' + 'c'.repeat(100) + '\u0085');
+        await op.click('#testbtn');
+        if (!await until(op, tag, 'a 100-byte test inside marks starting', testState, '^sealed to this machine')) problems.push(`${tag}: a line trimmed to 100 bytes was refused: ${await op.evaluate(() => document.getElementById('testnote').textContent)}`);
+        await op.keyboard.press('Escape');
+        report.selfTest[`${tag} own words`] = { begun, heard: own.state, tape: own.tape };
+        await op.close();
       }
       if (where === 'app') {
         // a Mac with no sound to test with says so, rather than asking for a switch already turned
@@ -1220,6 +1548,7 @@ function measureText() {
         light: document.getElementById('k2').getAttribute('aria-valuenow'), button: document.getElementById('testlight').textContent });
       await lp.click('#testlight');
       await until(lp, tag, 'the lamp open on the test', () => !document.getElementById('lamp').hidden);
+      const cutT = await lp.evaluate(lampCuts); if (cutT.length) problems.push(`${tag}: testing by light cuts drums: ${cutT.join('; ')}`);
       const on = await lp.evaluate(lamp);
       if (on.plate !== 'Testing by light' || !/^Hold a mirror up to this screen\./.test(on.say) || on.button !== 'Stop the test') problems.push(`${tag}: the lamp does not show the test for a mirror: ${JSON.stringify(on)}`);
       await shot('lamp', '.lamp');
@@ -1232,7 +1561,16 @@ function measureText() {
       const seen = { ...(await lp.evaluate(lamp)), ...(await lp.evaluate(testView)) };
       if (seen.open || !/^Read back in the mirror after \d+ s\.$/.test(seen.state) || !/^seen by this machine, \d\d\.\d\d$/.test(seen.stamp) || seen.tape.toLowerCase() !== TESTED.toLowerCase()) problems.push(`${tag}: a test read back did not land as seen: ${JSON.stringify(seen)}`);
       await shot('seen');
-      report.selfTest[tag] = { refused: off.note, lamp: on.say, seen: seen.state };
+      // in its own words, the same way: the line's words go on the lamp, the line clears, and they are read back
+      await lp.fill('#reply', 'hello mirror');
+      await lp.click('#testlight');
+      await until(lp, tag, 'the own-words test on the lamp', () => !document.getElementById('lamp').hidden);
+      const ownOn = await lp.evaluate(() => ({ reply: document.getElementById('reply').value, typed: ([...document.querySelectorAll('#log .ent.selftest')].pop().querySelector('.typed') || {}).textContent }));
+      await until(lp, tag, 'the own-words test read back', stamped);
+      const ownSeen = await lp.evaluate(testView);
+      if (ownOn.reply || ownOn.typed !== 'hello mirror' || ownSeen.tape.toLowerCase() !== 'hello mirror' || !/^Read back in the mirror/.test(ownSeen.state)) problems.push(`${tag}: own words by light: ${JSON.stringify({ ownOn, ownSeen })}`);
+      await shot('own-words');
+      report.selfTest[tag] = { refused: off.note, lamp: on.say, seen: seen.state, own: ownSeen.tape };
       await lp.close();
     }
 
@@ -1282,6 +1620,38 @@ function measureText() {
           sends: __calls.filter(c => c[0] === 'send' || c[0] === 'broadcast').length };
       };
       report.light = {};
+      // the lamp over the drum bay at every window size, in each of its three uses: no drum partly under it
+      report.lampCuts = {};
+      for (const [w, h] of VIEWPORTS) {
+        const tag = `lamp over the bay ${w}x${h}`, seen = {};
+        // flashing a message, on the app path
+        const fp = await openLight(w, h, 2, { dpr: 1 });
+        await emit(fp, 'display', frame(1, 0)); await paint(fp); seen.flashing = await fp.evaluate(lampCuts);
+        await fp.close();
+        // testing and pairing by light, in the browser, each started from where its stamp is, scrolled to it
+        const lp = await browser.newPage({ viewport: { width: w, height: h } });
+        watch(lp, tag);
+        await lp.goto(url('still'));
+        await lp.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
+        await lp.focus('#k2'); await lp.keyboard.press('ArrowRight'); await lp.keyboard.press('ArrowRight');
+        for (const [use, stamp] of [['testing', '#testlight'], ['pairing', '#pairlight']]) {
+          await lp.evaluate(s => document.querySelector(s).scrollIntoView({ block: 'center' }), stamp);
+          const from = await lp.evaluate(() => scrollY);
+          await lp.click(stamp);
+          await lp.waitForFunction(() => !document.getElementById('lamp').hidden, null, { timeout: 8000 }).catch(() => {});
+          await paint(lp);
+          seen[use] = await lp.evaluate(lampCuts); seen[use + 'Scroll'] = await lp.evaluate(() => scrollY);
+          await lp.keyboard.press('Escape');
+          await lp.waitForFunction(() => document.getElementById('lamp').hidden, null, { timeout: 8000 }).catch(() => {});
+          await paint(lp);
+          seen[use + 'Back'] = await lp.evaluate(f => ({ lamp: !document.getElementById('lamp').hidden, scroll: Math.round(scrollY), from: Math.round(f), overflow: getComputedStyle(document.body).overflowY }), from);
+        }
+        report.lampCuts[`${w}x${h}`] = seen;
+        for (const k of ['flashing', 'testing', 'pairing']) if (seen[k].length) problems.push(`${tag}: ${k} by light, ${seen[k].join('; ')}`);
+        if (seen.testingScroll || seen.pairingScroll) problems.push(`${tag}: the page was not held at its top under the lamp: ${JSON.stringify(seen)}`);
+        for (const k of ['testingBack', 'pairingBack']) { const b = seen[k]; if (b.lamp || b.overflow === 'hidden' || Math.abs(b.scroll - b.from) > 1) problems.push(`${tag}: the page did not come back from the lamp where it was: ${JSON.stringify(b)}`); }
+        await lp.close();
+      }
       for (const [w, h] of [[1024, 768], [1440, 900], [1728, 1117]]) {
         const tag = `light ${w}`, r = report.light[w] = {};
         const lp = await openLight(w, h, 2);
@@ -1296,6 +1666,7 @@ function measureText() {
         r.small = await lp.evaluate(`(${measureText.toString()})()`);
         if (r.small.length) problems.push(`${tag}: text under 12px in the flashing view: ${r.small.join('; ')}`);
         await shot('ready', '.lamp');
+        const cutF = await lp.evaluate(lampCuts); if (cutF.length) problems.push(`${tag}: the flashing view cuts drums: ${cutF.join('; ')}`);
         await lp.waitForTimeout(450);
         for (let i = 1; i <= 5; i++) { await emit(lp, 'display', frame(1, i)); await paint(lp); }
         const flashing = await lp.evaluate(view);
@@ -1459,6 +1830,7 @@ function measureText() {
         if (where === 'app') { for (let i = 0; i <= 3; i++) { await emit(lp, 'display', helloFrame(1, i, 0x4e1)); await paint(lp); } await lp.waitForTimeout(450); for (let i = 4; i <= 6; i++) { await emit(lp, 'display', helloFrame(1, i, 0x4e1)); await paint(lp); } }
         else await lp.waitForTimeout(1100);
         const reading = await st();
+        const cutP = await lp.evaluate(lampCuts); if (cutP.length) problems.push(`${tag}: pairing by light cuts drums: ${cutP.join('; ')}`);
         if (reading.state !== 'reading' || reading.who !== 'pairing by light' || !reading.lamp || reading.plate !== 'Pairing by light' || reading.say !== 'Hold your screens face to face. reading theirs, Escape stops it' || !/reading for a hello/.test(reading.pencil))
           problems.push(`${tag}: Pair by light did not show the hello: ${JSON.stringify(reading)}`);
         if (where === 'app' && JSON.stringify(reading.calls) !== '["pair {\\"channel\\":\\"light\\"}"]') problems.push(`${tag}: Pair by light asked the machine ${JSON.stringify(reading.calls)}`);
@@ -1613,7 +1985,9 @@ function measureText() {
         const cap = async () => caps.push((await lp.screenshot({ clip: box })).toString('base64'));
         // where the lamp will stand: open it once, then let it close, and start from the sheet
         await emit(lp, 'display', frame(spec, 0, 1)); await paint(lp);
-        box = await lp.locator('.lamp').boundingBox();
+        // (the lamp's column, where the code is: the band it reaches over the drum bay with is the same still grey)
+        box = await lp.evaluate(() => { const l = document.getElementById('lamp'), r = l.getBoundingClientRect(), nx = parseFloat(getComputedStyle(l).getPropertyValue('--nx')) || r.width;
+          return { x: r.left, y: r.top, width: Math.min(r.width, nx), height: r.height }; });
         await emit(lp, 'displayStopped', { tag: 1 }); await paint(lp); await cap();
         await emit(lp, 'display', frame(spec, 0)); await paint(lp); await cap();
         await lp.waitForTimeout(350);
@@ -1718,6 +2092,26 @@ function measureText() {
   report.audio = audio;
 
   await browser.close();
+
+  // 8. without WebGL the bank stays the flat drums: three rows of twelve, nothing between the rows, the plain row
+  // settling on the frame text, no page errors
+  if (APP) {
+    const flat = await chromium.launch({ channel: 'chrome', args: ['--disable-webgl', '--disable-3d-apis'] });
+    const fp = await flat.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 });
+    // three.js says on the console that it found no WebGL: that is the fallback being taken, not a fault
+    fp.on('pageerror', e => problems.push('flat: page error: ' + e.message));
+    fp.on('console', m => m.type() === 'error' && !/^THREE\.WebGLRenderer: (A WebGL context could not be created|Error creating WebGL context)/.test(m.text()) && problems.push('flat: console: ' + m.text()));
+    fp.on('request', r => { const u = r.url(); if (!/^(data:|blob:|http:\/\/127\.0\.0\.1:4812\/)/.test(u)) problems.push(`flat: asked the network for ${u}`); });
+    await fp.goto(url());
+    await fp.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
+    const fpText = () => window.__bank.frame ? __bank.frame().plain : null;
+    await fp.waitForFunction(`__bank.frame() && __bank.rows().plain === (${fpText})()`, null, { timeout: 8000 }).catch(() => {});
+    report.flat = await fp.evaluate(`({ gl: __bank.gl, bars: document.querySelectorAll('#drums .bar').length, drums: document.querySelectorAll('#drums .drum').length, plain: __bank.rows().plain, expected: (${fpText})() })`);
+    if (report.flat.gl || report.flat.bars || report.flat.drums !== 36) problems.push(`flat drum bank: ${JSON.stringify(report.flat)}`);
+    if (report.flat.plain !== report.flat.expected) problems.push(`flat drum bank: the plain row reads ${report.flat.plain}, the frame is ${report.flat.expected}`);
+    await fp.locator('.bank').screenshot({ path: path.join(out, 'bank-flat.png') });
+    await flat.close();
+  }
   console.log(JSON.stringify({ out, frames, ...report, problems }, null, 2));
   server.close();
   process.exit(problems.length ? 1 : 0);

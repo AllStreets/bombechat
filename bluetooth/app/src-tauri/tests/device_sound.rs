@@ -34,6 +34,12 @@ impl AudioIo for Card {
     fn play(&mut self, samples: Vec<f32>) -> Result<(), AudioError> {
         self.0.lock().unwrap().play(samples)
     }
+    fn play_for(&mut self, owner: u16, samples: Vec<f32>) -> Result<(), AudioError> {
+        self.0.lock().unwrap().play_for(owner, samples)
+    }
+    fn cut(&mut self, owner: u16) -> usize {
+        self.0.lock().unwrap().cut(owner)
+    }
     fn sample_rate(&self) -> u32 {
         self.0.lock().unwrap().sample_rate()
     }
@@ -42,6 +48,10 @@ impl AudioIo for Card {
 impl Card {
     fn played(&self) -> usize {
         self.0.lock().unwrap().played().len()
+    }
+    /// Samples handed to the speaker and not yet played.
+    fn pending(&self) -> usize {
+        self.0.lock().unwrap().pending(None)
     }
     /// 200 ms of the room at `level` (a steady sample value).
     fn room(&self, level: f32) {
@@ -412,6 +422,45 @@ fn a_card_too_slow_for_near_silent_shows_the_band_it_is_really_on() {
     assert_eq!(view[0]["band"], "audible", "audible is what it is on");
 }
 
+/// Stop pressed while the test plays: through the commands the page uses,
+/// what was handed to the speaker is cut there and then, and nothing more
+/// of it is handed over.
+#[test]
+fn stopping_a_test_through_the_commands_cuts_it_from_the_speaker() {
+    let dir = TempDir::new().unwrap();
+    // a speaker its microphone never hears, so the test plays on until stopped
+    let card = Card(Arc::new(Mutex::new(FakeAudio::new(48_000))));
+    let device = Device::with_audio(dir.path().join("bombechat.db"), Box::new(card.clone()));
+    let shared = Shared::new(Box::new(device));
+    commands::unlock(&shared, "correct horse".into(), Some("Ben".into())).unwrap();
+    commands::self_test(&shared, "sound".into(), None).unwrap();
+    let mut now = 0;
+    let mut playing = false;
+    for _ in 0..50 {
+        card.room(0.0);
+        now += 200;
+        playing |= commands::tick(&shared, now).iter().any(|e| {
+            let (name, payload) = commands::bridge_event(e);
+            name == "selfTest" && payload["state"] == "playing"
+        });
+        if playing {
+            break;
+        }
+    }
+    assert!(playing, "the test never played");
+    assert!(card.pending() > 48_000, "seconds of it wait at the speaker");
+
+    commands::stop_self_test(&shared);
+    assert_eq!(card.pending(), 0, "what was handed over is cut");
+    let handed = card.played();
+    for _ in 0..1_000 {
+        card.room(0.0);
+        now += 200;
+        commands::tick(&shared, now);
+    }
+    assert_eq!(card.played(), handed, "and nothing more is handed over");
+}
+
 /// The machine on a sound card whose microphone hears its own speaker,
 /// tested through the commands the page uses: what the page is told, and
 /// that nothing of it is kept.
@@ -422,7 +471,7 @@ fn the_machine_tests_itself_through_the_commands_and_keeps_nothing() {
     let device = Device::with_audio(dir.path().join("bombechat.db"), Box::new(card.clone()));
     let shared = Shared::new(Box::new(device));
     assert_eq!(
-        commands::self_test(&shared, "sound".into()),
+        commands::self_test(&shared, "sound".into(), None),
         Err("locked".to_string()),
         "nothing to seal with before the store is open"
     );
@@ -431,12 +480,12 @@ fn the_machine_tests_itself_through_the_commands_and_keeps_nothing() {
     // refused at Listen, as pairing is, with the switch untouched
     commands::set_setting(&shared, "sound".into(), 1).unwrap();
     assert_eq!(
-        commands::self_test(&shared, "sound".into()),
+        commands::self_test(&shared, "sound".into(), None),
         Err("not sent: sound is set to listen only".to_string())
     );
     commands::set_setting(&shared, "sound".into(), 2).unwrap();
 
-    commands::self_test(&shared, "sound".into()).unwrap();
+    commands::self_test(&shared, "sound".into(), None).unwrap();
     let mut states = Vec::new();
     let mut chunks = 0;
     let mut now = 0;

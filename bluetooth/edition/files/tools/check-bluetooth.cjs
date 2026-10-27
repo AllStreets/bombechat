@@ -2,7 +2,7 @@
 // the shared checks):
 //   node tools/check-bluetooth.cjs
 // Writes checks/app-ui/bluetooth/: 2x crops of the front's panel in every Bluetooth state (off, contacts, open,
-// request, request-held, requests-two, accepted, asking, send, locked, unavailable, unavailable-long) at 1024, 1440 and 1728
+// request, request-held, requests-two, accepted, asking, send, locked, unavailable, unavailable-long) at 1024, 1440, 1512 by 982 and 1728
 // (x2-<w>-<state>.png, with the deck, top bar and bank's foot for some), and the settings card's Bluetooth row.
 // Fails on page errors, a request to another host, text under 12px in the Bluetooth parts, a page that scrolls
 // sideways, and when: the settings card has no live Bluetooth row (Off, Contacts, Open; Off by default, kept across
@@ -22,7 +22,7 @@
 // not working isn't on the tape under the switch, within the switch's width (after a resize too), or working again
 // isn't said; Send by Bluetooth isn't beside Flash and Send by sound with the line uncrowded, isn't refused under the line
 // at Off, when the contact is out of range or for a public notice, doesn't send and get heard in range, or doesn't wait
-// for a contact who left and go when they are back; a station's line is cut short; or, at 1280 and up, the deck or the
+// for a contact who left and go when they are back; a station's line is cut short; or, at 1440 and up, the deck or the
 // stations move when the tray fills; or the strangers' list doesn't follow a change in who is in range with the counts
 // the same. Every wait is on a condition in the page, and one that never comes fails.
 const path = require('path'), fs = require('fs');
@@ -338,7 +338,7 @@ const GROUP_NOTE = 'Anyone in Bluetooth range can read this Mac\'s name. Give it
     await wait(p, 'the slip', () => !!document.querySelector('#intray .slip.ask'));
     let f = await face(p);
     if (!f.request || f.request.accept || !f.request.decline || f.request.rule !== MEET_FIRST) fail(`held: the slip shows ${JSON.stringify(f.request)}`);
-    const folded = await p.evaluate(() => { const s = document.querySelector('#neartray .slip.near.folded'); return s && { text: s.textContent, title: s.title, under: !!s.closest('.col.meter') }; });
+    const folded = await p.evaluate(() => { const s = document.querySelector('#neartray .slip.near.folded'); return s && { text: s.textContent, title: s.title, under: !!s.closest('.col.tray') }; });
     if (!folded || folded.text !== 'K7MX near, not asked' || !/Not asked while new contacts need a key check\.$/.test(folded.title) || !folded.under) fail(`held: the strangers' line ${JSON.stringify(folded)}`);
     const whole = await slipWhole(p);
     if (whole) fail(`held: ${whole}`);
@@ -450,7 +450,7 @@ const GROUP_NOTE = 'Anyone in Bluetooth range can read this Mac\'s name. Give it
   }
 
   // 9. every state at each laptop size: 2x crops of the panel as it is on screen; nothing scrolls sideways, nothing is
-  //    under 12px, no station's line is cut short; where the panel stands beside the sheet (1280 and up), the deck and
+  //    under 12px, no station's line is cut short; where the panel stands beside the sheet (1440 and up), the deck and
   //    the stations are where they are at Off, whatever the tray holds
   const settle = async (p, what, f) => wait(p, what, f);
   const CROPS = [
@@ -464,12 +464,17 @@ const GROUP_NOTE = 'Anyone in Bluetooth range can read this Mac\'s name. Give it
       await p.click('#intray .rs.ok'); await settle(p, 'added', () => !document.querySelector('#intray .slip.ask') && !!document.querySelector('.stn small.nc')); }],
     ['asking', { bluetooth: 2, inperson: 0 }, async p => { await p.evaluate(() => window.__sim.bluetoothStrangers(['P2QD', 'W9HT'], ['W9HT'])); await settle(p, 'strangers', () => document.querySelectorAll('#neartray li').length === 3);
       await p.click('li[data-label="P2QD"] .rs'); await p.click('li[data-label="W9HT"] .rs'); await settle(p, 'answers', () => (document.querySelector('li[data-label="W9HT"] small') || {}).textContent === 'not delivered' && (document.querySelector('li[data-label="P2QD"] small') || {}).textContent === 'asked, delivered'); }],
+    // the README clip's moment: strangers listed, a request accepted, and a reply going out by Bluetooth, so the tray
+    // holds more than its room and, at 1440, two slips are tucked, one under the other
+    ['accepted-sending', { bluetooth: 2, inperson: 0 }, async p => { await p.evaluate(() => window.__sim.bluetoothStrangers(['R2QD', 'T8WN'])); await p.evaluate(() => window.__sim.bluetoothAsk()); await settle(p, 'the slip', () => !!document.querySelector('#intray .slip.ask'));
+      await p.click('#intray .rs.ok'); await settle(p, 'added', () => !document.querySelector('#intray .slip.ask') && !!document.querySelector('.stn small.nc'));
+      await p.fill('#reply', 'On my way. Ines is with me, she has a radio.'); await p.click('#sendbluetooth', { force: true }); await settle(p, 'the reply in the outbox', () => [...document.querySelectorAll('.col.tray .slip:not(.gone)')].some(e => /On my way/.test(e.textContent))); }],
     ['send', { bluetooth: 1 }, async p => { await p.fill('#reply', 'By the radio.'); await p.click('#sendbluetooth', { force: true }); await settle(p, 'heard', () => { const e = [...document.querySelectorAll('#log .ent')].pop(); return e && /heard by Marisol/.test(e.textContent); }); }],
     ['locked', { bluetooth: 2 }, async p => { await p.evaluate(() => window.__sim.bluetoothLocked()); await settle(p, 'locked', () => !!document.querySelector('#btnote b').textContent); }],
     ['unavailable', { bluetooth: 2 }, async p => { await p.evaluate(() => window.__sim.bluetoothUnavailable('Bluetooth is off in System Settings.')); await settle(p, 'tape', () => !!document.querySelector('#btnote b').textContent); }],
     ['unavailable-long', { bluetooth: 1 }, async p => { await p.evaluate(() => window.__sim.bluetoothUnavailable('Bombechat may not use Bluetooth. Allow it in System Settings, Privacy and Security, Bluetooth.')); await settle(p, 'tape', () => !!document.querySelector('#btnote b').textContent); }],
   ];
-  for (const [w, h] of [[1024, 768], [1280, 800], [1440, 900], [1728, 1117]]) {
+  for (const [w, h] of [[1024, 768], [1280, 800], [1440, 900], [1512, 982], [1728, 1117]]) {
     let atOff = null;
     for (const [name, settings, run] of CROPS) {
       const ctx = await machine(settings);
@@ -490,10 +495,32 @@ const GROUP_NOTE = 'Anyone in Bluetooth range can read this Mac\'s name. Give it
             for (const r of range.getClientRects()) if ((r.top < c.top - .5 && r.bottom > c.top + .5) || (r.top < c.bottom - .5 && r.bottom > c.bottom + .5)) out.push(n.nodeValue.trim().slice(0, 24)); } }
         return out; });
       if (sliced.length) fail(`${name} ${w}: a line of type in the tray is cut through: ${JSON.stringify(sliced)}`);
+      // a slip tucked in the pile shows only its edge: of the tray's room, no more than a few pixels of it are left
+      // uncovered by the slips around it, never a strip of blank paper
+      const blank = await p.evaluate(() => { const col = document.querySelector('.col.tray'); if (!col) return []; const c = col.getBoundingClientRect(), all = [...col.querySelectorAll('.slip:not(.gone)')], out = [];
+        for (const s of all.filter(e => e.classList.contains('edge'))) {
+          // (as it shows: less what its clip-path cuts away)
+          const r = s.getBoundingClientRect(), cut = (getComputedStyle(s).clipPath.match(/inset\(([^)]*)\)/) || [, '0px'])[1].split(/\s+/).map(parseFloat), [ct, , cb = ct] = cut;
+          const top = Math.max(r.top + (ct || 0), c.top), bottom = Math.min(r.bottom - (cb || 0), c.bottom); if (bottom <= top) continue;
+          const cover = all.filter(o => o !== s && !o.classList.contains('edge')).concat(all.filter(o => o !== s && o.classList.contains('edge') && all.indexOf(o) < all.indexOf(s))).map(o => o.getBoundingClientRect()).map(o => [o.top, o.bottom]).sort((a, b) => a[0] - b[0]);
+          let shown = 0, y = top; for (const [t, b] of cover) { if (t > y) shown += Math.min(t, bottom) - y; y = Math.max(y, b); if (y >= bottom) break; } if (y < bottom) shown += bottom - y;
+          if (shown > 14) out.push(`${s.textContent.trim().slice(0, 24)}: ${Math.round(shown)}px`); }
+        return out; });
+      if (blank.length) fail(`${name} ${w}: a tucked slip shows blank paper: ${blank.join('; ')}`);
+      // the tray's well is drawn round the slips as they lie, as the airgapped build's is: no more than about 24 px of
+      // bare floor under the last of them that shows
+      const bare = () => { const t = window.__bank.trayWell && __bank.trayWell(), col = document.querySelector('.col.tray'), c = col.getBoundingClientRect();
+        const s = [...col.querySelectorAll('.slip:not(.gone)')].filter(e => e.offsetParent).map(e => e.getBoundingClientRect());
+        return t && s.length ? Math.round(t.y + t.h - 6 - (Math.min(c.bottom, Math.max(...s.map(r => r.bottom))) + scrollY)) : null; };
+      if (await p.evaluate(() => !!(window.__bank && __bank.gl))) {
+        await p.waitForFunction(f => { const b = eval(f)(); return b !== null && b <= 24; }, `(${bare})`, { timeout: 5000 }).catch(() => {});
+        const left = await p.evaluate(f => eval(f)(), `(${bare})`);
+        if (left === null || left > 24) fail(`${name} ${w}: the tray's well runs ${left}px past its slips`);
+      }
       const over = await overlaps(p);
       if (over.length) fail(`${name} ${w}: ${over.join('; ')}`);
       if (name === 'off') atOff = m;
-      else if (w >= 1280 && (m.deck !== atOff.deck || m.row3 !== atOff.row3)) fail(`${name} ${w}: the deck or the stations moved: ${JSON.stringify({ off: atOff, now: m })}`);
+      else if (w >= 1440 && (m.deck !== atOff.deck || m.row3 !== atOff.row3)) fail(`${name} ${w}: the deck or the stations moved: ${JSON.stringify({ off: atOff, now: m })}`);
       const small = await smallText(p);
       if (small.length) fail(`${name} ${w}: text under 12px: ${small.join('; ')}`);
       if (w !== 1280) {

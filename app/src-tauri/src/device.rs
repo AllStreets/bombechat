@@ -646,8 +646,10 @@ impl Machine for Device {
         self.node.set_eyepiece(on);
     }
 
-    fn start_self_test(&mut self, channel: Channel) -> Result<(), String> {
-        self.node.start_self_test(channel).map_err(str::to_string)
+    fn start_self_test(&mut self, channel: Channel, text: Option<&str>) -> Result<u64, String> {
+        self.node
+            .start_self_test(channel, text)
+            .map_err(str::to_string)
     }
 
     fn stop_self_test(&mut self) {

@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use bombechat_app::commands::{self, bridge_event, Lock, Machine, Opened, Shared, Unlocking};
 use bombechat_app::edition;
-use bombechat_core::{safety_number, ChunkView, PublicIdentity};
+use bombechat_core::{safety_number, ChunkView, PublicIdentity, CHUNK, TEXT_AT};
 use bombechat_node::{
     max_private_text, NodeEvent, OutboxState, RequestState, WaitingRequest, MAX_BROADCAST,
     MEET_FIRST, NOT_IN_RANGE, NOT_SENT, NOT_STORED, REQUEST_GONE,
@@ -32,6 +32,7 @@ struct Calls {
     finished: usize,
     /// Each self-test started, by channel.
     self_tests: Vec<Channel>,
+    self_test_words: Vec<Option<String>>,
     /// How many times a self-test was stopped.
     self_tests_stopped: usize,
     /// What the page asked of the eyepiece, in turn.
@@ -143,12 +144,14 @@ impl Machine for Fake {
     fn finish_pairing(&mut self) {
         self.calls.lock().unwrap().finished += 1;
     }
-    fn start_self_test(&mut self, channel: Channel) -> Result<(), String> {
-        self.calls.lock().unwrap().self_tests.push(channel);
+    fn start_self_test(&mut self, channel: Channel, text: Option<&str>) -> Result<u64, String> {
+        let mut calls = self.calls.lock().unwrap();
+        calls.self_tests.push(channel);
+        calls.self_test_words.push(text.map(str::to_string));
         if channel == Channel::Light {
             Err("not sent: light is off".to_string())
         } else {
-            Ok(())
+            Ok(23_530)
         }
     }
     fn stop_self_test(&mut self) {
@@ -425,30 +428,43 @@ fn stop_and_finish_pairing_reach_the_machine() {
 #[test]
 fn a_self_test_reaches_the_machine_and_is_refused_as_pairing_is() {
     let (m, calls) = fake(Lock::Unlocked);
-    commands::self_test(&m, "sound".into()).unwrap();
     assert_eq!(
-        commands::self_test(&m, "light".into()),
+        commands::self_test(&m, "sound".into(), None),
+        Ok(23_530),
+        "its time on air"
+    );
+    commands::self_test(&m, "sound".into(), Some("hello world".into())).unwrap();
+    assert_eq!(
+        commands::self_test(&m, "light".into(), None),
         Err("not sent: light is off".to_string()),
         "the machine's refusal, as it gives it"
     );
     assert_eq!(
-        commands::self_test(&m, "bluetooth".into()),
+        commands::self_test(&m, "bluetooth".into(), None),
         Err(bombechat_node::NOT_IN_THIS_PLAN.to_string())
     );
     assert_eq!(
-        commands::self_test(&m, "radio".into()),
+        commands::self_test(&m, "radio".into(), None),
         Err("no such channel: radio".to_string())
     );
     commands::stop_self_test(&m);
     {
         let calls = calls.lock().unwrap();
-        assert_eq!(calls.self_tests, vec![Channel::Sound, Channel::Light]);
+        assert_eq!(
+            calls.self_tests,
+            vec![Channel::Sound, Channel::Sound, Channel::Light]
+        );
+        assert_eq!(
+            calls.self_test_words,
+            vec![None, Some("hello world".to_string()), None],
+            "the words reach the machine as typed"
+        );
         assert_eq!(calls.self_tests_stopped, 1);
     }
 
     let (locked, calls) = fake(Lock::Locked);
     assert_eq!(
-        commands::self_test(&locked, "sound".into()),
+        commands::self_test(&locked, "sound".into(), None),
         Err("locked".to_string())
     );
     assert!(calls.lock().unwrap().self_tests.is_empty());
@@ -537,6 +553,29 @@ fn the_page_and_the_simulator_give_a_self_test_the_nodes_time_and_text() {
             bombechat_node::SELF_TEST_TEXT
         )),
         "bombechat.html's SELF_TEST_TEXT is not the node's"
+    );
+    for (file, src, line) in [
+        ("simulator.js", sim, "const SELF_TEST_MAX_BYTES = {};"),
+        ("bombechat.html", page, "const SELF_TEST_MAX_BYTES={},"),
+    ] {
+        assert!(
+            src.contains(&line.replace("{}", &bombechat_node::SELF_TEST_MAX_BYTES.to_string())),
+            "{file}'s SELF_TEST_MAX_BYTES is not the node's"
+        );
+    }
+    assert!(
+        sim.contains(&format!(
+            "const SELF_TEST_TOO_LONG = '{}';",
+            bombechat_node::SELF_TEST_TOO_LONG
+        )),
+        "simulator.js's SELF_TEST_TOO_LONG is not the node's"
+    );
+    assert!(
+        page.contains(&format!(
+            "SELF_TEST_TOO_LONG='{}';",
+            bombechat_node::SELF_TEST_TOO_LONG
+        )),
+        "bombechat.html's SELF_TEST_TOO_LONG is not the node's"
     );
 }
 
@@ -899,8 +938,15 @@ fn machine_is_named_machine_no_1_with_its_public_key() {
     assert_eq!(
         view,
         json!({ "name": "Machine No. 1", "key": "01".repeat(32) + &"02".repeat(32),
-                "you": "Ana Lima", "held": 3, "version": env!("CARGO_PKG_VERSION"),
+                "you": "Ana Lima", "held": 3, "version": "0.5.0", "commit": env!("BOMBECHAT_COMMIT"),
                 "broadcast_max": MAX_BROADCAST, "reply_max": max_private_text(1) })
+    );
+    // the commit names this build: a short hash, marked + when built from uncommitted changes
+    let commit = env!("BOMBECHAT_COMMIT");
+    let hash = commit.strip_suffix('+').unwrap_or(commit);
+    assert!(
+        commit == "unknown" || (hash.len() >= 7 && hash.bytes().all(|b| b.is_ascii_hexdigit())),
+        "{commit}"
     );
     let (fresh, _) = fake(Lock::NoStore);
     assert!(commands::machine(&fresh).is_err());
@@ -1481,6 +1527,27 @@ fn the_simulator_knows_the_longest_reply_as_the_node_does() {
     );
     let check = include_str!("../../../tools/check.cjs");
     assert!(check.contains(&format!("reply_max: {}", max_private_text(1))));
+}
+
+#[test]
+fn the_bridge_lays_the_text_where_the_node_does() {
+    // the page lays the drums' plain row, and the bridge cuts the provisional text, from where the text starts in what
+    // the chunks carry and how much each chunk carries: the node's, never the page's own
+    let bridge = include_str!("../../ui/bridge.js");
+    assert!(
+        bridge.lines().any(|l| l == format!("export const TEXT_AT = {TEXT_AT}, CHUNK = {CHUNK};")),
+        "bridge.js TEXT_AT, CHUNK"
+    );
+    let sim = include_str!("../../ui/simulator.js");
+    assert!(
+        sim.lines().any(|l| l == format!("const CHUNK = {CHUNK};")),
+        "simulator.js CHUNK"
+    );
+    let page = include_str!("../../ui/bombechat.html");
+    assert!(
+        page.contains("import { bridge, buildPlate, TEXT_AT, CHUNK } from './bridge.js';") && !page.contains("=68"),
+        "bombechat.html takes TEXT_AT and CHUNK from the bridge"
+    );
 }
 
 #[test]
