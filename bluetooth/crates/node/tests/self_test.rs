@@ -11,7 +11,7 @@ use bombechat_modem::{
 };
 use bombechat_node::{
     Node, NodeEvent, SelfTestState, SoundSwitch, SoundTransport, Transport, NOTHING_TO_SEND_ON,
-    SELF_TEST_MS, SELF_TEST_TEXT,
+    SELF_TEST_MAX_BYTES, SELF_TEST_MS, SELF_TEST_TEXT, SELF_TEST_TOO_LONG,
 };
 use bombechat_store::{Channel, Store};
 use rand::rngs::StdRng;
@@ -150,7 +150,7 @@ fn chunk_tags(events: &[NodeEvent]) -> Vec<u16> {
 #[test]
 fn a_laptop_hears_its_own_sealed_message_and_keeps_none_of_it() {
     let mut l = Laptop::new(true);
-    l.node.start_self_test(Channel::Sound).unwrap();
+    l.node.start_self_test(Channel::Sound, None).unwrap();
     assert!(l.node.self_testing());
     l.run(200, heard);
     let tests = l.tests();
@@ -240,6 +240,79 @@ fn a_laptop_hears_its_own_sealed_message_and_keeps_none_of_it() {
     assert!(store.contacts().is_empty());
 }
 
+#[test]
+fn a_test_in_its_own_words_comes_back_spelled_and_keeps_none_of_it() {
+    let mut l = Laptop::new(true);
+    let words = "hello world";
+    let on_air = l.node.start_self_test(Channel::Sound, Some(words)).unwrap();
+    l.run(200, heard);
+    let Some(SelfTestState::Heard { text, bytes, .. }) = l.tests().last().map(|t| t.1.clone())
+    else {
+        panic!("not heard: {:?}", l.tests());
+    };
+    assert_eq!(text, words);
+    let rate = measured_rate(&ModemConfig::default());
+    assert_eq!(
+        on_air,
+        (bytes as f32 * 1000.0 / rate).ceil() as u64,
+        "its time on air, as returned"
+    );
+
+    // the drums spell it
+    let plain: Vec<u8> = l
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            NodeEvent::ChunkLanded { view, .. } => Some(view.plain.to_vec()),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    assert!(plain.windows(words.len()).any(|w| w == words.as_bytes()));
+
+    // the same rules as the fixed text: nothing for the sheet, the outbox or a receipt, nothing kept
+    assert!(!l.events.iter().any(|e| matches!(
+        e,
+        NodeEvent::Message(_) | NodeEvent::Outbox { .. } | NodeEvent::Heard { .. }
+    )));
+    let id = l.played_envelopes()[0].id;
+    let store = Store::open(&l.dir.path().join("me.db"), PASS).unwrap();
+    assert!(!store.has_message(&id));
+    assert_eq!(store.counts(), (0, 0));
+    assert!(store.waiting().is_empty());
+}
+
+#[test]
+fn a_tests_own_words_have_a_limit_and_blank_ones_are_the_fixed_text() {
+    let mut l = Laptop::new(true);
+    let longest = "a".repeat(SELF_TEST_MAX_BYTES);
+    assert_eq!(
+        l.node
+            .start_self_test(Channel::Sound, Some(&format!("{longest}a"))),
+        Err(SELF_TEST_TOO_LONG)
+    );
+    // counted in bytes
+    assert_eq!(
+        l.node
+            .start_self_test(Channel::Sound, Some(&"\u{e9}".repeat(51))),
+        Err(SELF_TEST_TOO_LONG)
+    );
+    assert!(!l.node.self_testing(), "a refusal starts nothing");
+    // the spaces round it are trimmed before it is counted
+    let long = l
+        .node
+        .start_self_test(Channel::Sound, Some(&format!("  {longest}  ")))
+        .unwrap();
+    let fixed = l.node.start_self_test(Channel::Sound, Some("   ")).unwrap();
+    assert!(long > fixed, "longer words take longer on air");
+    l.run(200, heard);
+    let Some(SelfTestState::Heard { text, .. }) = l.tests().last().map(|t| t.1.clone()) else {
+        panic!("not heard: {:?}", l.tests());
+    };
+    assert_eq!(text, SELF_TEST_TEXT, "blank words are the fixed text");
+    println!("on air: fixed {fixed} ms, longest {long} ms");
+}
+
 fn heard(events: &[NodeEvent]) -> bool {
     any_state(events, |s| matches!(s, SelfTestState::Heard { .. }))
 }
@@ -247,7 +320,7 @@ fn heard(events: &[NodeEvent]) -> bool {
 #[test]
 fn a_replay_of_the_test_is_not_heard_again() {
     let mut l = Laptop::new(true);
-    l.node.start_self_test(Channel::Sound).unwrap();
+    l.node.start_self_test(Channel::Sound, None).unwrap();
     l.run(200, heard);
     let before = l.events.len();
 
@@ -270,7 +343,7 @@ fn a_replay_of_the_test_is_not_heard_again() {
         .any(|e| matches!(e, NodeEvent::SelfTest { .. } | NodeEvent::Message(_))));
 
     // And a test afresh is a new envelope: heard again.
-    l.node.start_self_test(Channel::Sound).unwrap();
+    l.node.start_self_test(Channel::Sound, None).unwrap();
     l.run(200, |e| {
         e[before..].iter().any(|e| {
             matches!(
@@ -299,7 +372,7 @@ fn its_own_messages_and_notices_are_still_not_heard() {
     let notice = l
         .node
         .broadcast("Shelter open at the high school.", Channel::Sound);
-    l.node.start_self_test(Channel::Sound).unwrap();
+    l.node.start_self_test(Channel::Sound, None).unwrap();
     l.run(400, heard);
     let tag = l.tests()[0].0;
     // all three played, and the microphone heard them all
@@ -318,7 +391,7 @@ fn its_own_messages_and_notices_are_still_not_heard() {
 #[test]
 fn a_test_nobody_hears_is_given_up_after_its_time() {
     let mut l = Laptop::new(false);
-    l.node.start_self_test(Channel::Sound).unwrap();
+    l.node.start_self_test(Channel::Sound, None).unwrap();
     l.run(10, |e| any_state(e, |s| *s == SelfTestState::Playing));
     let playing_at = l.now_ms;
     let bytes = l.played_envelopes()[0].encode().len() as f32;
@@ -341,7 +414,7 @@ fn a_stopped_test_plays_no_more_and_is_not_heard() {
     let mut l = Laptop::new(true);
     // the room is loud until the test is stopped: nothing has played
     l.node.set_send_under(10.0);
-    l.node.start_self_test(Channel::Sound).unwrap();
+    l.node.start_self_test(Channel::Sound, None).unwrap();
     l.rounds(4);
     l.node.stop_self_test();
     l.node.set_send_under(40.0);
@@ -351,7 +424,7 @@ fn a_stopped_test_plays_no_more_and_is_not_heard() {
     assert_eq!(states, vec![SelfTestState::Waiting, SelfTestState::Stopped]);
 
     // turning Sound to Listen stops one too
-    l.node.start_self_test(Channel::Sound).unwrap();
+    l.node.start_self_test(Channel::Sound, None).unwrap();
     l.node.set_sound(SoundSwitch::Listen);
     l.rounds(2);
     assert_eq!(l.tests().last().unwrap().1, SelfTestState::Stopped);
@@ -362,7 +435,7 @@ fn a_stopped_test_plays_no_more_and_is_not_heard() {
 fn a_test_stopped_while_it_plays_falls_silent_at_once() {
     // a speaker its microphone never hears, so the test plays on until stopped
     let mut l = Laptop::new(false);
-    l.node.start_self_test(Channel::Sound).unwrap();
+    l.node.start_self_test(Channel::Sound, None).unwrap();
     l.run(20, |ev| {
         ev.iter().any(|e| {
             matches!(
@@ -396,16 +469,16 @@ fn a_test_is_refused_as_pairing_is() {
     let mut l = Laptop::new(true);
     l.node.set_sound(SoundSwitch::Listen);
     assert_eq!(
-        l.node.start_self_test(Channel::Sound),
+        l.node.start_self_test(Channel::Sound, None),
         Err("not sent: sound is set to listen only")
     );
     l.node.set_sound(SoundSwitch::Off);
     assert_eq!(
-        l.node.start_self_test(Channel::Sound),
+        l.node.start_self_test(Channel::Sound, None),
         Err("not sent: sound is off")
     );
     assert_eq!(
-        l.node.start_self_test(Channel::Light),
+        l.node.start_self_test(Channel::Light, None),
         Err(NOTHING_TO_SEND_ON),
         "this laptop has no light transport"
     );
@@ -413,7 +486,7 @@ fn a_test_is_refused_as_pairing_is() {
     assert!(l.tests().is_empty() && !l.node.self_testing());
 
     let mut locked = Node::new(None, Vec::new());
-    assert_eq!(locked.start_self_test(Channel::Sound), Err("locked"));
+    assert_eq!(locked.start_self_test(Channel::Sound, None), Err("locked"));
 }
 
 fn any_state(events: &[NodeEvent], f: impl Fn(&SelfTestState) -> bool) -> bool {

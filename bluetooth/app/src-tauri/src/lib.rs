@@ -60,8 +60,12 @@ fn finish_pairing(state: State<'_, Shared>) {
 }
 
 #[tauri::command]
-fn self_test(state: State<'_, Shared>, channel: String) -> Result<(), String> {
-    commands::self_test(&state, channel)
+fn self_test(
+    state: State<'_, Shared>,
+    channel: String,
+    text: Option<String>,
+) -> Result<u64, String> {
+    commands::self_test(&state, channel, text)
 }
 
 #[tauri::command]

@@ -306,9 +306,18 @@ pub const NOTHING_TO_SEND_ON: &str = "not sent: no sound or light to send on";
 /// does not build.
 pub const NOT_IN_THIS_PLAN: &str = "unavailable: not in this plan";
 
-/// What a self-test seals and sends ([`Node::start_self_test`]): short,
-/// so it plays quickly, and in letters, so the drums spell it.
+/// What a self-test seals and sends ([`Node::start_self_test`]) when it is
+/// given no words of its own: short, so it plays quickly, and in letters,
+/// so the drums spell it.
 pub const SELF_TEST_TEXT: &str = "The machine hears itself.";
+
+/// The most a self-test's own words may be, in bytes of UTF-8: by sound,
+/// about four times the fixed text, half a minute or so on air.
+pub const SELF_TEST_MAX_BYTES: usize = 100;
+
+/// Returned by [`Node::start_self_test`] for words longer than
+/// [`SELF_TEST_MAX_BYTES`].
+pub const SELF_TEST_TOO_LONG: &str = "not sent: too long for a test";
 
 /// A self-test is given up as not heard this long, in ms, after its
 /// envelope should have finished going out: from its first play, the
@@ -1444,8 +1453,9 @@ impl Node {
         id
     }
 
-    /// Test the machine on `channel` (sound or light): seal
-    /// [`SELF_TEST_TEXT`] to this machine's own key and send it, so it is
+    /// Test the machine on `channel` (sound or light): seal `text` (or,
+    /// with none, or only spaces, [`SELF_TEST_TEXT`]) to this machine's
+    /// own key and send it, so it is
     /// heard by this machine's own microphone (or, by light, its camera
     /// reading the screen in a mirror) and opened as any message is. By
     /// sound it waits for a quiet room like any send; by light it is
@@ -1458,9 +1468,17 @@ impl Node {
     ///
     /// Refused as [`Node::start_pairing`] is: "locked"; the channel's
     /// state unless its switch allows sending (no switch is turned for
-    /// it); [`NOTHING_TO_SEND_ON`] without a transport for it. Starting
-    /// again ends the test in progress first.
-    pub fn start_self_test(&mut self, channel: Channel) -> Result<(), &'static str> {
+    /// it); [`NOTHING_TO_SEND_ON`] without a transport for it; and
+    /// [`SELF_TEST_TOO_LONG`] for words over [`SELF_TEST_MAX_BYTES`].
+    /// Starting again ends the test in progress first.
+    ///
+    /// Returns how long it takes to go out once it starts, in ms, at the
+    /// channel's rate (0 when the channel has none).
+    pub fn start_self_test(
+        &mut self,
+        channel: Channel,
+        text: Option<&str>,
+    ) -> Result<u64, &'static str> {
         if self.me.is_none() {
             return Err("locked");
         }
@@ -1469,13 +1487,18 @@ impl Node {
         if !carried {
             return Err(NOTHING_TO_SEND_ON);
         }
+        let text = text.map(str::trim).filter(|t| !t.is_empty());
+        if text.is_some_and(|t| t.len() > SELF_TEST_MAX_BYTES) {
+            return Err(SELF_TEST_TOO_LONG);
+        }
         if let Some(why) = self.refusal(channel) {
             self.report_refusal(channel, why);
             return Err(why);
         }
         self.stop_self_test();
         let me = self.me.as_ref().expect("checked above");
-        let envelope = seal_private(me, &[me.public()], SELF_TEST_TEXT, now_min(), TTL_MIN);
+        let text = text.unwrap_or(SELF_TEST_TEXT);
+        let envelope = seal_private(me, &[me.public()], text, now_min(), TTL_MIN);
         // the time the envelope takes to go out at the channel's rate
         let bytes = envelope.encode().len();
         let airtime_ms = self
@@ -1501,7 +1524,7 @@ impl Node {
             channel,
             state: SelfTestState::Waiting,
         });
-        Ok(())
+        Ok(airtime_ms)
     }
 
     /// End the self-test in progress, if any, as
@@ -3988,7 +4011,7 @@ mod tests {
     /// A sound test started, with its tag and the envelope it sent.
     fn testing(me: &Identity, dir: &tempfile::TempDir) -> (Node, Wire, u16, Envelope) {
         let (mut node, wire, _) = node(dir, me, &[]);
-        node.start_self_test(Channel::Sound).unwrap();
+        node.start_self_test(Channel::Sound, None).unwrap();
         // its waiting is reported on the first tick
         assert_eq!(self_tests(&node.tick(0)).len(), 1);
         let tag = wire.last_tag();
@@ -4137,12 +4160,12 @@ mod tests {
         };
         let mut node = Node::new(Some(store), vec![Box::new(wire.clone())]);
         assert_eq!(
-            node.start_self_test(Channel::Light),
+            node.start_self_test(Channel::Light, None),
             Err(LIGHT_OFF),
             "Light starts at Off"
         );
         node.set_light(LightSwitch::ReadAndFlash);
-        node.start_self_test(Channel::Light).unwrap();
+        node.start_self_test(Channel::Light, None).unwrap();
         let first = wire.last_tag();
         wire.news.lock().unwrap().extend([
             TransportEvent::Playing(first),
@@ -4193,7 +4216,7 @@ mod tests {
         assert_eq!(*wire.delivered.lock().unwrap(), vec![again]);
 
         // and Light turned to Read stops one in progress
-        node.start_self_test(Channel::Light).unwrap();
+        node.start_self_test(Channel::Light, None).unwrap();
         node.set_light(LightSwitch::Read);
         let ev = node.tick(50);
         assert_eq!(self_tests(&ev).last().unwrap().1, SelfTestState::Stopped);

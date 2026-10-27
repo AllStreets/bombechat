@@ -560,8 +560,8 @@ body:has(.lamp:not([hidden])){perspective:none}
         <div class="fld">Received on<b>kitchen laptop</b></div>
         <div class="fld">Heard through<b>built-in mic</b></div>
         <p class="testnote" id="testnote" role="status" aria-live="polite"></p>
-        <p class="emptyline" id="emptyline" hidden>On your own? Press Test the machine to hear it work.</p>
-        <div class="teststamps"><button type="button" class="rs test" id="testbtn" title="Seals a short message to this machine's own key and plays it once the room is quiet. The microphone hears it back and it lands on this sheet. Nothing of it is kept. Sound must be at Listen and send.">Test the machine</button><button type="button" class="rs test light" id="testlight" title="Shows a short message sealed to this machine's own key as a light code. Hold a mirror up to the screen and the camera reads it back. Nothing of it is kept. Light must be at Read and flash.">Test by light</button></div>
+        <p class="emptyline" id="emptyline" hidden>On your own? Type something and press Test the machine.</p>
+        <div class="teststamps"><button type="button" class="rs test" id="testbtn" title="Seals what is typed in the reply line, or a short message of its own, to this machine's own key and plays it once the room is quiet. The microphone hears it back and it lands on this sheet. Nothing of it is kept. Sound must be at Listen and send.">Test the machine</button><button type="button" class="rs test light" id="testlight" title="Shows what is typed in the reply line, or a short message of its own, sealed to this machine's own key as a light code. Hold a mirror up to the screen and the camera reads it back. Nothing of it is kept. Light must be at Read and flash.">Test by light</button></div>
       </div>
     </article>
 
@@ -1515,9 +1515,15 @@ addEventListener('keydown',e=>{if(e.key!=='Escape')return;if(Lamp.state!=='close
    it is kept: it is this page's alone, gone when it closes. Each needs its switch at its sending position, as
    pairing does, and turns none: refused, the foot says which switch to turn, typed where its two fields were, until
    a switch turns or a test starts. Escape, or the stamp again, stops it; a test that comes back with nothing says
-   what to try. On a new machine the empty sheet's first line suggests it, until a test has run. */
-// what the machine seals for a test, as the node's SELF_TEST_TEXT
+   what to try. On a new machine the empty sheet's first line suggests it, until a test has run. Words in the reply line
+   go out as the test instead of the machine's own short line, typed in its entry and spelled on the drums, and the line
+   is cleared as a send clears it; nothing else about the test changes. */
+// what the machine seals for a test with the reply line empty, as the node's SELF_TEST_TEXT; and the most the line may
+// hold for one, as its SELF_TEST_MAX_BYTES, with the node's word for more
 const SELF_TEST_TEXT='The machine hears itself.';
+const SELF_TEST_MAX_BYTES=100,SELF_TEST_TOO_LONG='not sent: too long for a test';
+// own words this long on air or more are said to take that long while it waits
+const SAY_AIR_MS=25000;
 // the switches' own refusals, as the node words them: anything else is said as it is
 const SWITCH_REFUSALS=['not sent: sound is off','not sent: sound is set to listen only','not sent: light is off','not sent: light is set to read only'];
 const NOTHING_TO_TEST={sound:'This Mac has no sound to test with.',light:'This Mac has no camera to test by light with.'};
@@ -1544,6 +1550,7 @@ function testStamps(){const on=Test&&Test.channel;testBtn.hidden=on==='light';te
   testBtn.textContent=on==='sound'?'Stop the test':'Test the machine';testLightBtn.textContent=on==='light'?'Stop the test':'Test by light';
   [[testBtn,'sound'],[testLightBtn,'light']].forEach(([b,ch])=>{b.classList.toggle('no',on===ch);
     b.title=on===ch?`Stops the test at once: ${ch==='light'?'the screen clears':'the sound stops'}. Escape does the same.`:b.dataset.rest})}
+const tooLongToTest=n=>`Too long to test with: ${n} bytes, at most ${SELF_TEST_MAX_BYTES}. Shorten the line, or empty it to test with the machine's own.`;
 const testStampFor=channel=>channel==='light'?testLightBtn:testBtn;
 // the switch that won't let it run, said as what to turn
 function refuseTest(channel){const k=channel==='light'?KNOBS.k2:KNOBS.k1,name=channel==='light'?'Light':'Sound';
@@ -1552,7 +1559,7 @@ function refuseTest(channel){const k=channel==='light'?KNOBS.k2:KNOBS.k1,name=ch
 function testLine(text,live){if(!Test||!Test.ent)return;const st=Test.ent.querySelector('.state');st.textContent=text;st.classList.toggle('live',!!live)}
 // waiting: for a quiet room, by sound, as the outbox says it of any send
 function testWaiting(){if(!Test||Test.state!=='waiting')return;
-  testLine('sealed to this machine, '+(Test.channel==='light'?'waiting to go on screen':room==null?'waiting for quiet':room<sendUnder()?'playing next':`waiting for quiet, the room is at ${Math.round(room)} dB`))}
+  testLine('sealed to this machine, '+(Test.channel==='sound'&&Test.words&&Test.airMs>=SAY_AIR_MS?`about ${secs(Test.airMs)} s on air, `:'')+(Test.channel==='light'?'waiting to go on screen':room==null?'waiting for quiet':room<sendUnder()?'playing next':`waiting for quiet, the room is at ${Math.round(room)} dB`))}
 function testShow(){if(!Test)return;if(Test.state==='waiting')testWaiting();
   else if(Test.state==='playing')testLine(`sealed to this machine, ${Test.channel==='light'?'on the screen for a mirror':'playing by sound and listening for it'}, Escape stops it`,true)}
 // a chunk of it came back: onto the drums, and its provisional tape typed into its own entry
@@ -1563,15 +1570,22 @@ async function startTest(channel){
   if(Test){if(Test.channel===channel)stopTest();return}
   const k=channel==='light'?KNOBS.k2:KNOBS.k1,btn=testStampFor(channel);
   if(!(k.read&&k.pos===2)){refuseTest(channel);return}
-  const t=Test={channel,tags:new Set(),ent:null,arr:null,state:'asking'};
+  // the reply line's words, if any, are what it sends
+  const words=reply.value.trim(),n=new TextEncoder().encode(words).length;
+  if(n>SELF_TEST_MAX_BYTES){testSays(tooLongToTest(n));nudge(btn);return}
+  const t=Test={channel,words,airMs:0,tags:new Set(),ent:null,arr:null,state:'asking'};
   btn.disabled=true;testSays('');
-  try{await bridge.selfTest(channel)}catch(why){btn.disabled=false;if(Test===t)Test=null;why=String(why&&why.message||why);
-    if(SWITCH_REFUSALS.includes(why))refuseTest(channel);else{testSays(why==='not sent: no sound or light to send on'?NOTHING_TO_TEST[channel]:sentence(why));nudge(btn)}return}
+  try{t.airMs=+await bridge.selfTest(channel,words||null)||0}catch(why){btn.disabled=false;if(Test===t)Test=null;why=String(why&&why.message||why);
+    if(SWITCH_REFUSALS.includes(why))refuseTest(channel);else{testSays(why==='not sent: no sound or light to send on'?NOTHING_TO_TEST[channel]:why===SELF_TEST_TOO_LONG?tooLongToTest(n):sentence(why));nudge(btn)}return}
   btn.disabled=false;
   if(Test!==t)return;// it ended before the machine's answer came
+  // gone from the line once it is under way, as a send's words are
+  if(words&&reply.value.trim()===words){reply.value='';fit();if(pubnote.classList.contains('refused'))pinned(()=>pubnote.classList.remove('refused'))}
   if(channel==='light'){Lamp.stopped=false;Lamp.gone=null}
-  // the machine's own entry: no typed line, which on a contact's sheet would read as written to them
+  // the machine's own entry: no typed line of its own words, which on a contact's sheet would read as written to them;
+  // words typed for it are shown as typed, under the margin's self-test
   const ent=entry(bridge.now(),'self-test');ent.classList.add('selftest');
+  if(t.words)ent.querySelector('.what').append(el('div','typed',t.words));
   ent.querySelector('.what').append(el('div','state'));
   t.ent=ent;if(t.state==='asking')t.state='waiting';
   grow(()=>put(ent),true);testStamps();testShow();

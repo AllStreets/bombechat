@@ -121,20 +121,24 @@ function tauriStub({ hello, safety, pairOfferMs = 1200, people, talk, afterUnloc
           if (noSound) return Promise.reject('not sent: no sound or light to send on');
           if (args.channel === 'sound' && s.sound < 2) return Promise.reject(s.sound === 0 ? 'not sent: sound is off' : 'not sent: sound is set to listen only');
           if (args.channel === 'light' && s.light < 2) return Promise.reject(s.light === 0 ? 'not sent: light is off' : 'not sent: light is set to read only');
+          // the reply line's words, or the machine's own; refused over 100 bytes, as the node refuses them
+          const words = (args.text || '').trim(), said = words || 'The machine hears itself.', n = new TextEncoder().encode(said).length;
+          if (new TextEncoder().encode(words).length > 100) return Promise.reject('not sent: too long for a test');
           const tag = 0x7e00 + (window.__calls.length & 255), channel = args.channel === 'light' ? 'Light' : 'Sound';
           const says = (state, extra) => () => window.__emit('selfTest', { tag, channel, state, ...extra });
           const steps = [says('playing')];
           if (selfTest === 'heard') {
             // sealed as the node seals it: sender keys and time, the text, a signature, in 48-byte chunks
-            const inner = [...Array(68).fill(0x51), ...new TextEncoder().encode('The machine hears itself.'), ...Array(64).fill(0x52)], of = Math.ceil(inner.length / 48);
+            const inner = [...Array(68).fill(0x51), ...new TextEncoder().encode(said), ...Array(64).fill(0x52)], of = Math.ceil(inner.length / 48);
             for (let i = 0; i < of; i++) steps.push(() => { const plain = inner.slice(i * 48, i * 48 + 48); window.__emit('chunk', { tag, index: i, of, channel, view: { plain, heard: plain.map(b => b ^ 9), key: plain.map(() => 9) } }); });
-            steps.push(says('heard', { text: 'The machine hears itself.', bytes: 379, ms: 23510, rate: 16.1, band: 'near silent' }));
+            steps.push(says('heard', { text: said, bytes: 354 + n, ms: Math.ceil((354 + n) / 0.0161), rate: 16.1, band: 'near silent' }));
           } else steps.push(says('unheard'));
           const run = window.__selfTest = { tag, channel, steps };
           window.__selfTestStep = () => { if (window.__selfTest !== run || !run.steps.length) return false; run.steps.shift()(); if (!run.steps.length) window.__selfTest = null; return true; };
           window.__selfTestGo = () => { const next = () => { if (window.__selfTestStep()) setTimeout(next, 0); }; next(); };
           setTimeout(says('waiting'), 0);
-          return Promise.resolve(null);
+          // its time on air, at 16.1 bytes a second
+          return Promise.resolve(Math.ceil((354 + n) / 0.0161));
         }
         case 'stop_self_test': { const run = window.__selfTest; window.__selfTest = null;
           if (run) window.__emit('selfTest', { tag: run.tag, channel: run.channel, state: 'stopped' }); return Promise.resolve(null); }
@@ -1083,7 +1087,7 @@ function measureText() {
     // mirror. Every wait is for a state on the page, never a time.
     report.selfTest = {};
     const TESTED = 'The machine hears itself.';
-    const EMPTY_LINE = 'On your own? Press Test the machine to hear it work.';
+    const EMPTY_LINE = 'On your own? Type something and press Test the machine.';
     const testView = () => { const ents = [...document.querySelectorAll('#log .ent.selftest')], e = ents[ents.length - 1], q = s => e && e.querySelector(s);
       return { entries: ents.length, how: q('.when span') ? q('.when span').textContent : '', typed: !!q('.typed'), mine: !!e && e.classList.contains('mine'),
         tape: e ? [...e.querySelectorAll('.strip')].map(s => s.textContent).join(' ') : '', state: q('.state') ? q('.state').textContent : '', failed: !!e && e.classList.contains('failed'),
@@ -1246,6 +1250,38 @@ function measureText() {
         report.selfTest[`${tag} unheard`] = deaf.state;
         await dp.close();
       }
+      // in its own words: typed in the reply line they go out as the test (the machine asked with them), typed in its
+      // entry, spelled on the drums and read back on its tape, and the line clears as a send clears it. Over 100 bytes
+      // it is refused in place with the words kept; long enough to take a while, its line says about how long on air
+      {
+        const op = await testPage(where, w, h), WORDS = 'hello world';
+        await op.fill('#reply', WORDS);
+        await op.click('#testbtn');
+        await until(op, tag, 'the own-words test waiting', testState, '^sealed to this machine, waiting for quiet');
+        const begun = await op.evaluate(() => ({ reply: document.getElementById('reply').value, typed: ([...document.querySelectorAll('#log .ent.selftest')].pop().querySelector('.typed') || {}).textContent,
+          asked: window.__TAURI__ ? __calls.filter(c => c[0] === 'self_test').map(c => c[1].text) : null }));
+        if (begun.reply || begun.typed !== WORDS || (begun.asked && JSON.stringify(begun.asked) !== JSON.stringify([WORDS]))) problems.push(`${tag}: own words did not go out as the test: ${JSON.stringify(begun)}`);
+        await release(op, where);
+        // (a frame of twelve may split one word, so either will do)
+        const spelledOwn = await until(op, tag, 'the drums spelling the own words', () => /HELLO|WORLD/.test(__bank.rows().plain));
+        await until(op, tag, 'the own-words test heard', stamped);
+        const own = await op.evaluate(testView);
+        if (!spelledOwn || own.tape.toLowerCase() !== WORDS || !/^Heard back/.test(own.state) || own.failed) problems.push(`${tag}: own words did not come back on the sheet: ${JSON.stringify(own)}`);
+        await op.locator('.sheet').screenshot({ path: path.join(out, `selftest-${where}-${w}-own-words.png`) });
+        const LONG = 'a'.repeat(101);
+        await op.fill('#reply', LONG);
+        await op.click('#testbtn');
+        await until(op, tag, 'the too-long refusal', () => /^Too long to test with: 101 bytes, at most 100\./.test(document.getElementById('testnote').textContent));
+        const refused = await op.evaluate(() => ({ reply: document.getElementById('reply').value, tests: document.querySelectorAll('#log .ent.selftest').length, button: document.getElementById('testbtn').textContent }));
+        if (refused.reply !== LONG || refused.tests !== 1 || refused.button !== 'Test the machine') problems.push(`${tag}: too long a test was not refused in place: ${JSON.stringify(refused)}`);
+        await op.fill('#reply', 'b'.repeat(90));
+        await op.click('#testbtn');
+        const air = await until(op, tag, 'the long test saying its time on air', testState, '^sealed to this machine, about \\d+ s on air, (waiting for quiet|playing next)');
+        if (!air) problems.push(`${tag}: a long test does not say its time on air`);
+        await op.keyboard.press('Escape');
+        report.selfTest[`${tag} own words`] = { begun, heard: own.state, tape: own.tape };
+        await op.close();
+      }
       if (where === 'app') {
         // a Mac with no sound to test with says so, rather than asking for a switch already turned
         const np = await testPage('app', w, h, { stub: { noSound: true } });
@@ -1318,7 +1354,16 @@ function measureText() {
       const seen = { ...(await lp.evaluate(lamp)), ...(await lp.evaluate(testView)) };
       if (seen.open || !/^Read back in the mirror after \d+ s\.$/.test(seen.state) || !/^seen by this machine, \d\d\.\d\d$/.test(seen.stamp) || seen.tape.toLowerCase() !== TESTED.toLowerCase()) problems.push(`${tag}: a test read back did not land as seen: ${JSON.stringify(seen)}`);
       await shot('seen');
-      report.selfTest[tag] = { refused: off.note, lamp: on.say, seen: seen.state };
+      // in its own words, the same way: the line's words go on the lamp, the line clears, and they are read back
+      await lp.fill('#reply', 'hello mirror');
+      await lp.click('#testlight');
+      await until(lp, tag, 'the own-words test on the lamp', () => !document.getElementById('lamp').hidden);
+      const ownOn = await lp.evaluate(() => ({ reply: document.getElementById('reply').value, typed: ([...document.querySelectorAll('#log .ent.selftest')].pop().querySelector('.typed') || {}).textContent }));
+      await until(lp, tag, 'the own-words test read back', stamped);
+      const ownSeen = await lp.evaluate(testView);
+      if (ownOn.reply || ownOn.typed !== 'hello mirror' || ownSeen.tape.toLowerCase() !== 'hello mirror' || !/^Read back in the mirror/.test(ownSeen.state)) problems.push(`${tag}: own words by light: ${JSON.stringify({ ownOn, ownSeen })}`);
+      await shot('own-words');
+      report.selfTest[tag] = { refused: off.note, lamp: on.say, seen: seen.state, own: ownSeen.tape };
       await lp.close();
     }
 

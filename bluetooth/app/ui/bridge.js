@@ -21,12 +21,14 @@
 //   finishPairing()              [finish_pairing]                   their hello is in: the hello showing by light finishes its
 //                                window (so whoever pressed later still has a whole one to read it), then the screen
 //                                clears (displayStopped) and pairing ends; with none showing it ends at once
-//   selfTest(channel)            [self_test { channel }]            tests the machine on channel, 'sound' (the default) or
-//                                'light': it seals a short message to its own key and sends it, by sound once the room is
-//                                quiet, by light on the screen for a mirror held in front of it, and hears it with its own
-//                                microphone (or camera). How it goes arrives as selfTest. Nothing of it is stored, sent to
+//   selfTest(channel, text)      [self_test { channel, text }]      tests the machine on channel, 'sound' (the default) or
+//                                'light': it seals text (the reply line's words; blank, its own short message) to its own
+//                                key and sends it, by sound once the room is quiet, by light on the screen for a mirror
+//                                held in front of it, and hears it with its own microphone (or camera). Resolves to its
+//                                time on air in ms. How it goes arrives as selfTest. Nothing of it is stored, sent to
 //                                anyone or answered. Rejects as pair does: 'locked', or the channel's state when its switch
-//                                won't send ('not sent: sound is set to listen only'). No switch is turned for it
+//                                won't send ('not sent: sound is set to listen only'), and 'not sent: too long for a
+//                                test' for text over 100 bytes. No switch is turned for it
 //   stopSelfTest()               [stop_self_test]                   ends the self-test in progress: nothing more of it goes
 //                                out, and what is still arriving of it is let go (selfTest 'stopped')
 //   eyepiece(on)                 [eyepiece { on }]                  whether to be sent what the camera sees (the eyepiece
@@ -253,7 +255,7 @@ function tauriBackend() {
     pair: channel => invoke('pair', { channel }),
     stopPairing: () => invoke('stop_pairing'),
     finishPairing: () => invoke('finish_pairing'),
-    selfTest: channel => invoke('self_test', { channel }),
+    selfTest: (channel, text) => invoke('self_test', { channel, text: text || null }),
     stopSelfTest: () => invoke('stop_self_test'),
     eyepiece: on => invoke('eyepiece', { on: !!on }),
     confirmPair: (peerHex, name) => invoke('confirm_pair', { peerHex, name }).then(contactId),
@@ -287,7 +289,7 @@ function simulatedBackend() {
     pair: channel => sim.pair(channel),
     stopPairing: () => sim.stopPairing(),
     finishPairing: () => sim.finishPairing(),
-    selfTest: channel => sim.selfTest(channel),
+    selfTest: (channel, text) => sim.selfTest(channel, text),
     stopSelfTest: () => sim.stopSelfTest(),
     eyepiece: on => sim.eyepiece(!!on),
     confirmPair: (peerHex, name) => sim.confirmPair(peerHex, name).then(contactId),
@@ -321,7 +323,7 @@ export const bridge = {
   pair: (channel = 'sound') => backend.pair(lower(channel)),
   stopPairing: () => backend.stopPairing(),
   finishPairing: () => backend.finishPairing(),
-  selfTest: (channel = 'sound') => backend.selfTest(lower(channel)),
+  selfTest: (channel = 'sound', text = null) => backend.selfTest(lower(channel), text),
   stopSelfTest: () => backend.stopSelfTest(),
   eyepiece: on => backend.eyepiece(on),
   confirmPair: (peerHex, name) => backend.confirmPair(peerHex, name),

@@ -422,7 +422,7 @@ fn the_machine_tests_itself_through_the_commands_and_keeps_nothing() {
     let device = Device::with_audio(dir.path().join("bombechat.db"), Box::new(card.clone()));
     let shared = Shared::new(Box::new(device));
     assert_eq!(
-        commands::self_test(&shared, "sound".into()),
+        commands::self_test(&shared, "sound".into(), None),
         Err("locked".to_string()),
         "nothing to seal with before the store is open"
     );
@@ -431,12 +431,12 @@ fn the_machine_tests_itself_through_the_commands_and_keeps_nothing() {
     // refused at Listen, as pairing is, with the switch untouched
     commands::set_setting(&shared, "sound".into(), 1).unwrap();
     assert_eq!(
-        commands::self_test(&shared, "sound".into()),
+        commands::self_test(&shared, "sound".into(), None),
         Err("not sent: sound is set to listen only".to_string())
     );
     commands::set_setting(&shared, "sound".into(), 2).unwrap();
 
-    commands::self_test(&shared, "sound".into()).unwrap();
+    commands::self_test(&shared, "sound".into(), None).unwrap();
     let mut states = Vec::new();
     let mut chunks = 0;
     let mut now = 0;
