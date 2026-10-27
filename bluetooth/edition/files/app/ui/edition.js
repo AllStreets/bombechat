@@ -254,16 +254,18 @@ export function front(bridge, kit) {
     // where each slip is laid out, without the tuck below
     const at = s => { const r = s.getBoundingClientRect(), l = +s.dataset.lift || 0; return { top: r.top + l, bottom: r.bottom + l, height: r.height }; };
     const rects = list.map(at);
+    // (a few pixels' grace for the slips' tilt; never the slip being worked in)
+    const edges = rects.map((r, i) => right.scrollHeight > right.clientHeight + 1 && (r.bottom > foot + 3 || r.top < room.top - 3) && r.height < foot - room.top && !list[i].contains(document.activeElement));
+    // a slip shown only by its edge is tucked under its neighbour in the pile, a few pixels of it showing past that
+    // slip's foot (or head), as the next slip in a tray does: never a whole sheet of blank paper. A neighbour may be
+    // tucked itself, so each is tucked under where its neighbour is seen, not where it is laid out: the slips below
+    // the room in order down the pile, those above it in order up
+    const lifts = rects.map(() => 0), seen = i => ({ top: rects[i].top - lifts[i], bottom: rects[i].bottom - lifts[i] });
+    for (let i = 1; i < list.length; i++) if (edges[i] && rects[i].bottom > foot + 3) lifts[i] = Math.max(0, rects[i].bottom - seen(i - 1).bottom - EDGE);
+    for (let i = list.length - 2; i >= 0; i--) if (edges[i] && !(rects[i].bottom > foot + 3 && i > 0)) lifts[i] = -Math.max(0, seen(i + 1).top - rects[i].top - EDGE);
     list.forEach((s, i) => {
-      const r = rects[i];
-      // (a few pixels' grace for the slips' tilt; never the slip being worked in)
-      const edge = right.scrollHeight > right.clientHeight + 1 && (r.bottom > foot + 3 || r.top < room.top - 3) && r.height < foot - room.top && !s.contains(document.activeElement);
-      s.classList.toggle('edge', edge);
-      // a slip shown only by its edge is tucked under its neighbour in the pile, a few pixels of it showing past that
-      // slip's foot (or head), as the next slip in a tray does: never a whole sheet of blank paper
-      let lift = 0;
-      if (edge && r.bottom > foot + 3 && i > 0) lift = Math.max(0, r.top - rects[i - 1].bottom + r.height - EDGE);
-      else if (edge && i < list.length - 1) lift = -Math.max(0, rects[i + 1].top - r.bottom + r.height - EDGE);
+      s.classList.toggle('edge', edges[i]);
+      const lift = lifts[i];
       if (lift) { s.dataset.lift = lift; s.style.setProperty('--lift', lift + 'px'); } else if (s.dataset.lift) { delete s.dataset.lift; s.style.removeProperty('--lift'); }
     });
   };

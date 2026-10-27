@@ -464,6 +464,11 @@ const GROUP_NOTE = 'Anyone in Bluetooth range can read this Mac\'s name. Give it
       await p.click('#intray .rs.ok'); await settle(p, 'added', () => !document.querySelector('#intray .slip.ask') && !!document.querySelector('.stn small.nc')); }],
     ['asking', { bluetooth: 2, inperson: 0 }, async p => { await p.evaluate(() => window.__sim.bluetoothStrangers(['P2QD', 'W9HT'], ['W9HT'])); await settle(p, 'strangers', () => document.querySelectorAll('#neartray li').length === 3);
       await p.click('li[data-label="P2QD"] .rs'); await p.click('li[data-label="W9HT"] .rs'); await settle(p, 'answers', () => (document.querySelector('li[data-label="W9HT"] small') || {}).textContent === 'not delivered' && (document.querySelector('li[data-label="P2QD"] small') || {}).textContent === 'asked, delivered'); }],
+    // the README clip's moment: strangers listed, a request accepted, and a reply going out by Bluetooth, so the tray
+    // holds more than its room and, at 1440, two slips are tucked, one under the other
+    ['accepted-sending', { bluetooth: 2, inperson: 0 }, async p => { await p.evaluate(() => window.__sim.bluetoothStrangers(['R2QD', 'T8WN'])); await p.evaluate(() => window.__sim.bluetoothAsk()); await settle(p, 'the slip', () => !!document.querySelector('#intray .slip.ask'));
+      await p.click('#intray .rs.ok'); await settle(p, 'added', () => !document.querySelector('#intray .slip.ask') && !!document.querySelector('.stn small.nc'));
+      await p.fill('#reply', 'On my way. Ines is with me, she has a radio.'); await p.click('#sendbluetooth', { force: true }); await settle(p, 'the reply in the outbox', () => [...document.querySelectorAll('.col.tray .slip:not(.gone)')].some(e => /On my way/.test(e.textContent))); }],
     ['send', { bluetooth: 1 }, async p => { await p.fill('#reply', 'By the radio.'); await p.click('#sendbluetooth', { force: true }); await settle(p, 'heard', () => { const e = [...document.querySelectorAll('#log .ent')].pop(); return e && /heard by Marisol/.test(e.textContent); }); }],
     ['locked', { bluetooth: 2 }, async p => { await p.evaluate(() => window.__sim.bluetoothLocked()); await settle(p, 'locked', () => !!document.querySelector('#btnote b').textContent); }],
     ['unavailable', { bluetooth: 2 }, async p => { await p.evaluate(() => window.__sim.bluetoothUnavailable('Bluetooth is off in System Settings.')); await settle(p, 'tape', () => !!document.querySelector('#btnote b').textContent); }],
@@ -490,6 +495,16 @@ const GROUP_NOTE = 'Anyone in Bluetooth range can read this Mac\'s name. Give it
             for (const r of range.getClientRects()) if ((r.top < c.top - .5 && r.bottom > c.top + .5) || (r.top < c.bottom - .5 && r.bottom > c.bottom + .5)) out.push(n.nodeValue.trim().slice(0, 24)); } }
         return out; });
       if (sliced.length) fail(`${name} ${w}: a line of type in the tray is cut through: ${JSON.stringify(sliced)}`);
+      // a slip tucked in the pile shows only its edge: of the tray's room, no more than a few pixels of it are left
+      // uncovered by the slips around it, never a strip of blank paper
+      const blank = await p.evaluate(() => { const col = document.querySelector('.col.tray'); if (!col) return []; const c = col.getBoundingClientRect(), all = [...col.querySelectorAll('.slip:not(.gone)')], out = [];
+        for (const s of all.filter(e => e.classList.contains('edge'))) {
+          const r = s.getBoundingClientRect(), top = Math.max(r.top, c.top), bottom = Math.min(r.bottom, c.bottom); if (bottom <= top) continue;
+          const cover = all.filter(o => o !== s && !o.classList.contains('edge')).concat(all.filter(o => o !== s && o.classList.contains('edge') && all.indexOf(o) < all.indexOf(s))).map(o => o.getBoundingClientRect()).map(o => [o.top, o.bottom]).sort((a, b) => a[0] - b[0]);
+          let shown = 0, y = top; for (const [t, b] of cover) { if (t > y) shown += Math.min(t, bottom) - y; y = Math.max(y, b); if (y >= bottom) break; } if (y < bottom) shown += bottom - y;
+          if (shown > 14) out.push(`${s.textContent.trim().slice(0, 24)}: ${Math.round(shown)}px`); }
+        return out; });
+      if (blank.length) fail(`${name} ${w}: a tucked slip shows blank paper: ${blank.join('; ')}`);
       const over = await overlaps(p);
       if (over.length) fail(`${name} ${w}: ${over.join('; ')}`);
       if (name === 'off') atOff = m;
