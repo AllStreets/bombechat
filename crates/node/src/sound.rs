@@ -213,16 +213,32 @@ impl Transport for SoundTransport {
             }
             keep
         });
-        if self.io.cut(tag) == 0 {
+        let dropped = self.io.cut(tag) as u64;
+        if dropped == 0 {
             return;
         }
         // its frames leave the speaker's timeline, and what was queued
-        // behind each moves up by what of it was cut
+        // behind each moves up by what of it was cut. The device says
+        // exactly how much that was; the timeline, kept from the last
+        // poll, would count what played since then too, so the frame of
+        // it playing now gives back the difference
         let now = self.now_ms;
+        let rate = u64::from(self.io.sample_rate().max(1));
+        let cut_ms = dropped * 1000 / rate;
+        let modelled: u64 = self
+            .handed
+            .iter()
+            .filter(|c| c.0 == Some(tag))
+            .map(|c| c.2.saturating_sub(c.1.max(now)))
+            .sum();
+        let mut played_since = modelled.saturating_sub(cut_ms);
         let mut shift = 0;
         for (t, start, end) in self.handed.iter_mut() {
             if *t == Some(tag) {
-                shift += end.saturating_sub((*start).max(now));
+                let part = end.saturating_sub((*start).max(now));
+                let heard = played_since.min(part);
+                played_since -= heard;
+                shift += part - heard;
             } else {
                 *start -= shift;
                 *end -= shift;
@@ -867,6 +883,36 @@ mod tests {
         assert!(progress(t.poll(300 + ms - 200)).is_empty());
         assert_eq!(
             progress(t.poll(300 + ms + 1)),
+            vec![TransportEvent::Sent(2)]
+        );
+    }
+
+    #[test]
+    fn a_cut_between_polls_moves_what_is_behind_up_by_only_what_was_cut() {
+        let io = bombechat_modem::FakeAudio::new(48_000);
+        let mut t = fake_transport(&io);
+        for f in split(&[3; 200], 9) {
+            t.send(f);
+        }
+        io.feed(&[0.0; 9_600]);
+        assert_eq!(progress(t.poll(100)), vec![TransportEvent::Playing(9)]);
+        for f in split(&[1; 200], 2) {
+            t.send(f);
+        }
+        assert_eq!(progress(t.poll(200)), vec![TransportEvent::Playing(2)]);
+        let contact = io.pending(Some(2));
+        let ms = (contact as u64 * 1000).div_ceil(48_000);
+        // the test plays on to 1 s (it began at 0.1 s), then Stop is pressed,
+        // before the next poll: the contact's message plays from then
+        io.speak(48_000 - 4_800);
+        t.withdraw(9);
+        assert_eq!(progress(t.poll(1_000)), vec![TransportEvent::Sent(9)]);
+        assert!(
+            progress(t.poll(1_000 + ms - 20)).is_empty(),
+            "still playing"
+        );
+        assert_eq!(
+            progress(t.poll(1_000 + ms + 20)),
             vec![TransportEvent::Sent(2)]
         );
     }

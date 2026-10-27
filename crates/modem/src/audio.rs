@@ -73,7 +73,10 @@ pub trait AudioIo: Send {
 
     /// Drop every sample queued by [`play_for`](AudioIo::play_for) for
     /// `owner` that has not played yet, the one playing now included, so
-    /// its sound stops within the output's own buffer (milliseconds).
+    /// its sound stops within the output's own delay: milliseconds on
+    /// built-in speakers, longer on Bluetooth or AirPlay, which hold what
+    /// they were sent and play it out. A device may fade out what it
+    /// stops part way through over a few ms, rather than click.
     /// Everything else queued plays on as it would have. Returns how many
     /// samples were dropped. The default drops nothing: a device that
     /// cannot take audio back lets it play out.
@@ -128,6 +131,9 @@ fn record_stream_error(slot: &Mutex<Option<AudioError>>, err: cpal::Error) {
 #[derive(Default)]
 struct Speaker {
     chunks: VecDeque<Chunk>,
+    /// How many samples a cut takes to fade out the chunk it stops part
+    /// way through, so it ends without a click (4 ms).
+    fade: usize,
 }
 
 struct Chunk {
@@ -161,9 +167,24 @@ impl Speaker {
     }
 
     /// Drops what has not played of every chunk `owner` queued; returns
-    /// how many samples that was.
+    /// how many samples that was. The chunk playing now, if it is
+    /// `owner`'s, ends in a [`Speaker::fade`] ramp down to silence rather
+    /// than stepping to zero mid-wave; those few samples still play and
+    /// are not counted.
     fn cut(&mut self, owner: u16) -> usize {
         let mut dropped = 0;
+        if let Some(c) = self.chunks.front_mut() {
+            if c.owner == Some(owner) && c.at > 0 && self.fade > 0 {
+                let left = c.samples.len() - c.at;
+                let keep = left.min(self.fade);
+                for (i, s) in c.samples[c.at..c.at + keep].iter_mut().enumerate() {
+                    *s *= 1.0 - (i + 1) as f32 / keep as f32;
+                }
+                c.samples.truncate(c.at + keep);
+                c.owner = None;
+                dropped += left - keep;
+            }
+        }
         self.chunks.retain(|c| {
             let keep = c.owner != Some(owner);
             if !keep {
@@ -231,7 +252,10 @@ impl CpalAudio {
         let input_channels = input_default.channels();
         let output_channels = output_default.channels();
 
-        let output_queue: Arc<Mutex<Speaker>> = Arc::new(Mutex::new(Speaker::default()));
+        let output_queue: Arc<Mutex<Speaker>> = Arc::new(Mutex::new(Speaker {
+            fade: sample_rate as usize * 4 / 1000,
+            ..Speaker::default()
+        }));
         let queue_for_callback = output_queue.clone();
         let out_channels = output_channels as usize;
 
@@ -366,6 +390,22 @@ impl AudioIo for CpalAudio {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cut_part_way_through_a_chunk_fades_out_instead_of_clicking() {
+        let mut sp = Speaker {
+            fade: 4,
+            ..Speaker::default()
+        };
+        sp.push(Some(7), vec![1.0; 10]);
+        sp.push(Some(2), vec![0.5; 2]);
+        assert_eq!(sp.next(), 1.0);
+        // nine left: four fade out and still play, five are dropped
+        assert_eq!(sp.cut(7), 5);
+        let heard: Vec<f32> = (0..7).map(|_| sp.next()).collect();
+        assert_eq!(heard, vec![0.75, 0.5, 0.25, 0.0, 0.5, 0.5, 0.0]);
+        assert_eq!(sp.cut(7), 0, "the fade is not cut again");
+    }
 
     #[test]
     fn the_speaker_plays_its_chunks_in_order_then_silence() {
