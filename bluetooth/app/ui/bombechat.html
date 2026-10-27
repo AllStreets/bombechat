@@ -465,6 +465,8 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
   box-shadow:inset calc(var(--lx) * -2px) calc(var(--ly) * -2px) 2.5px -1px rgba(40,28,10,.5),inset 0 0 0 .5px rgba(80,60,30,.3)}
 .holder span small{display:block;font-size:12px;color:#625a49;margin-top:1px;overflow:hidden;text-overflow:ellipsis}
 .counter{display:flex;align-items:center;gap:10px}
+/* the speaker's grille, under a sheet cut short (front-panel.css shows it where the 3D panel draws it) */
+.grille{display:none}
 
 /* the flashing view: while the machine flashes by light, the message sheet's place holds a signal lamp. The code
    sits in a brass bezel on mid-grey enamel, so it never fills the screen and its surround never changes. The
@@ -641,6 +643,7 @@ body:has(.lamp:not([hidden])){perspective:none}
       <div class="ptape" id="ptape" role="img" aria-label="Your key as punched tape, for pairing in person by camera"></div>
     </aside>
 
+    <div class="grille" aria-hidden="true"></div>
     <section class="panel" aria-label="Channels and stations">
       <div class="mods">
         <div class="mod"><span class="jewel" id="j1" aria-hidden="true"></span><button class="knob" id="k1" role="slider" aria-label="Sound" aria-valuemin="0" aria-valuemax="2"></button><span class="pl screw">Sound</span></div>

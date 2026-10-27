@@ -129,7 +129,7 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
   const NARROW = matchMedia('(max-width:1239px)'), BOLT = 4.2;
   let FRAME = 6, RING = 16;
   // the parts no ring bolt may meet
-  const PARTS = '.bank, .sheet, .menu, .mods .mod, .vu, .row2 > .col, .outbox, .row3 .stn, .counter, .lamp:not([hidden])';
+  const PARTS = '.bank, .sheet, .menu, .grille, .mods .mod, .vu, .row2 > .col, .outbox, .row3 .stn, .counter, .lamp:not([hidden])';
   const css = (el, k) => parseFloat(getComputedStyle(el)[k]) || 0;
   // laid out mid-turn, to the pixel: laid out again from the rects once the turn is over (frame)
   let laidTurned = false;
@@ -207,6 +207,8 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
 
   const eyeGeo = (() => { const p = [[.74, 0], [1, 0], [1, .1], [.97, .2], [.9, .25], [.82, .25], [.77, .2], [.76, .12], [.74, .1]].map(([r, y]) => new THREE.Vector2(r, y)); const g = new THREE.LatheGeometry(p, 64); g.rotateX(Math.PI / 2); g.userData.keep = true; return g; })();
   const bossGeo = (() => { const p = [[0, 0], [1, 0], [1, .35], [.9, .55], [.6, .66], [0, .7]].map(([r, y]) => new THREE.Vector2(r, y)); const g = new THREE.LatheGeometry(p, 32); g.rotateX(Math.PI / 2); g.userData.keep = true; return g; })();
+  // the speaker's cloth behind its grille, dark and dull
+  const clothMat = new THREE.MeshStandardMaterial({ color: '#211e19', roughness: .95, metalness: 0, bumpMap: K.tex.wrinkle, bumpScale: .25 }); clothMat.userData.keep = true;
   let shutter = null, eyeEl = null;
   // parts sitting at the given boxes; z the face of the deck under them
   function layoutDeck(holes) {
@@ -289,6 +291,17 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
       const je = stn.querySelector('.jewel');
       if (je && placed(je)) { const jb = box(je), L = jewelFor(je, (jb.w / 2 + 2.6) / U); L.j.group.position.copy(at(jb.x + jb.w / 2, jb.y + jb.h / 2, 0)); }
     }
+    // the speaker's grille, in the enamel under a sheet cut short to the first screen (a narrow window): the pressed steel
+    // of the switch tiles, louvred, let into the panel and bolted at its corners, the dark of the speaker behind it
+    const gr = deck.querySelector('.grille');
+    if (gr && shown(gr)) { const b = box(gr);
+      if (b.h > 90) { const c = at(b.x + b.w / 2, b.y + b.h / 2, -.012), w = b.w / U, h = b.h / U, m = 30 / U, pitch = 14 / U, sh = 3.5 / U;
+        const n = Math.max(1, Math.floor((h - 2 * m + pitch - sh) / pitch)), y0 = (n - 1) * pitch / 2, slots = [];
+        for (let i = 0; i < n; i++) slots.push({ x: 0, y: y0 - i * pitch, w: w - 2 * m - 2 * 12 / U, h: sh, r: sh / 2 });
+        const pl = new THREE.Mesh(slab(w, h, .03, { r: 2.5 / U, b: .01, holes: slots }), M.cover); pl.position.set(c.x, c.y, -.042); pl.castShadow = true; pl.receiveShadow = true; deckParts.add(pl);
+        const dark = new THREE.Mesh(new THREE.PlaneGeometry(w, h), clothMat); dark.position.set(c.x, c.y, -.06); deckParts.add(dark);
+        holes.push({ x: c.x, y: c.y, w, h, r: 2.5 / U });
+        const k = 9; [[k, k], [b.w - k, k], [k, b.h - k], [b.w - k, b.h - k]].forEach(([x, y], i) => { const p = at(b.x + x, b.y + y, 0); K.bolt(p.x, p.y, { scale: bs * .85, z: .006, parent: deckParts, slot: (i * 1.3 + b.y * .01) % 3 }); }); } }
     // jewels whose HTML has gone
     for (const [el, L] of lamps) if (L.kind === 'jewel' && !el.isConnected) { kept.remove(L.j.group); lamps.delete(el); }
     for (const [el, k] of knobParts) k.group.visible = placed(el);
@@ -341,6 +354,17 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
     { const p = [[0, 0], [1, 0], [1, .07], [.96, .15], [.78, .28], [.45, .37], [0, .4]].map(([r, y]) => new THREE.Vector2(r, y));
       const head = new THREE.Mesh(new THREE.LatheGeometry(p, 48).rotateX(Math.PI / 2), M.brass);
       set('--pin', K.bake(head, { px: 56, shadow: true, margin: .32 })); }
+    // the top bar's Machine sound switch: the deck's bakelite knob, small, thrown to on or off
+    { const k = K.knob({ labels: [], angles: [-32, 32], parent: new THREE.Group() });
+      k.set(0); set('--bat-off', K.bake(k.group, { px: 104, shadow: true, margin: .14 }));
+      k.set(1); set('--bat-on', K.bake(k.group, { px: 104, shadow: true, margin: .14 })); }
+    // brass frames to stretch round a window of any size (border-image): the flashing view's bezel in bright brass, its
+    // card holder in the dull brass of the stations' holders
+    for (const [name, mat, t, d] of [['--bezel', M.brass, .16, .16], ['--holder', M.brassDull, .1, .1]]) {
+      const fr = new THREE.Mesh(frameGeo(1, 1, t, d, .015), mat), b = new THREE.Box3().setFromObject(fr), W = b.max.x - b.min.x;
+      const px = 240, win = 1 - 2 * (Math.min(t * .45, d * .45) * .9);
+      set(name, K.bake(fr, { px, margin: 0 })); root.style.setProperty(name + '-cut', String(Math.round(px * (W - win) / 2 / W)));
+    }
     K.bakeDone();
     root.classList.add('baked');
   }
@@ -394,7 +418,7 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
 
   let dirty = true, renders = 0, laidSig = '';
   // what the scene was laid out from: every box it reads. A change in the HTML lays it out again only if one moved
-  const WATCHED = '.bank, .colno, .rowlab, .bankfoot .rd, .bankfoot .odo, .lampset i, .mods .mod, .mod .knob, .mod .jewel, .mod .blank, .eyepiece, .vu, .vu svg, .row2 > .col.tray, .outbox, .outbox > .slip.empty, .row3 .stn, .row3 .holder, .row3 .holder > span, .stn .jewel, .counter .odo, .sheet, .menu';
+  const WATCHED = '.bank, .grille, .colno, .rowlab, .bankfoot .rd, .bankfoot .odo, .lampset i, .mods .mod, .mod .knob, .mod .jewel, .mod .blank, .eyepiece, .vu, .vu svg, .row2 > .col.tray, .outbox, .outbox > .slip.empty, .row3 .stn, .row3 .holder, .row3 .holder > span, .stn .jewel, .counter .odo, .sheet, .menu';
   function signature() { const hr = host.getBoundingClientRect(); let s = `${hr.width}x${hr.height}`;
     for (const el of app.querySelectorAll(WATCHED)) { const r = el.getBoundingClientRect(); s += `|${Math.round(r.left - hr.left)},${Math.round(r.top - hr.top)},${Math.round(r.width)},${Math.round(r.height)},${el.offsetParent ? 1 : 0}`; }
     for (const el of app.querySelectorAll('.bankfoot .rd')) s += getComputedStyle(el).visibility[0];
