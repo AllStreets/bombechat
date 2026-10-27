@@ -851,10 +851,11 @@ const pad=s=>s.padEnd(W,'X');
 function lamps(index,of){const n=Math.min(of,24),first=Math.max(0,Math.min(index-n+2,of-n));
   return [...Array(n)].map((_,k)=>{const i=first+k;return `<i class="${i<index?'d':i===index?'n':''}"></i>`}).join('')}
 // X is the spacer: anything in the message that isn't a letter. It is cut lighter on the drum.
-function showFrame(fr,anim){const p=fr.plain;for(let c=0;c<W;c++){
+function showFrame(fr,anim){if(fr.said)fr.plain=plainRow(fr.said.said,fr.through);const p=fr.plain;for(let c=0;c<W;c++){
   cells[c].wl.setAttribute('fill',p[c]==='X'?'#9a9282':'#15130f');cells[c].wl.setAttribute('stroke',p[c]==='X'?'#9a9282':'#15130f');
   if(!anim){setLetter(cells[24+c],fr.key[c]);setLetter(cells[12+c],fr.heard[c]);setLetter(cells[c],p[c]);continue}
-  const d=c*110;setTimeout(()=>setLetter(cells[24+c],fr.key[c],1),d);setTimeout(()=>setLetter(cells[12+c],fr.heard[c],2),d+150);setTimeout(()=>setLetter(cells[c],p[c],3),d+320)}
+  // a plain letter that is already showing stays put: the text holds still while the rest of the message lands
+  const d=c*110,same=current&&current.plain[c]===p[c];setTimeout(()=>setLetter(cells[24+c],fr.key[c],1),d);setTimeout(()=>setLetter(cells[12+c],fr.heard[c],2),d+150);if(!same)setTimeout(()=>setLetter(cells[c],p[c],3),d+320)}
   current=fr;
   document.getElementById('fno').textContent=fr.no+1;document.getElementById('fnt').textContent=fr.total;
   document.getElementById('chk').innerHTML=lamps(fr.index,fr.of)}
@@ -865,7 +866,7 @@ function pump(){clearTimeout(pumpT);if(!frames.length)return;
   // what landed before the page opened goes straight to the last of it
   if(booting)while(frames.length>1)showFrame(frames.shift(),false);
   showFrame(frames.shift(),!booting&&!STILL);shownAt=performance.now();
-  if(frames.length)pumpT=setTimeout(pump,DWELL)}
+  if(frames.length)pumpT=setTimeout(pump,frames.length>4?1300:DWELL)}
 // let the drums finish before the sheet moves on
 // (a long message can leave the drums far behind: the sheet waits for them 2.7 s at most)
 function whenDrumsRest(fn,t0=performance.now()){if(booting||STILL||RM.matches||(!frames.length&&performance.now()-shownAt>2700)||performance.now()-t0>2700)fn();else setTimeout(()=>whenDrumsRest(fn,t0),100)}
@@ -952,10 +953,23 @@ function provisionalTape(a,text){const what=a.ent.querySelector('.what'),note=wh
 function failArrival(a){if(!a||!a.ent)return;clearTimeout(a.stallT);const ent=a.ent;a.ent=null;
   grow(()=>{ent.classList.remove('arriving');ent.classList.add('failed');ent.querySelectorAll('.cur').forEach(c=>c.remove());
     const note=ent.querySelector('.state');note.classList.remove('live');note.textContent='did not check'})}
+// The plain row is the message's text, laid from drum 1 as it is decoded: the sender's keys, the time and the
+// signature are not text and never show there. Each frame shows the text decoded through its last byte (the bridge's
+// provisional text, as it stands when the frame comes up, cut to the frame), the latest twelve characters of it when
+// there are more, so a short message ends up whole on the row and stays there to the last frame. Letters read as
+// themselves, anything else as the spacer. The Heard and Key rows stay each frame's own ciphertext and keystream.
+const TEXT_FROM=68,utf8=new TextEncoder(),unutf8=new TextDecoder('utf-8');
+function plainRow(text,through){const b=utf8.encode(text||''),n=Math.max(0,Math.min(b.length,through-TEXT_FROM));
+  const t=unutf8.decode(b.slice(0,n)).replace(/\uFFFD+$/,'');
+  return pad([...t].slice(-W).map(ch=>/[a-z]/i.test(ch)?ch.toUpperCase():'X').join(''))}
 // each landed chunk onto the drums, twelve letters a frame, after what is already waiting to show
 function toDrums(c,a){const v=c.view,fpc=Math.max(1,Math.ceil(v.plain.length/W));if(!a.fpc||c.index===0)a.fpc=fpc;
+  // every chunk but the last is full: where this one starts in the sealed message
+  if(c.index<c.of-1)a.csize=v.plain.length;const at=c.index*(a.csize||v.plain.length);
+  // the text known so far for this message: it only grows, chunk by chunk
+  if(c.index===0||!a.said||(c.text||'').length>=a.said.length)a.said=c.text||'';
   const base=c.index*a.fpc,total=c.index===c.of-1?base+fpc:c.of*a.fpc;
-  for(let i=0;i<fpc;i++){const s=i*W;frames.push({plain:pad(v.plain.slice(s,s+W)),heard:pad(v.heard.slice(s,s+W)),key:pad(v.key.slice(s,s+W)),no:base+i,total,index:c.index,of:c.of})}
+  for(let i=0;i<fpc;i++){const s=i*W,through=at+Math.min(s+W,v.plain.length);frames.push({plain:plainRow(a.said,through),said:a,through,heard:pad(v.heard.slice(s,s+W)),key:pad(v.key.slice(s,s+W)),no:base+i,total,index:c.index,of:c.of})}
   pump()}
 bridge.on('chunk',c=>{
   // the self-test's own chunks type into its entry, and leave any message arriving meanwhile as it was

@@ -385,12 +385,13 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
   const test = {
     // number of chunks in the scripted incoming message
     chunks: NC,
-    // one chunk whose plain bytes are exactly this text; stops the scripted conversation first
+    // this text sealed as a message, its chunks all at once with no message after them; stops the scripted
+    // conversation first
     inject(text, { end = false } = {}) {
       paused = true;
-      const plain = utf8(text), r = seeded(77), key = plain.map(() => r());
+      const tag = ++testTag, parts = chunked(sealedInner(text, Math.floor(clock / 60000), tag), tag);
       sound('receiving');
-      emit('chunk', { tag: ++testTag, index: 0, of: 1, view: { plain, key, heard: plain.map((p, i) => p ^ key[i]) }, channel: 'Sound' });
+      parts.forEach((view, index) => emit('chunk', { tag, index, of: parts.length, view, channel: 'Sound' }));
       if (end) sound('listening');
     },
     // a whole sealed message from Marisol, chunk by chunk at once; `complete` false leaves it hanging. By light it

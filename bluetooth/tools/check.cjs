@@ -80,6 +80,10 @@ const PARTS = { top: '.top', bank: '.bank', sheet: '.sheet', compose: '.compose'
 // sends its next report (playing, each chunk, then heard; or with `selfTest` 'unheard', playing then unheard), and
 // __selfTestGo() sends the rest in turn. `noSound`: the machine has no sound to test with. stop_self_test reports it
 // stopped.
+// what the plain row shows once a message's text is in: its last twelve characters from drum 1, letters as themselves,
+// anything else as the spacer X
+const plainRowOf = t => [...t].slice(-12).map(ch => /[a-z]/i.test(ch) ? ch.toUpperCase() : 'X').join('').padEnd(12, 'X');
+
 function tauriStub({ hello, safety, pairOfferMs = 1200, people, talk, afterUnlock, settings, broadcastMax = 3939, kept = [], refuseBroadcast, keychain, unlockMs = 0, wrong = 0, wrongWhy = 'wrong passphrase', refuseSetting, sendId, selfTest = 'heard', noSound }) {
   let unlocked = !!keychain, refusals = wrong;
   const KEPT = 'stub.notices';
@@ -518,9 +522,10 @@ function measureText() {
     await br.mouse.click(5, 5);
     await br.waitForFunction(() => window.__bank && __bank.ready && window.__sim, null, { timeout: 60000 });
     await br.waitForFunction(() => __drum.running, null, { timeout: 5000 }).catch(() => {});
-    // a chunk of real text: letters read as themselves on the plain row, anything else as X
+    // a sealed message of real text: the plain row ends on its last twelve characters, letters as themselves and
+    // anything else as X, never the sender's keys or the signature
     const KNOWN = 'Look under the blue stairs for the radio.';
-    const WANT = [...KNOWN.slice(0, 12)].map(ch => /[a-z]/i.test(ch) ? ch.toUpperCase() : 'X').join('');
+    const WANT = [...KNOWN.slice(-12)].map(ch => /[a-z]/i.test(ch) ? ch.toUpperCase() : 'X').join('');
     const bridged = await br.evaluate(async ([known, want]) => {
       const audio = __drum.running;
       __sim.inject(known);
@@ -1350,7 +1355,8 @@ function measureText() {
       if (waiting.how !== 'self-test' || waiting.typed || waiting.mine || waiting.button !== 'Stop the test' || !waiting.lightHidden || waiting.note) problems.push(`${tag}: the test did not start as this machine's own, waiting for quiet: ${JSON.stringify(waiting)}`);
       await shot('waiting');
       await release(tp, where);
-      const spelled = await until(tp, tag, 'the drums spelling the test', () => /MACHINE/.test(__bank.rows().plain));
+      // the plain row spells the test's text (its last twelve characters, it being longer), never the sender's keys
+      const spelled = await until(tp, tag, 'the drums spelling the test', want => __bank.rows().plain === want, plainRowOf(TESTED));
       await until(tp, tag, 'the test ending', () => { const e = [...document.querySelectorAll('#log .ent.selftest')].pop(); return !!e && (!!e.querySelector('.stamp') || e.classList.contains('failed')); });
       await until(tp, tag, 'the stamp coming to rest', stamped);
       const heard = await tp.evaluate(testView);
@@ -1394,9 +1400,13 @@ function measureText() {
           asked: window.__TAURI__ ? __calls.filter(c => c[0] === 'self_test').map(c => c[1].text) : null }));
         if (begun.reply || begun.typed !== WORDS || (begun.asked && JSON.stringify(begun.asked) !== JSON.stringify([WORDS]))) problems.push(`${tag}: own words did not go out as the test: ${JSON.stringify(begun)}`);
         await release(op, where);
-        // (a frame of twelve may split one word, so either will do)
-        const spelledOwn = await until(op, tag, 'the drums spelling the own words', () => /HELLO|WORLD/.test(__bank.rows().plain));
+        // the words whole on the plain row, laid from drum 1, and still there once the test is heard and stamped
+        const spelledOwn = await until(op, tag, 'the drums spelling the own words', want => __bank.rows().plain === want, plainRowOf(WORDS));
         await until(op, tag, 'the own-words test heard', stamped);
+        // to the last frame on the drums (the signature's), with the row at rest
+        await until(op, tag, 'the own-words test on its last frame', () => { const f = __bank.frame(); return !!f && document.getElementById('fno').textContent === document.getElementById('fnt').textContent && __bank.rows().plain === f.plain; });
+        const ownRow = await op.evaluate(() => __bank.rows().plain);
+        if (ownRow !== 'HELLOXWORLDX') problems.push(`${tag}: own words: the plain row reads ${ownRow} once heard, not HELLOXWORLDX`);
         const own = await op.evaluate(testView);
         if (!spelledOwn || own.tape.toLowerCase() !== WORDS || !/^Heard back/.test(own.state) || own.failed) problems.push(`${tag}: own words did not come back on the sheet: ${JSON.stringify(own)}`);
         await op.locator('.sheet').screenshot({ path: path.join(out, `selftest-${where}-${w}-own-words.png`) });
