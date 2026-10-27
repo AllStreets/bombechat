@@ -1467,9 +1467,11 @@ impl Node {
     /// heard because of it.
     ///
     /// Refused as [`Node::start_pairing`] is: "locked"; the channel's
+    /// [`NOTHING_TO_SEND_ON`] without a transport for it; the channel's
     /// state unless its switch allows sending (no switch is turned for
-    /// it); [`NOTHING_TO_SEND_ON`] without a transport for it; and
-    /// [`SELF_TEST_TOO_LONG`] for words over [`SELF_TEST_MAX_BYTES`].
+    /// it); and [`SELF_TEST_TOO_LONG`] for words over
+    /// [`SELF_TEST_MAX_BYTES`] once trimmed of white space and byte order
+    /// marks. The page checks the same, in the same order.
     /// Starting again ends the test in progress first.
     ///
     /// Returns how long it takes to go out once it starts, in ms, at the
@@ -1487,13 +1489,16 @@ impl Node {
         if !carried {
             return Err(NOTHING_TO_SEND_ON);
         }
-        let text = text.map(str::trim).filter(|t| !t.is_empty());
-        if text.is_some_and(|t| t.len() > SELF_TEST_MAX_BYTES) {
-            return Err(SELF_TEST_TOO_LONG);
-        }
         if let Some(why) = self.refusal(channel) {
             self.report_refusal(channel, why);
             return Err(why);
+        }
+        // trimmed of white space and byte order marks, as the page trims it
+        let text = text
+            .map(|t| t.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}'))
+            .filter(|t| !t.is_empty());
+        if text.is_some_and(|t| t.len() > SELF_TEST_MAX_BYTES) {
+            return Err(SELF_TEST_TOO_LONG);
         }
         self.stop_self_test();
         let me = self.me.as_ref().expect("checked above");

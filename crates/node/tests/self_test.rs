@@ -298,6 +298,20 @@ fn a_tests_own_words_have_a_limit_and_blank_ones_are_the_fixed_text() {
         Err(SELF_TEST_TOO_LONG)
     );
     assert!(!l.node.self_testing(), "a refusal starts nothing");
+    // a byte order mark and a next line round it are trimmed too, as the page trims them
+    let marked = format!("\u{feff}{longest}\u{85}");
+    l.node
+        .start_self_test(Channel::Sound, Some(&marked))
+        .unwrap();
+    l.node.stop_self_test();
+    // the switch is checked first, as the page checks it
+    l.node.set_sound(SoundSwitch::Listen);
+    assert_eq!(
+        l.node
+            .start_self_test(Channel::Sound, Some(&format!("{longest}a"))),
+        Err("not sent: sound is set to listen only")
+    );
+    l.node.set_sound(SoundSwitch::ListenAndSend);
     // the spaces round it are trimmed before it is counted
     let long = l
         .node

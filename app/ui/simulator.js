@@ -463,8 +463,6 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
     stopPairing() { endHello(); return Promise.resolve(); },
     selfTest(channel = 'sound', text = null) {
       if (channel !== 'sound' && channel !== 'light') return Promise.reject(`no such channel: ${channel}`);
-      const words = (text || '').trim();
-      if (new TextEncoder().encode(words).length > SELF_TEST_MAX_BYTES) return Promise.reject(SELF_TEST_TOO_LONG);
       const say = channel === 'light' ? light : sound;
       const at = channel === 'light' ? settings.light : settings.sound;
       if (at < 2) {
@@ -472,6 +470,9 @@ export function createSimulator(emit, { query = new URLSearchParams() } = {}) {
         later(() => { say(why); say(channel === 'light' ? lightAt() : at === 0 ? 'off' : 'listening'); });
         return Promise.reject(why);
       }
+      // after the switch, as the node checks it, and trimmed as it trims: white space (with U+0085) and byte order marks
+      const words = (text || '').replace(/^[\s\u0085]+|[\s\u0085]+$/g, '');
+      if (new TextEncoder().encode(words).length > SELF_TEST_MAX_BYTES) return Promise.reject(SELF_TEST_TOO_LONG);
       endTest('stopped');
       if (!paused) { paused = true; heldForTest = true; }
       const t = selfTest = { tag: Math.floor(Math.random() * 65536), channel, text: words || SELF_TEST_TEXT, timers: [], at: 0 };
