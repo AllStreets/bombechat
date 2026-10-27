@@ -30,7 +30,8 @@
 // a held hello lapsing), when testing the machine doesn't run in the browser or on the app path (its stamps
 // not cut as Pair by sound's are, refused at Off and Listen in sentence case with nothing asked of the machine, the
 // run waiting for quiet, the drums not spelling it, its entry not under the margin note self-test with what came
-// back, the rate and band and the stamp, anything of it in the outbox, Escape not stopping it, a test nobody hears
+// back, the rate and band and the stamp, a drum left partly under the lamp while it flashes, tests or pairs at any
+// window size (or the page not held at its top under it, or not put back where it was), anything of it in the outbox, Escape not stopping it, a test nobody hears
 // not saying what to try, Test by light not on the lamp for a mirror, an empty sheet's typed line missing or its
 // mark not pointing at the stamp, or at any window size, empty or full, Test the machine outside the first screen, the
 // sheet's head running together or its foot running past the sheet), when writing a public notice doesn't work in the browser or on the app
@@ -169,6 +170,24 @@ function tauriStub({ hello, safety, pairOfferMs = 1200, people, talk, afterUnloc
 
 // every visible piece of text, HTML or SVG, with the size it is actually drawn at.
 // Decorative scales (the 26 letters round each drum) are marked data-decor and skipped.
+// The drums the flashing view covers only in part: the lamp's shape is its column (--nx wide) and, when it reaches over
+// the drum bay, the band over it (--ny deep). Each drum on the screen lies wholly under it or wholly clear of it; any
+// partly covered is returned, with how much of it shows
+function lampCuts() {
+  const l = document.getElementById('lamp'); if (l.hidden) return ['the lamp is not open'];
+  const r = l.getBoundingClientRect(), cs = getComputedStyle(l), nx = parseFloat(cs.getPropertyValue('--nx')) || r.width, ny = parseFloat(cs.getPropertyValue('--ny')) || r.height;
+  const parts = [{ l: r.left, t: r.top, r: r.left + nx, b: r.bottom }, { l: r.left, t: r.top, r: r.right, b: r.top + ny }];
+  const meet = (a, b) => ({ l: Math.max(a.l, b.l), t: Math.max(a.t, b.t), r: Math.min(a.r, b.r), b: Math.min(a.b, b.b) });
+  const area = a => Math.max(0, a.r - a.l) * Math.max(0, a.b - a.t);
+  const view = { l: 0, t: 0, r: innerWidth, b: innerHeight }, out = [];
+  document.querySelectorAll('#drums .drum').forEach((d, i) => {
+    const q = d.getBoundingClientRect(), box = meet({ l: q.left, t: q.top, r: q.right, b: q.bottom }, view), all = area(box); if (all < 1) return;
+    const under = area(meet(box, parts[0])) + area(meet(box, parts[1])) - area(meet(meet(box, parts[0]), parts[1]));
+    if (under > 1 && under < all - 1) out.push(`drum ${Math.floor(i / 12) + 1}.${i % 12 + 1} ${Math.round(100 * under / all)}% under the lamp`);
+  });
+  return out;
+}
+
 function measureText() {
   const small = [];
   const seen = new Set();
@@ -1461,6 +1480,7 @@ function measureText() {
         light: document.getElementById('k2').getAttribute('aria-valuenow'), button: document.getElementById('testlight').textContent });
       await lp.click('#testlight');
       await until(lp, tag, 'the lamp open on the test', () => !document.getElementById('lamp').hidden);
+      const cutT = await lp.evaluate(lampCuts); if (cutT.length) problems.push(`${tag}: testing by light cuts drums: ${cutT.join('; ')}`);
       const on = await lp.evaluate(lamp);
       if (on.plate !== 'Testing by light' || !/^Hold a mirror up to this screen\./.test(on.say) || on.button !== 'Stop the test') problems.push(`${tag}: the lamp does not show the test for a mirror: ${JSON.stringify(on)}`);
       await shot('lamp', '.lamp');
@@ -1532,6 +1552,38 @@ function measureText() {
           sends: __calls.filter(c => c[0] === 'send' || c[0] === 'broadcast').length };
       };
       report.light = {};
+      // the lamp over the drum bay at every window size, in each of its three uses: no drum partly under it
+      report.lampCuts = {};
+      for (const [w, h] of VIEWPORTS) {
+        const tag = `lamp over the bay ${w}x${h}`, seen = {};
+        // flashing a message, on the app path
+        const fp = await openLight(w, h, 2, { dpr: 1 });
+        await emit(fp, 'display', frame(1, 0)); await paint(fp); seen.flashing = await fp.evaluate(lampCuts);
+        await fp.close();
+        // testing and pairing by light, in the browser, each started from where its stamp is, scrolled to it
+        const lp = await browser.newPage({ viewport: { width: w, height: h } });
+        watch(lp, tag);
+        await lp.goto(url('still'));
+        await lp.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
+        await lp.focus('#k2'); await lp.keyboard.press('ArrowRight'); await lp.keyboard.press('ArrowRight');
+        for (const [use, stamp] of [['testing', '#testlight'], ['pairing', '#pairlight']]) {
+          await lp.evaluate(s => document.querySelector(s).scrollIntoView({ block: 'center' }), stamp);
+          const from = await lp.evaluate(() => scrollY);
+          await lp.click(stamp);
+          await lp.waitForFunction(() => !document.getElementById('lamp').hidden, null, { timeout: 8000 }).catch(() => {});
+          await paint(lp);
+          seen[use] = await lp.evaluate(lampCuts); seen[use + 'Scroll'] = await lp.evaluate(() => scrollY);
+          await lp.keyboard.press('Escape');
+          await lp.waitForFunction(() => document.getElementById('lamp').hidden, null, { timeout: 8000 }).catch(() => {});
+          await paint(lp);
+          seen[use + 'Back'] = await lp.evaluate(f => ({ lamp: !document.getElementById('lamp').hidden, scroll: Math.round(scrollY), from: Math.round(f), overflow: getComputedStyle(document.body).overflowY }), from);
+        }
+        report.lampCuts[`${w}x${h}`] = seen;
+        for (const k of ['flashing', 'testing', 'pairing']) if (seen[k].length) problems.push(`${tag}: ${k} by light, ${seen[k].join('; ')}`);
+        if (seen.testingScroll || seen.pairingScroll) problems.push(`${tag}: the page was not held at its top under the lamp: ${JSON.stringify(seen)}`);
+        for (const k of ['testingBack', 'pairingBack']) { const b = seen[k]; if (b.lamp || b.overflow === 'hidden' || Math.abs(b.scroll - b.from) > 1) problems.push(`${tag}: the page did not come back from the lamp where it was: ${JSON.stringify(b)}`); }
+        await lp.close();
+      }
       for (const [w, h] of [[1024, 768], [1440, 900], [1728, 1117]]) {
         const tag = `light ${w}`, r = report.light[w] = {};
         const lp = await openLight(w, h, 2);
@@ -1546,6 +1598,7 @@ function measureText() {
         r.small = await lp.evaluate(`(${measureText.toString()})()`);
         if (r.small.length) problems.push(`${tag}: text under 12px in the flashing view: ${r.small.join('; ')}`);
         await shot('ready', '.lamp');
+        const cutF = await lp.evaluate(lampCuts); if (cutF.length) problems.push(`${tag}: the flashing view cuts drums: ${cutF.join('; ')}`);
         await lp.waitForTimeout(450);
         for (let i = 1; i <= 5; i++) { await emit(lp, 'display', frame(1, i)); await paint(lp); }
         const flashing = await lp.evaluate(view);
@@ -1709,6 +1762,7 @@ function measureText() {
         if (where === 'app') { for (let i = 0; i <= 3; i++) { await emit(lp, 'display', helloFrame(1, i, 0x4e1)); await paint(lp); } await lp.waitForTimeout(450); for (let i = 4; i <= 6; i++) { await emit(lp, 'display', helloFrame(1, i, 0x4e1)); await paint(lp); } }
         else await lp.waitForTimeout(1100);
         const reading = await st();
+        const cutP = await lp.evaluate(lampCuts); if (cutP.length) problems.push(`${tag}: pairing by light cuts drums: ${cutP.join('; ')}`);
         if (reading.state !== 'reading' || reading.who !== 'pairing by light' || !reading.lamp || reading.plate !== 'Pairing by light' || reading.say !== 'Hold your screens face to face. reading theirs, Escape stops it' || !/reading for a hello/.test(reading.pencil))
           problems.push(`${tag}: Pair by light did not show the hello: ${JSON.stringify(reading)}`);
         if (where === 'app' && JSON.stringify(reading.calls) !== '["pair {\\"channel\\":\\"light\\"}"]') problems.push(`${tag}: Pair by light asked the machine ${JSON.stringify(reading.calls)}`);
@@ -1863,7 +1917,9 @@ function measureText() {
         const cap = async () => caps.push((await lp.screenshot({ clip: box })).toString('base64'));
         // where the lamp will stand: open it once, then let it close, and start from the sheet
         await emit(lp, 'display', frame(spec, 0, 1)); await paint(lp);
-        box = await lp.locator('.lamp').boundingBox();
+        // (the lamp's column, where the code is: the band it reaches over the drum bay with is the same still grey)
+        box = await lp.evaluate(() => { const l = document.getElementById('lamp'), r = l.getBoundingClientRect(), nx = parseFloat(getComputedStyle(l).getPropertyValue('--nx')) || r.width;
+          return { x: r.left, y: r.top, width: Math.min(r.width, nx), height: r.height }; });
         await emit(lp, 'displayStopped', { tag: 1 }); await paint(lp); await cap();
         await emit(lp, 'display', frame(spec, 0)); await paint(lp); await cap();
         await lp.waitForTimeout(350);

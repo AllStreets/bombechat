@@ -466,8 +466,6 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
   box-shadow:inset calc(var(--lx) * -2px) calc(var(--ly) * -2px) 2.5px -1px rgba(40,28,10,.5),inset 0 0 0 .5px rgba(80,60,30,.3)}
 .holder span small{display:block;font-size:12px;color:#625a49;margin-top:1px;overflow:hidden;text-overflow:ellipsis}
 .counter{display:flex;align-items:center;gap:10px}
-/* the speaker's grille, under a sheet cut short (front-panel.css shows it where the 3D panel draws it) */
-.grille{display:none}
 
 /* the flashing view: while the machine flashes by light, the message sheet's place holds a signal lamp. The code
    sits in a brass bezel on mid-grey enamel, so it never fills the screen and its surround never changes. The
@@ -477,10 +475,19 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
    size for a camera at arm's length. Fixed to the window, so it never scrolls or moves while it shows */
 body:has(.lamp:not([hidden])){perspective:none}
 .lamp{position:fixed;left:16px;top:58px;bottom:16px;width:min(980px,calc(100vw - 32px));z-index:4;display:grid;grid-template-rows:auto minmax(0,1fr) auto;gap:12px;min-height:0;padding:12px 16px 14px;border-radius:3px;
-  background:linear-gradient(#8f8b80,#8d887a);box-shadow:inset 0 0 0 1px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.16),0 10px 24px rgba(0,0,0,.55),0 2px 3px rgba(0,0,0,.5)}
+  /* its plate is drawn underneath (::before, its finish over it ::after), cut to the lamp's shape (lampPlace): the
+     sheet's column, and the band over the drum bay when it has one. The shadow is the shape's */
+  --shape:polygon(0 0,100% 0,100% var(--ny,100%),var(--nx,100%) var(--ny,100%),var(--nx,100%) 100%,0 100%);
+  filter:drop-shadow(0 10px 12px rgba(0,0,0,.45)) drop-shadow(0 2px 2px rgba(0,0,0,.5))}
 .lamp[hidden]{display:none}
-.lamp::before{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;opacity:.3;mix-blend-mode:overlay;
+.lamp::before{content:"";position:absolute;inset:0;z-index:-1;border-radius:inherit;pointer-events:none;clip-path:var(--shape);
+  background:linear-gradient(#8f8b80,#8d887a);box-shadow:inset 0 0 0 1px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.16)}
+.lamp::after{content:"";position:absolute;inset:0;z-index:-1;border-radius:inherit;pointer-events:none;clip-path:var(--shape);opacity:.3;mix-blend-mode:overlay;
   background-image:var(--noise)}
+/* the code and the foot keep to the column; the head runs the lamp's width, its readouts over the bay */
+.lamp-mid,.lamp-foot{width:calc(var(--nx,calc(100% + 32px)) - 32px)}
+/* the page stays where the lamp was placed */
+body:has(.lamp:not([hidden])){overflow:hidden}
 .lamp>*{position:relative}
 .deck.flashing .sheet{visibility:hidden}
 .lamp-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px}
@@ -525,14 +532,22 @@ body:has(.lamp:not([hidden])){perspective:none}
   .blank{width:80px;height:80px;margin:6px 0 8px}
 }
 
-/* the sheet beside the panel and the menu, in two columns, until the window is wide enough for three columns to leave
-   the sheet room for its head and its foot's fields and stamps (about 600px) */
+/* the sheet beside the panel, in two columns, until the window is wide enough for three columns to leave the sheet
+   room for its head and its foot's fields and stamps (about 600px). The sheet and the panel stand side by side, about
+   the same height, and the key check card lies across both columns under them, turned on its side: its graph on the
+   left, its key, its stamps and its tape on the right. So neither column runs on past the other into bare enamel */
 @media (max-width:1399px){
-  .deck{grid-template-columns:minmax(0,1fr) 384px;grid-template-areas:"sheet panel" "sheet menu"}
+  .deck{grid-template-columns:minmax(0,1fr) 384px;grid-template-areas:"sheet panel" "menu menu"}
   /* cut to end inside the first screen (fitSheet); unseen until it is, so nothing in it moves once it shows */
   .sheet{align-self:start;height:var(--sheet-h,auto)}
   .sheet:not(.fitted){visibility:hidden}
-  .menu{min-height:540px}
+  .menu{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);grid-template-rows:auto auto auto auto minmax(0,1fr);
+    grid-template-areas:"h2 h2" "graph fp" "graph pair" "graph tape" "graph .";column-gap:30px;transform:rotate(.25deg);padding:14px 22px 16px}
+  .menu h2{grid-area:h2}
+  .menu .graph{grid-area:graph;min-height:250px;margin-top:4px}
+  .menu .fpwrap{grid-area:fp;align-self:start;margin-top:10px}
+  .menu .pairact{grid-area:pair}
+  .menu .ptape{grid-area:tape}
 }
 @media (max-width:1239px){
   .bank{--dr:clamp(66px,(100vw - 160px) / 12 - 8px,112px)}
@@ -644,7 +659,6 @@ body:has(.lamp:not([hidden])){perspective:none}
       <div class="ptape" id="ptape" role="img" aria-label="Your key as punched tape, for pairing in person by camera"></div>
     </aside>
 
-    <div class="grille" aria-hidden="true"></div>
     <section class="panel" aria-label="Channels and stations">
       <div class="mods">
         <div class="mod"><span class="jewel" id="j1" aria-hidden="true"></span><button class="knob" id="k1" role="slider" aria-label="Sound" aria-valuemin="0" aria-valuemax="2"></button><span class="pl screw">Sound</span></div>
@@ -676,9 +690,8 @@ import { front } from './edition.js';
    log scrolls within it as it does on a wide window. Never shorter than 340px. */
 const NARROW=matchMedia('(max-width:1399px)');
 function fitSheet(){const sh=document.querySelector('.sheet');
-  if(!NARROW.matches){sh.parentElement.style.removeProperty('--sheet-h');return}
-  // (set on the deck: the sheet takes its height from it, and the speaker's grille under it the rest of the column)
-  const top=sh.getBoundingClientRect().top+scrollY;sh.parentElement.style.setProperty('--sheet-h',Math.max(340,Math.floor(innerHeight-top-14))+'px');sh.classList.add('fitted')}
+  if(!NARROW.matches){sh.style.removeProperty('--sheet-h');return}
+  const top=sh.getBoundingClientRect().top+scrollY;sh.style.setProperty('--sheet-h',Math.max(340,Math.floor(innerHeight-top-14))+'px');sh.classList.add('fitted')}
 fitSheet();addEventListener('resize',fitSheet);
 /* ---------- the slips' torn ends ----------
    each slip torn from its pad its own way, kept while it lies in the tray: one of four tears at each end, chosen from
@@ -1504,10 +1517,18 @@ const READY_MS=Q.has('ready')?+Q.get('ready'):1200,LAMP_GREY='#bcbcbc';
 const Lamp={state:'closed',tag:null,hello:false,test:false,gone:null,spec:1,bits:null,index:-1,shown:0,readyT:null,stopped:false,stopping:false,for:null,next:null,refocus:false,rateSpec:null};
 const odoDigits=(el,n,w)=>{el.innerHTML=String(Math.max(0,Math.min(10**w-1,Math.round(n)))).padStart(w,'0').split('').map(d=>`<i>${d}</i>`).join('')};
 // the canvas, sized to the bezel's opening in whole device pixels and placed on whole device pixels
-// the lamp's span: the sheet's column, and the card's when it stands beside the sheet (the wide layout)
+// the lamp's span: the sheet's column, and the card's when it stands beside the sheet (the wide layout), and across the
+// whole drum bay above the panel, so it covers every drum or none and never cuts one at its edge. Its shape is the
+// sheet's column and the band over the bay (--nx: the column's width, --ny: the band's depth, both from the lamp's
+// corner); the panel stays in view in the corner the two leave
 function lampPlace(){const a=sheetEl.getBoundingClientRect(),m=document.querySelector('.menu').getBoundingClientRect(),beside=Math.abs(m.top-a.top)<40&&m.left>a.left;
-  const left=Math.max(16,Math.round(a.left)),right=Math.min(innerWidth-16,Math.round(beside?m.right:a.right));
-  lampEl.style.left=left+'px';lampEl.style.width=Math.max(320,right-left)+'px'}
+  const left=Math.max(16,Math.round(a.left)),right=Math.min(innerWidth-16,Math.round(beside?m.right:a.right)),col=Math.max(320,right-left);
+  const top=parseFloat(getComputedStyle(lampEl).top)||58,h=innerHeight-top-(parseFloat(getComputedStyle(lampEl).bottom)||16);
+  const bk=document.getElementById('bank').getBoundingClientRect(),pn=document.querySelector('.panel').getBoundingClientRect();
+  const reach=Math.min(innerWidth-16,Math.round(bk.right)),depth=Math.round((bk.bottom+pn.top)/2-top);
+  const band=reach>left+col&&depth>0&&depth<h;
+  lampEl.style.left=left+'px';lampEl.style.width=(band?reach-left:col)+'px';lampEl.classList.toggle('banded',band);
+  lampEl.style.setProperty('--nx',col+'px');lampEl.style.setProperty('--ny',(band?depth:h)+'px')}
 function lampFit(){if(lampEl.hidden)return;
   lampPlace();
   const mid=lampEl.querySelector('.lamp-mid').getBoundingClientRect(),dpr=devicePixelRatio||1;
@@ -1541,6 +1562,8 @@ function lampRate(){bridge.channels().then(list=>{const l=list.find(c=>c.channel
     rd.title=`${Math.round(l.rate)} bytes a second at this Flash speed, coding included: what a camera reading every frame takes in`}},()=>{})}
 function lampOpen(){Lamp.state='ready';Lamp.shown=0;
   Lamp.refocus=sheetEl.contains(document.activeElement)||document.activeElement===document.body;
+  // the page held at its top while the lamp shows, so the lamp lies over the bay where it was placed
+  Lamp.scrolled=scrollY;if(scrollY)scrollTo(0,0);
   lampEl.hidden=false;deckEl.classList.add('flashing');sheetEl.inert=true;
   document.getElementById('lampjewel').classList.add('off');odoDigits(document.getElementById('lampn'),0,3);lampCaption();
   lampFit();if(Lamp.refocus)lampStop.focus({preventScroll:true});
@@ -1550,8 +1573,9 @@ function lampFrame(){if(Lamp.state!=='flashing')return;lampPaint();
 function lampClose(focusBack=true){clearTimeout(Lamp.readyT);if(Lamp.state==='closed')return;const test=Lamp.test;Lamp.state='closed';Lamp.bits=null;Lamp.tag=null;Lamp.hello=false;Lamp.test=false;Lamp.for=null;Lamp.refused='';Lamp.rateSpec=null;
   const back=lampEl.contains(document.activeElement)||Lamp.refocus;
   // back to the stamp that started a test by light
-  if(test&&back&&focusBack){lampEl.hidden=true;deckEl.classList.remove('flashing');sheetEl.inert=false;testLightBtn.focus({preventScroll:true});return}
-  lampEl.hidden=true;deckEl.classList.remove('flashing');sheetEl.inert=false;
+  const unscroll=()=>{if(Lamp.scrolled)scrollTo(0,Lamp.scrolled);Lamp.scrolled=0};
+  if(test&&back&&focusBack){lampEl.hidden=true;deckEl.classList.remove('flashing');sheetEl.inert=false;unscroll();testLightBtn.focus({preventScroll:true});return}
+  lampEl.hidden=true;deckEl.classList.remove('flashing');sheetEl.inert=false;unscroll();
   // back to the reply line, or (a pairing's lamp closing on its offer) to the card's Matched, add
   if(back&&focusBack)(menu.dataset.pair==='offer'&&!yesBtn.hidden?yesBtn:reply).focus({preventScroll:true})}
 bridge.on('display',d=>{
