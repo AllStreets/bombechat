@@ -23,6 +23,11 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
   const { THREE, renderer, scene, camera, M, tex, key, rim } = K;
   app.classList.add('gl'); bank.classList.add('gl'); api.gl = true;
   key.position.set(-6, 9, 22); key.intensity = 2.7; rim.intensity = .45; key.shadow.mapSize.set(4096, 4096);
+  // the key light's direction, for paper lit by the same light (its shadows fall away from it): on the screen, a unit
+  // vector toward the light (--lx right, --ly down, so the light at the upper left is negative in both), and --lz how
+  // far it stands out of the panel, as the cosine of its angle to the panel's face
+  { const v = key.position.clone().normalize(), xy = Math.hypot(v.x, v.y);
+    app.style.setProperty('--lx', (v.x / xy).toFixed(3)); app.style.setProperty('--ly', (-v.y / xy).toFixed(3)); app.style.setProperty('--lz', v.z.toFixed(3)); }
 
   /* ---------- the drums (as they were in bombechat.html) ---------- */
   // the drums' bay is let into the panel this deep: the plates, numbers, axles and pointers stand on its floor
@@ -79,7 +84,10 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
   const screwGeo = new THREE.CylinderGeometry(.035, .035, .025, 20); screwGeo.rotateX(Math.PI / 2); const screwSlot = new THREE.BoxGeometry(.052, .009, .008);
   const SLOTS = [.62, -.48, .85, -.7, .4, -.9];
   const plateScrews = plates.map((_, r) => [0, 1].map(i => { const g = new THREE.Group(); const h = new THREE.Mesh(screwGeo, M.steel); h.castShadow = true; const s = new THREE.Mesh(screwSlot, M.hole); s.position.z = .0135; s.rotation.z = SLOTS[r * 2 + i]; g.add(h, s); scene.add(g); return g; }));
-  const nums = [...Array(12)].map((_, i) => K.engrave(String(i + 1), 0, 0, .13, '#b8b09a'));
+  // (the column numbers stay legible in the shade the bay's top lip throws: they take no shadow)
+  // the column numbers stand a little above their HTML, closer to the bay's top edge, but clear of its lip
+  const NUP = .03;
+  const nums = [...Array(12)].map((_, i) => { const m = K.engrave(String(i + 1), 0, 0, .13, '#b8b09a'); m.receiveShadow = false; return m; });
 
   /* ---------- the panel ---------- */
   const floor = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), M.panel); floor.receiveShadow = true; scene.add(floor);
@@ -171,7 +179,7 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
     let k = knobParts.get(btn);
     if (!k) {
       const spec = knobs[btn.id] || {};
-      k = K.knob({ labels: spec.labels || [], angles, place: place.map(P => ({ ...P, x: P.x / SVGU, y: P.y / SVGU })), line: line / SVGU, size: 13.6 / SVGU, parent: kept });
+      k = K.knob({ labels: spec.labels || [], angles, place: place.map(P => ({ ...P, x: P.x / SVGU, y: P.y / SVGU })), line: line / SVGU, size: 13.6 / .86 / SVGU, parent: kept });// (engrave() cuts its capitals .86 of the size it is given: the SVG's 13.6)
       k.set(+btn.getAttribute('aria-valuenow') || 0); knobParts.set(btn, k); ticking.push(now => k.tick(now));
     }
     return k;
@@ -183,8 +191,8 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
     L.j.size(radius);
     return L;
   }
-  const brass = M.brassDull;
-  const trayMat = new THREE.MeshStandardMaterial({ color: '#8f7144', roughness: .5, metalness: 1, bumpMap: tex.panelRough, bumpScale: .08 });
+  // the holders and the tray: the same aged brass, its grain catching the light
+  const trayMat = new THREE.MeshStandardMaterial({ color: '#9a7c4a', roughness: .48, metalness: 1, bumpMap: tex.panelRough, bumpScale: .08 });
   const lensMat = new THREE.MeshPhysicalMaterial({ color: '#050607', roughness: .05, metalness: 0, clearcoat: 1, clearcoatRoughness: .03 });
   const eyeGeo = (() => { const p = [[.74, 0], [1, 0], [1, .1], [.97, .2], [.9, .25], [.82, .25], [.77, .2], [.76, .12], [.74, .1]].map(([r, y]) => new THREE.Vector2(r, y)); const g = new THREE.LatheGeometry(p, 64); g.rotateX(Math.PI / 2); g.userData.keep = true; return g; })();
   const bossGeo = (() => { const p = [[0, 0], [1, 0], [1, .35], [.9, .55], [.6, .66], [0, .7]].map(([r, y]) => new THREE.Vector2(r, y)); const g = new THREE.LatheGeometry(p, 32); g.rotateX(Math.PI / 2); g.userData.keep = true; return g; })();
@@ -215,7 +223,7 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
       // a switch not fitted: the kit's blanking plate, the one the back carries for its Bluetooth group
       const bl = mod.querySelector('.blank');
       if (bl && placed(bl)) { const bb = box(bl), p = at(bb.x + bb.w / 2, bb.y + bb.h / 2, 0);
-        const plate = K.blank(bb.w / U, bb.h / U, 'NOT FITTED', { size: 13.5 / U, bolts: bs * .85, parent: deckParts }); plate.group.position.copy(p); }
+        const plate = K.blank(bb.w / U, bb.h / U, 'NOT FITTED', { size: 12.5 / .86 / U, bolts: bs * .85, parent: deckParts }); plate.group.position.copy(p); }
       // Light's eyepiece: a turned brass ring and a dark lens round the camera's picture, and its shutter
       if (eye && placed(eye)) {
         eyeEl = eye; const r = eb.w / 2 / U, p = at(eb.x + eb.w / 2, eb.y + eb.h / 2, .02);
@@ -240,13 +248,13 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
       const cap = new THREE.Mesh(new THREE.CircleGeometry(pr * .35, 24), M.brass); cap.position.set(pv.x, pv.y, .07 + pr * .705); deckParts.add(cap);
       if (self.vu) self.vu.layout();
     }
-    // the outbox: a shallow brass letter tray under the slips' column
+    // the outbox: a shallow letter tray under the slips' column, a brass rim round a steel floor
     const col = deck.querySelector('.row2 > .col.tray') || deck.querySelector('.outbox');
     if (col && shown(col)) {
       // round the column's content (the standard build's tray column reaches past it into its margins to scroll)
       const b = box(col), cs = getComputedStyle(col), pl = parseFloat(cs.paddingLeft), pr = parseFloat(cs.paddingRight), pt = parseFloat(cs.paddingTop), pbm = parseFloat(cs.paddingBottom);
       const pad = 6, x = b.x + pl - pad, y = b.y + pt - pad, w = b.w - pl - pr + 2 * pad, h = b.h - pt - pbm + 2 * pad, c = at(x + w / 2, y + h / 2, 0), rim = 4 / U;
-      const fl = new THREE.Mesh(slab(w / U, h / U, .012, { r: 2 / U, b: .004 }), trayMat); fl.position.set(c.x, c.y, 0); fl.receiveShadow = true; fl.castShadow = true; deckParts.add(fl);
+      const fl = new THREE.Mesh(slab(w / U, h / U, .012, { r: 2 / U, b: .004 }), M.cover);// (its floor the switches' pressed steel, inside a brass rim) fl.position.set(c.x, c.y, 0); fl.receiveShadow = true; fl.castShadow = true; deckParts.add(fl);
       const lip = new THREE.Mesh(frameGeo(w / U - 2 * rim, h / U - 2 * rim, rim, .045, 1 / U), trayMat); lip.position.set(c.x, c.y, .004); lip.castShadow = true; lip.receiveShadow = true; deckParts.add(lip);
     }
     // the stations: each card slid into a brass holder, its jewel beside it
@@ -254,7 +262,7 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
       if (!shown(stn)) continue;
       const hd = stn.querySelector('.holder'), sp = hd && hd.querySelector(':scope > span');
       if (hd && sp) { const hb = box(hd), sb = box(sp), c = at(hb.x + hb.w / 2, hb.y + hb.h / 2, 0), ic = at(sb.x + sb.w / 2, sb.y + sb.h / 2, 0);
-        const fr = new THREE.Mesh(slab(hb.w / U, hb.h / U, .028, { r: 2 / U, b: .009, holes: [{ x: ic.x - c.x, y: ic.y - c.y, w: sb.w / U, h: sb.h / U, r: .5 / U }] }), brass);
+        const fr = new THREE.Mesh(slab(hb.w / U, hb.h / U, .028, { r: 2 / U, b: .009, holes: [{ x: ic.x - c.x, y: ic.y - c.y, w: sb.w / U, h: sb.h / U, r: .5 / U }] }), trayMat);
         fr.position.set(c.x, c.y, 0); fr.castShadow = true; fr.receiveShadow = true; deckParts.add(fr);
         const back = new THREE.Mesh(new THREE.PlaneGeometry(sb.w / U, sb.h / U), M.hole); back.position.set(ic.x, ic.y, .002); deckParts.add(back); }
       const je = stn.querySelector('.jewel');
@@ -333,7 +341,7 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
       p.position.set(left.x + w / 2, left.y, -BAY + .03);
       // the screws sit in the plate's ends, 8 px in, as the printed plates have them
       plateScrews[r][0].position.set(p.position.x - w / 2 + 8 / U, left.y, -BAY + .055); plateScrews[r][1].position.set(p.position.x + w / 2 - 8 / U, left.y, -BAY + .055); plateScrews[r].forEach(m => m.scale.setScalar((6 / U) / .07)); });
-    const cn = [...app.querySelectorAll('.colno')]; nums.forEach((n, i) => { const r = box(cn[i]); const p = at(r.x + r.w / 2, r.y + r.h / 2, -BAY + .005); n.position.set(p.x, p.y + .07, -BAY + .005); n.scale.setScalar(Math.max(1, (13 / U) / .13)); });
+    const cn = [...app.querySelectorAll('.colno')]; nums.forEach((n, i) => { const r = box(cn[i]); const p = at(r.x + r.w / 2, r.y + r.h / 2, -BAY + .005); n.position.set(p.x, p.y + NUP, -BAY + .005); n.scale.setScalar(Math.max(1, (13 / U) / .13)); });
     layoutFoot();
     for (const f of later) f({ box, at, U, W, H, D });
     // the key's shadow covers the whole panel
@@ -372,7 +380,7 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
 
   // for checks: where the scene draws each part and where its HTML stands, in bank pixels, at rest. Each drum's centre
   // (and its axle's height), each row plate's left end (its label's left plus 4 px) and each column number's middle
-  // (drawn .07 up, by design)
+  // (drawn NUP up, by design)
   api.placement = () => { camera.updateMatrixWorld(); const br = bank.getBoundingClientRect(), hr = host.getBoundingClientRect();
     const px = v => { const q = v.clone().project(camera); return { x: (q.x + 1) / 2 * W + hr.left - br.left, y: (1 - q.y) / 2 * H + hr.top - br.top }; };
     const rel = el => { const r = el.getBoundingClientRect(); return { l: r.left - br.left, t: r.top - br.top, w: r.width, h: r.height }; };
@@ -380,7 +388,7 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
     return { drums: drums.map(d => { const r = rel(d.cell.el); const c = px(d.g.position);
         return { at: `drum ${d.r + 1}.${d.c + 1}`, drawn: c, html: { x: r.l + r.w / 2, y: r.t + r.w * .08 + r.w / 2 }, axle: px(new THREE.Vector3(c.x, rails[d.r].position.y, rails[d.r].position.z)).y, centre: c.y }; }),
       plates: plates.map((p, r) => { const w = p.geometry.parameters.width * p.scale.x; return { at: `plate ${r + 1}`, drawn: { x: px(new THREE.Vector3(p.position.x - w / 2, p.position.y, p.position.z)).x }, html: { x: rel(lab[r]).l + 4 } }; }),
-      numbers: nums.map((n, i) => { const r = rel(cn[i]); return { at: `number ${i + 1}`, drawn: px(new THREE.Vector3(n.position.x, n.position.y - .07, n.position.z)), html: { x: r.l + r.w / 2, y: r.t + r.h / 2 } }; }) }; };
+      numbers: nums.map((n, i) => { const r = rel(cn[i]); return { at: `number ${i + 1}`, drawn: px(new THREE.Vector3(n.position.x, n.position.y - NUP, n.position.z)), html: { x: r.l + r.w / 2, y: r.t + r.h / 2 } }; }) }; };
   document.fonts && document.fonts.ready.then(() => { drums.forEach(d => d.last = ''); layout(); });
 
   // the same curve as the CSS turn: cubic-bezier(.2,.85,.25,1.04) over .95 s
@@ -389,6 +397,8 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
   const DUR = 950; let frames = 0;
   const ticking = [];// parts that animate on their own (knobs): tick(now) true while moving
   const self = { ready: false, layout, dirty() { dirty = true; }, renders: () => renders,
+    // a part drawn alone in this scene's light, as a picture for the CSS (the kit's bake: clips, pins, screws on paper)
+    bake: (o, opts) => K.bake(o, opts),
     // a switch turned: its knob turns to the stop now, before the HTML redraws
     knob(id, pos) { const k = knobParts.get(document.getElementById(id)); if (k && k.set(pos, !rm.matches && !still)) dirty = true; },
     jewel(id, on) { const L = lamps.get(document.getElementById(id)); if (L && L.j.set(on)) dirty = true; }, K, scene, at, box: el => box(el), later, ticking, lamps, syncLamp, soon, host, get U() { return U; }, get D() { return D; } };
