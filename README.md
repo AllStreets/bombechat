@@ -6,7 +6,7 @@
   <img alt="channel" src="https://img.shields.io/badge/channel-sound_%C2%B7_light-c29a5c?style=for-the-badge&labelColor=141311" />
   <img alt="build" src="https://img.shields.io/badge/build-airgapped-2c4a3a?style=for-the-badge&labelColor=141311" />
   <img alt="crypto" src="https://img.shields.io/badge/crypto-X25519_%C2%B7_XChaCha20_%C2%B7_Ed25519-33465b?style=for-the-badge&labelColor=141311" />
-  <img alt="tests" src="https://img.shields.io/badge/tests-259_passing-a5822e?style=for-the-badge&labelColor=141311" />
+  <img alt="tests" src="https://img.shields.io/badge/tests-471_passing-a5822e?style=for-the-badge&labelColor=141311" />
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-7a2a22?style=for-the-badge&labelColor=141311" /></a>
   <br />
   <img alt="Rust" src="https://img.shields.io/badge/Rust-workspace-6e6656?style=flat-square&labelColor=141311" />
@@ -46,7 +46,7 @@ The modem carries about **16 bytes a second** on sixteen tones between **17.6 an
 
 ## How a message travels
 
-<img src="docs/media/front.png" alt="The front of the machine: a bank of 36 code drums above the message sheet, the key check card, the channel switches and the room meter" />
+<img src="docs/media/front.png" alt="The front of the machine, one framed panel: three rows of twelve code drums labelled Plain, Heard and Key, with the frame counter under them. Below, the message sheet with a message arriving as provisional tape, the key check card, the Sound and Light switches beside a blanking plate where Bluetooth would be, the room meter, the outbox slip and the stations." />
 
 You type a reply on the message sheet and press Send by sound. The message is sealed, cut into 48-byte chunks, wrapped in Reed-Solomon parity and played as multi-tone FSK, each transmission starting with a chirp the receiver can lock onto. Before playing, the sender waits until the room is quieter than 40 dB, and by default it plays the message twice more, a minute and a half apart, in case the first was missed.
 
@@ -56,7 +56,7 @@ Light works the same way, between a screen and a camera, and is described below.
 
 ## By light
 
-<img src="docs/media/light.png" alt="The flashing view: the message sheet's place taken by a signal lamp in a brass bezel, showing a square code of black and white cells, with Frames shown at 13 and Bytes a second at 2290. The caption reads Hold this screen up to Marisol's camera." />
+<img src="docs/media/light.png" alt="The flashing view: the drums and the message sheet give way to a signal lamp in a brass bezel, showing a square code of black and white cells, with Frames shown at 13 and Bytes a second at 2290. The caption reads Hold this screen up to Marisol's camera." />
 
 Light carries the same sealed messages as sound, from one screen to another laptop's camera. It's much faster, and it's the hardest channel to overhear, since someone has to see the screen.
 
@@ -73,7 +73,7 @@ Flash speed on the back of the machine has three settings:
 Bigger cells read from further away and in brighter rooms. Even Slow moves a full-length message in a few seconds, against minutes by sound.
 
 <p align="center">
-  <img src="docs/media/light.gif" alt="A message going out by light. The reply is typed, the cursor presses Flash, and a signal lamp opens in the message sheet's place: a plain grey square for a moment, then a code of black and white cells changing ten times a second while the Frames shown counter climbs. Then the lamp closes and the message sits on the sheet, stamped seen by Marisol." width="900" />
+  <img src="docs/media/light.gif" alt="A message going out by light. The reply is typed, the cursor presses Flash, and a signal lamp opens over the drums and the message sheet: a plain grey square for a moment, then a code of black and white cells changing ten times a second while the Frames shown counter climbs. Then the lamp closes and the message sits on the sheet, stamped seen by Marisol." width="900" />
 </p>
 
 Pairing works by light too. Both of you press Pair by light and hold the screens face to face. Each screen shows its hello as a code while its camera reads the other's, and the key check card then shows the same 60-digit safety number to read out loud.
@@ -87,10 +87,10 @@ While Light reads, a small brass eyepiece on its switch shows what the camera se
 ## By Bluetooth
 
 <p align="center">
-  <img src="docs/media/bluetooth.png" alt="The front panel on the standard build with the Bluetooth switch at Open and its jewel lit. In the tray beside the room meter a request slip reads Ines Duarte, as they gave it, key CA96, asks to connect, 09.15, with Accept and Decline stamps. Under the meter a typed line lists the strangers in range: K7MX, R2QD." width="435" />
+  <img src="docs/media/bluetooth.png" alt="The front panel on the standard build with the Bluetooth switch at Open and its jewel lit. In the tray beside the room meter a torn request slip reads Ines Duarte, as they gave it, key CA96, asks to connect, 09.15, with Accept and Decline stamps. Under it a strip lists the strangers in range: K7MX, R2QD and one more." width="435" />
 </p>
 
-On the standard build, the third switch on the front of the machine is Bluetooth, where the airgapped build has a blanking plate. It has three positions. Off is where it starts, and at Off the radio is idle: nothing is advertised or scanned for, and every connection this Mac opened is closed. macOS is asked for Bluetooth permission the first time you turn it on, and not before. At Contacts it reaches the people you've added whenever they're in range, and a Send by Bluetooth key sits beside Flash and Send by sound. At Open, strangers nearby can also ask to connect, and you can ask them.
+On Bombechat Standard, the standard build, the third switch on the front of the machine is Bluetooth, where the airgapped build has a blanking plate. It has three positions. Off is where it starts, and at Off the radio is idle: nothing is advertised or scanned for, and every connection this Mac opened is closed. macOS is asked for Bluetooth permission the first time you turn it on, and not before. At Contacts it reaches the people you've added whenever they're in range, and a Send by Bluetooth key sits beside Flash and Send by sound. At Open, strangers nearby can also ask to connect, and you can ask them.
 
 Requests work the way they do on LinkedIn. A stranger in range shows up as a random four-character label, never a name or a key. Asking sends your name and key to that one person, and nothing of theirs comes back until they accept. On their machine the request arrives as a slip with Accept and Decline. Accept adds you as a contact who hasn't been checked in person yet, and lays out the safety number to compare when you do meet. Decline keeps nothing and sends nothing back, so from your side it looks exactly like a request nobody answered. While New contacts need a key check is on, which it is until you change it, requests are shown but can't be sent or accepted.
 
@@ -110,7 +110,13 @@ Someone in range can still link some things. Every Bombechat Mac advertises the 
 
 The window is a Bombe and its paperwork. Three rows of drums show what the sender wrote, what the microphone caught, and the key you share. When a frame lands, the drums turn to it and the top row settles on the words. The drums are real 3D objects, built in three.js from the same enamel, brass and bakelite as the rest of the machine, and they make a ratchet click for every letter that passes the index and a clunk when they settle. That sound is synthesised in the browser and filtered hard above 7 kHz, so it never leaks into the band Bombechat listens on, and it goes quiet while a message is arriving.
 
-To see the drums work before you've paired with anyone, press Test the machine, the stamp at the bottom right of the message sheet: the machine plays a short message to itself and spells it out as the microphone hears it back.
+To see the drums work before you've paired with anyone, press Test the machine, the stamp at the bottom right of the message sheet. On a new machine the empty sheet points at it. The machine seals a message to its own key, waits for the room to go quiet as any send does, plays it, and spells it out on the drums as its own microphone hears it back. If you've typed something in the reply line, that's what it sends, up to 100 bytes, so you can watch your own words come round. Otherwise it sends a short line of its own. Nothing of the test is kept.
+
+<p align="center">
+  <img src="docs/media/selftest.gif" alt="Testing the machine on a new, empty message sheet. hello world is typed in the reply line and Test the machine is pressed. The entry says it is sealed to this machine and waiting for quiet while the room meter sits near 47 dB; the room falls quiet and it plays. The wait while it plays is sped up four times. Then the frames land: the drums turn, the plain row reading HELL and then O WORLD after the sender's keys, while HELLO WORLD types onto the sheet as tape and is stamped heard by this machine." width="900" />
+</p>
+
+While a test runs the stamp reads Stop the test, in red. Press it, or Escape, and the sound stops at once, including what was already handed to the speaker. Bluetooth headphones and AirPlay speakers keep a buffer of their own, so they can play on for a moment. A test by light works the same way with a mirror held up to the screen.
 
 <img src="docs/media/notice.png" alt="The message sheet with the Public switch thrown and a notice typed in, signed with this machine's key" />
 
@@ -142,9 +148,13 @@ The first run asks for your name and a passphrase. Nobody can recover the passph
 
 ## Settings
 
-<img src="docs/media/settings.gif" alt="The back of the machine. Repeats is changed from 2 to 3 on the wiring schedule card, and the camera moves in on that row of the rear panel while its patch cord pulls out and seats in jack 3. A click returns to the whole panel, then the same plug is dragged back to jack 2 on the panel itself, and the view pulls out again." />
+<img src="docs/media/back.png" alt="The back of the machine as it opens. On the left, the wiring schedule card with the Sound, Light, Bluetooth and Machine settings. On the right, the rear panel from its top: a cable duct along the top edge, then three rows of twelve drum connectors signed Row 1, Row 2 and Row 3, columns numbered 12 to 1, their cords looping between them and gathered into five bundles that rise into the duct. Below, the maker's plate and the rows of jacks for every setting, the Bluetooth row blanked off as not fitted." />
 
-Settings live on the back of the machine. Press the Settings plate and the window turns round. On the left is a wiring schedule, and on the right is the rear panel, rendered in 3D. Every setting is a row of jacks with a patch cord in it. On and off settings have two jacks, and number settings have one jack per value, so Repeats at 3 means the cord sits in jack 3.
+Settings live on the back of the machine. Press the Settings plate and the window turns round. On the left is a wiring schedule, and on the right is the rear panel, rendered in 3D. It opens on the top of the panel, where the drums come through. There are three rows of twelve connectors, Row 1 to Row 3, one behind each drum on the front, so Row 1 is the back of the Plain row. Seen from behind, the columns run 12 to 1. Their cords are gathered into five bundles that run up into a duct along the top.
+
+Under the maker's plate, every setting is a row of jacks with a patch cord in it. On and off settings have two jacks, and number settings have one jack per value, so Repeats at 3 means the cord sits in jack 3.
+
+<img src="docs/media/settings.gif" alt="The back of the machine. Repeats is changed from 2 to 3 on the wiring schedule card, and the camera moves down from the top of the panel onto that row while its patch cord pulls out and seats in jack 3. A click returns to the opening view of the three connector rows and the duct, then the same plug is dragged back to jack 2 on the panel itself, and the view pulls out again." />
 
 Change a setting on the card and the camera moves in on that row while the cord pulls out, travels along the panel and seats itself in the new jack. You can also drag a plug on the panel itself, or click a jack. Settings that wait for a later feature, like the hop limit for relay, are taped over with a note saying what they're waiting for.
 
@@ -158,7 +168,7 @@ cd bombechat/app/src-tauri
 cargo tauri build
 ```
 
-The app lands in `target/release/bundle/macos/Bombechat.app` at the top of the repository. The first time it opens, macOS asks for the microphone; without it nothing can be heard. It asks for the camera the first time Light is turned on. Its store and settings live in `~/Library/Application Support/app.bombechat.airgapped/`. That is the airgapped build; the standard build, with Bluetooth, is built from `bluetooth/` (see [Two editions](#two-editions)). `docs/testing/two-laptops.md` walks through trying it on two Macs.
+This is version 0.5.0. The app lands in `target/release/bundle/macos/Bombechat.app` at the top of the repository. The first time it opens, macOS asks for the microphone; without it nothing can be heard. It asks for the camera the first time Light is turned on. Its store and settings live in `~/Library/Application Support/app.bombechat.airgapped/`. That is the airgapped build, Bombechat. The standard build with Bluetooth, Bombechat Standard, is built from `bluetooth/` (see [Two editions](#two-editions)). Both sides of the machine have a plate in the top bar reading Build, the version and the commit it was built from, so you can always tell which build you have open. `docs/testing/two-laptops.md` walks through trying it on two Macs.
 
 ### Or look at it in a browser
 
@@ -175,9 +185,9 @@ Then open http://localhost:4810/app/ui/bombechat.html.
 
 Bombechat comes as two builds from one repository.
 
-The airgapped build, at the root, talks by sound and light only. It has no Bluetooth or networking code in it at all. It exists for people who can't risk a radio giving them away: a build with Bluetooth in it advertises the Mac to anything in range whenever the switch is on, and a bug or a forgotten setting could leave it on. When the code isn't there, there's nothing to leave on, and `tools/check-airgapped.sh` proves on every change that it isn't.
+The airgapped build, Bombechat, is at the root and talks by sound and light only. It has no Bluetooth or networking code in it at all. It exists for people who can't risk a radio giving them away: a build with Bluetooth in it advertises the Mac to anything in range whenever the switch is on, and a bug or a forgotten setting could leave it on. When the code isn't there, there's nothing to leave on, and `tools/check-airgapped.sh` proves on every change that it isn't.
 
-The standard build, in `bluetooth/`, is the same project plus Bluetooth, for everyday use with the people you talk to most and for requests to connect. Its app is `app.bombechat.standard`, so its store and Keychain item never mix with the airgapped app's, and its maker's plate says "standard build".
+The standard build, Bombechat Standard, is in `bluetooth/`. It's the same project plus Bluetooth, for everyday use with the people you talk to most and for requests to connect. Its app is `app.bombechat.standard`, so its store and Keychain item never mix with the airgapped app's, and its maker's plate says "standard build".
 
 To build the airgapped app:
 
@@ -193,14 +203,14 @@ cd bluetooth/app/src-tauri
 cargo tauri build
 ```
 
-It lands in `bluetooth/target/release/bundle/macos/Bombechat.app`. Both apps are called Bombechat, so copying both into `/Applications` would leave only the second. The standard build's checks run from inside `bluetooth/`: `cargo test --workspace` and `npm run check`.
+It lands in `bluetooth/target/release/bundle/macos/Bombechat Standard.app`, so both apps can sit in `/Applications` side by side. The standard build's checks run from inside `bluetooth/`: `cargo test --workspace` (672 tests there) and `npm run check`.
 
 `bluetooth/` is generated. `tools/sync-bluetooth.sh` copies everything the root tracks (apart from `docs/`, `mockups/`, `.github/`, this README and the script and its test) into it, applies the small patches in `bluetooth/edition/patches/` and lays `bluetooth/edition/files/` over the top. Fix things at the root and run the script; CI fails if `bluetooth/` doesn't match what it writes, so the two editions differ only where `bluetooth/edition/` says they do. The one exception is `bluetooth/Cargo.lock`, which the edition keeps for itself since its dependencies will differ. The root never gains Bluetooth code, and the airgapped check still runs on it alone.
 
 ## Checks
 
 ```sh
-cargo test --workspace     # 259 tests: the crypto, the modem, the store, the node and the app's commands
+cargo test --workspace     # 471 tests: the crypto, the modem, the store, the node and the app's commands
 npm run check              # both pages in Chrome on the GPU
 npm run check:airgapped    # the dependency gate
 ```
@@ -212,7 +222,7 @@ CI runs the Rust tests and the airgapped check on Linux and on macOS, where the 
 ## Roadmap
 
 - **Relay.** Laptops carry messages for others, so a message can hop across a building or a block to reach someone out of earshot.
-- **Bluetooth on real Macs.** The standard build's Bluetooth is built and tested in code. Next is the two-Mac test, then pictures of it for this page.
+- **Bluetooth on real Macs.** The standard build's Bluetooth is built and tested in code. Next is the two-Mac test and the six measurements it still owes.
 - **Phones.** The same machine on iOS and Android.
 - **A bridge to Bitchat**, so messages can cross into its Bluetooth mesh.
 
