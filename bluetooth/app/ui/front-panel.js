@@ -27,7 +27,9 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
   // vector toward the light (--lx right, --ly down, so the light at the upper left is negative in both), and --lz how
   // far it stands out of the panel, as the cosine of its angle to the panel's face
   { const v = key.position.clone().normalize(), xy = Math.hypot(v.x, v.y);
-    app.style.setProperty('--lx', (v.x / xy).toFixed(3)); app.style.setProperty('--ly', (-v.y / xy).toFixed(3)); app.style.setProperty('--lz', v.z.toFixed(3)); }
+    app.style.setProperty('--lx', (v.x / xy).toFixed(3)); app.style.setProperty('--ly', (-v.y / xy).toFixed(3)); app.style.setProperty('--lz', v.z.toFixed(3));
+    // and the way its shadows fall, as a CSS gradient's angle (0deg up the screen, turning clockwise): away from the light
+    app.style.setProperty('--la', (Math.atan2(-v.x / xy, -v.y / xy) * 180 / Math.PI).toFixed(1) + 'deg'); }
 
   /* ---------- the drums (as they were in bombechat.html) ---------- */
   // the drums' bay is let into the panel this deep: the plates, numbers, axles and pointers stand on its floor
@@ -326,6 +328,19 @@ export async function mountFrontPanel({ app, bank, deck, cells, still = false, r
     // the keys: 25 px tall, round-ended; the toggle's plate: square-cornered
     await sliced(pill(5, 1.6, .78, .12, .12), 200, (.8 + .12) / (5 + .24), '--key');
     await sliced(pill(3.4, 2, .16, .1, .1), 160, .12, '--toggle');
+    // hardware on paper, in the same light: the sheet's two clips, a brass tab screwed to the panel over the paper's
+    // top edge, and the key check card's drawing pin. Each takes its own shadow on a catcher, so on the paper it lands
+    // where the key light throws it
+    { const g = new THREE.Group(), w = .62, h = 1.15, r = .28;
+      const sh = new THREE.Shape(); sh.moveTo(-w / 2 + r, -h / 2); sh.lineTo(w / 2 - r, -h / 2); sh.quadraticCurveTo(w / 2, -h / 2, w / 2, -h / 2 + r); sh.lineTo(w / 2, h / 2 - r); sh.quadraticCurveTo(w / 2, h / 2, w / 2 - r, h / 2);
+      sh.lineTo(-w / 2 + r, h / 2); sh.quadraticCurveTo(-w / 2, h / 2, -w / 2, h / 2 - r); sh.lineTo(-w / 2, -h / 2 + r); sh.quadraticCurveTo(-w / 2, -h / 2, -w / 2 + r, -h / 2);
+      const tab = new THREE.Mesh(new THREE.ExtrudeGeometry(sh, { depth: .04, bevelEnabled: true, bevelThickness: .045, bevelSize: .05, bevelSegments: 4, curveSegments: 10 }), M.brassDull); g.add(tab);
+      const scr = new THREE.Group(); scr.add(new THREE.Mesh(headGeo, M.steel)); const sl = new THREE.Mesh(new THREE.BoxGeometry(1.5, .2, .3), M.hole); sl.position.z = .7; scr.add(sl);
+      scr.scale.set(.2, .2, .2); scr.position.set(0, .26, .13);
+      for (const [name, turn] of [['--clip-a', .5], ['--clip-b', -.9]]) { sl.rotation.z = turn; g.add(scr); set(name, K.bake(g, { px: 64, shadow: true, margin: .2 })); } }
+    { const p = [[0, 0], [1, 0], [1, .07], [.96, .15], [.78, .28], [.45, .37], [0, .4]].map(([r, y]) => new THREE.Vector2(r, y));
+      const head = new THREE.Mesh(new THREE.LatheGeometry(p, 48).rotateX(Math.PI / 2), M.brass);
+      set('--pin', K.bake(head, { px: 56, shadow: true, margin: .32 })); }
     K.bakeDone();
     root.classList.add('baked');
   }

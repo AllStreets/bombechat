@@ -23,6 +23,28 @@
   --type:'Cutive Mono','Cutive fallback','Courier New',monospace;
   /* the wrinkle finish of the enamel, laid over it */
   --noise:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .5  0 0 0 0 .5  0 0 0 0 .5  0 0 0 .55 0'/></filter><rect width='240' height='240' filter='url(%23n)'/></svg>");
+  /* Paper is lit by the machine's key light. front-panel.js publishes its direction on #app from the 3D scene (--lx, --ly:
+     a unit vector toward the light on the screen; --la: the way shadows fall, as a gradient's angle); these are the same
+     values, for a page drawn without WebGL. A shadow falls by (-lx, -ly) times its length */
+  --lx:-.555; --ly:-.832; --la:146.3deg;
+  /* the paper's fibre, as the sheet has always had it */
+  --fibre:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='300' height='300'><filter id='p'><feTurbulence type='fractalNoise' baseFrequency='.55' numOctaves='4' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .45  0 0 0 0 .38  0 0 0 0 .25  0 0 0 .09 0'/></filter><rect width='300' height='300' filter='url(%23p)'/></svg>");
+  /* and its tooth: the fibre's fine relief lit from the key light's side (azimuth 236, elevation 64, as --lx, --ly and
+     --lz have it), kept only where a grain faces away from the light */
+  --tooth:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='t' x='0' y='0' width='100%25' height='100%25'><feTurbulence type='fractalNoise' baseFrequency='1.6' numOctaves='2' seed='3' stitchTiles='stitch'/><feDiffuseLighting surfaceScale='1.1' diffuseConstant='1' lighting-color='%23fff'><feDistantLight azimuth='236' elevation='64'/></feDiffuseLighting><feColorMatrix values='0 0 0 0 .2  0 0 0 0 .14  0 0 0 0 .05  -.32 0 0 0 .29'/></filter><rect width='220' height='220' filter='url(%23t)'/></svg>");
+  /* how paper lies on the enamel: a hairline at its cut edge, a pixel of light where the edge faces the light, a contact
+     shadow where it touches, and a short soft shadow thrown along the light (a sheet lies flat: it casts little) */
+  --paper-edge:inset calc(var(--lx) * -1px) calc(var(--ly) * -1px) 0 rgba(255,251,240,.6),inset 0 0 0 .5px rgba(96,74,40,.38);
+  --paper-lie:0 0 0 .5px rgba(0,0,0,.4),calc(var(--lx) * -1px) calc(var(--ly) * -1px) 1.5px rgba(0,0,0,.55),calc(var(--lx) * -4px) calc(var(--ly) * -4px) 9px rgba(0,0,0,.38);
+  /* the torn short ends of the slips, four of each, chosen per slip (seedTears) */
+  --tl0:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 100' preserveAspectRatio='none'><polygon points='8.0,0.0 2.3,0.0 2.6,5.6 1.0,9.1 1.8,14.9 1.6,18.4 0.3,24.7 2.8,28.4 4.2,34.5 4.1,40.4 3.4,44.0 1.5,49.9 1.2,54.1 4.1,57.1 1.9,64.0 2.3,69.9 0.9,74.4 1.6,79.3 0.7,84.5 1.0,89.2 0.5,92.6 3.1,98.0 2.8,100.0 8.0,100.0'/></svg>");
+  --tr0:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 100' preserveAspectRatio='none'><polygon points='0.0,0.0 7.3,0.0 4.3,6.1 5.2,9.3 5.3,15.8 5.6,22.2 4.4,25.3 5.9,31.0 6.7,36.2 6.8,41.9 7.4,45.2 5.8,48.7 7.6,53.7 7.4,58.2 5.5,60.7 6.0,64.5 6.6,67.4 6.7,73.6 4.6,78.4 6.8,83.0 5.1,85.7 5.7,91.5 6.0,97.8 6.9,100.0 0.0,100.0'/></svg>");
+  --tl1:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 100' preserveAspectRatio='none'><polygon points='8.0,0.0 3.1,0.0 1.7,6.2 0.5,9.9 0.4,14.3 2.6,20.5 1.5,25.8 1.1,31.0 3.2,35.1 3.3,41.8 4.3,48.4 1.0,51.8 3.4,56.3 0.7,60.3 4.3,66.5 0.7,69.0 1.7,73.6 1.8,78.1 3.0,82.9 3.0,87.3 3.4,90.2 4.4,93.5 2.5,96.5 2.8,99.5 1.9,100.0 8.0,100.0'/></svg>");
+  --tr1:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 100' preserveAspectRatio='none'><polygon points='0.0,0.0 6.8,0.0 7.0,2.8 7.6,7.9 7.5,11.3 6.7,14.4 7.7,20.8 6.4,23.6 5.6,28.1 6.9,33.5 5.0,40.4 4.3,47.1 7.1,53.0 7.2,57.2 7.7,60.2 7.6,63.3 7.2,69.0 5.0,73.7 7.5,78.9 5.3,82.2 5.5,88.5 6.2,95.1 5.5,98.6 6.2,100.0 0.0,100.0'/></svg>");
+  --tl2:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 100' preserveAspectRatio='none'><polygon points='8.0,0.0 2.2,0.0 0.8,6.3 2.3,11.9 1.4,18.2 3.0,21.5 0.9,24.9 0.4,28.1 1.3,34.1 2.8,40.1 1.1,45.5 2.1,49.6 2.6,53.8 2.5,58.0 1.0,64.5 1.8,70.4 3.4,74.3 2.2,77.7 1.3,81.5 3.5,87.6 3.8,92.3 2.6,97.9 0.7,100.0 8.0,100.0'/></svg>");
+  --tr2:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 100' preserveAspectRatio='none'><polygon points='0.0,0.0 7.6,0.0 6.6,3.5 5.8,7.8 5.3,10.3 6.8,17.3 7.3,22.4 6.6,28.8 7.1,32.7 5.0,39.6 5.1,44.6 5.2,47.9 5.3,52.7 7.6,55.5 7.4,58.9 5.2,61.5 3.7,68.1 5.5,74.5 4.8,79.9 7.4,85.6 4.4,91.3 4.7,95.8 6.2,100.0 0.0,100.0'/></svg>");
+  --tl3:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 100' preserveAspectRatio='none'><polygon points='8.0,0.0 1.5,0.0 1.0,6.3 2.0,11.8 2.3,15.4 2.4,19.2 1.4,23.4 4.5,28.5 3.3,32.4 1.2,35.3 4.1,39.6 1.1,42.5 2.4,46.2 2.2,52.0 2.3,55.8 2.9,60.0 2.9,66.1 2.7,69.1 2.7,72.6 0.4,77.1 0.3,81.7 1.9,86.3 0.5,93.0 2.2,95.9 0.5,99.4 1.2,100.0 8.0,100.0'/></svg>");
+  --tr3:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 100' preserveAspectRatio='none'><polygon points='0.0,0.0 6.9,0.0 5.2,3.8 5.4,9.7 5.1,15.8 6.0,21.1 7.2,23.7 4.8,27.4 5.1,30.5 6.7,33.5 5.4,38.4 6.8,43.6 5.1,49.1 5.7,54.5 5.8,58.5 6.9,64.8 6.1,69.9 3.5,72.6 7.5,75.9 7.5,78.9 5.4,83.3 7.6,89.9 6.2,93.8 6.2,97.8 7.2,100.0 0.0,100.0'/></svg>");
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html{background:#121311;color-scheme:dark}
@@ -195,10 +217,18 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
 
 
 /* message sheet */
-.sheet{grid-area:sheet;position:relative;display:flex;flex-direction:column;min-height:0;background:var(--buff);color:var(--type-ink);border-radius:1px;padding:16px 0 0;
-  box-shadow:0 1px 0 rgba(255,255,255,.2) inset,0 10px 24px rgba(0,0,0,.55),0 2px 3px rgba(0,0,0,.5);
-  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='300' height='300'><filter id='p'><feTurbulence type='fractalNoise' baseFrequency='.55' numOctaves='4' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .45  0 0 0 0 .38  0 0 0 0 .25  0 0 0 .09 0'/></filter><rect width='300' height='300' filter='url(%23p)'/></svg>");
+.sheet{grid-area:sheet;position:relative;display:flex;flex-direction:column;min-height:0;background-color:var(--buff);color:var(--type-ink);border-radius:1px;padding:16px 0 0;
+  /* the key light falling across it (warmer where it comes in, a few percent down where it leaves), the lower right
+     corner lifting off the enamel (its slope turned a little more to the light), the tooth and the fibre */
+  background-image:radial-gradient(120% 95% at 0 0,rgba(255,249,232,.13),rgba(255,249,232,0) 62%),linear-gradient(var(--la),rgba(80,58,24,0) 40%,rgba(80,58,24,.075)),
+    radial-gradient(90px 64px at 100% 100%,rgba(255,250,238,.16),rgba(255,250,238,0) 72%),var(--tooth),var(--fibre);
+  /* where it lifts, its shadow reaches further: a deeper, tighter shadow tucked under that corner */
+  box-shadow:var(--paper-edge),var(--paper-lie),calc(var(--lx) * -9px) calc(var(--ly) * -9px) 9px -6px rgba(0,0,0,.42);
   transform:rotate(-.2deg)}
+/* held to the panel along its top edge by two brass tabs, screwed down past the paper's edge (baked in the scene's
+   light, their shadows on the paper as the key light throws them) */
+.baked .app.gl .sheet::before,.baked .app.gl .sheet::after{content:"";position:absolute;top:-15px;left:14%;width:24px;height:36px;z-index:4;pointer-events:none;background:var(--clip-a) center/contain no-repeat}
+.baked .app.gl .sheet::after{left:auto;right:14%;background-image:var(--clip-b)}
 .sheet > *{margin-left:22px;margin-right:22px}
 .sh-head{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;border-bottom:1.5px solid var(--green-ink);padding-bottom:6px;color:var(--green-ink)}
 .sh-head h1{font-family:var(--print);font-weight:400;font-size:21px;letter-spacing:.01em;line-height:1.1}
@@ -211,7 +241,12 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
 .fields b{display:block;font-family:var(--type);font-size:14px;font-weight:400;color:var(--type-ink);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
 .logwrap{position:relative;flex:1 1 auto;min-height:0;margin-left:0!important;margin-right:0!important}
-.log{position:absolute;inset:0;overflow-y:auto;-webkit-mask-image:linear-gradient(transparent 0,#000 16px);mask-image:linear-gradient(transparent 0,#000 16px);overscroll-behavior:contain;padding:8px 14px 10px 22px;margin-right:8px;
+.log{position:absolute;inset:0;overflow-y:auto;
+  /* its ends: whatever has scrolled toward the head, or down toward the reply line, fades out over most of a line, so
+     no line stands half cut at either edge; at the top or the foot of what it holds, that end is not faded at all.
+     --fade and --fade-b follow the scroll (fadeLog) */
+  -webkit-mask-image:linear-gradient(transparent 0,transparent calc(var(--fade,0px) * .25),#000 calc(6px + var(--fade,0px)),#000 calc(100% - 6px - var(--fade-b,0px)),transparent calc(100% - var(--fade-b,0px) * .25));
+  mask-image:linear-gradient(transparent 0,transparent calc(var(--fade,0px) * .25),#000 calc(6px + var(--fade,0px)),#000 calc(100% - 6px - var(--fade-b,0px)),transparent calc(100% - var(--fade-b,0px) * .25));overscroll-behavior:contain;padding:8px 14px 10px 22px;margin-right:8px;
   scrollbar-width:thin;scrollbar-color:rgba(75,74,71,.55) transparent;
   background:linear-gradient(90deg,transparent 99.5px,rgba(47,90,75,.45) 99.5px,rgba(47,90,75,.45) 100.5px,transparent 100.5px) no-repeat;background-attachment:local}
 .log::-webkit-scrollbar{width:6px}
@@ -314,25 +349,30 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
 .rs.test.light{--tilt:1.2deg}
 
 /* key check card */
-.menu{grid-area:menu;position:relative;background:#f1eee5;border-radius:1px;padding:14px 16px 12px;color:var(--graphite);transform:rotate(.6deg);min-height:0;
-  background-image:linear-gradient(rgba(96,132,160,.22) 1px,transparent 1px),linear-gradient(90deg,rgba(96,132,160,.22) 1px,transparent 1px);background-size:12px 12px;background-position:-1px -1px;
-  box-shadow:0 10px 22px rgba(0,0,0,.55),0 2px 3px rgba(0,0,0,.4);display:flex;flex-direction:column}
+.menu{grid-area:menu;position:relative;background-color:#f1eee5;border-radius:1px;padding:14px 16px 12px;color:var(--graphite);transform:rotate(.6deg);min-height:0;
+  /* squared paper, lit as the sheet is: the light across it, the tooth, the printed squares */
+  background-image:radial-gradient(120% 95% at 0 0,rgba(255,252,240,.12),rgba(255,252,240,0) 62%),linear-gradient(var(--la),rgba(70,60,40,0) 40%,rgba(70,60,40,.07)),var(--tooth),
+    linear-gradient(rgba(96,132,160,.22) 1px,transparent 1px),linear-gradient(90deg,rgba(96,132,160,.22) 1px,transparent 1px);
+  background-size:auto,auto,auto,12px 12px,12px 12px;background-position:0 0,0 0,0 0,-1px -1px,-1px -1px;
+  box-shadow:var(--paper-edge),var(--paper-lie);display:flex;flex-direction:column}
 .menu .pin{position:absolute;top:-6px;left:50%;width:14px;height:14px;border-radius:50%;transform:translateX(-50%);background:radial-gradient(circle at 35% 30%,#f2eee4,#a19c90 55%,#55524b);box-shadow:0 2px 3px rgba(0,0,0,.6)}
-.menu h2{font-family:var(--print);font-weight:400;font-size:18px;color:#2b3a47;display:flex;justify-content:space-between;align-items:baseline;background:#f1eee5;margin:-2px -4px 0;padding:0 4px 4px}
+/* its drawing pin: a brass head, baked in the scene's light with its shadow on the card */
+.baked .app.gl .menu .pin{top:-9px;width:22px;height:22px;border-radius:0;background:var(--pin) center/contain no-repeat;box-shadow:none}
+.menu h2{font-family:var(--print);font-weight:400;font-size:18px;color:#2b3a47;display:flex;justify-content:space-between;align-items:baseline;margin:-2px -4px 0;padding:0 4px 4px}
 .menu h2 span{font-family:var(--type);font-size:13px;color:var(--graphite)}
 .menu .graph{flex:1 1 auto;min-height:130px;position:relative}
 .menu .graph svg{position:absolute;inset:0;width:100%;height:100%;display:block}
 .fpwrap{position:relative}
-.fp{width:100%;border-collapse:collapse;margin-top:6px;font-family:var(--type);font-size:14px;color:#2e2d2a;background:rgba(241,238,229,.85)}
+.fp{width:100%;border-collapse:collapse;margin-top:6px;font-family:var(--type);font-size:14px;color:#2e2d2a}
 .fp th{font-family:var(--print);font-weight:400;font-size:12.5px;color:#2b3a47;text-align:left;padding:3px 8px 3px 0;border-bottom:1px solid rgba(43,58,71,.5)}
 .fp td{padding:3px 6px 3px 0;border-bottom:1px solid rgba(43,58,71,.5);letter-spacing:.04em}
 .fp td.tk{width:22px;background:no-repeat center/14px url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'><path d='M1.5 7.5 L5 11.5 L12.5 2' fill='none' stroke='%234b4a47' stroke-width='1.6' stroke-linecap='round'/></svg>")}
-.menu .note{font-family:var(--type);font-size:12.5px;color:#3d3d3b;margin-top:6px;background:rgba(241,238,229,.85);align-self:flex-start;padding-right:4px;position:relative;z-index:1}
+.menu .note{font-family:var(--type);font-size:12.5px;color:#3d3d3b;margin-top:6px;align-self:flex-start;padding-right:4px;position:relative;z-index:1}
 .menu .stmp{position:absolute;left:2px;bottom:-6px;transform:rotate(-11deg);pointer-events:none;z-index:2}
 .menu .stmp div{font-family:var(--print);font-size:13px;color:var(--violet);border:1.8px double var(--violet);border-radius:50%;width:86px;height:86px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;line-height:1.2;opacity:.8;
   -webkit-mask:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='90' height='90'><filter id='s'><feTurbulence baseFrequency='1.1' numOctaves='2'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 -2 1.6'/></filter><rect width='90' height='90' filter='url(%23s)'/></svg>")}
 .menu .stmp small{font-size:12px}
-.ptlab{font-family:var(--type);font-size:12.5px;color:#3d3d3b;margin-bottom:4px;background:rgba(241,238,229,.85);align-self:flex-start;padding-right:4px}
+.ptlab{font-family:var(--type);font-size:12.5px;color:#3d3d3b;margin-bottom:4px;align-self:flex-start;padding-right:4px}
 /* pairing: rubber stamps pressed on the card, and the safety number pencilled in a ruled grid.
    The grid sits in the same place from the offer to the stamped card; only the stamps change. */
 .rs{appearance:none;background:transparent;cursor:pointer;font-family:var(--print);font-size:14px;line-height:1.15;color:var(--ink);border:1.6px solid currentColor;border-radius:3px;padding:4px 9px 3px;
@@ -404,6 +444,15 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
 .vu svg{display:block;width:100%;height:auto}
 .outbox{display:flex;flex-direction:column;gap:8px;min-width:0}
 .slip{background:var(--tape);font-family:var(--type);font-size:13.5px;color:#1c1a16;padding:7px 10px;box-shadow:0 2px 5px rgba(0,0,0,.5);transform:rotate(-.8deg);line-height:1.3;transition:transform .45s cubic-bezier(.5,0,.75,0),opacity .45s;overflow-wrap:anywhere}
+/* a slip is thinner paper than the sheet, torn from a pad at its short ends: a touch of what it lies on shows through
+   it, and its shadow is the shallow one of paper lying flat, thrown by the tray it lies in (a mask would cut a shadow
+   of its own off with the tear) */
+.slip:not(.empty){background:var(--tooth),linear-gradient(var(--la),rgba(255,251,240,.1),rgba(80,58,24,.05)),rgba(241,233,212,.955);box-shadow:var(--paper-edge);padding-left:12px;padding-right:12px;
+  -webkit-mask:var(--tear-l,var(--tl0)) left/8px 100% no-repeat,linear-gradient(#000 0 0) center/calc(100% - 15px) 100% no-repeat,var(--tear-r,var(--tr0)) right/8px 100% no-repeat;
+  mask:var(--tear-l,var(--tl0)) left/8px 100% no-repeat,linear-gradient(#000 0 0) center/calc(100% - 15px) 100% no-repeat,var(--tear-r,var(--tr0)) right/8px 100% no-repeat}
+.outbox{filter:drop-shadow(calc(var(--lx) * -1px) calc(var(--ly) * -1px) .8px rgba(0,0,0,.5)) drop-shadow(calc(var(--lx) * -2.5px) calc(var(--ly) * -2.5px) 3px rgba(0,0,0,.28))}
+/* a measure and its unit stay on one line */
+.slip .u{white-space:nowrap}
 .slip:nth-child(2){transform:rotate(.6deg)}
 .slip small{display:block;font-size:12px;color:#6b6150;margin-top:3px}
 .slip.gone{transform:translate(30px,-26px) rotate(6deg);opacity:0}
@@ -412,6 +461,10 @@ body.turning #back{visibility:visible;transform:rotateY(0);transition:transform 
 .stn{display:grid;grid-template-columns:auto minmax(0,1fr);gap:9px;align-items:center}
 .holder{position:relative;padding:4px 8px 3px;background:linear-gradient(#cfc9b9,#b3ad9d);border-radius:2px;box-shadow:inset 0 0 0 1px rgba(0,0,0,.4),0 1px 2px rgba(0,0,0,.6);min-width:0}
 .holder span{display:block;background:#efe8d4;font-family:var(--type);font-size:13px;color:#1f1c17;padding:2px 6px;box-shadow:inset 0 1px 2px rgba(0,0,0,.25);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* a station's card, slid into its brass holder: lit as the sheet is, and in the shade of the holder's lip where the
+   lip stands between it and the light */
+.holder>span{background:var(--tooth),linear-gradient(var(--la),rgba(255,251,240,.12),rgba(80,58,24,.06)),#efe8d4;
+  box-shadow:inset calc(var(--lx) * -2px) calc(var(--ly) * -2px) 2.5px -1px rgba(40,28,10,.5),inset 0 0 0 .5px rgba(80,60,30,.3)}
 .holder span small{display:block;font-size:12px;color:#625a49;margin-top:1px;overflow:hidden;text-overflow:ellipsis}
 .counter{display:flex;align-items:center;gap:10px}
 
@@ -621,9 +674,17 @@ import { front } from './edition.js';
    log scrolls within it as it does on a wide window. Never shorter than 340px. */
 const NARROW=matchMedia('(max-width:1399px)');
 function fitSheet(){const sh=document.querySelector('.sheet');
-  if(!NARROW.matches){sh.style.removeProperty('--sheet-h');return}
-  const top=sh.getBoundingClientRect().top+scrollY;sh.style.setProperty('--sheet-h',Math.max(340,Math.floor(innerHeight-top-14))+'px');sh.classList.add('fitted')}
+  if(!NARROW.matches){sh.parentElement.style.removeProperty('--sheet-h');return}
+  // (set on the deck: the sheet takes its height from it, and the speaker's grille under it the rest of the column)
+  const top=sh.getBoundingClientRect().top+scrollY;sh.parentElement.style.setProperty('--sheet-h',Math.max(340,Math.floor(innerHeight-top-14))+'px');sh.classList.add('fitted')}
 fitSheet();addEventListener('resize',fitSheet);
+/* ---------- the slips' torn ends ----------
+   each slip torn from its pad its own way, kept while it lies in the tray: one of four tears at each end, chosen from
+   what is written on it (its id, or its words) */
+function seedTears(){for(const s of document.querySelectorAll('.panel .slip:not(.empty)')){const k=s.dataset.id||s.dataset.contact||s.textContent.slice(0,40);
+  if(s.dataset.torn===k)continue;s.dataset.torn=k;let h=7;for(const c of k)h=(h*31+c.charCodeAt(0))>>>0;
+  s.style.setProperty('--tear-l',`var(--tl${h&3})`);s.style.setProperty('--tear-r',`var(--tr${(h>>2)&3})`)}}
+new MutationObserver(seedTears).observe(document.querySelector('.panel'),{subtree:true,childList:true});seedTears();
 /* ---------- passphrase and contact ----------
    contacts() refuses until the store is open, saying whether one exists yet; then the
    page asks for the passphrase (the first time, chooses one) and asks again. */
@@ -805,7 +866,11 @@ function grow(fn,own){if(booting){fn();return}const follow=own||atBottom();fn();
 function put(ent){if(!booting){log.appendChild(ent);return}const at=+ent.dataset.at;log.insertBefore(ent,[...log.children].find(e=>+e.dataset.at>at)||null)}
 // the compose block changes height (a notice's line, a longer reply): a reader at the bottom stays there
 function pinned(fn){const was=atBottom();fn();if(was)log.scrollTop=log.scrollHeight}
-log.addEventListener('scroll',()=>{if(atBottom())newtab.hidden=true});
+// the log's ends fade by as much as there is beyond them, up to most of a line
+function fadeLog(){const below=Math.max(0,log.scrollHeight-log.clientHeight-log.scrollTop);
+  log.style.setProperty('--fade',Math.min(18,log.scrollTop)+'px');log.style.setProperty('--fade-b',Math.min(18,below)+'px')}
+log.addEventListener('scroll',()=>{if(atBottom())newtab.hidden=true;fadeLog()},{passive:true});
+new ResizeObserver(fadeLog).observe(log);new MutationObserver(fadeLog).observe(log,{childList:true,subtree:true});
 newtab.addEventListener('click',()=>{toBottom(true);log.focus({preventScroll:true})});
 const hhmm=ms=>{const d=new Date(ms);return String(d.getHours()).padStart(2,'0')+'.'+String(d.getMinutes()).padStart(2,'0')};
 const el=(tag,cls,text)=>{const e=document.createElement(tag);if(cls)e.className=cls;if(text!=null)e.textContent=text;return e};
@@ -1007,7 +1072,7 @@ const esc=s=>s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&qu
 function outItem(id){let it=outbox.get(id);if(!it){it={id,text:'',public:false,state:null,ent:null,how:'sound',leaving:false};outbox.set(id,it)}return it}
 function drawOutbox(){const q=[...outbox.values()].filter(m=>m.text&&(m.state==='waiting'||m.leaving));
   if(!q.length){outboxEl.innerHTML='<div class="slip empty">Nothing waiting to send.</div>';return}
-  outboxEl.innerHTML=q.slice(0,2).map(m=>`<div class="slip${m.leaving?' gone':''}" data-id="${m.id}">${esc(m.text)}<small>${m.public?'public, ':''}${FITTED.has(m.how)?esc(FITTED.get(m.how).slip(m)):m.how==='light'?(KNOBS.k2.pos<2?'flashes at Read and flash':'flashes next'):`sends once under ${sendUnder()} dB`}</small></div>`).join('')+(q.length>2?`<div class="slip empty">and ${q.length-2} more</div>`:'')}
+  outboxEl.innerHTML=q.slice(0,2).map(m=>`<div class="slip${m.leaving?' gone':''}" data-id="${m.id}">${esc(m.text)}<small>${m.public?'public, ':''}${FITTED.has(m.how)?esc(FITTED.get(m.how).slip(m)):m.how==='light'?(KNOBS.k2.pos<2?'flashes at Read and flash':'flashes next'):`sends once under <span class="u">${sendUnder()} dB</span>`}</small></div>`).join('')+(q.length>2?`<div class="slip empty">and ${q.length-2} more</div>`:'')}
 function status(it){const st=it.ent&&it.ent.querySelector('.state');if(!st)return;
   st.classList.toggle('live',it.state==='playing');
   if(it.ent)it.ent.classList.toggle('failed',it.state==='failed');

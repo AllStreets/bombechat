@@ -16,6 +16,13 @@
 <style>
 :root{
   --enamel:#1b1c1a; --plate-ink:#ece6d6;
+  /* paper lit by the machine's key light, as the front's (bombechat.html has the why): the light's direction on the
+     screen, the way shadows fall, the paper's fibre and its tooth, and how it lies on the enamel */
+  --lx:-.555; --ly:-.832; --la:146.3deg;
+  --fibre:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='300' height='300'><filter id='p'><feTurbulence type='fractalNoise' baseFrequency='.55' numOctaves='4' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .45  0 0 0 0 .38  0 0 0 0 .25  0 0 0 .09 0'/></filter><rect width='300' height='300' filter='url(%23p)'/></svg>");
+  --tooth:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='t' x='0' y='0' width='100%25' height='100%25'><feTurbulence type='fractalNoise' baseFrequency='1.6' numOctaves='2' seed='3' stitchTiles='stitch'/><feDiffuseLighting surfaceScale='1.1' diffuseConstant='1' lighting-color='%23fff'><feDistantLight azimuth='236' elevation='64'/></feDiffuseLighting><feColorMatrix values='0 0 0 0 .2  0 0 0 0 .14  0 0 0 0 .05  -.32 0 0 0 .29'/></filter><rect width='220' height='220' filter='url(%23t)'/></svg>");
+  --paper-edge:inset calc(var(--lx) * -1px) calc(var(--ly) * -1px) 0 rgba(255,251,240,.6),inset 0 0 0 .5px rgba(96,74,40,.38);
+  --paper-lie:0 0 0 .5px rgba(0,0,0,.4),calc(var(--lx) * -1px) calc(var(--ly) * -1px) 1.5px rgba(0,0,0,.55),calc(var(--lx) * -4px) calc(var(--ly) * -4px) 9px rgba(0,0,0,.38);
   --buff:#eadfc4; --green-ink:#2f5a4b; --type-ink:#25211b; --muted:#6b6150;
   --brass:#b8955c; --amber:#e7a63c;
   --engr:'Bombechat Engraving',Georgia,serif;
@@ -50,16 +57,20 @@ a.pl svg{display:block}
 
 /* wiring schedule card */
 .cardwrap{min-height:0;padding:16px 0 16px 16px;display:flex}
-.card{position:relative;flex:1;min-height:0;display:flex;flex-direction:column;background:var(--buff);color:var(--type-ink);border-radius:1px;
-  box-shadow:0 10px 24px rgba(0,0,0,.55),0 2px 3px rgba(0,0,0,.5);
-  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='300' height='300'><filter id='p'><feTurbulence type='fractalNoise' baseFrequency='.55' numOctaves='4' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .45  0 0 0 0 .38  0 0 0 0 .25  0 0 0 .09 0'/></filter><rect width='300' height='300' filter='url(%23p)'/></svg>")}
+.card{position:relative;flex:1;min-height:0;display:flex;flex-direction:column;background-color:var(--buff);color:var(--type-ink);border-radius:1px;
+  /* the same paper as the front's message sheet, lit the same way */
+  box-shadow:var(--paper-edge),var(--paper-lie);
+  background-image:radial-gradient(120% 95% at 0 0,rgba(255,249,232,.13),rgba(255,249,232,0) 62%),linear-gradient(var(--la),rgba(80,58,24,0) 40%,rgba(80,58,24,.075)),var(--tooth),var(--fibre)}
 .card-h{padding:16px 22px 8px;border-bottom:1.5px solid var(--green-ink);display:flex;justify-content:space-between;align-items:flex-end;color:var(--green-ink)}
 .card-h h1{font-family:var(--print);font-weight:400;font-size:21px}
 .card-h span{font-family:var(--print);font-size:12px}
 .card-h span b{font-family:var(--type);font-weight:400;font-size:14px;color:var(--type-ink);margin-left:4px}
 .sched{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:0 22px 24px;scrollbar-width:thin;scrollbar-color:rgba(75,74,71,.55) transparent}
 .sched::-webkit-scrollbar{width:8px}.sched::-webkit-scrollbar-thumb{background:rgba(75,74,71,.45);border-radius:4px;border:2px solid var(--buff)}
-.grp{position:sticky;top:0;z-index:2;background:var(--buff);box-shadow:-8px 0 0 var(--buff),8px 0 0 var(--buff);font-family:var(--print);font-size:13px;color:var(--green-ink);padding:14px 0 5px;border-bottom:1px solid var(--green-ink);display:flex;justify-content:space-between}
+.grp{position:sticky;top:0;z-index:2;font-family:var(--print);font-size:13px;color:var(--green-ink);padding:14px 0 5px;border-bottom:1px solid var(--green-ink);display:flex;justify-content:space-between}
+/* a group's heading is printed on the card; only while it stands stuck at the top, over the rows scrolling under it, is it
+   a strip of the same paper laid over them (stuckHeads) */
+.grp.stuck{background:linear-gradient(rgba(80,58,24,.035),rgba(80,58,24,.035)),var(--tooth),var(--buff);box-shadow:-8px 0 0 color-mix(in srgb,var(--buff),#50381a 3.5%),8px 0 0 color-mix(in srgb,var(--buff),#50381a 3.5%),0 1px 2px rgba(60,40,10,.12)}
 .grp small{font-family:var(--type);font-size:12px;color:var(--muted)}
 .row{position:relative;padding:10px 8px 11px;margin:0 -8px;border-bottom:1px solid rgba(47,90,75,.3);border-radius:1px;transition:background .2s}
 .row:hover,.row.focus{background:rgba(47,90,75,.06)}
@@ -207,6 +218,9 @@ const seatedAt=s=>s.parked?-1:s.v;
 
 /* ---------- schedule card ---------- */
 const sched=document.getElementById('sched');
+// the group heading stuck at the top of the card, over the rows scrolling under it
+function stuckHeads(){const top=sched.getBoundingClientRect().top;for(const g of sched.querySelectorAll('.grp'))g.classList.toggle('stuck',sched.scrollTop>0&&g.getBoundingClientRect().top<=top+.5)}
+sched.addEventListener('scroll',stuckHeads,{passive:true});
 const rows={};
 for(const g of GROUPS){
   const items=SETTINGS.filter(s=>s.g===g);

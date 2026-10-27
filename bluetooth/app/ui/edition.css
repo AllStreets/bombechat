@@ -36,6 +36,10 @@
 .col.tray .slip.edge{color:transparent;text-shadow:none;z-index:0;translate:0 calc(-1 * var(--lift,0px));box-shadow:0 1px 2px rgba(0,0,0,.45)}
 .col.tray .slip.edge *{visibility:hidden}
 .intray{display:flex;flex-direction:column;gap:8px;min-width:0}
+/* the slips' shadow is the tray's to throw (each slip's torn ends are a mask, which would cut its own shadow off): the
+   whole column throws it, so a slip tucked under its neighbour stays under it */
+.col.tray .outbox{filter:none}
+.col.tray{filter:drop-shadow(calc(var(--lx) * -1px) calc(var(--ly) * -1px) .8px rgba(0,0,0,.5)) drop-shadow(calc(var(--lx) * -2.5px) calc(var(--ly) * -2.5px) 3px rgba(0,0,0,.28))}
 .intray:empty{display:none}
 .row2:has(.intray:not(:empty)) .outbox:has(>.slip.empty:only-child){display:none}
 /* held by the key check, Decline sits up at the right of their name, the rest of the slip under both */
