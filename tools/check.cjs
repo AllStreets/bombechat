@@ -326,6 +326,32 @@ function measureText() {
       if (settled.off > .25) problems.push(`after a turn at ${w} the bank is off its HTML: ${settled.at} by ${settled.off.toFixed(2)} px`);
     }
   }
+  // the front panel costs nothing while idle: one canvas under the whole front, drawn only when something changed. Held
+  // still, 120 frames draw nothing; a knob turned draws a few frames and stops; the room meter's needle moving draws
+  // only the meter's own canvas
+  if (APP) {
+    const idle = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    watch(idle, 'idle');
+    await idle.goto(url(HELD));
+    await idle.waitForFunction(() => window.__bank && __bank.ready, null, { timeout: 60000 });
+    await idle.evaluate(() => document.fonts.ready);
+    const frames = n => idle.evaluate(n => new Promise(r => { const n0 = __bank.renders(); const f = () => --n ? requestAnimationFrame(f) : r(__bank.renders() - n0); requestAnimationFrame(f); }), n);
+    await frames(30);
+    const r = { idle: await frames(120) };
+    await idle.click('#k1');
+    r.knob = await frames(90);
+    r.after = await frames(120);
+    if (await idle.evaluate(() => !!window.__vu)) {
+      const vu0 = await idle.evaluate(() => __vu.renders());
+      await idle.evaluate(() => window.__sim && __sim.room ? __sim.room(55) : __vu.set(55));
+      r.needle = await frames(40); r.vu = await idle.evaluate(n => __vu.renders() - n, vu0);
+      if (r.needle !== 0 || r.vu < 1) problems.push(`the room meter's needle moving redraws more than its own canvas: ${JSON.stringify(r)}`);
+    }
+    report.renders = r;
+    if (r.idle !== 0 || r.after !== 0) problems.push(`the front panel draws while nothing changes: ${JSON.stringify(r)}`);
+    if (r.knob < 1 || r.knob > 45) problems.push(`a knob turn draws ${r.knob} frames of the front panel (1 to 45 expected)`);
+    await idle.close();
+  }
   report.fps = await live.evaluate(() => new Promise(r => { let n = 0; const t0 = performance.now(); const f = () => { n++; performance.now() - t0 < 2000 ? requestAnimationFrame(f) : r(Math.round(n / 2)); }; requestAnimationFrame(f); }));
   if (report.fps < 50) problems.push('front frame rate ' + report.fps);
   await live.waitForTimeout(1750);

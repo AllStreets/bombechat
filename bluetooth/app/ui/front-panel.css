@@ -1,0 +1,19 @@
+/* The front panel in 3D (front-panel.js) draws the enamel, the drum bank's bay and the hardware below the drums behind
+   the HTML. These rules land only with it (.gl, set once the scene is up): they take away the CSS drawing of what the
+   scene now draws, and leave every control, its box, its label and its focus ring where it was. Without WebGL none of
+   this applies and the CSS machine shows as it always has. */
+
+/* the canvas under everything below the top bar */
+.front3d{position:absolute;left:0;right:0;top:46px;bottom:0;z-index:0;overflow:hidden;pointer-events:none}
+.front3d canvas{display:block;width:100%;height:100%}
+.app.gl{background:#151614}
+.app.gl::before{display:none}
+
+/* the drum bank: its bay is the scene's; the SVG drums stay, unseen, as the model */
+.bank.gl{background:transparent;box-shadow:none}
+.bank.gl .grid{position:relative;z-index:1;opacity:0}
+.bank.gl .bankfoot{position:relative;z-index:2;border-top-color:transparent;box-shadow:none}
+/* the readouts' bezels, wheels and lamps are the scene's; the digits stay */
+.app.gl .bank .odo,.app.gl .counter .odo{background:transparent;box-shadow:none}
+.app.gl .bank .odo i,.app.gl .counter .odo i{background:transparent;text-shadow:0 1px 0 rgba(0,0,0,.65)}
+.app.gl .lampset i{background:transparent;box-shadow:none}

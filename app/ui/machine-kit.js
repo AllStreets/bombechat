@@ -75,6 +75,8 @@ export function createMachine(container, { still = false, background = '#0d0d0c'
     bakelite: new THREE.MeshPhysicalMaterial({ color: '#17120e', roughness: .32, metalness: 0, clearcoat: .6, clearcoatRoughness: .35 }),
     hole: new THREE.MeshStandardMaterial({ color: '#050505', roughness: .9 }),
     frame: new THREE.MeshStandardMaterial({ color: '#121311', roughness: .6, metalness: .5 }),
+    // the walls of a bay let into the panel: the same enamel, sprayed thinner where the gun couldn't reach
+    lip: new THREE.MeshStandardMaterial({ color: '#2e2f2b', roughness: .55, metalness: .45 }),
   };
   const cableMat = c => new THREE.MeshPhysicalMaterial({ color: c, roughness: .72, metalness: 0, sheen: .6, sheenRoughness: .6, sheenColor: new THREE.Color('#8a8070'), bumpMap: tex.braid, bumpScale: 1.4 });
 
@@ -149,18 +151,41 @@ export function createMachine(container, { still = false, background = '#0d0d0c'
 
   // the panel's frame and bolt ring: the enamel panel, the dark frame standing out round it, and a bolt every so often
   // along each edge (across along the top and the foot, about every two units down the sides unless down says)
-  function perimeter(w, h, cy, { across = 13, down = null, inset = .35, scale = 1, z = .03, parent = scene } = {}) {
-    const panel = new THREE.Mesh(new THREE.BoxGeometry(w, h, .3), M.panel); panel.position.set(0, cy, -.15); panel.receiveShadow = true; parent.add(panel);
+  // holes: bays let into the panel ([{x, y, w, h, r}], centred, in panel units), each with a bevelled lip in the frame's
+  // finish running back the panel's depth; grain: the wrinkle's tile size in units across and down, for a panel with bays
+  function perimeter(w, h, cy, { across = 13, down = null, inset = .35, scale = 1, z = .03, holes = null, grain = null, parent = scene } = {}) {
+    let panel;
+    if (holes && holes.length) {
+      const s = new THREE.Shape(); s.moveTo(-w / 2 - .1, cy - h / 2 - .1); s.lineTo(w / 2 + .1, cy - h / 2 - .1); s.lineTo(w / 2 + .1, cy + h / 2 + .1); s.lineTo(-w / 2 - .1, cy + h / 2 + .1); s.closePath();
+      const lip = .028;
+      for (const o of holes) {
+        // (the bevel rounds the lip inward from the hole's edge, so the front face's edge is the bay's edge)
+        const hw = o.w / 2, hh = o.h / 2, r = Math.min(o.r || 0, hw, hh), p = new THREE.Path();
+        p.moveTo(o.x - hw + r, o.y - hh); p.lineTo(o.x + hw - r, o.y - hh); p.quadraticCurveTo(o.x + hw, o.y - hh, o.x + hw, o.y - hh + r);
+        p.lineTo(o.x + hw, o.y + hh - r); p.quadraticCurveTo(o.x + hw, o.y + hh, o.x + hw - r, o.y + hh); p.lineTo(o.x - hw + r, o.y + hh);
+        p.quadraticCurveTo(o.x - hw, o.y + hh, o.x - hw, o.y + hh - r); p.lineTo(o.x - hw, o.y - hh + r); p.quadraticCurveTo(o.x - hw, o.y - hh, o.x - hw + r, o.y - hh);
+        s.holes.push(p);
+      }
+      const g = new THREE.ExtrudeGeometry(s, { depth: .3 - 2 * lip, bevelEnabled: true, bevelThickness: lip, bevelSize: lip, bevelSegments: 4, curveSegments: 10 });
+      g.translate(0, -cy, -.3 + lip);
+      // the front's grain as the back's box panel has it: the texture's tiles a set size in units
+      const [gx, gy] = grain || [w, h], uv = g.attributes.uv;
+      for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) / gx, uv.getY(i) / gy);
+      panel = new THREE.Mesh(g, [M.panel, M.lip]); panel.position.set(0, cy, 0);
+    } else { panel = new THREE.Mesh(new THREE.BoxGeometry(w, h, .3), M.panel); panel.position.set(0, cy, -.15); }
+    panel.receiveShadow = true; parent.add(panel);
     const frame = new THREE.Mesh(new THREE.BoxGeometry(w + .5, h + .5, .2), M.frame); frame.position.set(0, cy, -.32); parent.add(frame);
     const bolts = { top: [], bottom: [], left: [], right: [] };
+    // each bolt's slot where it was left when it was tightened: the same every time the ring is drawn
+    let n = 0; const slot = () => ((++n * 2.399) % Math.PI);
     for (let i = 0; i < across; i++) {
       const x = -w / 2 + inset + i * (w - 2 * inset) / (across - 1);
-      bolts.top.push(bolt(x, cy + h / 2 - inset, { scale, z, parent })); bolts.bottom.push(bolt(x, cy - h / 2 + inset, { scale, z, parent }));
+      bolts.top.push(bolt(x, cy + h / 2 - inset, { scale, z, parent, slot: slot() })); bolts.bottom.push(bolt(x, cy - h / 2 + inset, { scale, z, parent, slot: slot() }));
     }
     const side = down || Math.round((h - 2 * inset) / 2);
     for (let i = 1; i < side; i++) {
       const y = cy - h / 2 + inset + i * (h - 2 * inset) / side;
-      bolts.left.push(bolt(-w / 2 + inset, y, { scale, z, parent })); bolts.right.push(bolt(w / 2 - inset, y, { scale, z, parent }));
+      bolts.left.push(bolt(-w / 2 + inset, y, { scale, z, parent, slot: slot() })); bolts.right.push(bolt(w / 2 - inset, y, { scale, z, parent, slot: slot() }));
     }
     return { panel, frame, bolts };
   }
@@ -259,11 +284,13 @@ export function createMachine(container, { still = false, background = '#0d0d0c'
     const coreMat = new THREE.MeshStandardMaterial({ color: '#000000', emissive: new THREE.Color(color), emissiveIntensity: 0, roughness: 1 });
     const core = new THREE.Mesh(coreGeo, coreMat); core.position.z = .05; core.scale.set(1, 1, .55); g.add(core);
     const lamp = light ? new THREE.PointLight(color, 0, 2.2 * radius, 2) : null; if (lamp) { lamp.position.z = .35; g.add(lamp); }
-    let on = null;
-    function set(v) {
-      v = !!v; if (v === on) return false; on = v;
-      coreMat.emissiveIntensity = v ? 3.2 : 0; glass.emissiveIntensity = v ? .55 : 0;
-      glass.color.set(v ? color : '#3a2c18'); glass.transmission = v ? .9 : .55; glass.attenuationColor.set(v ? color : '#20160a');
+    let on = null, lit = color;
+    // on, in its own colour or the one given (a lamp that shows more than one state); false if nothing changed
+    function set(v, c = color) {
+      v = !!v; if (v === on && c === lit) return false; on = v; lit = c;
+      coreMat.emissive.set(c); glass.emissive.set(c); if (lamp) lamp.color.set(c);
+      coreMat.emissiveIntensity = v ? 1.6 : 0; glass.emissiveIntensity = v ? .22 : 0;
+      glass.color.set(v ? c : '#3a2c18'); glass.transmission = v ? .9 : .55; glass.attenuationColor.set(v ? c : '#20160a');
       if (lamp) lamp.intensity = v ? .7 * radius * radius : 0;
       return true;
     }
