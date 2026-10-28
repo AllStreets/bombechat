@@ -164,7 +164,9 @@ function drumFace(r, turn) {
     ticks.push(`M${(Math.cos(t) * r0).toFixed(2)} ${(Math.sin(t) * r0).toFixed(2)}L${(Math.cos(t) * (r - 0.7)).toFixed(2)} ${(Math.sin(t) * (r - 0.7)).toFixed(2)}`);
   }
   const ring = (rr) => `M${rr} 0A${rr} ${rr} 0 1 0 ${-rr} 0A${rr} ${rr} 0 1 0 ${rr} 0Z`;
-  return L(ticks.join(""), { tone: "mid" }) + L(ring(r - 0.7), { tone: "lo" }) + L(ring(r - 3.2), { tone: "faint" });
+  // The A mark: one bright tick, so the turn reads at a glance.
+  const mark = `M${(Math.cos(turn) * (r - 3.6)).toFixed(2)} ${(Math.sin(turn) * (r - 3.6)).toFixed(2)}L${(Math.cos(turn) * (r - 0.7)).toFixed(2)} ${(Math.sin(turn) * (r - 0.7)).toFixed(2)}`;
+  return L(ticks.join(""), { tone: "mid" }) + L(ring(r - 0.7), { tone: "lo" }) + L(ring(r - 3.2), { tone: "faint" }) + L(mark, { tone: "hi" });
 }
 
 function drum(x, z, colour, turn, { spin = null } = {}) {
@@ -178,8 +180,11 @@ function drum(x, z, colour, turn, { spin = null } = {}) {
   out.push(spin ? a.amSpin(face, m, spin) : `<g transform="${m}">${face}</g>`);
   // The silver hub and its slotted screw.
   out.push(S(G.disc(5.2, 6.4, 2.4, F, P, { steps: 20 }), { tone: "hi" }));
-  const s = 1.6;
-  out.push(L(seg([x - Math.cos(turn) * s, 7.2, z - Math.sin(turn) * s], [x + Math.cos(turn) * s, 7.2, z + Math.sin(turn) * s]), { tone: "lo" }));
+  // The hub's slot turns with the drum, in step with its face.
+  const s = 1.7;
+  const slot = L(`M${(-Math.cos(turn) * s).toFixed(2)} ${(Math.sin(turn) * s).toFixed(2)}L${(Math.cos(turn) * s).toFixed(2)} ${(-Math.sin(turn) * s).toFixed(2)}`, { tone: "lo" });
+  const hm = faceMatrix(x, z, 7.2);
+  out.push(spin ? a.amSpin(slot, hm, spin) : `<g transform="${hm}">${slot}</g>`);
   // The letter tab at the top of the drum: a cream card that stays put while the drum turns.
   out.push(cls("paper", facePlate(x - 2.6, z + R - 6.2, x + 2.6, z + R - 1.2, 6, 6.5, "hi")));
   out.push(L(seg([x - 1, 6.5, z + R - 4.4], [x + 1, 6.5, z + R - 2.6]), { tone: "lo", free: true }));

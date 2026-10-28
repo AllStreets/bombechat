@@ -310,22 +310,72 @@ for px, cut, out in json.loads(sys.argv[2]):
     console.log('logo.svg');
   }
   async function banner() {
-    const tmp = path.join(ROOT, 'checks', 'media'); fs.mkdirSync(tmp, { recursive: true });
-    const c = await ctx(1440, 900, 3);
-    const p = await front(c);
-    const b = await p.locator('.bank').boundingBox();
-    const d = await p.locator('.drum').nth(5).boundingBox(), low = await p.locator('.drum').nth(29).boundingBox();
-    // the first six drums of the three rows, down to just under the third row, above the counters
-    await p.screenshot({ path: path.join(tmp, 'bank.png'), clip: { x: b.x, y: b.y, width: d.x + d.width + 22 - b.x, height: low.y + low.height + 14 - b.y } });
-    await c.close();
     const bc = await ctx(1200, 480, 2);
     const bp = await bc.newPage(); errors(bp);
     await bp.goto(at('tools/media/banner.html'));
     await bp.waitForFunction(() => window.__ready, null, { timeout: 30000 });
     await bp.evaluate(() => document.fonts.ready);
     await bp.screenshot({ path: path.join(OUT, 'banner.png') });
+    // The same banner as an SVG, so the machine's drums turn in the README. Every line of words
+    // is set where the page set it: each word is measured and grouped into lines.
+    const lay = await bp.evaluate(() => {
+      const out = {};
+      const box = (el) => { const r = el.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; };
+      out.logo = box(document.querySelector('.mark img'));
+      out.rule = box(document.querySelector('.rule'));
+      const lines = (el) => {
+        const words = el.textContent.trim().split(/\s+/);
+        el.innerHTML = words.map((w) => `<span>${w}</span>`).join(' ');
+        const spans = [...el.querySelectorAll('span')];
+        const rows = [];
+        for (const s of spans) {
+          const t = Math.round(s.getBoundingClientRect().top);
+          const row = rows.find((r) => r.top === t);
+          if (row) row.spans.push(s); else rows.push({ top: t, spans: [s] });
+        }
+        // A span's box starts at the top of the font's content area, so the baseline sits
+        // one font ascent below it.
+        const cs = getComputedStyle(el);
+        const ctx = document.createElement('canvas').getContext('2d');
+        ctx.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+        const ascent = ctx.measureText('M').fontBoundingBoxAscent;
+        return rows.map((r) => ({ x: r.spans[0].getBoundingClientRect().x, y: r.spans[0].getBoundingClientRect().top + ascent, text: r.spans.map((s) => s.textContent).join(' ') }));
+      };
+      out.name = lines(document.querySelector('.mark span'));
+      out.h1 = lines(document.querySelector('h1'));
+      out.p = lines(document.querySelector('p'));
+      return out;
+    });
+    const b64 = (f) => fs.readFileSync(path.join(ROOT, f)).toString('base64');
+    const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+    const text = (rows, style) => rows.map((r) => `<text x="${r.x.toFixed(1)}" y="${r.y.toFixed(1)}" style="${style}">${esc(r.text)}</text>`).join('');
+    // The machine goes in inline, so its CSS keeps running: placed where .machine puts it.
+    const machine = fs.readFileSync(path.join(OUT, 'bombe-hero.svg'), 'utf8')
+      .replace(/^<svg xmlns="http:\/\/www.w3.org\/2000\/svg" /, '<svg x="205" y="-22" ')
+      .replace(' width="1200" height="640"', ' width="960" height="512"');
+    const bannerSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 480" width="1200" height="480" role="img" aria-label="Bombechat: messages that never touch the internet. The app's machine drawn as an isometric cabinet, its top row of drums turning.">
+<defs>
+<style>@font-face{font-family:'Marcellus SC';src:url(data:font/woff2;base64,${b64('app/ui/fonts/marcellus-sc.woff2')}) format('woff2')}@font-face{font-family:'Libre Caslon Text';src:url(data:font/woff2;base64,${b64('app/ui/fonts/libre-caslon-text-400.woff2')}) format('woff2')}</style>
+<radialGradient id="bn-lit" cx="22%" cy="18%" r="70%" gradientTransform="translate(.22 .18) scale(1 1.2857) translate(-.22 -.18)"><stop offset="0" stop-color="#fff0d7" stop-opacity=".06"/><stop offset=".6" stop-color="#fff0d7" stop-opacity="0"/></radialGradient>
+<radialGradient id="bn-dark" cx="95%" cy="100%" r="60%"><stop offset="0" stop-color="#000" stop-opacity=".45"/><stop offset=".7" stop-color="#000" stop-opacity="0"/></radialGradient>
+<filter id="bn-grain" x="0" y="0" width="100%" height="100%"><feTurbulence type="fractalNoise" baseFrequency=".85" numOctaves="2" stitchTiles="stitch"/><feColorMatrix type="saturate" values="0"/></filter>
+<filter id="bn-shadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="3" stdDeviation="2.5" flood-color="#000" flood-opacity=".6"/></filter>
+</defs>
+<rect width="1200" height="480" fill="#171715"/>
+<rect width="1200" height="480" fill="url(#bn-lit)"/>
+<rect width="1200" height="480" fill="url(#bn-dark)"/>
+<rect width="1200" height="480" filter="url(#bn-grain)" opacity=".08"/>
+${machine}
+<image x="${lay.logo.x}" y="${lay.logo.y}" width="${lay.logo.w}" height="${lay.logo.h}" filter="url(#bn-shadow)" href="data:image/svg+xml;base64,${b64('docs/media/logo.svg')}"/>
+${text(lay.name, "font-family:'Marcellus SC',serif;font-size:36px;letter-spacing:.06em;fill:#e9e2cf")}
+${text(lay.h1, "font-family:'Libre Caslon Text',serif;font-size:46px;letter-spacing:-.005em;fill:#efe8d6")}
+<rect x="${lay.rule.x}" y="${lay.rule.y}" width="${lay.rule.w}" height="${lay.rule.h}" fill="#c29a5c" opacity=".85"/>
+${text(lay.p, "font-family:'Libre Caslon Text',serif;font-size:19px;fill:#b9b19c")}
+</svg>
+`;
+    fs.writeFileSync(path.join(OUT, 'banner.svg'), bannerSvg);
     await bc.close();
-    console.log('banner.png');
+    console.log('banner.png, banner.svg');
   }
   async function shots() {
     // the front: the message sheet and the drum bank, held on a frame of the message

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/media/banner.png" alt="Bombechat: messages that never touch the internet. The app's machine drawn as an isometric cabinet: three rows of colour-coded drums, the message sheet, the key check card, the switch plates and the room meter" />
+  <img src="docs/media/banner.svg" alt="Bombechat: messages that never touch the internet. The app's machine drawn as an isometric cabinet: three rows of colour-coded drums, the message sheet, the key check card, the switch plates and the room meter" />
 </p>
 
 <p align="center">

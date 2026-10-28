@@ -18,6 +18,12 @@ Fonts, in app/ui/fonts, under the SIL Open Font License 1.1
 
   docs/media/logo.svg embeds Marcellus SC, unmodified, under the same license.
 
+anatomy-asset, under the MIT License
+
+  docs/media/bombe-hero.svg inlines the stylesheet of the anatomy-asset kit
+  (github.com/Teddarific/skills, a fork of github.com/wheresryan22/anatomy).
+  Copyright (c) 2026 Ryan; the fork's additions under the same license.
+
 three.js r170, in app/ui/vendor/three, under the MIT License
 
   Copyright (c) 2010-2024 three.js authors        app/ui/vendor/three/LICENSE

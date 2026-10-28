@@ -3,8 +3,9 @@
 <head>
 <meta charset="utf-8">
 <title>Banner</title>
-<!-- The README banner, 1200 x 480 at 2x. The drum bank on the right is the
-     front page's own, captured by tools/media.cjs into checks/media/. -->
+<!-- The README banner, 1200 x 480 at 2x. The machine on the right is
+     docs/media/bombe-hero.svg, drawn with the anatomy-asset skill
+     (tools/media/bombe-hero.build.mjs). -->
 <link rel="stylesheet" href="/app/ui/fonts/fonts.css">
 <style>
 html,body{margin:0}
@@ -15,10 +16,8 @@ body{width:1200px;height:480px;overflow:hidden;position:relative;background:#141
   radial-gradient(ellipse 60% 80% at 95% 100%,rgba(0,0,0,.45),transparent 70%),
   #171715}
 .enamel canvas{position:absolute;inset:0;width:100%;height:100%;opacity:.5;mix-blend-mode:overlay}
-.bank{position:absolute;right:-6px;top:50%;transform:translateY(-50%);width:700px;
-  -webkit-mask-image:linear-gradient(90deg,transparent 0,rgba(0,0,0,.6) 14%,#000 26%),linear-gradient(0deg,transparent 0,#000 20%,#000 82%,transparent 100%);
-  -webkit-mask-composite:source-in;mask-composite:intersect}
-.bank img{display:block;width:100%}
+.machine{position:absolute;left:205px;top:-22px;width:960px}
+.machine img{display:block;width:100%}
 .words{position:absolute;left:76px;top:0;bottom:0;display:flex;flex-direction:column;justify-content:center;width:520px}
 .mark{display:flex;align-items:center;gap:18px;margin-bottom:34px}
 .mark img{width:64px;height:64px;filter:drop-shadow(0 3px 5px rgba(0,0,0,.6))}
@@ -30,17 +29,17 @@ p{margin:0;font-size:19px;line-height:1.55;color:#b9b19c;max-width:445px;text-wr
 </head>
 <body>
 <div class="enamel"><canvas id="n" width="600" height="240"></canvas></div>
-<div class="bank"><img id="bank" alt=""></div>
+<div class="machine"><img id="machine" alt=""></div>
 <div class="words">
   <div class="mark"><img src="/docs/media/logo.png" alt=""><span>Bombechat</span></div>
   <h1>Messages that never touch the internet.</h1>
   <div class="rule"></div>
-  <p>Encrypted messages carried across a room by sound and light, on a machine built after the Bombe.</p>
+  <p>Encrypted messages carried across a room by sound and light.</p>
 </div>
 <script>
 const k=document.getElementById('n').getContext('2d'),id=k.createImageData(600,240);
 for(let i=0;i<600*240;i++){const v=128+(Math.random()-.5)*70;id.data.set([v,v,v,255],i*4)}k.putImageData(id,0,0);
-const img=document.getElementById('bank');img.onload=()=>{window.__ready=true};img.src='/checks/media/bank.png';
+const img=document.getElementById('machine');img.onload=()=>{window.__ready=true};img.src='/docs/media/bombe-hero.svg';
 </script>
 </body>
 </html>
