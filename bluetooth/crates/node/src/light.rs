@@ -852,6 +852,10 @@ impl Transport for LightTransport {
     fn send(&mut self, frame: Vec<u8>) {
         for event in self.outgoing.push(&frame, self.now_ms) {
             if let Event::Complete { tag, bytes } = event {
+                // These are our own frames, never a duplicate off the air, so
+                // the tag is forgotten at once: tags are random, and one that
+                // comes round again within minutes must still be shown.
+                self.outgoing.forget(tag);
                 self.enqueue(tag, bytes);
             }
         }
@@ -933,6 +937,25 @@ mod tests {
             }
         }
         (shown, rest)
+    }
+
+    #[test]
+    fn an_envelope_under_a_tag_used_minutes_ago_is_still_shown() {
+        // The node picks each tag at random from 16 bits, so a tag can come
+        // round again within minutes: a pairing hello is shown again under a
+        // fresh tag each time its window ends.
+        let cam = FakeCamera::new(Vec::new());
+        let mut t = transport(&cam);
+        send(&mut t, 7, 100);
+        let (_, rest) = run(&mut t, 0, 6_000);
+        assert!(rest.contains(&TransportEvent::Sent(7)));
+        send(&mut t, 7, 100);
+        let (shown, rest) = run(&mut t, 6_000, 12_000);
+        assert!(
+            !shown.is_empty(),
+            "the second envelope under tag 7 never went on screen"
+        );
+        assert!(rest.contains(&TransportEvent::Sent(7)));
     }
 
     #[test]
