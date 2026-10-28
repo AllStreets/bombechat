@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/media/banner.png" alt="Bombechat: messages that never touch the internet. A drum bank from the app, reading CHURCH on its top row" />
+  <img src="docs/media/banner.png" alt="Bombechat: messages that never touch the internet. The app's machine drawn as an isometric cabinet: three rows of colour-coded drums, the message sheet, the key check card, the switch plates and the room meter" />
 </p>
 
 <p align="center">
@@ -225,6 +225,10 @@ CI runs the Rust tests and the airgapped check on Linux and on macOS, where the 
 - **Bluetooth on real Macs.** The standard build's Bluetooth is built and tested in code. Next is the two-Mac test and the six measurements it still owes.
 - **Phones.** The same machine on iOS and Android.
 - **A bridge to Bitchat**, so messages can cross into its Bluetooth mesh.
+
+## Credits
+
+The machine in the banner at the top was drawn with [anatomy-asset](https://github.com/Teddarific/skills/tree/main/skills/anatomy-asset) by [Teddy Ni](https://github.com/Teddarific), a fork of Ryan's [Anatomy](https://github.com/wheresryan22/anatomy) skill. It is `docs/media/bombe-hero.svg`, made by `tools/media/bombe-hero.build.mjs`, which runs from the skill's `examples/` folder.
 
 ## License
 

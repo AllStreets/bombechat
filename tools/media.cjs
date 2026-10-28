@@ -310,14 +310,6 @@ for px, cut, out in json.loads(sys.argv[2]):
     console.log('logo.svg');
   }
   async function banner() {
-    const tmp = path.join(ROOT, 'checks', 'media'); fs.mkdirSync(tmp, { recursive: true });
-    const c = await ctx(1440, 900, 3);
-    const p = await front(c);
-    const b = await p.locator('.bank').boundingBox();
-    const d = await p.locator('.drum').nth(5).boundingBox(), low = await p.locator('.drum').nth(29).boundingBox();
-    // the first six drums of the three rows, down to just under the third row, above the counters
-    await p.screenshot({ path: path.join(tmp, 'bank.png'), clip: { x: b.x, y: b.y, width: d.x + d.width + 22 - b.x, height: low.y + low.height + 14 - b.y } });
-    await c.close();
     const bc = await ctx(1200, 480, 2);
     const bp = await bc.newPage(); errors(bp);
     await bp.goto(at('tools/media/banner.html'));
